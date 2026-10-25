@@ -19,6 +19,12 @@ func assertErrorMsg(t *testing.T, err error, msg string) {
 	}
 }
 
+// "e" + acute is the NFD form of eAcute.
+const (
+	acute  = string(rune(0x0301))
+	eAcute = string(rune(0x00E9))
+)
+
 func TestNormalizeText(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -35,6 +41,8 @@ func TestNormalizeText(t *testing.T) {
 		{name: "line separator", in: "a\u2028b", want: "a\u2028b"},
 		{name: "no-break space", in: "a\u00a0b", want: "a\u00a0b"},
 		{name: "empty", in: "", want: ""},
+		{name: "NFD", in: "cafe" + acute, want: "caf" + eAcute},
+		{name: "composed after removing NUL", in: "e\x00" + acute, want: eAcute},
 		{name: "invalid UTF-8", in: "a\xffb", want: "a\ufffdb"},
 		{name: "multiline CRLF", in: "a\r\nb", multiline: true, want: "a\nb"},
 		{name: "multiline CR", in: "a\rb", multiline: true, want: "a\nb"},
@@ -42,6 +50,7 @@ func TestNormalizeText(t *testing.T) {
 		{name: "multiline tab and NUL", in: "a\tb\x00", multiline: true, want: "a\tb"},
 		{name: "multiline VT", in: "a\vb", multiline: true, want: "ab"},
 		{name: "multiline NEL", in: "a\u0085b", multiline: true, want: "ab"},
+		{name: "multiline NFD", in: "e" + acute + "\r\n", multiline: true, want: eAcute + "\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +81,8 @@ func TestCheckText(t *testing.T) {
 		{name: "no-break space", in: "a\u00a0b"},
 		{name: "ideographic space", in: "a\u3000b"},
 		{name: "empty", in: ""},
+		{name: "NFC", in: "caf" + eAcute},
+		{name: "NFD", in: "cafe" + acute, msg: "not in Unicode NFC; normalize it first"},
 		{name: "newline", in: "a\nb", msg: lineBreak},
 		{name: "CR", in: "a\rb", msg: lineBreak},
 		{name: "tab", in: "a\tb", msg: lineBreak},
@@ -91,6 +102,7 @@ func TestCheckText(t *testing.T) {
 		{name: "multiline NUL", in: "a\x00b", multiline: true, msg: control},
 		{name: "multiline VT", in: "a\vb", multiline: true, msg: control},
 		{name: "multiline invalid UTF-8", in: "a\xffb", multiline: true, msg: "invalid UTF-8"},
+		{name: "multiline NFD", in: "e" + acute + "\n", multiline: true, msg: "not in Unicode NFC; normalize it first"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

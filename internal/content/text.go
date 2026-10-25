@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 )
 
 func normalizeText(s string, multiline bool) string {
@@ -20,8 +22,7 @@ func normalizeText(s string, multiline bool) string {
 		}
 		return r
 	}, s)
-	// NFC is not applied yet; it will be implemented in-house, not with golang.org/x/text.
-	return s
+	return nfc.Normalize(s)
 }
 
 func checkText(s string, multiline bool) error {
@@ -33,6 +34,9 @@ func checkText(s string, multiline bool) error {
 	}
 	if strings.ContainsFunc(s, func(r rune) bool { return isStrayControl(r, multiline) }) {
 		return errors.New("contains control characters; normalize it first")
+	}
+	if !nfc.IsNormalized(s) {
+		return errors.New("not in Unicode NFC; normalize it first")
 	}
 	return nil
 }
