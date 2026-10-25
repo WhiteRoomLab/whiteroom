@@ -1,0 +1,31 @@
+[
+  {
+    "type": "heading",
+    "id": "b_4n8c1w2e",
+    "attrs": { "level": 2 },
+    "content": [{ "type": "text", "text": "私たちについて" }]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_9x3v7k5m",
+    "content": [{ "type": "text", "text": "当社の事業内容をご紹介します。" }]
+  },
+  {
+    "type": "image",
+    "id": "b_2p6t8r1z",
+    "attrs": { "media": "med_01JB8Z3K5Q", "alt": "会社外観" }
+  },
+  {
+    "type": "table",
+    "id": "b_5h1j3g7d",
+    "content": [
+      {
+        "type": "tableRow",
+        "content": [
+          { "type": "tableCell", "attrs": { "header": true }, "content": [{ "type": "text", "text": "所在地" }] },
+          { "type": "tableCell", "content": [{ "type": "text", "text": "東京都千代田区〇〇1-2-3" }] }
+        ]
+      }
+    ]
+  }
+]

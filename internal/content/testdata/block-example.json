@@ -1,0 +1,12 @@
+{
+  "type": "paragraph",
+  "id": "b_9x3v7k5m",
+  "variant": "lead",
+  "style": {
+    "textColor": { "preset": "primary" },
+    "backgroundColor": { "value": "#fff4e5" },
+    "fontSize": { "preset": "large" },
+    "padding": { "top": { "value": "1rem" }, "bottom": { "value": "1rem" } }
+  },
+  "content": [{ "type": "text", "text": "当社の事業内容をご紹介します。" }]
+}

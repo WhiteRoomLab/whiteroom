@@ -31,6 +31,7 @@ func (es Errors) Error() string {
 
 type checker struct {
 	errs Errors
+	doc  *docState // nil outside a document of blocks, as in Style.Validate and RichText.Validate
 }
 
 func (c *checker) addf(path, format string, args ...any) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,16 @@ func TestRichTextUnmarshalJSONError(t *testing.T) {
 				t.Errorf("UnmarshalJSON(%s) changed the value to %#v", tt.in, rt)
 			}
 		})
+	}
+}
+
+func TestRichTextUnmarshalJSONRawPointer(t *testing.T) {
+	// attrs before type is read as a raw value; the duplicate key falls at every offset of the decoder's buffer.
+	for n := 1; n < 200; n++ {
+		in := `[{"type":"text","text":"` + strings.Repeat("p", n) +
+			`","marks":[{"attrs":{"color":{"value":"#fff","value":"#000"}},"type":"highlight"}]}]`
+		var rt RichText
+		assertError(t, rt.UnmarshalJSON([]byte(in)), "/0/marks/0/attrs/color/value", "duplicate key")
 	}
 }
 
@@ -750,6 +761,18 @@ func TestRichTextValidateGoValues(t *testing.T) {
 			in:    RichText{{Type: InlineText, Text: "a\x00b", Marks: []Mark{{Type: MarkLink, Link: &Link{Href: " https://example.com "}}}}},
 			paths: []string{"/0/text", "/0/marks/0/attrs/href"},
 			msg:   "normalize it first",
+		},
+		{
+			name:  "too long text",
+			in:    RichText{{Type: InlineText, Text: strings.Repeat("a", MaxTextBytes+1)}},
+			paths: []string{"/0/text"},
+			msg:   "too long",
+		},
+		{
+			name:  "too long href",
+			in:    markedText(Mark{Type: MarkLink, Link: &Link{Href: "/" + strings.Repeat("a", MaxTextBytes)}}),
+			paths: []string{"/0/marks/0/attrs/href"},
+			msg:   "too long",
 		},
 		{
 			name:  "hardBreak with text",
