@@ -395,6 +395,12 @@ func TestRichTextNormalize(t *testing.T) {
 	}{
 		{name: "nil", in: nil, want: nil},
 		{name: "empty", in: RichText{}, want: nil},
+		{name: "NFD", in: RichText{{Type: InlineText, Text: "e" + acute}}, want: RichText{{Type: InlineText, Text: eAcute}}},
+		{
+			name: "NFD split across texts",
+			in:   RichText{{Type: InlineText, Text: "e", Marks: []Mark{{Type: MarkBold}}}, {Type: InlineText, Text: acute}},
+			want: RichText{{Type: InlineText, Text: "e", Marks: []Mark{{Type: MarkBold}}}, {Type: InlineText, Text: acute}},
+		},
 		{name: "NUL", in: RichText{{Type: InlineText, Text: "a\x00b"}}, want: RichText{{Type: InlineText, Text: "ab"}}},
 		{name: "invalid UTF-8", in: RichText{{Type: InlineText, Text: "a\xffb"}}, want: RichText{{Type: InlineText, Text: "a\ufffdb"}}},
 		{
@@ -726,6 +732,12 @@ func TestRichTextValidateGoValues(t *testing.T) {
 		{name: "nil", in: nil},
 		{name: "empty marks", in: RichText{{Type: InlineText, Text: "a", Marks: []Mark{}}}},
 		{name: "empty text", in: RichText{{Type: InlineText}}, paths: []string{"/0/text"}, msg: "empty text"},
+		{
+			name:  "NFD text",
+			in:    RichText{{Type: InlineText, Text: "a"}, {Type: InlineText, Text: "e" + acute}},
+			paths: []string{"/1/text"},
+			msg:   "not in Unicode NFC; normalize it first",
+		},
 		{name: "invalid UTF-8 in text", in: RichText{{Type: InlineText, Text: "a\xffb"}}, paths: []string{"/0/text"}, msg: "invalid UTF-8"},
 		{
 			name:  "invalid UTF-8 in href",

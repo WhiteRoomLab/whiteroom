@@ -22,8 +22,13 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 
 ## パッケージの置き場所
 
-- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`。
+- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`。
 - コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
+
+## 生成するファイル
+
+- `internal/nfc/tables.go` と `internal/nfc/testdata/NormalizationTest.txt.gz` は `go generate ./internal/nfc` で作る（unicode.org から UCD を取得するので、ネットが要る）。手で編集しない。
+- 表の Unicode の版は、Go の `unicode.Version` に合わせる。Go のマイナー版を上げて `unicode.Version` が変わると `internal/nfc` のテストが失敗するので、そのときに作り直す。
 
 ## 規約
 
