@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Tool versions come from the flake; don't add setup-go or golangci-lint-action.
+      - uses: cachix/install-nix-action@v31
+
+      - name: flake check
+        run: nix flake check --all-systems
+
+      - name: tidy
+        run: nix develop -c go mod tidy -diff
+
+      # Not `gofmt -l`: it exits 0 even when files need formatting.
+      - name: format
+        run: nix develop -c golangci-lint fmt --diff
+
+      - name: vet
+        run: nix develop -c go vet ./...
+
+      # `golangci-lint run` silently ignores unknown config keys.
+      - name: lint config
+        run: nix develop -c golangci-lint config verify
+
+      - name: lint
+        run: nix develop -c golangci-lint run
+
+      - name: test
+        run: nix develop -c go test -race ./...
