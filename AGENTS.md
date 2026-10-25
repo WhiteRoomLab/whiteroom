@@ -28,5 +28,6 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 ## 規約
 
 - コードと設定ファイルのコメントは英語で、最小限にする。消すと誤った「修正」を招く箇所にだけ、短い1行で書く。
+- doc コメントは、名前だけで分からないときだけ書く。公開する識別子のすべてには付けない。
 - ドキュメントは日本語で書く。
 - コミットは Conventional Commits。type は `feat`・`fix`・`docs`・`refactor`・`test`・`build`・`ci`・`chore` など（`update`・`add` は使わない）。説明と本文は日本語（例：`build: 開発環境の Nix flake を追加`）。
