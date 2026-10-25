@@ -763,6 +763,18 @@ func TestRichTextValidateGoValues(t *testing.T) {
 			msg:   "normalize it first",
 		},
 		{
+			name:  "too long text",
+			in:    RichText{{Type: InlineText, Text: strings.Repeat("a", MaxTextBytes+1)}},
+			paths: []string{"/0/text"},
+			msg:   "too long",
+		},
+		{
+			name:  "too long href",
+			in:    markedText(Mark{Type: MarkLink, Link: &Link{Href: "/" + strings.Repeat("a", MaxTextBytes)}}),
+			paths: []string{"/0/marks/0/attrs/href"},
+			msg:   "too long",
+		},
+		{
 			name:  "hardBreak with text",
 			in:    RichText{{Type: InlineHardBreak, Text: "a"}},
 			paths: []string{"/0/text"},

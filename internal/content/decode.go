@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 )
 
 type decoder struct {
@@ -180,6 +181,19 @@ func (d *decoder) number() (string, error) {
 		return "", err
 	}
 	return tok.String(), nil
+}
+
+// int reads a number written as an integer: 2, but not 2.0 or 2e0.
+func (d *decoder) int() (int, error) {
+	s, err := d.number()
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, d.errorf("must be an integer")
+	}
+	return v, nil
 }
 
 // raw reads the next value as written and returns it with its path.

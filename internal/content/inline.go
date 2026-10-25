@@ -414,10 +414,10 @@ func (x Link) check(c *checker, path string) {
 		c.add(path+"/href", checkHref(x.Href))
 	}
 	if x.Entry != "" {
-		c.add(path+"/entry", checkName(x.Entry))
+		c.ref(path+"/entry", RefEntry, x.Entry)
 	}
 	if x.Media != "" {
-		c.add(path+"/media", checkName(x.Media))
+		c.ref(path+"/media", RefMedia, x.Media)
 	}
 	if x.Anchor != "" {
 		c.add(path+"/anchor", checkName(x.Anchor))

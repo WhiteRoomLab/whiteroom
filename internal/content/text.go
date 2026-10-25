@@ -11,32 +11,69 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 )
 
-func normalizeText(s string, multiline bool) string {
+func checkSize(s string) error {
+	if len(s) > MaxTextBytes {
+		return fmt.Errorf("too long: %d bytes (max %d)", len(s), MaxTextBytes)
+	}
+	return nil
+}
+
+func cleanText(s string, multiline bool) string {
 	if multiline {
 		s = strings.ReplaceAll(s, "\r\n", "\n")
 		s = strings.ReplaceAll(s, "\r", "\n")
 	}
-	s = strings.Map(func(r rune) rune {
+	return strings.Map(func(r rune) rune {
 		if isStrayControl(r, multiline) {
 			return -1
 		}
 		return r
 	}, s)
-	return nfc.Normalize(s)
+}
+
+func normalizeText(s string, multiline bool) string {
+	return nfc.Normalize(cleanText(s, multiline))
 }
 
 func checkText(s string, multiline bool) error {
+	return checkTextWith(s, multiline, "contains a line break or tab; use hardBreak for line breaks")
+}
+
+// checkLine checks a line of plain text such as alt, which has no hardBreak.
+func checkLine(s string) error {
+	return checkTextWith(s, false, "contains a line break or tab")
+}
+
+// checkTextWith is checkText with lineBreak as the message for a line break or tab.
+func checkTextWith(s string, multiline bool, lineBreak string) error {
+	if err := checkSize(s); err != nil {
+		return err
+	}
 	if !utf8.ValidString(s) {
 		return errors.New("invalid UTF-8")
 	}
 	if !multiline && strings.ContainsFunc(s, isLineBreakOrTab) {
-		return errors.New("contains a line break or tab; use hardBreak for line breaks")
+		return errors.New(lineBreak)
 	}
 	if strings.ContainsFunc(s, func(r rune) bool { return isStrayControl(r, multiline) }) {
 		return errors.New("contains control characters; normalize it first")
 	}
 	if !nfc.IsNormalized(s) {
 		return errors.New("not in Unicode NFC; normalize it first")
+	}
+	return nil
+}
+
+// checkRaw checks HTML. It does not require NFC, which would break URLs in src and href.
+func checkRaw(s string) error {
+	if err := checkSize(s); err != nil {
+		return err
+	}
+	if !utf8.ValidString(s) {
+		return errors.New("invalid UTF-8")
+	}
+	if strings.ContainsFunc(s, func(r rune) bool { return isStrayControl(r, true) }) {
+		return errors.New("contains control characters; normalize it first")
 	}
 	return nil
 }
@@ -58,6 +95,9 @@ func isLineBreakOrTab(r rune) bool {
 }
 
 func checkName(s string) error {
+	if err := checkSize(s); err != nil {
+		return err
+	}
 	if s == "" {
 		return errors.New("empty name")
 	}
@@ -73,6 +113,14 @@ func isNameByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
+func checkBlockID(s string) error {
+	rest, ok := strings.CutPrefix(s, "b_")
+	if !ok || len(rest) != 8 || strings.TrimLeft(rest, "0123456789abcdefghijklmnopqrstuvwxyz") != "" {
+		return fmt.Errorf(`invalid block ID %q: use "b_" and 8 lowercase ASCII letters or digits`, s)
+	}
+	return nil
+}
+
 func normalizeHref(s string) string {
 	// Browsers ignore tabs and newlines anywhere in a URL, as in "java\tscript:".
 	s = strings.Map(func(r rune) rune {
@@ -85,6 +133,9 @@ func normalizeHref(s string) string {
 }
 
 func checkHref(s string) error {
+	if err := checkSize(s); err != nil {
+		return err
+	}
 	if s == "" {
 		return errors.New("empty URL")
 	}

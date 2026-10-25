@@ -1,0 +1,163 @@
+[
+  {
+    "type": "paragraph",
+    "id": "b_0paragr1",
+    "variant": "lead",
+    "className": "intro",
+    "anchor": "intro",
+    "style": {"textColor": {"preset": "primary"}, "padding": {"top": {"value": "1rem"}}},
+    "attrs": {"textAlign": "center"},
+    "content": [
+      {"type": "text", "text": "Read the "},
+      {"type": "text", "text": "guide", "marks": [{"type": "bold"}, {"type": "link", "attrs": {"entry": "ent_01JB8Y6T2R"}}]},
+      {"type": "hardBreak"},
+      {"type": "text", "text": "today."}
+    ]
+  },
+  {"type": "paragraph", "id": "b_0paragr2"},
+  {
+    "type": "heading",
+    "id": "b_0heading",
+    "anchor": "services",
+    "attrs": {"level": 3, "textAlign": "right"},
+    "content": [{"type": "text", "text": "Services"}]
+  },
+  {
+    "type": "list",
+    "id": "b_00list01",
+    "attrs": {"ordered": true, "start": 3},
+    "content": [
+      {
+        "type": "listItem",
+        "content": [
+          {"type": "paragraph", "id": "b_0litem01", "content": [{"type": "text", "text": "First"}]},
+          {
+            "type": "list",
+            "id": "b_00list02",
+            "content": [
+              {"type": "listItem", "content": [{"type": "paragraph", "id": "b_0litem02", "content": [{"type": "text", "text": "Nested"}]}]}
+            ]
+          }
+        ]
+      },
+      {"type": "listItem", "content": [{"type": "paragraph", "id": "b_0litem03", "content": [{"type": "text", "text": "Second"}]}]}
+    ]
+  },
+  {
+    "type": "quote",
+    "id": "b_000quote",
+    "variant": "pull",
+    "attrs": {"citation": [{"type": "text", "text": "A customer"}]},
+    "content": [{"type": "paragraph", "id": "b_0quotep1", "content": [{"type": "text", "text": "Great service."}]}]
+  },
+  {
+    "type": "image",
+    "id": "b_000image",
+    "attrs": {
+      "media": "med_01JB8Z3K5Q",
+      "alt": "Our office building",
+      "caption": [{"type": "text", "text": "Head office"}],
+      "link": {"href": "https://example.com/office", "newTab": true},
+      "size": "large",
+      "width": "300px",
+      "aspectRatio": "16/9",
+      "align": "wide"
+    }
+  },
+  {"type": "image", "id": "b_00image2", "attrs": {"media": "med_01JB8Z3K5R", "decorative": true}},
+  {
+    "type": "table",
+    "id": "b_000table",
+    "attrs": {"caption": [{"type": "text", "text": "Company profile"}]},
+    "content": [
+      {
+        "type": "tableRow",
+        "attrs": {"section": "head"},
+        "content": [
+          {"type": "tableCell", "attrs": {"header": true}, "content": [{"type": "text", "text": "Item"}]},
+          {"type": "tableCell", "attrs": {"header": true}, "content": [{"type": "text", "text": "Value"}]}
+        ]
+      },
+      {
+        "type": "tableRow",
+        "content": [
+          {"type": "tableCell", "attrs": {"header": true, "rowspan": 2}, "content": [{"type": "text", "text": "Address"}]},
+          {"type": "tableCell", "attrs": {"textAlign": "left"}, "content": [{"type": "text", "text": "Tokyo"}]}
+        ]
+      },
+      {"type": "tableRow", "attrs": {"section": "body"}, "content": [{"type": "tableCell"}]},
+      {
+        "type": "tableRow",
+        "attrs": {"section": "foot"},
+        "content": [{"type": "tableCell", "attrs": {"colspan": 2, "textAlign": "right"}, "content": [{"type": "text", "text": "As of 2026"}]}]
+      }
+    ]
+  },
+  {
+    "type": "buttons",
+    "id": "b_0buttons",
+    "attrs": {"justify": "spaceBetween"},
+    "content": [
+      {
+        "type": "button",
+        "id": "b_0button1",
+        "variant": "outline",
+        "style": {"backgroundColor": {"value": "#1e73be"}},
+        "attrs": {"label": "Contact us", "link": {"entry": "ent_01JB8Y6T2S", "anchor": "form"}, "width": "50%"}
+      },
+      {"type": "button", "id": "b_0button2", "attrs": {"label": "Download", "link": {"media": "med_01JB8Z3K5S"}}}
+    ]
+  },
+  {"type": "separator", "id": "b_separat1", "variant": "wide"},
+  {"type": "spacer", "id": "b_00spacer", "attrs": {"height": {"preset": "large"}}},
+  {"type": "spacer", "id": "b_0spacer2", "attrs": {"height": {"value": "40px"}}},
+  {"type": "code", "id": "b_0000code", "attrs": {"language": "go"}, "content": "func main() {\n\tfmt.Println(\"hi\")\n}\n"},
+  {"type": "code", "id": "b_000code2"},
+  {
+    "type": "embed",
+    "id": "b_000embed",
+    "attrs": {
+      "provider": "youtube",
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "caption": [{"type": "text", "text": "Our video"}]
+    }
+  },
+  {
+    "type": "columns",
+    "id": "b_0columns",
+    "attrs": {"verticalAlign": "top", "stackOnMobile": false},
+    "content": [
+      {
+        "type": "column",
+        "id": "b_0column1",
+        "style": {"backgroundColor": {"preset": "muted"}},
+        "attrs": {"width": "33.33%", "verticalAlign": "stretch"},
+        "content": [{"type": "paragraph", "id": "b_0colpar1", "content": [{"type": "text", "text": "Left"}]}]
+      },
+      {"type": "column", "id": "b_0column2"}
+    ]
+  },
+  {
+    "type": "group",
+    "id": "b_000group",
+    "variant": "box",
+    "attrs": {
+      "layout": {"type": "row", "justify": "spaceBetween", "verticalAlign": "center", "nowrap": true},
+      "tagName": "section",
+      "label": "Notice",
+      "align": "full"
+    },
+    "content": [{"type": "paragraph", "id": "b_0grppar1", "content": [{"type": "text", "text": "Closed on Sundays."}]}]
+  },
+  {
+    "type": "group",
+    "id": "b_00group2",
+    "attrs": {"layout": {"type": "grid", "columns": 3, "minColumnWidth": "12rem"}},
+    "content": [{"type": "image", "id": "b_0grpimg1", "attrs": {"media": "med_01JB8Z3K5T", "alt": "Product"}}]
+  },
+  {"type": "group", "id": "b_00group3", "attrs": {"layout": {"type": "stack", "justify": "stretch", "verticalAlign": "spaceBetween"}}},
+  {"type": "file", "id": "b_0000file", "attrs": {"media": "med_01JB8Z3K5U", "label": "Brochure (PDF)"}},
+  {"type": "form", "id": "b_0000form", "attrs": {"form": "frm_01JB8Z3K5V"}},
+  {"type": "html", "id": "b_0000html", "attrs": {"html": "<div class=\"note\">\n  <p>Custom</p>\n</div>"}},
+  {"type": "legacy", "id": "b_00legacy", "attrs": {"html": "[gallery ids=\"1,2\"]", "reason": "shortcode gallery"}}
+]

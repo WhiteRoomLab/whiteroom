@@ -23,6 +23,7 @@ type probe struct {
 	S    string
 	B    bool
 	N    string
+	K    int
 	O    *probe
 	A, I []string
 	R    jsontext.Value
@@ -39,6 +40,8 @@ func (p *probe) decode(d *decoder) error {
 			p.B, err = d.bool()
 		case "n":
 			p.N, err = d.number()
+		case "k":
+			p.K, err = d.int()
 		case "o":
 			p.O = new(probe)
 			err = p.O.decode(d)
@@ -74,6 +77,8 @@ func TestUnmarshal(t *testing.T) {
 		{name: "true", in: `{"b":true}`, want: probe{B: true}},
 		{name: "false", in: `{"b":false}`, want: probe{}},
 		{name: "number as written", in: `{"n":-1.50}`, want: probe{N: "-1.50"}},
+		{name: "integer", in: `{"k":7}`, want: probe{K: 7}},
+		{name: "negative integer", in: `{"k":-3}`, want: probe{K: -3}},
 		{name: "nested object", in: `{"o":{"s":"y"}}`, want: probe{O: &probe{S: "y"}}},
 		{name: "empty items", in: `{"i":[]}`, want: probe{I: []string{}}},
 		{name: "raw", in: `{"r":{"x":[1, 2]}}`, want: probe{R: jsontext.Value(`{"x":[1, 2]}`), RP: "/r"}},
@@ -149,6 +154,10 @@ func TestUnmarshalError(t *testing.T) {
 		{name: "null for string", in: `{"s":null}`, path: "/s", msg: "expected string, got null"},
 		{name: "string for boolean", in: `{"b":"x"}`, path: "/b", msg: "expected boolean, got string"},
 		{name: "string for number", in: `{"n":"1"}`, path: "/n", msg: "expected number, got string"},
+		{name: "integer with fraction", in: `{"k":2.0}`, path: "/k", msg: "must be an integer"},
+		{name: "integer with exponent", in: `{"k":2e0}`, path: "/k", msg: "must be an integer"},
+		{name: "integer overflow", in: `{"k":99999999999999999999}`, path: "/k", msg: "must be an integer"},
+		{name: "string for integer", in: `{"k":"7"}`, path: "/k", msg: "expected number, got string"},
 		{name: "array for object", in: `{"o":[]}`, path: "/o", msg: "expected object, got array"},
 		{name: "object for array", in: `{"a":{"x":1}}`, path: "/a", msg: "expected array, got object"},
 		{name: "null", in: `null`, path: "", msg: "expected object, got null"},

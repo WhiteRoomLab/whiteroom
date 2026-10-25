@@ -1,0 +1,13 @@
+{
+  "type": "paragraph",
+  "id": "b_9x3v7k5m",
+  "style": {
+    "textColor": { "preset": "primary" },
+    "fontSize": { "preset": "large" }
+  },
+  "content": [
+    { "type": "text", "text": "当社の" },
+    { "type": "text", "text": "事業内容", "marks": [{ "type": "bold" }] },
+    { "type": "text", "text": "をご紹介します。" }
+  ]
+}

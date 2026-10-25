@@ -65,6 +65,35 @@ func TestNormalizeText(t *testing.T) {
 	}
 }
 
+func TestCleanText(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		multiline bool
+		want      string
+	}{
+		{name: "NUL", in: "a\x00b", want: "ab"},
+		{name: "CRLF", in: "a\r\nb", want: "a\r\nb"},
+		{name: "NFD", in: "cafe" + acute, want: "cafe" + acute},
+		{name: "invalid UTF-8", in: "a\xffb", want: "a" + string(rune(0xFFFD)) + "b"},
+		{name: "multiline CRLF", in: "a\r\nb", multiline: true, want: "a\nb"},
+		{name: "multiline CR", in: "a\rb", multiline: true, want: "a\nb"},
+		{name: "multiline tab and NUL", in: "a\tb\x00", multiline: true, want: "a\tb"},
+		{name: "multiline NFD", in: "e" + acute + "\r\n", multiline: true, want: "e" + acute + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanText(tt.in, tt.multiline)
+			if got != tt.want {
+				t.Errorf("cleanText(%q, %t) = %q, want %q", tt.in, tt.multiline, got, tt.want)
+			}
+			if again := cleanText(got, tt.multiline); again != got {
+				t.Errorf("cleanText(%q, %t) = %q, want it unchanged", got, tt.multiline, again)
+			}
+		})
+	}
+}
+
 func TestCheckText(t *testing.T) {
 	const (
 		lineBreak = "contains a line break or tab; use hardBreak for line breaks"
@@ -111,6 +140,55 @@ func TestCheckText(t *testing.T) {
 	}
 }
 
+func TestCheckLine(t *testing.T) {
+	const lineBreak = "contains a line break or tab"
+	tests := []struct {
+		name string
+		in   string
+		msg  string
+	}{
+		{name: "space", in: "a b"},
+		{name: "Japanese", in: "会社外観"},
+		{name: "newline", in: "a\nb", msg: lineBreak},
+		{name: "tab", in: "a\tb", msg: lineBreak},
+		{name: "line separator", in: "a" + string(rune(0x2028)) + "b", msg: lineBreak},
+		{name: "NUL", in: "a\x00b", msg: "contains control characters; normalize it first"},
+		{name: "NFD", in: "cafe" + acute, msg: "not in Unicode NFC; normalize it first"},
+		{name: "invalid UTF-8", in: "a\xffb", msg: "invalid UTF-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkLine(tt.in)
+			assertErrorMsg(t, err, tt.msg)
+			if err != nil && strings.Contains(err.Error(), "hardBreak") {
+				t.Errorf("error = %q, want no mention of hardBreak", err)
+			}
+		})
+	}
+}
+
+func TestCheckRaw(t *testing.T) {
+	const control = "contains control characters; normalize it first"
+	tests := []struct {
+		name string
+		in   string
+		msg  string
+	}{
+		{name: "HTML", in: `<p class="note">a</p>`},
+		{name: "empty", in: ""},
+		{name: "newline and tab", in: "<ul>\n\t<li>a</li>\n</ul>"},
+		{name: "NFD", in: `<img src="/cafe` + acute + `.jpg">`},
+		{name: "CR", in: "<p>a</p>\r\n", msg: control},
+		{name: "NUL", in: "a\x00b", msg: control},
+		{name: "invalid UTF-8", in: "a\xffb", msg: "invalid UTF-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertErrorMsg(t, checkRaw(tt.in), tt.msg)
+		})
+	}
+}
+
 func TestCheckName(t *testing.T) {
 	tests := []struct {
 		name string
@@ -131,6 +209,34 @@ func TestCheckName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkName(tt.in), tt.msg)
+		})
+	}
+}
+
+func TestCheckBlockID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		msg  string
+	}{
+		{name: "letters and digits", in: "b_9x3v7k5m"},
+		{name: "digits", in: "b_00000000"},
+		{name: "empty", in: "", msg: "invalid block ID"},
+		{
+			name: "upper case",
+			in:   "b_9X3V7K5M",
+			msg:  `invalid block ID "b_9X3V7K5M": use "b_" and 8 lowercase ASCII letters or digits`,
+		},
+		{name: "7 characters", in: "b_9x3v7k5", msg: "invalid block ID"},
+		{name: "9 characters", in: "b_9x3v7k5mm", msg: "invalid block ID"},
+		{name: "other prefix", in: "c_9x3v7k5m", msg: "invalid block ID"},
+		{name: "hyphen", in: "b-9x3v7k5m", msg: "invalid block ID"},
+		{name: "underscore", in: "b_9x3v7k5_", msg: "invalid block ID"},
+		{name: "non-ASCII letter in 10 bytes", in: "b_9x3v7k" + eAcute, msg: "invalid block ID"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertErrorMsg(t, checkBlockID(tt.in), tt.msg)
 		})
 	}
 }
@@ -222,6 +328,32 @@ func TestCheckHref(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkHref(tt.in), tt.msg)
+		})
+	}
+}
+
+func TestCheckSize(t *testing.T) {
+	const msg = "too long: 1048577 bytes (max 1048576)"
+	long := strings.Repeat("a", MaxTextBytes)
+	tests := []struct {
+		name    string
+		check   func(string) error
+		longest string // the longest string that check accepts
+	}{
+		{name: "checkSize", check: checkSize, longest: long},
+		{name: "checkText", check: func(s string) error { return checkText(s, false) }, longest: long},
+		{name: "checkText multiline", check: func(s string) error { return checkText(s, true) }, longest: long},
+		{name: "checkLine", check: checkLine, longest: long},
+		{name: "checkRaw", check: checkRaw, longest: long},
+		{name: "checkName", check: checkName, longest: long},
+		{name: "checkHref", check: checkHref, longest: "/" + long[1:]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertErrorMsg(t, tt.check(tt.longest), "")
+			assertErrorMsg(t, tt.check(tt.longest+"a"), msg)
+			// The size is checked first, before UTF-8.
+			assertErrorMsg(t, tt.check(tt.longest+"\xff"), msg)
 		})
 	}
 }
