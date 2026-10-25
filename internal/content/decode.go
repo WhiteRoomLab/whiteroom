@@ -15,7 +15,8 @@ type decoder struct {
 
 // unmarshal reads exactly one value from data with read.
 func unmarshal(data []byte, base string, read func(*decoder) error) error {
-	d := &decoder{dec: jsontext.NewDecoder(bytes.NewReader(data)), base: base}
+	// Not bytes.NewReader: jsontext then garbles member names in the pointers of errors inside ReadValue.
+	d := &decoder{dec: jsontext.NewDecoder(bytes.NewBuffer(data)), base: base}
 	if err := read(d); err != nil {
 		return err
 	}

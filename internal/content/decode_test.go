@@ -180,3 +180,12 @@ func TestUnmarshalError(t *testing.T) {
 		})
 	}
 }
+
+func TestUnmarshalRawPointer(t *testing.T) {
+	// The error inside the raw value falls at every offset of the decoder's buffer.
+	for n := range 300 {
+		in := `{"r":{"s":"` + strings.Repeat("x", n) + `","o":{"a":1,"a":2}}}`
+		var p probe
+		assertError(t, unmarshal([]byte(in), "", p.decode), "/r/o/a", "duplicate key")
+	}
+}

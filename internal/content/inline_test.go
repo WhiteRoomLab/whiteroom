@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,16 @@ func TestRichTextUnmarshalJSONError(t *testing.T) {
 				t.Errorf("UnmarshalJSON(%s) changed the value to %#v", tt.in, rt)
 			}
 		})
+	}
+}
+
+func TestRichTextUnmarshalJSONRawPointer(t *testing.T) {
+	// attrs before type is read as a raw value; the duplicate key falls at every offset of the decoder's buffer.
+	for n := 1; n < 200; n++ {
+		in := `[{"type":"text","text":"` + strings.Repeat("p", n) +
+			`","marks":[{"attrs":{"color":{"value":"#fff","value":"#000"}},"type":"highlight"}]}]`
+		var rt RichText
+		assertError(t, rt.UnmarshalJSON([]byte(in)), "/0/marks/0/attrs/color/value", "duplicate key")
 	}
 }
 
