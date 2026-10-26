@@ -14,7 +14,7 @@ const conceptRichTextJSON = `[
   { "type": "text", "text": "事業内容", "marks": [{ "type": "bold" }] },
   { "type": "text", "text": "をご紹介します。" },
   { "type": "hardBreak" },
-  { "type": "text", "text": "サービス一覧", "marks": [{ "type": "link", "attrs": { "entry": "ent_01JB8Y6T2R" } }] }
+  { "type": "text", "text": "サービス一覧", "marks": [{ "type": "link", "attrs": { "entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" } }] }
 ]`
 
 // fullRichTextJSON has every mark and every kind of link and highlight, in canonical form.
@@ -29,9 +29,9 @@ const fullRichTextJSON = `[
     {"type": "highlight", "attrs": {"color": {"preset": "accent"}, "backgroundColor": {"value": "#fff4e5"}}}
   ]},
   {"type": "text", "text": "entry", "marks": [
-    {"type": "link", "attrs": {"entry": "ent_01JB8Y6T2R", "anchor": "contact", "newTab": true, "rel": ["nofollow", "sponsored", "ugc"]}}
+    {"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3", "anchor": "contact", "newTab": true, "rel": ["nofollow", "sponsored", "ugc"]}}
   ]},
-  {"type": "text", "text": "media", "marks": [{"type": "link", "attrs": {"media": "med_01JB8Y6T2S"}}]},
+  {"type": "text", "text": "media", "marks": [{"type": "link", "attrs": {"media": "med_01JB8Y6T2SB7C1D4E8F2G5H9J3"}}]},
   {"type": "text", "text": "mail", "marks": [{"type": "link", "attrs": {"href": "mailto:info@example.com"}}]},
   {"type": "text", "text": "anchor", "marks": [{"type": "link", "attrs": {"anchor": "contact"}}]}
 ]`
@@ -50,7 +50,7 @@ func TestRichTextUnmarshalJSON(t *testing.T) {
 				{Type: InlineText, Text: "事業内容", Marks: []Mark{{Type: MarkBold}}},
 				{Type: InlineText, Text: "をご紹介します。"},
 				{Type: InlineHardBreak},
-				{Type: InlineText, Text: "サービス一覧", Marks: []Mark{{Type: MarkLink, Link: &Link{Entry: "ent_01JB8Y6T2R"}}}},
+				{Type: InlineText, Text: "サービス一覧", Marks: []Mark{{Type: MarkLink, Link: &Link{Entry: "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}}},
 			},
 		},
 		{
@@ -69,9 +69,9 @@ func TestRichTextUnmarshalJSON(t *testing.T) {
 					{Type: MarkHighlight, Highlight: &Highlight{Color: Color{Preset: "accent"}, BackgroundColor: Color{Value: "#fff4e5"}}},
 				}},
 				{Type: InlineText, Text: "entry", Marks: []Mark{{Type: MarkLink, Link: &Link{
-					Entry: "ent_01JB8Y6T2R", Anchor: "contact", NewTab: true, Rel: []Rel{RelNofollow, RelSponsored, RelUGC},
+					Entry: "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3", Anchor: "contact", NewTab: true, Rel: []Rel{RelNofollow, RelSponsored, RelUGC},
 				}}}},
-				{Type: InlineText, Text: "media", Marks: []Mark{{Type: MarkLink, Link: &Link{Media: "med_01JB8Y6T2S"}}}},
+				{Type: InlineText, Text: "media", Marks: []Mark{{Type: MarkLink, Link: &Link{Media: "med_01JB8Y6T2SB7C1D4E8F2G5H9J3"}}}},
 				{Type: InlineText, Text: "mail", Marks: []Mark{{Type: MarkLink, Link: &Link{Href: "mailto:info@example.com"}}}},
 				{Type: InlineText, Text: "anchor", Marks: []Mark{{Type: MarkLink, Link: &Link{Anchor: "contact"}}}},
 			},
@@ -335,11 +335,11 @@ func TestRichTextRoundTrip(t *testing.T) {
 		{
 			name: "reversed key order",
 			in: `[{"marks": [
-  {"attrs": {"rel": ["ugc"], "newTab": true, "anchor": "contact", "entry": "ent_01JB8Y6T2R"}, "type": "link"},
+  {"attrs": {"rel": ["ugc"], "newTab": true, "anchor": "contact", "entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}, "type": "link"},
   {"attrs": {"backgroundColor": {"value": "#fff4e5"}, "color": {"preset": "accent"}}, "type": "highlight"}
 ], "text": "a", "type": "text"}]`,
 			want: `[{"type": "text", "text": "a", "marks": [
-  {"type": "link", "attrs": {"entry": "ent_01JB8Y6T2R", "anchor": "contact", "newTab": true, "rel": ["ugc"]}},
+  {"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3", "anchor": "contact", "newTab": true, "rel": ["ugc"]}},
   {"type": "highlight", "attrs": {"color": {"preset": "accent"}, "backgroundColor": {"value": "#fff4e5"}}}
 ]}]`,
 		},
@@ -526,7 +526,7 @@ func TestRichTextValidate(t *testing.T) {
 		{name: "empty", in: `[]`},
 		{name: "quote and backslash", in: `[{"type":"text","text":"say \"hi\" \\ bye"}]`},
 		{name: "anchor only", in: linkJSON(`{"anchor":"top"}`)},
-		{name: "entry and anchor", in: linkJSON(`{"entry":"ent_01JB8Y6T2R","anchor":"contact"}`)},
+		{name: "entry and anchor", in: linkJSON(`{"entry":"ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3","anchor":"contact"}`)},
 		{name: "href with fragment", in: linkJSON(`{"href":"https://example.com/about#contact","newTab":true,"rel":["nofollow"]}`)},
 		{name: "path", in: linkJSON(`{"href":"/about/"}`)},
 
@@ -605,13 +605,13 @@ func TestRichTextValidate(t *testing.T) {
 		},
 		{
 			name:  "href and entry",
-			in:    linkJSON(`{"href":"https://example.com","entry":"ent_01JB8Y6T2R"}`),
+			in:    linkJSON(`{"href":"https://example.com","entry":"ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}`),
 			paths: []string{"/0/marks/0/attrs"},
 			msg:   "set at most one of href, entry and media",
 		},
 		{
 			name:  "href, entry and media",
-			in:    linkJSON(`{"href":"https://example.com","entry":"ent_01JB8Y6T2R","media":"med_01JB8Y6T2S"}`),
+			in:    linkJSON(`{"href":"https://example.com","entry":"ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3","media":"med_01JB8Y6T2SB7C1D4E8F2G5H9J3"}`),
 			paths: []string{"/0/marks/0/attrs"},
 			msg:   "set at most one of href, entry and media",
 		},
@@ -629,7 +629,7 @@ func TestRichTextValidate(t *testing.T) {
 		},
 		{
 			name:  "anchor and media",
-			in:    linkJSON(`{"media":"med_01JB8Y6T2S","anchor":"top"}`),
+			in:    linkJSON(`{"media":"med_01JB8Y6T2SB7C1D4E8F2G5H9J3","anchor":"top"}`),
 			paths: []string{"/0/marks/0/attrs/anchor"},
 			msg:   "anchor cannot be combined with media",
 		},
@@ -637,13 +637,13 @@ func TestRichTextValidate(t *testing.T) {
 			name:  "entry with space",
 			in:    linkJSON(`{"entry":"ent 1"}`),
 			paths: []string{"/0/marks/0/attrs/entry"},
-			msg:   `invalid name "ent 1"`,
+			msg:   `invalid entry ID "ent 1"`,
 		},
 		{
 			name:  "media with slash",
 			in:    linkJSON(`{"media":"med/1"}`),
 			paths: []string{"/0/marks/0/attrs/media"},
-			msg:   `invalid name "med/1"`,
+			msg:   `invalid media ID "med/1"`,
 		},
 		{
 			name:  "Japanese anchor",

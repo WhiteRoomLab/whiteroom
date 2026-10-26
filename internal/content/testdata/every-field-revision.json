@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "title": "ステンレスボトル",
+  "slug": "stainless-bottle",
+  "excerpt": "保温・保冷に優れたボトルです。\n容量は500mlです。",
+  "featuredImage": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
+  "terms": {
+    "series": ["trm_01JB9A00000000000000000006"],
+    "tag": ["trm_01JB9A00000000000000000003", "trm_01JB9A00000000000000000004"]
+  },
+  "seo": {
+    "title": "ステンレスボトル | 〇〇株式会社",
+    "description": "保温・保冷に優れたステンレスボトルです。",
+    "ogImage": "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9",
+    "noindex": true,
+    "canonical": "https://example.com/products/stainless-bottle/"
+  },
+  "fields": {
+    "colors": ["赤", "青"],
+    "description": [
+      { "type": "text", "text": "真空断熱", "marks": [{ "type": "bold" }] },
+      { "type": "text", "text": "の二重構造です。" }
+    ],
+    "details": [
+      {
+        "type": "paragraph",
+        "id": "b_2d4f6h8j",
+        "content": [{ "type": "text", "text": "食器洗い乾燥機に対応しています。" }]
+      }
+    ],
+    "features": ["保温", "保冷"],
+    "inStock": true,
+    "keywords": ["trm_01JB9A00000000000000000003", "trm_01JB9A00000000000000000004"],
+    "mainCategory": "trm_01JB9A00000000000000000002",
+    "maker": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3",
+    "manual": "med_01JB8Z3K5TM8A1C5F9V3J6K2N7",
+    "matrix": [[1, 2], [3]],
+    "name": "ステンレスボトル",
+    "price": 3980,
+    "related": ["ent_01JB8Y6T2SA3F6H9J2K5M8N1P4"],
+    "releaseDate": "2026-11-01",
+    "saleEnds": "2026-12-31T23:59:59+09:00",
+    "shop": { "href": "https://shop.example.com/bottle", "newTab": true, "rel": ["sponsored"] },
+    "size": "M",
+    "spec": { "material": "ステンレス", "weight": 0.35 },
+    "summary": "保温・保冷に優れたボトル。\n容量は500ml。",
+    "variants": [
+      { "code": "SB-500-R", "image": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "sizes": ["S", "M"] },
+      { "code": "SB-500-B" }
+    ]
+  }
+}

@@ -214,9 +214,9 @@ func TestBlocksUnmarshalJSON(t *testing.T) {
 		},
 		{
 			name: "blocks without content",
-			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office"}},{"type":"separator","id":"b_8s4d6f2g"},{"type":"group","id":"b_6q2w8e4r"}]`,
+			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office"}},{"type":"separator","id":"b_8s4d6f2g"},{"type":"group","id":"b_6q2w8e4r"}]`,
 			want: Blocks{
-				{Type: BlockImage, ID: "b_2p6t8r1z", Attrs: Attrs{Media: "med_01JB8Z3K5Q", Alt: "Office"}},
+				{Type: BlockImage, ID: "b_2p6t8r1z", Attrs: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", Alt: "Office"}},
 				{Type: BlockSeparator, ID: "b_8s4d6f2g"},
 				{Type: BlockGroup, ID: "b_6q2w8e4r"},
 			},
@@ -322,7 +322,7 @@ func TestBlocksUnmarshalJSONError(t *testing.T) {
 		{name: "empty attrs", in: `[{"type":"paragraph","attrs":{}}]`, path: "/0/attrs", msg: "empty object is not allowed"},
 		{
 			name: "content of image",
-			in:   `[{"type":"image","attrs":{"media":"med_01JB8Z3K5Q"},"content":[]}]`,
+			in:   `[{"type":"image","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"},"content":[]}]`,
 			path: "/0/content",
 			msg:  "not allowed for image",
 		},
@@ -507,7 +507,7 @@ func TestBlocksRoundTrip(t *testing.T) {
       "align": "wide", "aspectRatio": "16/9", "width": "300px", "size": "large",
       "link": {"newTab": true, "href": "https://example.com/office"},
       "caption": [{"text": "Head office", "type": "text"}],
-      "alt": "Our office building", "media": "med_01JB8Z3K5Q"
+      "alt": "Our office building", "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
     },
     "id": "b_2p6t8r1z",
     "type": "image"
@@ -558,7 +558,7 @@ func TestBlocksRoundTrip(t *testing.T) {
     "type": "image",
     "id": "b_2p6t8r1z",
     "attrs": {
-      "media": "med_01JB8Z3K5Q", "alt": "Our office building",
+      "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "alt": "Our office building",
       "caption": [{"type": "text", "text": "Head office"}],
       "link": {"href": "https://example.com/office", "newTab": true},
       "size": "large", "width": "300px", "aspectRatio": "16/9", "align": "wide"
@@ -600,8 +600,8 @@ func TestBlocksRoundTrip(t *testing.T) {
 		},
 		{
 			name: "decorative false",
-			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office","decorative":false}}]`,
-			want: `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office"}}]`,
+			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office","decorative":false}}]`,
+			want: `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office"}}]`,
 		},
 		{
 			name: "header false",
@@ -620,8 +620,8 @@ func TestBlocksRoundTrip(t *testing.T) {
 		},
 		{
 			name: "empty caption",
-			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office","caption":[]}}]`,
-			want: `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office"}}]`,
+			in:   `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office","caption":[]}}]`,
+			want: `[{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office"}}]`,
 		},
 		{
 			name: "only an empty caption",
@@ -670,8 +670,8 @@ func TestJSONMarshalBlockTypes(t *testing.T) {
 		},
 		{
 			name: "text of image",
-			in:   Block{Type: BlockImage, ID: "b_2p6t8r1z", Attrs: Attrs{Media: "med_01JB8Z3K5Q", Alt: "Office"}, Text: text},
-			want: `{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5Q","alt":"Office"}}`,
+			in:   Block{Type: BlockImage, ID: "b_2p6t8r1z", Attrs: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", Alt: "Office"}, Text: text},
+			want: `{"type":"image","id":"b_2p6t8r1z","attrs":{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","alt":"Office"}}`,
 		},
 		{
 			name: "children and code of tableCell",
@@ -765,7 +765,7 @@ func TestEveryBlockCoverage(t *testing.T) {
 }
 
 func TestBlocksNormalize(t *testing.T) {
-	const media = "med_01JB8Z3K5Q"
+	const media = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
 	// rt is a rich text of a text s, or nil if s is "", as Normalize leaves a rich text without texts.
 	rt := func(s string) RichText {
 		if s == "" {
@@ -828,7 +828,7 @@ func TestBlocksNormalize(t *testing.T) {
 		return Blocks{{
 			Type: BlockImage, ID: "b_000image ", Variant: " lead", ClassName: "a\x00", Anchor: " x",
 			Style: Style{TextColor: Color{Value: " #fff"}},
-			Attrs: Attrs{Media: " " + media, Alt: "Office", Size: "large\t", Link: &Link{Entry: " ent_01JB8Y6T2R", Anchor: "top\n"}},
+			Attrs: Attrs{Media: " " + media, Alt: "Office", Size: "large\t", Link: &Link{Entry: " ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3", Anchor: "top\n"}},
 		}}
 	}
 	// columns is a columns block with stackOnMobile true, the same as omitting it.

@@ -417,7 +417,7 @@ func (x Link) check(c *checker, path string) {
 		c.ref(path+"/entry", RefEntry, x.Entry)
 	}
 	if x.Media != "" {
-		c.ref(path+"/media", RefMedia, x.Media)
+		c.media(path+"/media", x.Media)
 	}
 	if x.Anchor != "" {
 		c.add(path+"/anchor", checkName(x.Anchor))
