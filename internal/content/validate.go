@@ -16,13 +16,15 @@ type ValidateOptions struct {
 	Lookup func(kind RefKind, id string) (Ref, bool)
 }
 
-// docState is shared by the checks of every list of blocks in a document, such as its body and fields.
+// docState is shared by the checks of a document, such as the body and the fields of a revision.
 type docState struct {
-	opts    ValidateOptions
-	blocks  int               // blocks checked so far
-	ids     map[string]string // block ID to the path of its "id" where first used
-	anchors map[string]string // anchor to the path of its "anchor" where first used
-	prev    map[string]*Block // blocks of opts.Previous by ID; built on first use
+	opts     ValidateOptions
+	publish  bool              // the document is to be published, which needs its required items
+	language string            // language of the entry of the document
+	blocks   int               // blocks checked so far
+	ids      map[string]string // block ID to the path of its "id" where first used
+	anchors  map[string]string // anchor to the path of its "anchor" where first used
+	prev     map[string]*Block // blocks of opts.Previous by ID; built on first use
 }
 
 func (x Blocks) Validate(opts ValidateOptions) error {

@@ -1,6 +1,7 @@
 package content
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -43,6 +44,18 @@ func (c *checker) add(path string, err error) {
 		return
 	}
 	c.errs = append(c.errs, &Error{Path: path, Msg: err.Error()})
+}
+
+// addError adds err, which has its own path as an *Error from reading JSON, if it is not nil.
+func (c *checker) addError(err error) {
+	var e *Error
+	switch {
+	case err == nil:
+	case errors.As(err, &e):
+		c.errs = append(c.errs, e)
+	default:
+		c.errs = append(c.errs, &Error{Msg: err.Error()})
+	}
 }
 
 func (c *checker) result() error {
