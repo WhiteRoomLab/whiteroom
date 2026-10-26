@@ -198,7 +198,7 @@ func TestCheckName(t *testing.T) {
 		{name: "word", in: "primary"},
 		{name: "hyphen and underscore", in: "a-b_c"},
 		{name: "upper case and digit", in: "A1"},
-		{name: "ID", in: "ent_01JB8Y6T2R"},
+		{name: "ID", in: "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"},
 		{name: "empty", in: "", msg: "empty name"},
 		{name: "space", in: "a b", msg: `invalid name "a b": use ASCII letters, digits, "-" and "_"`},
 		{name: "dot", in: "a.b", msg: "invalid name"},

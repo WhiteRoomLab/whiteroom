@@ -293,7 +293,7 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		if a.Media == "" {
 			c.addf(path+"/media", "missing media")
 		} else {
-			c.ref(path+"/media", RefMedia, a.Media)
+			c.media(path+"/media", a.Media, MediaImage)
 		}
 		switch {
 		case a.Alt != "" && a.Decorative:
@@ -389,7 +389,7 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		if a.Media == "" {
 			c.addf(path+"/media", "missing media")
 		} else {
-			c.ref(path+"/media", RefMedia, a.Media)
+			c.media(path+"/media", a.Media)
 		}
 		if a.Label != "" {
 			c.add(path+"/label", checkLine(a.Label))

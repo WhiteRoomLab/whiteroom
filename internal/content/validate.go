@@ -4,21 +4,16 @@ import (
 	"cmp"
 	"slices"
 	"strconv"
-)
-
-type RefKind string
-
-const (
-	RefMedia RefKind = "media"
-	RefEntry RefKind = "entry"
-	RefForm  RefKind = "form"
+	"strings"
 )
 
 type ValidateOptions struct {
-	AllowHTML bool                               // html blocks are enabled in the site settings
-	Import    bool                               // the blocks come from an import, which may create legacy blocks and images without alt
-	Previous  Blocks                             // blocks of the previous revision, matched by ID
-	RefExists func(kind RefKind, id string) bool // nil skips checking that referenced entities exist
+	AllowHTML bool   // html blocks are enabled in the site settings
+	Import    bool   // the blocks come from an import, which may create legacy blocks and images without alt
+	Previous  Blocks // blocks of the previous revision, matched by ID
+	// Lookup tells about the entry, medium, form, term or author with the ID, and whether it exists.
+	// nil skips checking referenced entities.
+	Lookup func(kind RefKind, id string) (Ref, bool)
 }
 
 // docState is shared by the checks of every list of blocks in a document, such as its body and fields.
@@ -230,14 +225,27 @@ func (c *checker) anchor(path, anchor string) {
 	c.doc.anchors[anchor] = path
 }
 
-// ref checks id, which refers to an entity of kind, and asks opts.RefExists whether the entity exists.
-func (c *checker) ref(path string, kind RefKind, id string) {
-	if err := checkName(id); err != nil {
+// ref checks id, which refers to an entity of kind, and returns what opts.Lookup tells about the entity.
+// ok is false if id is invalid, the entity does not exist or there is no Lookup.
+func (c *checker) ref(path string, kind RefKind, id string) (r Ref, ok bool) {
+	if err := checkID(kind, id); err != nil {
 		c.add(path, err)
-		return
+		return Ref{}, false
 	}
-	if c.doc != nil && c.doc.opts.RefExists != nil && !c.doc.opts.RefExists(kind, id) {
+	if c.doc == nil || c.doc.opts.Lookup == nil {
+		return Ref{}, false
+	}
+	if r, ok = c.doc.opts.Lookup(kind, id); !ok {
 		c.addf(path, "%s %q does not exist", kind, id)
+	}
+	return r, ok
+}
+
+// media checks id, which refers to a medium, and that the medium is of a kind in accept (any kind if empty).
+func (c *checker) media(path, id string, accept ...string) {
+	r, ok := c.ref(path, RefMedia, id)
+	if ok && len(accept) > 0 && !slices.Contains(accept, r.Type) {
+		c.addf(path, "media %q (%s) is not accepted here (accept: %s)", id, cmp.Or(r.Type, "unknown kind"), strings.Join(accept, ", "))
 	}
 }
 

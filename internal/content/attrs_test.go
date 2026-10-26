@@ -20,7 +20,7 @@ const fullAttrsJSON = `{
   "tagName": "section",
   "provider": "youtube",
   "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "media": "med_01JB8Z3K5Q",
+  "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
   "alt": "Our office building",
   "decorative": true,
   "label": "Notice",
@@ -40,7 +40,7 @@ const fullAttrsJSON = `{
   "justify": "spaceBetween",
   "height": {"preset": "large"},
   "language": "go",
-  "form": "frm_01JB8Z3K5V",
+  "form": "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6",
   "html": "<p>Custom</p>",
   "reason": "shortcode gallery"
 }`
@@ -54,7 +54,7 @@ var fullAttrs = Attrs{
 	TagName:       "section",
 	Provider:      "youtube",
 	URL:           "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-	Media:         "med_01JB8Z3K5Q",
+	Media:         "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
 	Alt:           "Our office building",
 	Decorative:    true,
 	Label:         "Notice",
@@ -74,7 +74,7 @@ var fullAttrs = Attrs{
 	Justify:       "spaceBetween",
 	Height:        Length{Preset: "large"},
 	Language:      "go",
-	Form:          "frm_01JB8Z3K5V",
+	Form:          "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6",
 	HTML:          "<p>Custom</p>",
 	Reason:        "shortcode gallery",
 }
@@ -100,12 +100,12 @@ func TestAttrsDecodeFor(t *testing.T) {
 			name: "image",
 			typ:  BlockImage,
 			in: `{
-  "media": "med_01JB8Z3K5Q", "alt": "Our office building", "decorative": true,
+  "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "alt": "Our office building", "decorative": true,
   "caption": [{"type": "text", "text": "Head office"}], "link": {"href": "https://example.com/office", "newTab": true},
   "size": "large", "width": "300px", "aspectRatio": "16/9", "align": "wide"
 }`,
 			want: Attrs{
-				Media: "med_01JB8Z3K5Q", Alt: "Our office building", Decorative: true,
+				Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", Alt: "Our office building", Decorative: true,
 				Caption: headOffice, Link: &Link{Href: "https://example.com/office", NewTab: true},
 				Size: "large", Width: "300px", AspectRatio: "16/9", Align: "wide",
 			},
@@ -122,8 +122,8 @@ func TestAttrsDecodeFor(t *testing.T) {
 		{
 			name: "button",
 			typ:  BlockButton,
-			in:   `{"label":"Contact us","link":{"entry":"ent_01JB8Y6T2S","anchor":"form"},"width":"50%"}`,
-			want: Attrs{Label: "Contact us", Link: &Link{Entry: "ent_01JB8Y6T2S", Anchor: "form"}, Width: "50%"},
+			in:   `{"label":"Contact us","link":{"entry":"ent_01JB8Y6T2SA3F6H9J2K5M8N1P4","anchor":"form"},"width":"50%"}`,
+			want: Attrs{Label: "Contact us", Link: &Link{Entry: "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4", Anchor: "form"}, Width: "50%"},
 		},
 		{name: "spacer", typ: BlockSpacer, in: `{"height":{"value":"40px"}}`, want: Attrs{Height: Length{Value: "40px"}}},
 		{name: "code", typ: BlockCode, in: `{"language":"go"}`, want: Attrs{Language: "go"}},
@@ -160,10 +160,10 @@ func TestAttrsDecodeFor(t *testing.T) {
 		{
 			name: "file",
 			typ:  BlockFile,
-			in:   `{"media":"med_01JB8Z3K5U","label":"Brochure (PDF)"}`,
-			want: Attrs{Media: "med_01JB8Z3K5U", Label: "Brochure (PDF)"},
+			in:   `{"media":"med_01JB8Z3K5WN9C2E6H1K4P7S3T8","label":"Brochure (PDF)"}`,
+			want: Attrs{Media: "med_01JB8Z3K5WN9C2E6H1K4P7S3T8", Label: "Brochure (PDF)"},
 		},
-		{name: "form", typ: BlockForm, in: `{"form":"frm_01JB8Z3K5V"}`, want: Attrs{Form: "frm_01JB8Z3K5V"}},
+		{name: "form", typ: BlockForm, in: `{"form":"frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"}`, want: Attrs{Form: "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"}},
 		{name: "html", typ: BlockHTML, in: `{"html":"<ul>\n\t<li>a</li>\n</ul>"}`, want: Attrs{HTML: "<ul>\n\t<li>a</li>\n</ul>"}},
 		{
 			name: "legacy",
@@ -175,7 +175,7 @@ func TestAttrsDecodeFor(t *testing.T) {
 
 		{name: "ordered false", typ: BlockList, in: `{"ordered":false,"start":1}`, want: Attrs{Start: 1}},
 		{name: "only false", typ: BlockList, in: `{"ordered":false}`, want: Attrs{}},
-		{name: "decorative false", typ: BlockImage, in: `{"media":"med_01JB8Z3K5Q","decorative":false}`, want: Attrs{Media: "med_01JB8Z3K5Q"}},
+		{name: "decorative false", typ: BlockImage, in: `{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","decorative":false}`, want: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"}},
 		{name: "header false", typ: BlockTableCell, in: `{"header":false,"colspan":1,"rowspan":1}`, want: Attrs{Colspan: 1, Rowspan: 1}},
 		{
 			name: "nowrap false",
@@ -184,14 +184,14 @@ func TestAttrsDecodeFor(t *testing.T) {
 			want: Attrs{Layout: Layout{Type: "grid", Columns: 1}},
 		},
 		{name: "stackOnMobile false", typ: BlockColumns, in: `{"stackOnMobile":false}`, want: Attrs{StackOnMobile: new(false)}},
-		{name: "empty caption", typ: BlockImage, in: `{"media":"med_01JB8Z3K5Q","caption":[]}`, want: Attrs{Media: "med_01JB8Z3K5Q"}},
+		{name: "empty caption", typ: BlockImage, in: `{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","caption":[]}`, want: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"}},
 		{name: "empty citation", typ: BlockQuote, in: `{"citation":[]}`, want: Attrs{}},
 		{name: "lowest level", typ: BlockHeading, in: `{"level":2}`, want: Attrs{Level: 2}},
 		{
 			name: "reversed key order",
 			typ:  BlockImage,
-			in:   `{"align":"wide","size":"large","alt":"Our office building","media":"med_01JB8Z3K5Q"}`,
-			want: Attrs{Media: "med_01JB8Z3K5Q", Alt: "Our office building", Size: "large", Align: "wide"},
+			in:   `{"align":"wide","size":"large","alt":"Our office building","media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"}`,
+			want: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", Alt: "Our office building", Size: "large", Align: "wide"},
 		},
 		{name: "missing level not checked", typ: BlockHeading, in: `{"textAlign":"left"}`, want: Attrs{TextAlign: "left"}},
 		{
@@ -255,7 +255,7 @@ func TestAttrsDecodeForError(t *testing.T) {
 		{
 			name: "html of image",
 			typ:  BlockImage,
-			in:   `{"media":"med_01JB8Z3K5Q","html":"<p>x</p>"}`,
+			in:   `{"media":"med_01JB8Z3K5QH2V6T9C4R7Y1E8B5","html":"<p>x</p>"}`,
 			path: "/attrs/html",
 			msg:  "not allowed for image",
 		},
@@ -493,8 +493,9 @@ func TestBlockSpecs(t *testing.T) {
 
 func TestBlockCheckAttrs(t *testing.T) {
 	const (
-		media   = "med_01JB8Z3K5Q"
-		form    = "frm_01JB8Z3K5V"
+		media   = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+		pdf     = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
+		form    = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
 		youTube = "https://youtu.be/dQw4w9WgXcQ"
 	)
 	text := RichText{{Type: InlineText, Text: "a"}}
@@ -531,8 +532,11 @@ func TestBlockCheckAttrs(t *testing.T) {
 	layout := func(l Layout) Blocks { return block(BlockGroup, Attrs{Layout: l}) }
 	allowHTML := ValidateOptions{AllowHTML: true}
 	imported := ValidateOptions{Import: true}
-	existing := map[RefKind]string{RefMedia: media, RefForm: form}
-	refs := ValidateOptions{RefExists: func(kind RefKind, id string) bool { return existing[kind] == id }}
+	existing := map[string]Ref{media: {Type: MediaImage}, pdf: {Type: MediaPDF}, form: {}}
+	refs := ValidateOptions{Lookup: func(_ RefKind, id string) (Ref, bool) {
+		r, ok := existing[id]
+		return r, ok
+	}}
 	tests := []struct {
 		name  string
 		in    Blocks
@@ -603,7 +607,7 @@ func TestBlockCheckAttrs(t *testing.T) {
 			name:  "invalid media",
 			in:    block(BlockImage, Attrs{Media: "med 1", Alt: "Office"}),
 			paths: []string{"/0/attrs/media"},
-			msg:   `/0/attrs/media: invalid name "med 1"`,
+			msg:   `/0/attrs/media: invalid media ID "med 1"`,
 		},
 		{
 			name:  "missing alt",
@@ -757,7 +761,7 @@ func TestBlockCheckAttrs(t *testing.T) {
 			paths: []string{"/0/attrs/justify"},
 			msg:   `/0/attrs/justify: unknown justify "stretch" (use left, center, right, spaceBetween)`,
 		},
-		{name: "button", in: button(Attrs{Label: "Contact us", Link: &Link{Entry: "ent_01JB8Y6T2S"}, Width: "100%"})},
+		{name: "button", in: button(Attrs{Label: "Contact us", Link: &Link{Entry: "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4"}, Width: "100%"})},
 		{
 			name:  "missing label",
 			in:    button(Attrs{Width: "25%"}),
@@ -1011,7 +1015,7 @@ func TestBlockCheckAttrs(t *testing.T) {
 			msg:   "/0/attrs/label: contains a line break or tab\n/0/attrs/align",
 		},
 
-		{name: "file", in: block(BlockFile, Attrs{Media: "med_01JB8Z3K5U", Label: "Brochure (PDF)"})},
+		{name: "file", in: block(BlockFile, Attrs{Media: "med_01JB8Z3K5WN9C2E6H1K4P7S3T8", Label: "Brochure (PDF)"})},
 		{name: "missing media of a file", in: block(BlockFile, Attrs{Label: "Brochure"}), paths: []string{"/0/attrs/media"}, msg: "/0/attrs/media: missing media"},
 		{
 			name:  "attributes of a file in order",
@@ -1025,39 +1029,47 @@ func TestBlockCheckAttrs(t *testing.T) {
 			name:  "invalid form",
 			in:    block(BlockForm, Attrs{Form: "a b"}),
 			paths: []string{"/0/attrs/form"},
-			msg:   `/0/attrs/form: invalid name "a b"`,
+			msg:   `/0/attrs/form: invalid form ID "a b"`,
 		},
 
 		{name: "existing media of an image", in: block(BlockImage, Attrs{Media: media, Alt: "Office"}), opts: refs},
 		{name: "existing media of a file", in: block(BlockFile, Attrs{Media: media}), opts: refs},
+		{name: "PDF of a file", in: block(BlockFile, Attrs{Media: pdf}), opts: refs},
+		{
+			name:  "PDF of an image",
+			in:    block(BlockImage, Attrs{Media: pdf, Alt: "Office"}),
+			opts:  refs,
+			paths: []string{"/0/attrs/media"},
+			msg:   `/0/attrs/media: media "` + pdf + `" (pdf) is not accepted here (accept: image)`,
+		},
 		{name: "existing form", in: block(BlockForm, Attrs{Form: form}), opts: refs},
 		{
 			name:  "media of an image that does not exist",
-			in:    block(BlockImage, Attrs{Media: "med_01JB8Z3K5R", Alt: "Office"}),
+			in:    block(BlockImage, Attrs{Media: "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9", Alt: "Office"}),
 			opts:  refs,
 			paths: []string{"/0/attrs/media"},
-			msg:   `/0/attrs/media: media "med_01JB8Z3K5R" does not exist`,
+			msg:   `/0/attrs/media: media "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9" does not exist`,
 		},
 		{
 			name:  "media of a file that does not exist",
-			in:    block(BlockFile, Attrs{Media: "med_01JB8Z3K5R"}),
+			in:    block(BlockFile, Attrs{Media: "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"}),
 			opts:  refs,
 			paths: []string{"/0/attrs/media"},
-			msg:   `/0/attrs/media: media "med_01JB8Z3K5R" does not exist`,
+			msg:   `/0/attrs/media: media "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9" does not exist`,
 		},
 		{
 			name:  "form that does not exist",
-			in:    block(BlockForm, Attrs{Form: "frm_01JB8Z3K5W"}),
+			in:    block(BlockForm, Attrs{Form: "frm_01JB8Z3K5WQ3E6H9K1N4R7V2X5"}),
 			opts:  refs,
 			paths: []string{"/0/attrs/form"},
-			msg:   `/0/attrs/form: form "frm_01JB8Z3K5W" does not exist`,
+			msg:   `/0/attrs/form: form "frm_01JB8Z3K5WQ3E6H9K1N4R7V2X5" does not exist`,
 		},
 		{
 			name:  "invalid media not looked up",
 			in:    block(BlockImage, Attrs{Media: "a b", Alt: "Office"}),
 			opts:  refs,
 			paths: []string{"/0/attrs/media"},
-			msg:   `/0/attrs/media: invalid name "a b"`,
+			msg:   `/0/attrs/media: invalid media ID "a b"`,
 		},
 
 		{name: "html", in: block(BlockHTML, Attrs{HTML: "<p>cafe" + acute + "</p>\n\t<br>"}), opts: allowHTML},

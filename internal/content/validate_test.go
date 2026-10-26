@@ -573,7 +573,7 @@ func TestBlocksValidateGoValues(t *testing.T) {
 
 		{
 			name:  "rich text content of an image",
-			in:    Blocks{{Type: BlockImage, ID: "b_00image1", Attrs: Attrs{Media: "med_01JB8Z3K5Q", Alt: "Office"}, Text: text}},
+			in:    Blocks{{Type: BlockImage, ID: "b_00image1", Attrs: Attrs{Media: "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", Alt: "Office"}, Text: text}},
 			paths: []string{"/0/content"},
 			msg:   "/0/content: rich text content is not allowed for image",
 		},
@@ -845,7 +845,7 @@ func TestBlocksValidateOrder(t *testing.T) {
 func TestValidateOptions(t *testing.T) {
 	const (
 		id          = "b_9x3v7k5m"
-		media       = "med_01JB8Z3K5Q"
+		media       = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
 		notEnabled  = "html blocks are not enabled"
 		notImported = "legacy blocks can only be created by import"
 		missingAlt  = "missing alt; set decorative for a decorative image"
@@ -929,7 +929,7 @@ func TestValidateOptions(t *testing.T) {
 		},
 		{
 			name:  "image with other media",
-			in:    Blocks{image(Attrs{Media: "med_01JB8Z3K5R"})},
+			in:    Blocks{image(Attrs{Media: "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"})},
 			opts:  previous(noAlt),
 			paths: []string{"/0/attrs/alt"},
 			msg:   "/0/attrs/alt: " + missingAlt,
@@ -982,48 +982,112 @@ func TestCheckerRef(t *testing.T) {
 		kind RefKind
 		id   string
 	}
-	const invalid = `/x: invalid name "a b": use ASCII letters, digits, "-" and "_"`
+	const (
+		image   = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+		form    = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
+		invalid = `/x: invalid entry ID "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5": use "ent_" and a ULID (26 characters in upper case)`
+	)
 	var calls []call
-	opts := ValidateOptions{RefExists: func(kind RefKind, id string) bool {
+	opts := ValidateOptions{Lookup: func(kind RefKind, id string) (Ref, bool) {
 		calls = append(calls, call{kind, id})
-		return id == "med_01JB8Z3K5Q"
+		return Ref{Type: MediaImage}, id == image
 	}}
 	tests := []struct {
 		name  string
 		doc   *docState
 		kind  RefKind
 		id    string
-		calls []call // calls of RefExists
+		ref   Ref
+		ok    bool
+		calls []call // calls of Lookup
 		want  string // text of the error, or "" for none
 	}{
-		{name: "exists", doc: &docState{opts: opts}, kind: RefMedia, id: "med_01JB8Z3K5Q", calls: []call{{RefMedia, "med_01JB8Z3K5Q"}}},
+		{
+			name:  "exists",
+			doc:   &docState{opts: opts},
+			kind:  RefMedia,
+			id:    image,
+			ref:   Ref{Type: MediaImage},
+			ok:    true,
+			calls: []call{{RefMedia, image}},
+		},
 		{
 			name:  "does not exist",
 			doc:   &docState{opts: opts},
 			kind:  RefForm,
-			id:    "frm_01JB8Z3K5V",
-			calls: []call{{RefForm, "frm_01JB8Z3K5V"}},
-			want:  `/x: form "frm_01JB8Z3K5V" does not exist`,
+			id:    form,
+			ref:   Ref{Type: MediaImage},
+			calls: []call{{RefForm, form}},
+			want:  `/x: form "` + form + `" does not exist`,
 		},
-		{name: "invalid name not looked up", doc: &docState{opts: opts}, kind: RefEntry, id: "a b", want: invalid},
-		{name: "without RefExists", doc: &docState{}, kind: RefMedia, id: "med_01JB8Z3K5R"},
-		{name: "outside a document", kind: RefMedia, id: "med_01JB8Z3K5R"},
-		{name: "invalid name outside a document", kind: RefMedia, id: "a b", want: invalid},
+		{name: "prefix of another kind not looked up", doc: &docState{opts: opts}, kind: RefEntry, id: image, want: invalid},
+		{name: "without Lookup", doc: &docState{}, kind: RefMedia, id: image},
+		{name: "outside a document", kind: RefMedia, id: image},
+		{name: "invalid outside a document", kind: RefEntry, id: image, want: invalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			calls = nil
 			c := checker{doc: tt.doc}
-			c.ref("/x", tt.kind, tt.id)
+			ref, ok := c.ref("/x", tt.kind, tt.id)
+			if ref != tt.ref || ok != tt.ok {
+				t.Errorf("ref(%q, %q) = %v, %t, want %v, %t", tt.kind, tt.id, ref, ok, tt.ref, tt.ok)
+			}
 			got := ""
 			if err := c.result(); err != nil {
 				got = err.Error()
 			}
 			if got != tt.want {
-				t.Errorf("ref(%q, %q) = %q, want %q", tt.kind, tt.id, got, tt.want)
+				t.Errorf("ref(%q, %q) error = %q, want %q", tt.kind, tt.id, got, tt.want)
 			}
 			if !reflect.DeepEqual(calls, tt.calls) {
-				t.Errorf("RefExists calls = %v, want %v", calls, tt.calls)
+				t.Errorf("Lookup calls = %v, want %v", calls, tt.calls)
+			}
+		})
+	}
+}
+
+func TestCheckerMedia(t *testing.T) {
+	const (
+		image   = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+		pdf     = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
+		unknown = "med_01JB8Z3K5SK6Y9B3E7T1A4G8H2"
+		missing = "med_01JB8Z3K5XR2T5V8Y1A4C7E3G6"
+	)
+	media := map[string]Ref{image: {Type: MediaImage}, pdf: {Type: MediaPDF}, unknown: {}}
+	opts := ValidateOptions{Lookup: func(_ RefKind, id string) (Ref, bool) {
+		r, ok := media[id]
+		return r, ok
+	}}
+	tests := []struct {
+		name   string
+		id     string
+		accept []string
+		want   string
+	}{
+		{name: "image as an image", id: image, accept: []string{MediaImage}},
+		{name: "PDF as any medium", id: pdf},
+		{name: "PDF as an image or a PDF", id: pdf, accept: []string{MediaImage, MediaPDF}},
+		{name: "PDF as an image", id: pdf, accept: []string{MediaImage}, want: `/x: media "` + pdf + `" (pdf) is not accepted here (accept: image)`},
+		{
+			name:   "unknown kind",
+			id:     unknown,
+			accept: []string{MediaImage, MediaPDF},
+			want:   `/x: media "` + unknown + `" (unknown kind) is not accepted here (accept: image, pdf)`,
+		},
+		{name: "unknown kind as any medium", id: unknown},
+		{name: "missing", id: missing, accept: []string{MediaImage}, want: `/x: media "` + missing + `" does not exist`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := checker{doc: &docState{opts: opts}}
+			c.media("/x", tt.id, tt.accept...)
+			got := ""
+			if err := c.result(); err != nil {
+				got = err.Error()
+			}
+			if got != tt.want {
+				t.Errorf("media(%q, %q) = %q, want %q", tt.id, tt.accept, got, tt.want)
 			}
 		})
 	}
@@ -1032,49 +1096,50 @@ func TestCheckerRef(t *testing.T) {
 func TestValidateRefs(t *testing.T) {
 	in := mustBlocks(t, `[
   {"type": "paragraph", "id": "b_0paragr1", "content": [
-    {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2R"}}]},
-    {"type": "text", "text": "b", "marks": [{"type": "link", "attrs": {"media": "med_missing1"}}]}
+    {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}]},
+    {"type": "text", "text": "b", "marks": [{"type": "link", "attrs": {"media": "med_01JB8Z3K5XR2T5V8Y1A4C7E3G6"}}]}
   ]},
   {
     "type": "image",
     "id": "b_000image",
     "attrs": {
-      "media": "med_01JB8Z3K5Q",
+      "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
       "alt": "Office",
-      "caption": [{"type": "text", "text": "c", "marks": [{"type": "link", "attrs": {"entry": "ent_missing1"}}]}],
-      "link": {"media": "med_01JB8Z3K5R"}
+      "caption": [{"type": "text", "text": "c", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9"}}]}],
+      "link": {"media": "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"}
     }
   },
   {"type": "buttons", "id": "b_0buttons", "content": [
-    {"type": "button", "id": "b_0button1", "attrs": {"label": "Contact", "link": {"entry": "ent_missing2", "anchor": "form"}}},
-    {"type": "button", "id": "b_0button2", "attrs": {"label": "Download", "link": {"media": "med_01JB8Z3K5S"}}}
+    {"type": "button", "id": "b_0button1", "attrs": {"label": "Contact", "link": {"entry": "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8", "anchor": "form"}}},
+    {"type": "button", "id": "b_0button2", "attrs": {"label": "Download", "link": {"media": "med_01JB8Z3K5SK6Y9B3E7T1A4G8H2"}}}
   ]},
-  {"type": "file", "id": "b_0000file", "attrs": {"media": "med_01JB8Z3K5U"}},
-  {"type": "form", "id": "b_0000form", "attrs": {"form": "frm_01JB8Z3K5V"}}
+  {"type": "file", "id": "b_0000file", "attrs": {"media": "med_01JB8Z3K5WN9C2E6H1K4P7S3T8"}},
+  {"type": "form", "id": "b_0000form", "attrs": {"form": "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"}}
 ]`)
+	missing := []string{"med_01JB8Z3K5XR2T5V8Y1A4C7E3G6", "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9", "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8"}
 	var calls []string
-	opts := ValidateOptions{RefExists: func(kind RefKind, id string) bool {
+	opts := ValidateOptions{Lookup: func(kind RefKind, id string) (Ref, bool) {
 		calls = append(calls, string(kind)+" "+id)
-		return !strings.Contains(id, "missing")
+		return Ref{Type: MediaImage}, !slices.Contains(missing, id)
 	}}
 	err := in.Validate(opts)
 	wantCalls := []string{
-		"entry ent_01JB8Y6T2R", "media med_missing1",
-		"media med_01JB8Z3K5Q", "entry ent_missing1", "media med_01JB8Z3K5R",
-		"entry ent_missing2", "media med_01JB8Z3K5S",
-		"media med_01JB8Z3K5U",
-		"form frm_01JB8Z3K5V",
+		"entry ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3", "media med_01JB8Z3K5XR2T5V8Y1A4C7E3G6",
+		"media med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "entry ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9", "media med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9",
+		"entry ent_01JB8Y6T2WT6X9C3E6G9J2K5M8", "media med_01JB8Z3K5SK6Y9B3E7T1A4G8H2",
+		"media med_01JB8Z3K5WN9C2E6H1K4P7S3T8",
+		"form frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6",
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
-		t.Errorf("RefExists calls = %q, want %q", calls, wantCalls)
+		t.Errorf("Lookup calls = %q, want %q", calls, wantCalls)
 	}
-	want := `/0/content/1/marks/0/attrs/media: media "med_missing1" does not exist` + "\n" +
-		`/1/attrs/caption/0/marks/0/attrs/entry: entry "ent_missing1" does not exist` + "\n" +
-		`/2/content/0/attrs/link/entry: entry "ent_missing2" does not exist`
+	want := `/0/content/1/marks/0/attrs/media: media "med_01JB8Z3K5XR2T5V8Y1A4C7E3G6" does not exist` + "\n" +
+		`/1/attrs/caption/0/marks/0/attrs/entry: entry "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" does not exist` + "\n" +
+		`/2/content/0/attrs/link/entry: entry "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" does not exist`
 	if err == nil || err.Error() != want {
 		t.Errorf("Validate() = %v, want %s", err, want)
 	}
 	if err := in.Validate(ValidateOptions{}); err != nil {
-		t.Errorf("Validate() without RefExists = %v, want nil", err)
+		t.Errorf("Validate() without Lookup = %v, want nil", err)
 	}
 }
