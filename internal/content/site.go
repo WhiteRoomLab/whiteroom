@@ -64,9 +64,21 @@ func (s *Site) Type(name string) *TypeDef {
 	return t
 }
 
-func (s *Site) hasTaxonomy(name string) bool {
+// Taxonomy returns the definition of the taxonomy name, built in or custom, or nil if the site has no such taxonomy.
+func (s *Site) Taxonomy(name string) *TaxonomyDef {
 	is := func(t TaxonomyDef) bool { return t.Name == name }
-	return slices.ContainsFunc(builtinTaxonomies, is) || slices.ContainsFunc(s.Taxonomies, is)
+	if i := slices.IndexFunc(builtinTaxonomies, is); i >= 0 {
+		t := builtinTaxonomies[i]
+		return &t
+	}
+	if i := slices.IndexFunc(s.Taxonomies, is); i >= 0 {
+		return &s.Taxonomies[i]
+	}
+	return nil
+}
+
+func (s *Site) hasTaxonomy(name string) bool {
+	return s.Taxonomy(name) != nil
 }
 
 func (s *Site) Validate() error {
@@ -133,6 +145,13 @@ var languagePattern = regexp.MustCompile(`^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[
 func checkLanguage(s string) error {
 	if !languagePattern.MatchString(s) {
 		return fmt.Errorf(`invalid language code %q: use a language tag such as "ja", "en-US" or "zh-Hant"`, s)
+	}
+	return nil
+}
+
+func checkSiteLanguage(site *Site, language string) error {
+	if !slices.Contains(site.Languages, language) {
+		return fmt.Errorf("language %q is not in the site settings (use %s)", language, strings.Join(site.Languages, ", "))
 	}
 	return nil
 }

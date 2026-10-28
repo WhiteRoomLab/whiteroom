@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "name": "山田 太郎",
+  "slug": "yamada",
+  "bio": {
+    "en": "Editor in chief. Writes about web design and accessibility.",
+    "ja": "編集長。Webデザインとアクセシビリティについて書いています。\n著書に『はじめてのWebアクセシビリティ』があります。"
+  },
+  "avatar": "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9",
+  "links": ["https://x.com/example", "https://example.com/"]
+}

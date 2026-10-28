@@ -72,45 +72,49 @@ func testSite() *Site {
 
 // IDs of the entities that testLookup finds, and of others.
 const (
-	testAboutPage   = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" // page in ja
-	testPage        = "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" // page in ja
-	testProduct     = "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4" // product in ja
-	testEnglishPage = "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" // page in en
-	testPost        = "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" // post in ja
-	testImage       = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
-	testImage2      = "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"
-	testPDF         = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
-	testForm        = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
-	testWorksTerm   = "trm_01JB9A00000000000000000001" // works_category in ja
-	testCategory    = "trm_01JB9A00000000000000000002" // category in ja
-	testTag         = "trm_01JB9A00000000000000000003" // tag in ja
-	testTag2        = "trm_01JB9A00000000000000000004" // tag in ja
-	testEnglishTag  = "trm_01JB9A00000000000000000005" // tag in en
-	testSeries      = "trm_01JB9A00000000000000000006" // series in ja
-	testAuthor      = "aut_01JB9B00000000000000000001"
-	testRevision    = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9"
-	testGroup       = "tg_01JB8X4M7NB5D8F1H4J7K2M6P9"
-	testUser        = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
-	testMissing     = "01JB9Z00000000000000000000" // after a prefix, the ID of an entity that testLookup does not find
+	testAboutPage       = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" // page in ja
+	testPage            = "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" // page in ja
+	testProduct         = "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4" // product in ja
+	testEnglishPage     = "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" // page in en
+	testPost            = "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" // post in ja
+	testImage           = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+	testImage2          = "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"
+	testPDF             = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
+	testForm            = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
+	testWorksTerm       = "trm_01JB9A00000000000000000001" // works_category in ja
+	testCategory        = "trm_01JB9A00000000000000000002" // category in ja
+	testTag             = "trm_01JB9A00000000000000000003" // tag in ja
+	testTag2            = "trm_01JB9A00000000000000000004" // tag in ja
+	testEnglishTag      = "trm_01JB9A00000000000000000005" // tag in en
+	testSeries          = "trm_01JB9A00000000000000000006" // series in ja
+	testNewsCategory    = "trm_01JBA4C7E2G5J8K1M4P7R2T5W8" // category in ja
+	testEnglishCategory = "trm_01JB9A00000000000000000008" // category in en
+	testAuthor          = "aut_01JB9B00000000000000000001"
+	testRevision        = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9"
+	testGroup           = "tg_01JB8X4M7NB5D8F1H4J7K2M6P9"
+	testUser            = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+	testMissing         = "01JB9Z00000000000000000000" // after a prefix, the ID of an entity that testLookup does not find
 )
 
 var testRefs = map[string]Ref{
-	testAboutPage:   {Type: TypePage, Language: "ja"},
-	testPage:        {Type: TypePage, Language: "ja"},
-	testProduct:     {Type: "product", Language: "ja"},
-	testEnglishPage: {Type: TypePage, Language: "en"},
-	testPost:        {Type: TypePost, Language: "ja"},
-	testImage:       {Type: MediaImage},
-	testImage2:      {Type: MediaImage},
-	testPDF:         {Type: MediaPDF},
-	testForm:        {},
-	testWorksTerm:   {Type: "works_category", Language: "ja"},
-	testCategory:    {Type: TaxonomyCategory, Language: "ja"},
-	testTag:         {Type: TaxonomyTag, Language: "ja"},
-	testTag2:        {Type: TaxonomyTag, Language: "ja"},
-	testEnglishTag:  {Type: TaxonomyTag, Language: "en"},
-	testSeries:      {Type: "series", Language: "ja"},
-	testAuthor:      {},
+	testAboutPage:       {Type: TypePage, Language: "ja"},
+	testPage:            {Type: TypePage, Language: "ja"},
+	testProduct:         {Type: "product", Language: "ja"},
+	testEnglishPage:     {Type: TypePage, Language: "en"},
+	testPost:            {Type: TypePost, Language: "ja"},
+	testImage:           {Type: MediaImage},
+	testImage2:          {Type: MediaImage},
+	testPDF:             {Type: MediaPDF},
+	testForm:            {},
+	testWorksTerm:       {Type: "works_category", Language: "ja"},
+	testCategory:        {Type: TaxonomyCategory, Language: "ja"},
+	testTag:             {Type: TaxonomyTag, Language: "ja"},
+	testTag2:            {Type: TaxonomyTag, Language: "ja"},
+	testEnglishTag:      {Type: TaxonomyTag, Language: "en"},
+	testSeries:          {Type: "series", Language: "ja"},
+	testNewsCategory:    {Type: TaxonomyCategory, Language: "ja"},
+	testEnglishCategory: {Type: TaxonomyCategory, Language: "en"},
+	testAuthor:          {},
 }
 
 func testLookup(kind RefKind, id string) (Ref, bool) {
@@ -216,6 +220,36 @@ func TestSiteType(t *testing.T) {
 	s.Type(TypePost).Taxonomies[0] = "x"
 	if got := s.Type(TypePost).Taxonomies[0]; got != TaxonomyCategory {
 		t.Errorf("Type(post).Taxonomies[0] = %q after changing another result", got)
+	}
+}
+
+func TestSiteTaxonomy(t *testing.T) {
+	s := testSite()
+	tests := []struct {
+		name string
+		want *TaxonomyDef
+	}{
+		{name: TaxonomyCategory, want: &TaxonomyDef{Name: TaxonomyCategory, Hierarchical: true}},
+		{name: TaxonomyTag, want: &TaxonomyDef{Name: TaxonomyTag}},
+		{name: "series", want: &s.Taxonomies[1]},
+		{name: "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := s.Taxonomy(tt.name); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Taxonomy(%q) = %#v, want %#v", tt.name, got, tt.want)
+			}
+		})
+	}
+	// Validate reports a custom taxonomy with the name of a built-in one, which Taxonomy ignores.
+	custom := &Site{Taxonomies: []TaxonomyDef{{Name: TaxonomyTag, Label: "タグ", Hierarchical: true}}}
+	if got := custom.Taxonomy(TaxonomyTag); !reflect.DeepEqual(got, &TaxonomyDef{Name: TaxonomyTag}) {
+		t.Errorf("Taxonomy(tag) of a site with a custom tag = %#v", got)
+	}
+	// The built-in definitions are not shared between calls.
+	s.Taxonomy(TaxonomyCategory).Hierarchical = false
+	if !s.Taxonomy(TaxonomyCategory).Hierarchical {
+		t.Error("Taxonomy(category) is not hierarchical after changing another result")
 	}
 }
 

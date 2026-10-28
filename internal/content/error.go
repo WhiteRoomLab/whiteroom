@@ -46,6 +46,15 @@ func (c *checker) add(path string, err error) {
 	c.errs = append(c.errs, &Error{Path: path, Msg: err.Error()})
 }
 
+// required checks v, the value of the required item key at the root, with check, or reports it missing.
+func (c *checker) required(key, v string, check func(string) error) {
+	if v == "" {
+		c.addf("/"+key, "missing %s", key)
+	} else {
+		c.add("/"+key, check(v))
+	}
+}
+
 // addError adds err, which has its own path as an *Error from reading JSON, if it is not nil.
 func (c *checker) addError(err error) {
 	var e *Error
