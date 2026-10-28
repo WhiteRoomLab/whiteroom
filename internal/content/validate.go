@@ -20,7 +20,7 @@ type ValidateOptions struct {
 type docState struct {
 	opts     ValidateOptions
 	publish  bool              // the document is to be published, which needs its required items
-	language string            // language of the entry of the document
+	language string            // language of the entry or the term of the document
 	blocks   int               // blocks checked so far
 	ids      map[string]string // block ID to the path of its "id" where first used
 	anchors  map[string]string // anchor to the path of its "anchor" where first used

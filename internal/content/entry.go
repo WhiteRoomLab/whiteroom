@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// SchemaVersion is the version of the JSON of entries and revisions that this package reads and writes.
+// SchemaVersion is the version of the JSON documents that this package reads and writes, such as entries, revisions and terms.
 const SchemaVersion = 1
 
 type Status string

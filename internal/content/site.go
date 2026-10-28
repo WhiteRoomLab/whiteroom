@@ -64,9 +64,21 @@ func (s *Site) Type(name string) *TypeDef {
 	return t
 }
 
-func (s *Site) hasTaxonomy(name string) bool {
+// Taxonomy returns the definition of the taxonomy name, built in or custom, or nil if the site has no such taxonomy.
+func (s *Site) Taxonomy(name string) *TaxonomyDef {
 	is := func(t TaxonomyDef) bool { return t.Name == name }
-	return slices.ContainsFunc(builtinTaxonomies, is) || slices.ContainsFunc(s.Taxonomies, is)
+	if i := slices.IndexFunc(builtinTaxonomies, is); i >= 0 {
+		t := builtinTaxonomies[i]
+		return &t
+	}
+	if i := slices.IndexFunc(s.Taxonomies, is); i >= 0 {
+		return &s.Taxonomies[i]
+	}
+	return nil
+}
+
+func (s *Site) hasTaxonomy(name string) bool {
+	return s.Taxonomy(name) != nil
 }
 
 func (s *Site) Validate() error {
