@@ -3,8 +3,6 @@ package content
 import (
 	"encoding/json/v2"
 	"fmt"
-	"slices"
-	"strings"
 )
 
 // SchemaVersion is the version of the JSON of entries and revisions that this package reads and writes.
@@ -124,33 +122,21 @@ func (x Entry) Validate(site *Site) error {
 }
 
 func (x Entry) check(c *checker, site *Site) {
-	required := func(key, v string, check func(string) error) {
-		if v == "" {
-			c.addf("/"+key, "missing %s", key)
-		} else {
-			c.add("/"+key, check(v))
-		}
-	}
-	required("id", x.ID, func(s string) error { return checkID(RefEntry, s) })
+	c.required("id", x.ID, func(s string) error { return checkID(RefEntry, s) })
 	if x.Number == 0 {
 		c.addf("/number", "missing number")
 	} else {
 		c.add("/number", checkNumber(x.Number))
 	}
-	required("type", x.Type, func(s string) error {
+	c.required("type", x.Type, func(s string) error {
 		if site.Type(s) == nil {
 			return fmt.Errorf("unknown type %q", s)
 		}
 		return nil
 	})
-	required("language", x.Language, func(s string) error {
-		if !slices.Contains(site.Languages, s) {
-			return fmt.Errorf("language %q is not in the site settings (use %s)", s, strings.Join(site.Languages, ", "))
-		}
-		return nil
-	})
-	required("translationGroup", x.TranslationGroup, func(s string) error { return checkID(RefTranslationGroup, s) })
-	required("status", string(x.Status), func(s string) error {
+	c.required("language", x.Language, func(s string) error { return checkSiteLanguage(site, s) })
+	c.required("translationGroup", x.TranslationGroup, func(s string) error { return checkID(RefTranslationGroup, s) })
+	c.required("status", string(x.Status), func(s string) error {
 		return checkChoice("status", s, string(StatusDraft), string(StatusPublished), string(StatusScheduled), string(StatusArchived))
 	})
 	switch {
@@ -162,8 +148,8 @@ func (x Entry) check(c *checker, site *Site) {
 	case x.Status == StatusPublished:
 		c.addf("/publishedRevision", "missing publishedRevision of a published entry")
 	}
-	required("createdAt", x.CreatedAt, checkDatetime)
-	required("createdBy", x.CreatedBy, func(s string) error { return checkID(RefUser, s) })
+	c.required("createdAt", x.CreatedAt, checkDatetime)
+	c.required("createdBy", x.CreatedBy, func(s string) error { return checkID(RefUser, s) })
 }
 
 func checkNumber(v int) error {

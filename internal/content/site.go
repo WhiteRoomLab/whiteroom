@@ -137,6 +137,13 @@ func checkLanguage(s string) error {
 	return nil
 }
 
+func checkSiteLanguage(site *Site, language string) error {
+	if !slices.Contains(site.Languages, language) {
+		return fmt.Errorf("language %q is not in the site settings (use %s)", language, strings.Join(site.Languages, ", "))
+	}
+	return nil
+}
+
 var pointerEscaper = strings.NewReplacer("~", "~0", "/", "~1")
 
 // escapePointer escapes s for a JSON Pointer.
