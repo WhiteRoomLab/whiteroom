@@ -204,3 +204,102 @@ func TestLocalizedCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalizedCheckRequired(t *testing.T) {
+	const (
+		ctrl    = string(rune(0x0001))
+		missing = "missing value; every language of the site needs one"
+	)
+	tests := []struct {
+		name      string
+		in        Localized
+		multiline bool
+		paths     []string
+		msg       string // part of the error text, a "path: message" line for each problem; not checked if ""
+	}{
+		{name: "every language", in: Localized{"ja": "お名前", "en": "Name"}},
+		{name: "every language in multiline", in: Localized{"ja": "一行目\n二行目\tタブ", "en": "Line 1\nLine 2"}, multiline: true},
+		{name: "nil", in: nil, paths: []string{"/label"}, msg: "/label: missing label"},
+		{name: "empty", in: Localized{}, multiline: true, paths: []string{"/label"}, msg: "/label: missing label"},
+		{name: "missing language", in: Localized{"ja": "お名前"}, paths: []string{"/label/en"}, msg: "/label/en: " + missing},
+		{
+			name:      "missing language in multiline",
+			in:        Localized{"en": "Thank you."},
+			multiline: true,
+			paths:     []string{"/label/ja"},
+			msg:       "/label/ja: " + missing,
+		},
+		{name: "empty value", in: Localized{"ja": "", "en": "Name"}, paths: []string{"/label/ja"}, msg: "/label/ja: " + missing},
+		{
+			name:  "only languages not in the site settings",
+			in:    Localized{"fr": "Nom", "de": "Name"},
+			paths: []string{"/label/ja", "/label/en", "/label/de", "/label/fr"},
+			msg: "/label/ja: " + missing + "\n/label/en: " + missing + "\n" +
+				`/label/de: language "de" is not in the site settings (use ja, en)` + "\n" +
+				`/label/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "language in another case",
+			in:    Localized{"JA": "お名前", "en": "Name"},
+			paths: []string{"/label/ja", "/label/JA"},
+			msg:   "/label/ja: " + missing + "\n" + `/label/JA: language "JA" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "line break in a line",
+			in:    Localized{"ja": "お\n名前", "en": "Name"},
+			paths: []string{"/label/ja"},
+			msg:   "/label/ja: contains a line break or tab",
+		},
+		{
+			name:  "not NFC",
+			in:    Localized{"ja": "お名前", "en": "cafe" + acute},
+			paths: []string{"/label/en"},
+			msg:   "/label/en: not in Unicode NFC; normalize it first",
+		},
+		{
+			name:      "not NFC in multiline",
+			in:        Localized{"ja": "cafe" + acute + "\n", "en": "Thank you."},
+			multiline: true,
+			paths:     []string{"/label/ja"},
+			msg:       "/label/ja: not in Unicode NFC; normalize it first",
+		},
+		{
+			name:  "control character",
+			in:    Localized{"ja": "お名前", "en": "Name" + ctrl},
+			paths: []string{"/label/en"},
+			msg:   "/label/en: contains control characters; normalize it first",
+		},
+		{
+			// The site languages in their order, missing or not, then the others in sorted order, whatever the order in the map.
+			name:  "order",
+			in:    Localized{"zh": "a", "en": "b\nc", "fr": "", "de": "d"},
+			paths: []string{"/label/ja", "/label/en", "/label/de", "/label/fr", "/label/zh"},
+			msg: "/label/ja: " + missing + "\n/label/en: contains a line break or tab\n" +
+				`/label/de: language "de" is not in the site settings (use ja, en)` + "\n" +
+				`/label/fr: language "fr" is not in the site settings (use ja, en)` + "\n" +
+				`/label/zh: language "zh" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "texts of languages not in the site settings",
+			in:    Localized{"ja": "お名前", "en": "Name", "fr": "a\nb" + ctrl},
+			paths: []string{"/label/fr"},
+			msg:   `/label/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c checker
+			tt.in.checkRequired(&c, "/label", "label", testSite(), tt.multiline)
+			err := c.result()
+			if tt.paths == nil && err != nil {
+				t.Fatalf("checkRequired() = %v, want nil", err)
+			}
+			if got := errorPaths(t, err); !reflect.DeepEqual(got, tt.paths) {
+				t.Errorf("checkRequired() paths = %q, want %q", got, tt.paths)
+			}
+			if tt.msg != "" {
+				assertErrorMsg(t, err, tt.msg)
+			}
+		})
+	}
+}
