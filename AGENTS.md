@@ -22,7 +22,7 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 
 ## パッケージの置き場所
 
-- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`。
+- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`、開発者が書くファイル（`site/schema.yaml`）の YAML を読む処理は `internal/yaml`。
 - コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
 
 ## 生成するファイル
