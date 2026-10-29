@@ -15,6 +15,7 @@ const (
 	RefTerm             RefKind = "term"
 	RefAuthor           RefKind = "author"
 	RefMenu             RefKind = "menu"
+	RefRedirect         RefKind = "redirect"
 	RefRevision         RefKind = "revision"
 	RefTranslationGroup RefKind = "translationGroup"
 	RefUser             RefKind = "user"
@@ -27,6 +28,7 @@ var idPrefixes = map[RefKind]string{
 	RefTerm:             "trm_",
 	RefAuthor:           "aut_",
 	RefMenu:             "mnu_",
+	RefRedirect:         "rdr_",
 	RefRevision:         "rev_",
 	RefTranslationGroup: "tg_",
 	RefUser:             "usr_",

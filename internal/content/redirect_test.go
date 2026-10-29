@@ -1,10 +1,315 @@
 package content
 
 import (
+	"encoding/json/v2"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// testRedirect is the ID of the redirect in testdata.
+const testRedirect = "rdr_01JBD3A4B5C6D7E8F9G0H1J2K3"
+
+// wordpressRedirect is testdata/wordpress-p-redirect.json, which forwards post 123 in the plain permalinks of WordPress
+// to the imported post.
+var wordpressRedirect = Redirect{
+	ID:     testRedirect,
+	From:   "/?p=123",
+	To:     testPost,
+	Status: 301,
+}
+
+func TestRedirectUnmarshalJSON(t *testing.T) {
+	in := readTestdata(t, "wordpress-p-redirect.json")
+	var got Redirect
+	if err := json.Unmarshal([]byte(in), &got); err != nil {
+		t.Fatalf("Unmarshal(%s) = %v", in, err)
+	}
+	if got != wordpressRedirect {
+		t.Errorf("Unmarshal(%s) = %#v, want %#v", in, got, wordpressRedirect)
+	}
+}
+
+func TestRedirectRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string // "" if in is canonical
+	}{
+		{name: "WordPress", in: readTestdata(t, "wordpress-p-redirect.json")},
+		{name: "schemaVersion only", in: `{"schemaVersion":1}`},
+		{
+			name: "reversed key order",
+			in:   `{"status":302,"to":"/category/news/page/2/","from":"/?cat=3&paged=2","id":"` + testRedirect + `","schemaVersion":1}`,
+			want: `{"schemaVersion":1,"id":"` + testRedirect + `","from":"/?cat=3&paged=2","to":"/category/news/page/2/","status":302}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.want
+			if want == "" {
+				want = tt.in
+			}
+			assertRoundTrip[Redirect](t, tt.in, want)
+		})
+	}
+}
+
+func TestRedirectMarshalJSON(t *testing.T) {
+	got, err := json.Marshal(Redirect{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"schemaVersion":1}`; string(got) != want {
+		t.Errorf("Marshal(Redirect{}) = %s, want %s", got, want)
+	}
+}
+
+func TestRedirectUnmarshalJSONError(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		path string
+		msg  string
+	}{
+		{name: "empty", in: `{}`, path: "", msg: "empty object is not allowed"},
+		{name: "missing schemaVersion", in: `{"id":"x","from":"x","to":"x","status":301}`, path: "", msg: `missing key "schemaVersion"`},
+		{name: "schemaVersion 2", in: `{"schemaVersion":2}`, path: "/schemaVersion", msg: "unsupported schemaVersion 2 (use 1)"},
+		{name: "unknown key", in: `{"schemaVersion":1,"language":"ja"}`, path: "/language", msg: "unknown key"},
+		{name: "key case", in: `{"schemaVersion":1,"From":"/?p=123"}`, path: "/From", msg: "unknown key"},
+		{name: "status as a string", in: `{"schemaVersion":1,"status":"301"}`, path: "/status", msg: "expected number, got string"},
+		{name: "status with a fraction", in: `{"schemaVersion":1,"status":301.0}`, path: "/status", msg: "must be an integer"},
+		{name: "status with an exponent", in: `{"schemaVersion":1,"status":3.01e2}`, path: "/status", msg: "must be an integer"},
+		{name: "status 0", in: `{"schemaVersion":1,"status":0}`, path: "/status", msg: "unsupported status 0 (use 301 or 302)"},
+		{name: "status 303", in: `{"schemaVersion":1,"status":303}`, path: "/status", msg: "unsupported status 303 (use 301 or 302)"},
+		{name: "status 308", in: `{"schemaVersion":1,"status":308}`, path: "/status", msg: "unsupported status 308 (use 301 or 302)"},
+		{name: "status 410", in: `{"schemaVersion":1,"status":410}`, path: "/status", msg: "unsupported status 410 (use 301 or 302)"},
+		{name: "negative status", in: `{"schemaVersion":1,"status":-301}`, path: "/status", msg: "unsupported status -301 (use 301 or 302)"},
+		{name: "null from", in: `{"schemaVersion":1,"from":null}`, path: "/from", msg: "expected string, got null"},
+		{name: "empty from", in: `{"schemaVersion":1,"from":""}`, path: "/from", msg: "empty string is not allowed"},
+		{name: "link for to", in: `{"schemaVersion":1,"to":{"entry":"` + testPost + `"}}`, path: "/to", msg: "expected string, got object"},
+		{name: "duplicate key", in: `{"schemaVersion":1,"to":"/a/","to":"/b/"}`, path: "/to", msg: "duplicate key"},
+		{name: "trailing data", in: `{"schemaVersion":1} {}`, path: "", msg: "unexpected data after value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Redirect{ID: "old"}
+			assertError(t, got.UnmarshalJSON([]byte(tt.in)), tt.path, tt.msg)
+			if got != (Redirect{ID: "old"}) {
+				t.Errorf("UnmarshalJSON(%s) changed the redirect to %#v", tt.in, got)
+			}
+		})
+	}
+}
+
+func TestRedirectNormalize(t *testing.T) {
+	const ctrl = string(rune(0x0001))
+	tests := []struct {
+		name string
+		in   Redirect
+		want Redirect
+	}{
+		{
+			name: "from in the canonical form",
+			in:   Redirect{From: " /%E4%BC%9A%E7%A4%BE/?p=2&a=1" + ctrl + "\n"},
+			want: Redirect{From: "/会社/?a=1&p=2"},
+		},
+		{name: "from not in NFC", in: Redirect{From: "/cafe" + acute + "/"}, want: Redirect{From: "/cafe" + acute + "/"}},
+		{
+			name: "spaces and control characters in to",
+			in:   Redirect{To: " https://example.com/ab\tout/" + ctrl + "\n"},
+			want: Redirect{To: "https://example.com/about/"},
+		},
+		{name: "to not in NFC", in: Redirect{To: "/cafe" + acute + "/"}, want: Redirect{To: "/cafe" + acute + "/"}},
+		{name: "encoded to left as it is", in: Redirect{To: "/%E4%BC%9A%E7%A4%BE/"}, want: Redirect{To: "/%E4%BC%9A%E7%A4%BE/"}},
+		{name: "ID in to", in: Redirect{To: "\t" + testPost + " "}, want: Redirect{To: testPost}},
+		{name: "nothing left", in: Redirect{From: " " + ctrl, To: "\n"}, want: Redirect{}},
+		{
+			name: "other items left as they are",
+			in:   Redirect{ID: " x" + ctrl, Status: 303},
+			want: Redirect{ID: " x" + ctrl, Status: 303},
+		},
+		{name: "WordPress", in: wordpressRedirect, want: wordpressRedirect},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in
+			got.Normalize()
+			if got != tt.want {
+				t.Errorf("Normalize() of %#v = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedirectValidate(t *testing.T) {
+	const (
+		normalize = "contains control characters or surrounding spaces; normalize it first"
+		notWeb    = `/to: must be a path starting with "/" or an http or https URL`
+		itself    = "/to: redirects to itself"
+	)
+	invalidTarget := func(s string) string {
+		return "/to: invalid target " + strconv.Quote(s) + ": use the ID of an entry, a term, an author or a medium, " +
+			`a path starting with "/", or an http or https URL`
+	}
+	// redirect returns x changed by f.
+	redirect := func(x Redirect, f func(x *Redirect)) Redirect {
+		f(&x)
+		return x
+	}
+	from := func(s string) Redirect { return redirect(wordpressRedirect, func(x *Redirect) { x.From = s }) }
+	to := func(s string) Redirect { return redirect(wordpressRedirect, func(x *Redirect) { x.To = s }) }
+	fromTo := func(path, target string) Redirect {
+		return redirect(wordpressRedirect, func(x *Redirect) { x.From, x.To = path, target })
+	}
+	tests := []struct {
+		name     string
+		in       Redirect
+		noLookup bool // validate without lookup
+		paths    []string
+		msg      string // part of the error text, a "path: message" line for each problem; not checked if ""
+	}{
+		{name: "WordPress", in: wordpressRedirect},
+		{name: "WordPress without lookup", in: wordpressRedirect, noLookup: true},
+		{
+			name:  "missing items",
+			in:    Redirect{},
+			paths: []string{"/id", "/from", "/to", "/status"},
+			msg:   "/id: missing id\n/from: missing from\n/to: missing to\n/status: missing status",
+		},
+		{
+			// The errors are in document order.
+			name:  "invalid items",
+			in:    Redirect{ID: testPost, From: "/?p=123&cat=3", To: "about/", Status: 303},
+			paths: []string{"/id", "/from", "/to", "/status"},
+			msg: `/id: invalid redirect ID "` + testPost + `": use "rdr_" and a ULID (26 characters in upper case)` + "\n" +
+				`/from: not in the canonical form "/?cat=3&p=123"; normalize it first` + "\n" +
+				invalidTarget("about/") + "\n/status: unsupported status 303 (use 301 or 302)",
+		},
+		{
+			name:  "ID of another kind",
+			in:    redirect(wordpressRedirect, func(x *Redirect) { x.ID = testHeaderMenu }),
+			paths: []string{"/id"},
+			msg:   `/id: invalid redirect ID "` + testHeaderMenu + `": use "rdr_" and a ULID (26 characters in upper case)`,
+		},
+
+		{name: "Japanese from", in: from("/会社概要/")},
+		{name: "from not in NFC", in: from("/cafe" + acute + "/")},
+		{
+			name:  "encoded from",
+			in:    from("/%E4%BC%9A%E7%A4%BE%E6%A6%82%E8%A6%81/"),
+			paths: []string{"/from"},
+			msg:   `/from: not in the canonical form "/会社概要/"; normalize it first`,
+		},
+		{name: "from with surrounding spaces", in: from(" /?p=123"), paths: []string{"/from"}, msg: "/from: " + normalize},
+		{name: "URL for from", in: from("https://example.com/?p=123"), paths: []string{"/from"}, msg: `/from: must be a path starting with "/"`},
+		{
+			name:  "from with a fragment",
+			in:    from("/about/#team"),
+			paths: []string{"/from"},
+			msg:   "/from: fragments are not allowed; browsers never send them",
+		},
+		{name: "from with a duplicate parameter", in: from("/?p=123&p=124"), paths: []string{"/from"}, msg: `/from: duplicate query parameter "p"`},
+
+		{name: "entry", in: to(testAboutPage)},
+		{name: "term", in: fromTo("/?cat=3", testCategory)},
+		{name: "author", in: fromTo("/?author=2", testAuthor)},
+		{name: "image", in: fromTo("/wp-content/uploads/2020/05/写真-scaled.jpg", testImage)},
+		{name: "PDF", in: fromTo("/wp-content/uploads/2020/05/会社案内.pdf", testPDF)},
+		{
+			name:  "entry that does not exist",
+			in:    to("ent_" + testMissing),
+			paths: []string{"/to"},
+			msg:   `/to: entry "ent_` + testMissing + `" does not exist`,
+		},
+		{name: "entry that does not exist without lookup", in: to("ent_" + testMissing), noLookup: true},
+		{
+			name:  "medium that does not exist",
+			in:    to("med_" + testMissing),
+			paths: []string{"/to"},
+			msg:   `/to: media "med_` + testMissing + `" does not exist`,
+		},
+		{
+			name:  "invalid entry ID",
+			in:    to("ent_01jb8y6t2wt6x9c3e6g9j2k5m8"),
+			paths: []string{"/to"},
+			msg:   `/to: invalid entry ID "ent_01jb8y6t2wt6x9c3e6g9j2k5m8": use "ent_" and a ULID (26 characters in upper case)`,
+		},
+		{name: "ID with surrounding spaces", in: to(" " + testPost), paths: []string{"/to"}, msg: `/to: invalid entry ID " ` + testPost + `"`},
+		{name: "revision", in: to(testRevision), paths: []string{"/to"}, msg: invalidTarget(testRevision)},
+		{name: "translation group", in: to(testGroup), paths: []string{"/to"}, msg: invalidTarget(testGroup)},
+		{name: "login account", in: to(testUser), paths: []string{"/to"}, msg: invalidTarget(testUser)},
+		{name: "form", in: to(testForm), paths: []string{"/to"}, msg: invalidTarget(testForm)},
+		{name: "menu", in: to(testHeaderMenu), paths: []string{"/to"}, msg: invalidTarget(testHeaderMenu)},
+		{name: "redirect", in: to(testRedirect), paths: []string{"/to"}, msg: invalidTarget(testRedirect)},
+		{
+			name:  "upper case prefix",
+			in:    to("ENT_01JB8Y6T2WT6X9C3E6G9J2K5M8"),
+			paths: []string{"/to"},
+			msg:   invalidTarget("ENT_01JB8Y6T2WT6X9C3E6G9J2K5M8"),
+		},
+		{name: "relative path", in: to("about/"), paths: []string{"/to"}, msg: invalidTarget("about/")},
+
+		{name: "path", in: to("/about/")},
+		{name: "path with a fragment", in: to("/about/#access")},
+		{name: "external URL", in: to("https://example.com/")},
+		{name: "http URL", in: to("http://example.com/about/")},
+		{name: "mailto", in: to("mailto:info@example.com"), paths: []string{"/to"}, msg: notWeb},
+		{name: "tel", in: to("tel:+81-3-1234-5678"), paths: []string{"/to"}, msg: notWeb},
+		{name: "javascript", in: to("javascript:alert(1)"), paths: []string{"/to"}, msg: `/to: scheme "javascript" is not allowed`},
+		{name: "protocol-relative", in: to("//evil.example/"), paths: []string{"/to"}, msg: "/to: protocol-relative URLs are not allowed"},
+		{name: "path with surrounding spaces", in: to(" /about/"), paths: []string{"/to"}, msg: "/to: " + normalize},
+
+		{name: "itself without the trailing slash", in: fromTo("/about/", "/about"), paths: []string{"/to"}, msg: itself},
+		{name: "itself with a query", in: fromTo("/?p=1", "/?p=1"), paths: []string{"/to"}, msg: itself},
+		{name: "root from a query", in: fromTo("/?p=1", "/")},
+		{name: "itself with a fragment", in: fromTo("/about/", "/about/#team"), paths: []string{"/to"}, msg: itself},
+		{name: "itself with another parameter", in: fromTo("/about/", "/about/?ref=top"), paths: []string{"/to"}, msg: itself},
+		{name: "itself encoded", in: fromTo("/会社/", "/%E4%BC%9A%E7%A4%BE/"), paths: []string{"/to"}, msg: itself},
+		{name: "upper case path", in: fromTo("/About/", "/about/")},
+		{
+			// Only From is reported until it is in the canonical form.
+			name:  "itself from a from not in the canonical form",
+			in:    fromTo("/about/?", "/about/"),
+			paths: []string{"/from"},
+			msg:   `/from: not in the canonical form "/about/"; normalize it first`,
+		},
+		{name: "external URL with the same path", in: fromTo("/about/", "https://example.com/about/")},
+
+		{name: "status 302", in: redirect(wordpressRedirect, func(x *Redirect) { x.Status = 302 })},
+		{
+			name:  "missing status",
+			in:    redirect(wordpressRedirect, func(x *Redirect) { x.Status = 0 }),
+			paths: []string{"/status"},
+			msg:   "/status: missing status",
+		},
+		{
+			name:  "status 303",
+			in:    redirect(wordpressRedirect, func(x *Redirect) { x.Status = 303 }),
+			paths: []string{"/status"},
+			msg:   "/status: unsupported status 303 (use 301 or 302)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookup := testLookup
+			if tt.noLookup {
+				lookup = nil
+			}
+			err := tt.in.Validate(lookup)
+			if tt.paths == nil && err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+			if got := errorPaths(t, err); !reflect.DeepEqual(got, tt.paths) {
+				t.Errorf("Validate() paths = %q, want %q", got, tt.paths)
+			}
+			if tt.msg != "" {
+				assertErrorMsg(t, err, tt.msg)
+			}
+		})
+	}
+}
 
 func TestNormalizeRedirectFrom(t *testing.T) {
 	const (
@@ -211,11 +516,16 @@ func TestRedirectMatches(t *testing.T) {
 		{name: "fragment", from: "/about/", target: "/about/#team", want: true},
 		{name: "query after the fragment", from: "/?p=123", target: "/#?p=123"},
 		{name: "other path", from: "/about/", target: "/contact/"},
+		{name: "WordPress with a parameter of analytics", from: wordpressRedirect.From, target: "/?p=123&utm_source=x", want: true},
+		{name: "WordPress and another post", from: wordpressRedirect.From, target: "/?p=1234"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := redirectMatches(tt.from, tt.target); got != tt.want {
 				t.Errorf("redirectMatches(%q, %q) = %t, want %t", tt.from, tt.target, got, tt.want)
+			}
+			if got := (Redirect{From: tt.from}).Matches(tt.target); got != tt.want {
+				t.Errorf("Matches(%q) of a redirect from %q = %t, want %t", tt.target, tt.from, got, tt.want)
 			}
 		})
 	}

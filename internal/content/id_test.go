@@ -16,6 +16,7 @@ func TestCheckID(t *testing.T) {
 		{name: "term", kind: RefTerm, in: "trm_" + ulid, ok: true},
 		{name: "author", kind: RefAuthor, in: "aut_" + ulid, ok: true},
 		{name: "menu", kind: RefMenu, in: "mnu_" + ulid, ok: true},
+		{name: "redirect", kind: RefRedirect, in: "rdr_" + ulid, ok: true},
 		{name: "revision", kind: RefRevision, in: "rev_" + ulid, ok: true},
 		{name: "translation group", kind: RefTranslationGroup, in: "tg_" + ulid, ok: true},
 		{name: "user", kind: RefUser, in: "usr_" + ulid, ok: true},
@@ -57,7 +58,7 @@ func TestCheckID(t *testing.T) {
 }
 
 func TestIDPrefixes(t *testing.T) {
-	kinds := []RefKind{RefEntry, RefMedia, RefForm, RefTerm, RefAuthor, RefMenu, RefRevision, RefTranslationGroup, RefUser}
+	kinds := []RefKind{RefEntry, RefMedia, RefForm, RefTerm, RefAuthor, RefMenu, RefRedirect, RefRevision, RefTranslationGroup, RefUser}
 	if len(idPrefixes) != len(kinds) {
 		t.Errorf("idPrefixes has %d kinds, want %d", len(idPrefixes), len(kinds))
 	}

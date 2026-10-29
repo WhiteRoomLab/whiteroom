@@ -2,14 +2,150 @@ package content
 
 import (
 	"cmp"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+// Redirect forwards requests for an old URL in the site, such as one from WordPress, to a new one.
+type Redirect struct {
+	ID     string
+	From   string // a path in the site with an optional query, such as "/?p=123", in the canonical form
+	To     string // the ID of an entry, a term, an author or a medium, a path in the site, or an http or https URL
+	Status int    // 301 or 302
+}
+
+func (x *Redirect) UnmarshalJSON(data []byte) error { return decodeJSON(x, data) }
+
+func (x *Redirect) decode(d *decoder) error {
+	var v Redirect
+	version := false
+	err := d.object(func(key string) error {
+		var err error
+		switch key {
+		case "schemaVersion":
+			err = readSchemaVersion(d)
+			version = true
+		case "id":
+			v.ID, err = d.string()
+		case "from":
+			v.From, err = d.string()
+		case "to":
+			v.To, err = d.string()
+		case "status":
+			v.Status, err = readInt(d, checkRedirectStatus)
+		default:
+			return d.errorf("unknown key")
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if !version {
+		return d.errorf(`missing key "schemaVersion"`)
+	}
+	*x = v
+	return nil
+}
+
+func (x Redirect) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		SchemaVersion int    `json:"schemaVersion"`
+		ID            string `json:"id,omitempty"`
+		From          string `json:"from,omitempty"`
+		To            string `json:"to,omitempty"`
+		Status        int    `json:"status,omitzero"`
+	}{
+		SchemaVersion: SchemaVersion,
+		ID:            x.ID,
+		From:          x.From,
+		To:            x.To,
+		Status:        x.Status,
+	})
+}
+
+// Normalize puts From in the canonical form and cleans up To as Revision.Normalize does URLs.
+func (x *Redirect) Normalize() {
+	x.From = normalizeRedirectFrom(x.From)
+	x.To = normalizeHref(x.To)
+}
+
+// Matches reports whether x applies to target, the path and the query of a request, as redirectMatches does.
+// The caller chooses among the redirects that match the same request.
+func (x Redirect) Matches(target string) bool { return redirectMatches(x.From, target) }
+
+// Validate checks x. Every item is required.
+// lookup tells about the entry, term, author or medium of To as ValidateOptions.Lookup does; nil skips checking that it exists.
+func (x Redirect) Validate(lookup func(kind RefKind, id string) (Ref, bool)) error {
+	c := checker{doc: &docState{opts: ValidateOptions{Lookup: lookup}}}
+	x.check(&c)
+	return c.result()
+}
+
+func (x Redirect) check(c *checker) {
+	c.required("id", x.ID, func(s string) error { return checkID(RefRedirect, s) })
+	c.required("from", x.From, checkRedirectFrom)
+	x.checkTo(c)
+	if x.Status == 0 {
+		c.addf("/status", "missing status")
+	} else {
+		c.add("/status", checkRedirectStatus(x.Status))
+	}
+}
+
+// redirectTargets are the kinds of entities that redirects can go to, in the order that the message of checkTo lists them.
+var redirectTargets = []RefKind{RefEntry, RefTerm, RefAuthor, RefMedia}
+
+func (x Redirect) checkTo(c *checker) {
+	// Classified in the normalized form, so that " /about/" is reported as not normalized, not as an invalid target.
+	t := normalizeHref(x.To)
+	switch {
+	case x.To == "":
+		c.addf("/to", "missing to")
+	case strings.HasPrefix(t, "/") || strings.Contains(t, ":"):
+		c.add("/to", x.checkURL())
+	default:
+		for _, kind := range redirectTargets {
+			if strings.HasPrefix(t, idPrefixes[kind]) {
+				c.ref("/to", kind, x.To)
+				return
+			}
+		}
+		c.addf("/to", "invalid target %q: use the ID of an entry, a term, an author or a medium, "+
+			`a path starting with "/", or an http or https URL`, x.To)
+	}
+}
+
+// checkURL checks To, a path in the site or a URL, which must not lead back to From.
+func (x Redirect) checkURL() error {
+	if err := checkHref(x.To); err != nil {
+		return err
+	}
+	switch u, _ := url.Parse(x.To); u.Scheme {
+	case "http", "https":
+	case "":
+		if checkRedirectFrom(x.From) == nil && redirectMatches(x.From, x.To) {
+			return errors.New("redirects to itself")
+		}
+	default:
+		return errors.New(`must be a path starting with "/" or an http or https URL`)
+	}
+	return nil
+}
+
+func checkRedirectStatus(v int) error {
+	if v != 301 && v != 302 {
+		return fmt.Errorf("unsupported status %d (use 301 or 302)", v)
+	}
+	return nil
+}
 
 // normalizeRedirectFrom returns from, a path in the site with an optional query, percent-encoded only where needed
 // (visible characters other than ASCII are decoded, as in IRIs) and with the query parameters sorted by name.
