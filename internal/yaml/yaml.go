@@ -2,6 +2,8 @@
 // Anything outside the subset is an error.
 package yaml
 
+//go:generate go run ./gen
+
 import (
 	"fmt"
 	"strings"

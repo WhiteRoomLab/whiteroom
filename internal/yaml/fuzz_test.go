@@ -49,6 +49,9 @@ func FuzzToJSON(f *testing.F) {
 		f.Add([]byte(tt.in))
 	}
 	f.Add([]byte(worksSchema))
+	for _, tt := range readSuite(f) {
+		f.Add([]byte(tt.YAML))
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, positions, err := ToJSON(data)
 		if err != nil {
