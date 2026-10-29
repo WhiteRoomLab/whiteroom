@@ -84,6 +84,12 @@ func parseURLRule(rule string) ([]rulePart, error) {
 	return parts, nil
 }
 
+// hasPlaceholder reports whether rule has the placeholder name, such as "category" for {category}.
+func hasPlaceholder(rule, name string) bool {
+	parts, err := parseURLRule(rule)
+	return err == nil && slices.Contains(parts, rulePart{text: name, placeholder: true})
+}
+
 // checkURLRule checks rule, a URL rule of the kind k in s, and reports the first problem.
 func checkURLRule(rule string, k ruleKind, s *Site) error {
 	if err := checkSize(rule); err != nil {

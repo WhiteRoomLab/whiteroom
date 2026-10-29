@@ -1,6 +1,7 @@
 package content
 
 import (
+	"cmp"
 	"encoding/json/v2"
 	"reflect"
 	"strconv"
@@ -163,8 +164,16 @@ func TestRedirectValidate(t *testing.T) {
 	fromTo := func(path, target string) Redirect {
 		return redirect(wordpressRedirect, func(x *Redirect) { x.From, x.To = path, target })
 	}
+	// siteAt returns testSite, whose URL is "https://example.com", with url as its URL.
+	siteAt := func(url string) *Site {
+		s := testSite()
+		s.URL = url
+		return s
+	}
+	blog := siteAt("https://example.com/blog")
 	tests := []struct {
 		name     string
+		site     *Site // testSite() if nil
 		in       Redirect
 		noLookup bool // validate without lookup
 		paths    []string
@@ -253,7 +262,7 @@ func TestRedirectValidate(t *testing.T) {
 
 		{name: "path", in: to("/about/")},
 		{name: "path with a fragment", in: to("/about/#access")},
-		{name: "external URL", in: to("https://example.com/")},
+		{name: "external URL", in: to("https://example.org/")},
 		{name: "http URL", in: to("http://example.com/about/")},
 		{name: "mailto", in: to("mailto:info@example.com"), paths: []string{"/to"}, msg: notWeb},
 		{name: "tel", in: to("tel:+81-3-1234-5678"), paths: []string{"/to"}, msg: notWeb},
@@ -275,7 +284,60 @@ func TestRedirectValidate(t *testing.T) {
 			paths: []string{"/from"},
 			msg:   `/from: not in the canonical form "/about/"; normalize it first`,
 		},
-		{name: "external URL with the same path", in: fromTo("/about/", "https://example.com/about/")},
+		{name: "external URL with the same path", in: fromTo("/about/", "https://example.org/about/")},
+
+		{name: "itself as a URL", in: fromTo("/about", "https://example.com/about/"), paths: []string{"/to"}, msg: itself},
+		{
+			name:  "itself as a URL with the host in upper case",
+			in:    fromTo("/about", "https://EXAMPLE.com/about"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{
+			name:  "itself as a URL with the scheme in upper case",
+			in:    fromTo("/about/", "HTTPS://example.com/about/"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{
+			name:  "itself as a URL with another parameter",
+			in:    fromTo("/about", "https://example.com/about/?ref=top"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{name: "itself as a URL with a query", in: fromTo("/?p=123", "https://example.com/?p=123"), paths: []string{"/to"}, msg: itself},
+		{name: "itself as a URL without a path", in: fromTo("/", "https://example.com"), paths: []string{"/to"}, msg: itself},
+		{name: "itself as a URL with a fragment", in: fromTo("/about/", "https://example.com/about/#team"), paths: []string{"/to"}, msg: itself},
+		{name: "itself as a URL encoded", in: fromTo("/会社/", "https://example.com/%e4%bc%9a%e7%a4%be/"), paths: []string{"/to"}, msg: itself},
+		{
+			name:  "itself as a URL with the default port",
+			in:    fromTo("/about/", "https://example.com:443/about/"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{name: "root URL from a query", in: fromTo("/?p=1", "https://example.com")},
+		{name: "URL with another scheme", in: fromTo("/about/", "http://example.com/about/")},
+		{name: "URL with another host", in: fromTo("/about/", "https://www.example.com/about/")},
+		{name: "URL with another port", in: fromTo("/about/", "https://example.com:8443/about/")},
+		{name: "URL with another path", in: fromTo("/about/", "https://example.com/other/")},
+		{
+			name:  "itself as a URL in a site at a path",
+			site:  blog,
+			in:    fromTo("/about/", "https://example.com/blog/about/"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{
+			name:  "itself as the URL of a site at a path",
+			site:  blog,
+			in:    fromTo("/", "https://example.com/blog"),
+			paths: []string{"/to"},
+			msg:   itself,
+		},
+		{name: "URL outside a site at a path", site: blog, in: fromTo("/about/", "https://example.com/about/")},
+		{name: "URL outside a site at a path that it starts with", site: blog, in: fromTo("/about/", "https://example.com/blogger/about/")},
+		{name: "URL in a site without a URL", site: siteAt(""), in: fromTo("/about/", "https://example.com/about/")},
+		{name: "URL in a site with an invalid URL", site: siteAt("https://example.com/"), in: fromTo("/about/", "https://example.com/about/")},
 
 		{name: "status 302", in: redirect(wordpressRedirect, func(x *Redirect) { x.Status = 302 })},
 		{
@@ -297,7 +359,7 @@ func TestRedirectValidate(t *testing.T) {
 			if tt.noLookup {
 				lookup = nil
 			}
-			err := tt.in.Validate(lookup)
+			err := tt.in.Validate(cmp.Or(tt.site, testSite()), lookup)
 			if tt.paths == nil && err != nil {
 				t.Fatalf("Validate() = %v, want nil", err)
 			}
@@ -533,6 +595,92 @@ func TestRedirectMatches(t *testing.T) {
 	}
 }
 
+func TestSitePath(t *testing.T) {
+	const (
+		site = "https://example.com"
+		blog = "https://example.com/blog"
+	)
+	tests := []struct {
+		name string
+		site string
+		to   string
+		want string // "" if to is not in the site
+	}{
+		{name: "path", site: site, to: "https://example.com/about/", want: "/about/"},
+		{name: "root", site: site, to: "https://example.com/", want: "/"},
+		{name: "without a path", site: site, to: "https://example.com", want: "/"},
+		{name: "query", site: site, to: "https://example.com/?p=123", want: "/?p=123"},
+		{name: "query without a path", site: site, to: "https://example.com?p=123", want: "/?p=123"},
+		{name: "query left as it is", site: site, to: "https://example.com/?q=%e4%bc%9a&a", want: "/?q=%e4%bc%9a&a"},
+		{name: "empty query", site: site, to: "https://example.com/about/?", want: "/about/"},
+		{name: "fragment", site: site, to: "https://example.com/about/?a=1#team", want: "/about/?a=1"},
+		{name: "scheme in upper case", site: site, to: "HTTPS://example.com/about/", want: "/about/"},
+		{name: "host in upper case", site: site, to: "https://EXAMPLE.COM/about/", want: "/about/"},
+		{name: "default port", site: site, to: "https://example.com:443/about/", want: "/about/"},
+		{name: "default port with a leading zero", site: site, to: "https://example.com:0443/about/", want: "/about/"},
+		{name: "empty port", site: site, to: "https://example.com:/about/", want: "/about/"},
+		{name: "default port of http", site: "http://example.com", to: "http://example.com:80/about/", want: "/about/"},
+		{name: "port", site: "http://localhost:8080", to: "http://localhost:8080/about/", want: "/about/"},
+		{name: "port with a leading zero", site: "http://localhost:8080", to: "http://localhost:08080/about/", want: "/about/"},
+		{name: "IPv6", site: "https://[::1]:8443", to: "https://[::1]:8443/about/", want: "/about/"},
+		{name: "Japanese", site: site, to: "https://example.com/会社/", want: "/会社/"},
+		{name: "encoded Japanese", site: site, to: "https://example.com/%E4%BC%9A%E7%A4%BE/", want: "/会社/"},
+		{name: "lower case hex", site: site, to: "https://example.com/%e4%bc%9a%e7%a4%be/", want: "/会社/"},
+		{name: "encoded slash", site: site, to: "https://example.com/a%2Fb/", want: "/a%2Fb/"},
+		{name: "encoded slash after Japanese", site: site, to: "https://example.com/会社/a%2Fb/", want: "/会社/a%2Fb/"},
+		{name: "encoded percent", site: site, to: "https://example.com/100%25/", want: "/100%25/"},
+		{name: "space", site: site, to: "https://example.com/a b/", want: "/a%20b/"},
+		{name: "in a site at a path", site: blog, to: "https://example.com/blog/about/", want: "/about/"},
+		{name: "path of the site", site: blog, to: "https://example.com/blog", want: "/"},
+		{name: "path of the site with a trailing slash", site: blog, to: "https://example.com/blog/", want: "/"},
+		{name: "path of the site with a query", site: blog, to: "https://example.com/blog?p=1", want: "/?p=1"},
+		{name: "encoded path of the site", site: blog, to: "https://example.com/%62log/about/", want: "/about/"},
+		{name: "site at a path of two segments", site: "https://example.com/a/b", to: "https://example.com/a/b/c/", want: "/c/"},
+		{
+			name: "site at a Japanese path",
+			site: "https://example.com/ブログ",
+			to:   "https://example.com/%E3%83%96%E3%83%AD%E3%82%B0/about/",
+			want: "/about/",
+		},
+		{
+			name: "site at an encoded Japanese path",
+			site: "https://example.com/%E3%83%96%E3%83%AD%E3%82%B0",
+			to:   "https://example.com/ブログ/about/",
+			want: "/about/",
+		},
+		{
+			name: "site at a Japanese path in lower case hex",
+			site: "https://example.com/ブログ",
+			to:   "https://example.com/%e3%83%96%e3%83%ad%e3%82%b0/about/",
+			want: "/about/",
+		},
+
+		{name: "another scheme", site: site, to: "http://example.com/about/"},
+		{name: "another host", site: site, to: "https://www.example.com/about/"},
+		{name: "another port", site: site, to: "https://example.com:8443/about/"},
+		{name: "default port for a site with a port", site: "http://localhost:8080", to: "http://localhost/about/"},
+		{name: "outside the path of the site", site: blog, to: "https://example.com/about/"},
+		{name: "root outside the path of the site", site: blog, to: "https://example.com/"},
+		{name: "path that starts with the path of the site", site: blog, to: "https://example.com/blogger/about/"},
+		{name: "path of the site in another case", site: blog, to: "https://example.com/Blog/about/"},
+		{name: "encoded slash after the path of the site", site: blog, to: "https://example.com/blog%2Fabout/"},
+		{name: "encoded slash after the Japanese path of the site", site: "https://example.com/ブログ", to: "https://example.com/ブログ%2Fabout/"},
+		{name: "path instead of a URL", site: site, to: "/about/"},
+		{name: "invalid URL", site: site, to: "https://example.com/%zz/"},
+		{name: "empty site URL", site: "", to: "https://example.com/about/"},
+		{name: "invalid site URL", site: "https://example.com/", to: "https://example.com/about/"},
+		{name: "site URL in upper case", site: "https://EXAMPLE.com", to: "https://EXAMPLE.com/about/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := sitePath(tt.site, tt.to)
+			if got != tt.want || ok != (tt.want != "") {
+				t.Errorf("sitePath(%q, %q) = %q, %t, want %q, %t", tt.site, tt.to, got, ok, tt.want, tt.want != "")
+			}
+		})
+	}
+}
+
 // FuzzNormalizeRedirectFrom checks that the canonical form does not change when normalized again,
 // that checkRedirectFrom does not ask to normalize it, and that a valid from matches the request it came from.
 func FuzzNormalizeRedirectFrom(f *testing.F) {
@@ -552,6 +700,24 @@ func FuzzNormalizeRedirectFrom(f *testing.F) {
 		}
 		if err == nil && !redirectMatches(n, s) {
 			t.Fatalf("redirectMatches(%q, %q) = false", n, s)
+		}
+	})
+}
+
+// FuzzSitePath checks that the URL of a valid from in a valid site, the URL of the site followed by from,
+// is a path in the site that from matches, so that a redirect from from to it is reported.
+func FuzzSitePath(f *testing.F) {
+	for _, site := range []string{"https://example.com", "https://example.com/blog", "http://localhost:8080/ブログ"} {
+		for _, from := range []string{"/", "/about/?ref=top", "/会社/", "/a%2Fb/%25", "/cafe" + acute + "/", "/a:b@c/?q=?&r=/", "/%E2%80%AE"} {
+			f.Add(site, from)
+		}
+	}
+	f.Fuzz(func(t *testing.T, site, from string) {
+		if checkSiteURL(site) != nil || checkRedirectFrom(from) != nil || checkHref(site+from) != nil {
+			t.Skip()
+		}
+		if p, ok := sitePath(site, site+from); !ok || !redirectMatches(from, p) {
+			t.Fatalf("sitePath(%q, %q) = %q, %t, which %q does not match", site, site+from, p, ok, from)
 		}
 	})
 }

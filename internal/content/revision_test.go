@@ -1,6 +1,7 @@
 package content
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"reflect"
@@ -584,6 +585,110 @@ func TestRevisionValidate(t *testing.T) {
 				tt.opts(&opts)
 			}
 			assertRevisionValidate(t, mustRevision(t, tt.in), opts, tt.paths, tt.msg)
+		})
+	}
+}
+
+// TestRevisionValidateCategory checks that publishing an entry needs a category if the URL rule of its type has {category}.
+func TestRevisionValidateCategory(t *testing.T) {
+	// site returns testSite with postRule and worksRule as the URL rules of post and works ("" for the default),
+	// and works using category if useCategory is true.
+	site := func(postRule, worksRule string, useCategory bool) *Site {
+		s := testSite()
+		for i := range s.Types {
+			switch d := &s.Types[i]; d.Name {
+			case TypePost:
+				d.URL = postRule
+			case "works":
+				d.URL = worksRule
+				if useCategory {
+					d.Taxonomies = append(d.Taxonomies, TaxonomyCategory)
+				}
+			}
+		}
+		return s
+	}
+	byCategory := site("/{category}/{slug}/", "/works/{category}/{slug}/", true)
+	defaults := site("", "", true)
+	assertValidSite(t, byCategory)
+	assertValidSite(t, defaults)
+	const (
+		missingPost  = `/terms/category: missing category; the URL rule "/{category}/{slug}/" of post needs one`
+		missingWorks = `/terms/category: missing category; the URL rule "/works/{category}/{slug}/" of works needs one`
+	)
+	post := Revision{Title: "t", Slug: "s", Date: "2026-10-25T10:00:00+09:00"}
+	works := Revision{Title: "t", Slug: "s", Fields: Fields{"client": jsontext.Value(`"c"`)}}
+	// withTerms returns r with terms.
+	withTerms := func(r Revision, terms Terms) Revision {
+		r.Terms = terms
+		return r
+	}
+	tests := []struct {
+		name    string
+		site    *Site // byCategory if nil
+		typ     string
+		in      Revision
+		publish bool
+		paths   []string
+		msg     string // part of the error text, a "path: message" line for each problem; not checked if ""
+	}{
+		{name: "post without a category", typ: TypePost, in: post, publish: true, paths: []string{"/terms/category"}, msg: missingPost},
+		{name: "post with a category", typ: TypePost, in: withTerms(post, Terms{TaxonomyCategory: {testCategory}}), publish: true},
+		{name: "draft post without a category", typ: TypePost, in: post},
+		{
+			name:    "post with empty categories",
+			typ:     TypePost,
+			in:      withTerms(post, Terms{TaxonomyCategory: {}}),
+			publish: true,
+			paths:   []string{"/terms/category"},
+			msg:     "/terms/category: empty value; omit it",
+		},
+		{
+			// In the order of the taxonomies of post, which starts with category.
+			name:    "post with only a tag",
+			typ:     TypePost,
+			in:      withTerms(post, Terms{TaxonomyTag: {testEnglishTag}}),
+			publish: true,
+			paths:   []string{"/terms/category", "/terms/tag/0"},
+			msg:     missingPost + "\n" + `/terms/tag/0: term "` + testEnglishTag + `" is in the language "en", not "ja"`,
+		},
+		{name: "post without a category in the default rule", site: defaults, typ: TypePost, in: post, publish: true},
+		{name: "page", typ: TypePage, in: Revision{Title: "t", Slug: "s"}, publish: true},
+
+		{name: "custom type without a category", typ: "works", in: works, publish: true, paths: []string{"/terms/category"}, msg: missingWorks},
+		{name: "custom type with a category", typ: "works", in: withTerms(works, Terms{TaxonomyCategory: {testCategory}}), publish: true},
+		{name: "draft of a custom type without a category", typ: "works", in: works},
+		{
+			name:    "custom type with empty categories",
+			typ:     "works",
+			in:      withTerms(works, Terms{TaxonomyCategory: nil}),
+			publish: true,
+			paths:   []string{"/terms/category"},
+			msg:     "/terms/category: empty value; omit it",
+		},
+		{
+			// In the order of the taxonomies of works, which ends with category.
+			name:    "custom type with only its own taxonomy",
+			typ:     "works",
+			in:      withTerms(works, Terms{"works_category": {testTag}}),
+			publish: true,
+			paths:   []string{"/terms/works_category/0", "/terms/category"},
+			msg:     `/terms/works_category/0: term "` + testTag + `" is in the taxonomy "tag", not "works_category"` + "\n" + missingWorks,
+		},
+		{name: "custom type without a category in the default rule", site: defaults, typ: "works", in: works, publish: true},
+		{
+			// The site is invalid: the rule cannot have {category} without category, which the entry cannot have either.
+			name:    "custom type without category",
+			site:    site("", "/works/{category}/{slug}/", false),
+			typ:     "works",
+			in:      works,
+			publish: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RevisionOptions{Site: cmp.Or(tt.site, byCategory), Entry: testEntry(tt.typ), Publish: tt.publish, Lookup: testLookup}
+			assertRevisionValidate(t, tt.in, opts, tt.paths, tt.msg)
 		})
 	}
 }

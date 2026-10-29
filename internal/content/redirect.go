@@ -81,18 +81,20 @@ func (x *Redirect) Normalize() {
 // The caller chooses among the redirects that match the same request.
 func (x Redirect) Matches(target string) bool { return redirectMatches(x.From, target) }
 
-// Validate checks x. Every item is required.
+// Validate checks x in site. Every item is required. To must not lead back to From, as a path or as a URL in the site,
+// such as "https://example.com/about/" for "/about/" in the site at "https://example.com"; URLs are not compared if
+// site.URL is invalid.
 // lookup tells about the entry, term, author or medium of To as ValidateOptions.Lookup does; nil skips checking that it exists.
-func (x Redirect) Validate(lookup func(kind RefKind, id string) (Ref, bool)) error {
+func (x Redirect) Validate(site *Site, lookup func(kind RefKind, id string) (Ref, bool)) error {
 	c := checker{doc: &docState{opts: ValidateOptions{Lookup: lookup}}}
-	x.check(&c)
+	x.check(&c, site)
 	return c.result()
 }
 
-func (x Redirect) check(c *checker) {
+func (x Redirect) check(c *checker, site *Site) {
 	c.required("id", x.ID, func(s string) error { return checkID(RefRedirect, s) })
 	c.required("from", x.From, checkRedirectFrom)
-	x.checkTo(c)
+	x.checkTo(c, site)
 	if x.Status == 0 {
 		c.addf("/status", "missing status")
 	} else {
@@ -103,14 +105,14 @@ func (x Redirect) check(c *checker) {
 // redirectTargets are the kinds of entities that redirects can go to, in the order that the message of checkTo lists them.
 var redirectTargets = []RefKind{RefEntry, RefTerm, RefAuthor, RefMedia}
 
-func (x Redirect) checkTo(c *checker) {
+func (x Redirect) checkTo(c *checker, site *Site) {
 	// Classified in the normalized form, so that " /about/" is reported as not normalized, not as an invalid target.
 	t := normalizeHref(x.To)
 	switch {
 	case x.To == "":
 		c.addf("/to", "missing to")
 	case strings.HasPrefix(t, "/") || strings.Contains(t, ":"):
-		c.add("/to", x.checkURL())
+		c.add("/to", x.checkURL(site))
 	default:
 		for _, kind := range redirectTargets {
 			if strings.HasPrefix(t, idPrefixes[kind]) {
@@ -123,21 +125,72 @@ func (x Redirect) checkTo(c *checker) {
 	}
 }
 
-// checkURL checks To, a path in the site or a URL, which must not lead back to From.
-func (x Redirect) checkURL() error {
+// checkURL checks To, a path in the site or a URL, which must not lead back to From, even as a URL in site.
+func (x Redirect) checkURL(site *Site) error {
 	if err := checkHref(x.To); err != nil {
 		return err
 	}
+	target, inSite := x.To, true
 	switch u, _ := url.Parse(x.To); u.Scheme {
 	case "http", "https":
+		target, inSite = sitePath(site.URL, x.To)
 	case "":
-		if checkRedirectFrom(x.From) == nil && redirectMatches(x.From, x.To) {
-			return errors.New("redirects to itself")
-		}
 	default:
 		return errors.New(`must be a path starting with "/" or an http or https URL`)
 	}
+	if inSite && checkRedirectFrom(x.From) == nil && redirectMatches(x.From, target) {
+		return errors.New("redirects to itself")
+	}
 	return nil
+}
+
+// sitePath returns to, an http or https URL, as a path in the site at siteURL with its query, such as "/about/?ref=top"
+// for "https://example.com/blog/about/?ref=top" in the site at "https://example.com/blog". ok is false if to is outside
+// the site or siteURL is invalid.
+func sitePath(siteURL, to string) (path string, ok bool) {
+	if checkSiteURL(siteURL) != nil {
+		return "", false
+	}
+	s, _ := url.Parse(siteURL)
+	u, err := url.Parse(to)
+	if err != nil || u.Scheme != s.Scheme || !strings.EqualFold(u.Hostname(), s.Hostname()) || urlPort(u) != urlPort(s) {
+		return "", false
+	}
+	base, path := canonicalPath(s), canonicalPath(u)
+	switch {
+	case path == base:
+		path = "/"
+	case strings.HasPrefix(path, base+"/"):
+		path = path[len(base):]
+	default:
+		return "", false
+	}
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+	return path, true
+}
+
+// canonicalPath returns the path of u, from url.Parse, in the canonical form of from, as redirectMatches compares
+// paths: "/会" for "/%e4%bc%9a". It starts from RawPath: EscapedPath decodes "%2F" in paths such as "/会社/a%2Fb".
+func canonicalPath(u *url.URL) string {
+	return canonicalPart(cmp.Or(u.RawPath, u.EscapedPath()), false)
+}
+
+// urlPort returns the port of u, an http or https URL, as browsers read it: 443 for "https://example.com:0443" and
+// "https://example.com".
+func urlPort(u *url.URL) int {
+	if u.Port() == "" {
+		if u.Scheme == "http" {
+			return 80
+		}
+		return 443
+	}
+	n, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 func checkRedirectStatus(v int) error {
