@@ -12,4 +12,8 @@ const (
 
 	MaxMenuDepth = 8    // nesting depth of menu items; top-level items are at depth 1
 	MaxMenuItems = 1000 // items in a menu, at any depth
+
+	MaxFormFields      = 100  // fields in a form
+	MaxFormOptions     = 1000 // options of a field
+	MaxNotifyAddresses = 10   // email addresses that a form notifies
 )
