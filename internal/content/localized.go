@@ -64,14 +64,25 @@ func (x Localized) checkRequired(c *checker, path, key string, site *Site, multi
 
 // checkTexts checks x as check does, and reports the languages of site without a text if required.
 func (x Localized) checkTexts(c *checker, path string, site *Site, multiline, required bool) {
+	x.checkValues(c, path, site, required, func(p, _, s string) {
+		if multiline {
+			c.add(p, checkText(s, true))
+		} else {
+			c.add(p, checkLine(s))
+		}
+	})
+}
+
+// checkValues checks the value of each language of site in x at path with check, which gets the path and the language
+// of the value, and reports the empty values, or the languages without a value if required. The languages that site
+// does not have are reported in sorted order after the others, without checking their values.
+func (x Localized) checkValues(c *checker, path string, site *Site, required bool, check func(path, language, v string)) {
 	for _, language := range site.Languages {
-		s, ok := x[language]
+		v, ok := x[language]
 		p := path + "/" + escapePointer(language)
 		switch {
-		case s != "" && multiline:
-			c.add(p, checkText(s, true))
-		case s != "":
-			c.add(p, checkLine(s))
+		case v != "":
+			check(p, language, v)
 		case required:
 			c.addf(p, "missing value; every language of the site needs one")
 		case ok:

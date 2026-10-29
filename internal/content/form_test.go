@@ -5,6 +5,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -417,6 +418,555 @@ func TestFormNormalize(t *testing.T) {
 			got.Normalize()
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Normalize() of %#v = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormValidate(t *testing.T) {
+	const (
+		ctrl     = string(rune(0x0001))
+		missing  = "missing value; every language of the site needs one"
+		reserved = `start with an ASCII letter (names starting with "_" are reserved)`
+		types    = "(use text, email, tel, textarea, select, radio, checkbox, consent)"
+	)
+	// form returns x changed by f, which gets a deep copy of x.
+	form := func(x Form, f func(x *Form)) Form {
+		x = cloneForm(x)
+		f(&x)
+		return x
+	}
+	// fields returns the contact form with fs for its fields.
+	fields := func(fs ...FormField) Form {
+		return form(contactForm, func(x *Form) { x.Fields = fs })
+	}
+	// thanksPage returns the contact form with the message in ja only and id for the thanks page in en.
+	thanksPage := func(id string) Form {
+		return form(contactForm, func(x *Form) {
+			delete(x.Message, "en")
+			x.ThanksPage = Localized{"en": id}
+		})
+	}
+	label := Localized{"en": "Item", "ja": "項目"}
+	// textFields returns n text fields with different names.
+	textFields := func(n int) []FormField {
+		fs := make([]FormField, n)
+		for i := range fs {
+			fs[i] = FormField{Name: "item" + strconv.Itoa(i+1), Type: FormText, Label: label}
+		}
+		return fs
+	}
+	// choices returns n options with different values.
+	choices := func(n int) []FormOption {
+		opts := make([]FormOption, n)
+		for i := range opts {
+			v := strconv.Itoa(i + 1)
+			opts[i] = FormOption{Value: v, Label: Localized{"en": v, "ja": v}}
+		}
+		return opts
+	}
+	// addresses returns n different email addresses.
+	addresses := func(n int) []string {
+		as := make([]string, n)
+		for i := range as {
+			as[i] = "info" + strconv.Itoa(i+1) + "@example.com"
+		}
+		return as
+	}
+	tests := []struct {
+		name     string
+		in       Form
+		noLookup bool // validate without lookup
+		paths    []string
+		msg      string // part of the error text, a "path: message" line for each problem; not checked if ""
+	}{
+		{name: "contact form", in: contactForm},
+		{name: "contact form without lookup", in: contactForm, noLookup: true},
+		{
+			name: "required items only",
+			in: Form{
+				ID:      testForm,
+				Title:   "お問い合わせ",
+				Fields:  []FormField{{Name: "your-email", Type: FormEmail, Label: Localized{"en": "Email", "ja": "メールアドレス"}}},
+				Message: Localized{"en": "Thank you.", "ja": "ありがとうございます。"},
+			},
+		},
+		{
+			name:  "missing items",
+			in:    Form{},
+			paths: []string{"/id", "/title", "/fields", "/message"},
+			msg:   "/id: missing id\n/title: missing title\n/fields: missing fields\n/message: missing message or thanksPage",
+		},
+		{
+			// The errors are in document order.
+			name: "invalid items",
+			in: Form{
+				ID:    testAboutPage,
+				Title: "a\tb",
+				Fields: []FormField{
+					{Name: "_honeypot", Type: "hidden", Label: Localized{"ja": "c"}},
+					{
+						Name:      "privacy",
+						Type:      FormConsent,
+						Label:     Localized{"en": "d\ne", "ja": "f"},
+						Required:  true,
+						MinLength: 1,
+						Options:   []FormOption{{Value: "yes"}},
+						Policy:    Localized{"ja": testEnglishPrivacyPage},
+					},
+				},
+				Message:    Localized{"ja": "g" + ctrl},
+				ThanksPage: Localized{"ja": testAboutPage},
+				Notify:     []string{"info@localhost"},
+			},
+			paths: []string{
+				"/id", "/title", "/fields/0/name", "/fields/0/type", "/fields/0/label/en", "/fields/1/label/en",
+				"/fields/1/required", "/fields/1/minLength", "/fields/1/options", "/fields/1/policy/ja",
+				"/message/ja", "/message/en", "/thanksPage/ja", "/notify/0",
+			},
+			msg: `/id: invalid form ID "` + testAboutPage + `": use "frm_" and a ULID (26 characters in upper case)` + "\n" +
+				"/title: contains a line break or tab\n" +
+				`/fields/0/name: invalid field name "_honeypot": ` + reserved + "\n" +
+				`/fields/0/type: unknown field type "hidden" ` + types + "\n" +
+				"/fields/0/label/en: " + missing + "\n" +
+				"/fields/1/label/en: contains a line break or tab\n" +
+				"/fields/1/required: not allowed for consent, which is always required\n" +
+				"/fields/1/minLength: not allowed for consent fields\n" +
+				"/fields/1/options: not allowed for consent fields\n" +
+				`/fields/1/policy/ja: entry "` + testEnglishPrivacyPage + `" is in the language "en", not "ja"` + "\n" +
+				"/message/ja: contains control characters; normalize it first\n" +
+				"/message/en: missing message or thanksPage in en\n" +
+				"/thanksPage/ja: cannot be combined with message in ja\n" +
+				`/notify/0: invalid email address "info@localhost": the domain needs a dot`,
+		},
+		{
+			name:  "ID of another kind",
+			in:    form(contactForm, func(x *Form) { x.ID = testAboutPage }),
+			paths: []string{"/id"},
+			msg:   `/id: invalid form ID "` + testAboutPage + `": use "frm_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			name:  "line break in the title",
+			in:    form(contactForm, func(x *Form) { x.Title = "お問い合わせ\nフォーム" }),
+			paths: []string{"/title"},
+			msg:   "/title: contains a line break or tab",
+		},
+		{
+			name:  "title not in NFC",
+			in:    form(contactForm, func(x *Form) { x.Title = "cafe" + acute }),
+			paths: []string{"/title"},
+			msg:   "/title: not in Unicode NFC; normalize it first",
+		},
+
+		{name: "most fields", in: fields(textFields(MaxFormFields)...)},
+		{
+			name:  "too many fields",
+			in:    fields(textFields(MaxFormFields + 1)...),
+			paths: []string{"/fields"},
+			msg:   "/fields: too many fields (101; max 100)",
+		},
+		{
+			// The fields after the limit are checked too.
+			name:  "invalid field after the limit",
+			in:    fields(append(textFields(MaxFormFields), FormField{})...),
+			paths: []string{"/fields", "/fields/100/name", "/fields/100/type", "/fields/100/label"},
+			msg: "/fields: too many fields (101; max 100)\n" +
+				"/fields/100/name: missing name\n/fields/100/type: missing type\n/fields/100/label: missing label",
+		},
+		{name: "name with digits, hyphens and underscores", in: form(contactForm, func(x *Form) { x.Fields[0].Name = "your_name-2" })},
+		{name: "names in another case", in: form(contactForm, func(x *Form) { x.Fields[2].Name = "Your-Name" })},
+		{
+			name:  "missing name",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "" }),
+			paths: []string{"/fields/0/name"},
+			msg:   "/fields/0/name: missing name",
+		},
+		{
+			name:  "name starting with an underscore",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "_name" }),
+			paths: []string{"/fields/0/name"},
+			msg:   `/fields/0/name: invalid field name "_name": ` + reserved,
+		},
+		{
+			name:  "name starting with a digit",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "1st-name" }),
+			paths: []string{"/fields/0/name"},
+			msg:   `/fields/0/name: invalid field name "1st-name": ` + reserved,
+		},
+		{
+			name:  "name starting with a hyphen",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "-name" }),
+			paths: []string{"/fields/0/name"},
+			msg:   `/fields/0/name: invalid field name "-name": ` + reserved,
+		},
+		{
+			name:  "Japanese name",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "お名前" }),
+			paths: []string{"/fields/0/name"},
+			msg:   `/fields/0/name: invalid name "お名前": use ASCII letters, digits, "-" and "_"`,
+		},
+		{
+			name:  "name with a space",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "your name" }),
+			paths: []string{"/fields/0/name"},
+			msg:   `/fields/0/name: invalid name "your name": use ASCII letters, digits, "-" and "_"`,
+		},
+		{
+			name:  "duplicate name",
+			in:    form(contactForm, func(x *Form) { x.Fields[2].Name = "your-name" }),
+			paths: []string{"/fields/2/name"},
+			msg:   `/fields/2/name: duplicate field name "your-name"`,
+		},
+
+		{
+			name: "select and checkbox",
+			in: fields(
+				FormField{Name: "prefecture", Type: FormSelect, Label: label, Required: true, Options: choices(47)},
+				FormField{Name: "services", Type: FormCheckbox, Label: label, Options: choices(3)},
+			),
+		},
+		{
+			// Without a type, which decides the keys that a field can use, the maxLength of the field is not checked.
+			name:  "missing type",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Type = "" }),
+			paths: []string{"/fields/0/type"},
+			msg:   "/fields/0/type: missing type",
+		},
+		{
+			name:  "unknown type",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Type = "color" }),
+			paths: []string{"/fields/0/type"},
+			msg:   `/fields/0/type: unknown field type "color" ` + types,
+		},
+		{
+			name:  "type in upper case",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Type = "Text" }),
+			paths: []string{"/fields/0/type"},
+			msg:   `/fields/0/type: unknown field type "Text" ` + types,
+		},
+		{
+			// Likewise, only the name, the type and the label are checked.
+			name: "keys of an unknown type",
+			in: fields(FormField{
+				Name: "a", Type: "hidden", Label: label, Required: true, MinLength: -1, MaxLength: 3, Options: []FormOption{{}},
+				Policy: Localized{"fr": ""},
+			}),
+			paths: []string{"/fields/0/type"},
+			msg:   `/fields/0/type: unknown field type "hidden" ` + types,
+		},
+
+		{
+			name:  "missing label",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Label = nil }),
+			paths: []string{"/fields/0/label"},
+			msg:   "/fields/0/label: missing label",
+		},
+		{
+			name:  "label without en",
+			in:    form(contactForm, func(x *Form) { delete(x.Fields[0].Label, "en") }),
+			paths: []string{"/fields/0/label/en"},
+			msg:   "/fields/0/label/en: " + missing,
+		},
+		{
+			name:  "empty text in a label",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Label["ja"] = "" }),
+			paths: []string{"/fields/0/label/ja"},
+			msg:   "/fields/0/label/ja: " + missing,
+		},
+		{
+			name:  "label in a language not in the site settings",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Label["fr"] = "Nom" }),
+			paths: []string{"/fields/0/label/fr"},
+			msg:   `/fields/0/label/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "line break in a label",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Label["ja"] = "個人情報の取り扱いに\n同意する" }),
+			paths: []string{"/fields/5/label/ja"},
+			msg:   "/fields/5/label/ja: contains a line break or tab",
+		},
+		{
+			name:  "required consent",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Required = true }),
+			paths: []string{"/fields/5/required"},
+			msg:   "/fields/5/required: not allowed for consent, which is always required",
+		},
+
+		{name: "minLength of a text field", in: form(contactForm, func(x *Form) { x.Fields[0].MinLength = 2 })},
+		{name: "minLength of a textarea field", in: form(contactForm, func(x *Form) { x.Fields[4].MinLength = 10 })},
+		{name: "minLength equal to maxLength", in: form(contactForm, func(x *Form) { x.Fields[0].MinLength = 100 })},
+		{
+			name:  "minLength greater than maxLength",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].MinLength = 101 }),
+			paths: []string{"/fields/0/minLength"},
+			msg:   "/fields/0/minLength: minLength 101 is greater than maxLength 100",
+		},
+		{
+			name:  "negative maxLength",
+			in:    form(contactForm, func(x *Form) { x.Fields[4].MaxLength = -1 }),
+			paths: []string{"/fields/4/maxLength"},
+			msg:   "/fields/4/maxLength: maxLength -1 is negative",
+		},
+		{
+			name:  "minLength of an email field",
+			in:    form(contactForm, func(x *Form) { x.Fields[1].MinLength = 6 }),
+			paths: []string{"/fields/1/minLength"},
+			msg:   "/fields/1/minLength: not allowed for email fields",
+		},
+		{
+			name:  "maxLength of a tel field",
+			in:    form(contactForm, func(x *Form) { x.Fields[2].MaxLength = 20 }),
+			paths: []string{"/fields/2/maxLength"},
+			msg:   "/fields/2/maxLength: not allowed for tel fields",
+		},
+		{
+			name:  "minLength of a select field",
+			in:    fields(FormField{Name: "a", Type: FormSelect, Label: label, MinLength: 1, Options: choices(2)}),
+			paths: []string{"/fields/0/minLength"},
+			msg:   "/fields/0/minLength: not allowed for select fields",
+		},
+
+		{name: "checkbox with one option", in: fields(FormField{Name: "newsletter", Type: FormCheckbox, Label: label, Options: choices(1)})},
+		{
+			name:  "missing options of a select field",
+			in:    fields(FormField{Name: "a", Type: FormSelect, Label: label}),
+			paths: []string{"/fields/0/options"},
+			msg:   "/fields/0/options: missing options",
+		},
+		{
+			name:  "missing options of a radio field",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options = nil }),
+			paths: []string{"/fields/3/options"},
+			msg:   "/fields/3/options: missing options",
+		},
+		{
+			name:  "missing options of a checkbox field",
+			in:    fields(FormField{Name: "a", Type: FormCheckbox, Label: label}),
+			paths: []string{"/fields/0/options"},
+			msg:   "/fields/0/options: missing options",
+		},
+		{
+			name:  "options of a text field",
+			in:    form(contactForm, func(x *Form) { x.Fields[0].Options = choices(2) }),
+			paths: []string{"/fields/0/options"},
+			msg:   "/fields/0/options: not allowed for text fields",
+		},
+		{name: "most options", in: form(contactForm, func(x *Form) { x.Fields[3].Options = choices(MaxFormOptions) })},
+		{
+			name:  "too many options",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options = choices(MaxFormOptions + 1) }),
+			paths: []string{"/fields/3/options"},
+			msg:   "/fields/3/options: too many options (1001; max 1000)",
+		},
+		{name: "Japanese value", in: form(contactForm, func(x *Form) { x.Fields[3].Options[0].Value = "お見積もり" })},
+		{
+			name:  "missing value",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[1].Value = "" }),
+			paths: []string{"/fields/3/options/1/value"},
+			msg:   "/fields/3/options/1/value: missing value",
+		},
+		{
+			name:  "duplicate value",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[2].Value = "quote" }),
+			paths: []string{"/fields/3/options/2/value"},
+			msg:   `/fields/3/options/2/value: duplicate option "quote"`,
+		},
+		{
+			name:  "line break in a value",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[0].Value = "quote\n" }),
+			paths: []string{"/fields/3/options/0/value"},
+			msg:   "/fields/3/options/0/value: contains a line break or tab",
+		},
+		{
+			name:  "missing label of an option",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[1].Label = nil }),
+			paths: []string{"/fields/3/options/1/label"},
+			msg:   "/fields/3/options/1/label: missing label",
+		},
+		{
+			name:  "label of an option without en",
+			in:    form(contactForm, func(x *Form) { delete(x.Fields[3].Options[1].Label, "en") }),
+			paths: []string{"/fields/3/options/1/label/en"},
+			msg:   "/fields/3/options/1/label/en: " + missing,
+		},
+
+		{name: "consent without a policy", in: form(contactForm, func(x *Form) { x.Fields[5].Policy = nil })},
+		{name: "policy in one language", in: form(contactForm, func(x *Form) { delete(x.Fields[5].Policy, "en") })},
+		{
+			name:  "policies in the other languages",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Policy = Localized{"en": testPrivacyPage, "ja": testEnglishPrivacyPage} }),
+			paths: []string{"/fields/5/policy/ja", "/fields/5/policy/en"},
+			msg: `/fields/5/policy/ja: entry "` + testEnglishPrivacyPage + `" is in the language "en", not "ja"` + "\n" +
+				`/fields/5/policy/en: entry "` + testPrivacyPage + `" is in the language "ja", not "en"`,
+		},
+		{
+			name:     "policies in the other languages without lookup",
+			in:       form(contactForm, func(x *Form) { x.Fields[5].Policy = Localized{"en": testPrivacyPage, "ja": testEnglishPrivacyPage} }),
+			noLookup: true,
+		},
+		{
+			name:  "policy that does not exist",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Policy["en"] = "ent_" + testMissing }),
+			paths: []string{"/fields/5/policy/en"},
+			msg:   `/fields/5/policy/en: entry "ent_` + testMissing + `" does not exist`,
+		},
+		{
+			name:     "policy that does not exist without lookup",
+			in:       form(contactForm, func(x *Form) { x.Fields[5].Policy["en"] = "ent_" + testMissing }),
+			noLookup: true,
+		},
+		{
+			name:  "policy of another kind",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Policy["ja"] = testForm }),
+			paths: []string{"/fields/5/policy/ja"},
+			msg:   `/fields/5/policy/ja: invalid entry ID "` + testForm + `": use "ent_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			name:     "policy of another kind without lookup",
+			in:       form(contactForm, func(x *Form) { x.Fields[5].Policy["ja"] = testForm }),
+			noLookup: true,
+			paths:    []string{"/fields/5/policy/ja"},
+			msg:      `/fields/5/policy/ja: invalid entry ID "` + testForm + `"`,
+		},
+		{
+			name:  "policy in a language not in the site settings",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Policy["fr"] = testPrivacyPage }),
+			paths: []string{"/fields/5/policy/fr"},
+			msg:   `/fields/5/policy/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "empty policy",
+			in:    form(contactForm, func(x *Form) { x.Fields[5].Policy["en"] = "" }),
+			paths: []string{"/fields/5/policy/en"},
+			msg:   "/fields/5/policy/en: empty value; omit it",
+		},
+		{
+			name:  "policy of an email field",
+			in:    form(contactForm, func(x *Form) { x.Fields[1].Policy = Localized{"ja": testPrivacyPage} }),
+			paths: []string{"/fields/1/policy"},
+			msg:   "/fields/1/policy: not allowed for email fields",
+		},
+
+		{
+			name: "thanks pages only",
+			in: form(contactForm, func(x *Form) {
+				x.Message, x.ThanksPage = nil, Localized{"en": testEnglishPage, "ja": testAboutPage}
+			}),
+		},
+		{name: "message in ja and thanks page in en", in: thanksPage(testEnglishPage)},
+		{
+			name:  "message and thanks page in the same language",
+			in:    form(contactForm, func(x *Form) { x.ThanksPage = Localized{"ja": testAboutPage} }),
+			paths: []string{"/thanksPage/ja"},
+			msg:   "/thanksPage/ja: cannot be combined with message in ja",
+		},
+		{
+			name:  "missing message in en",
+			in:    form(contactForm, func(x *Form) { delete(x.Message, "en") }),
+			paths: []string{"/message/en"},
+			msg:   "/message/en: missing message or thanksPage in en",
+		},
+		{
+			name:  "missing message and thanks page",
+			in:    form(contactForm, func(x *Form) { x.Message = nil }),
+			paths: []string{"/message"},
+			msg:   "/message: missing message or thanksPage",
+		},
+		{
+			// The message in fr counts for no language of the site.
+			name:  "message only in a language not in the site settings",
+			in:    form(contactForm, func(x *Form) { x.Message = Localized{"fr": "Merci."} }),
+			paths: []string{"/message/fr", "/message/ja", "/message/en"},
+			msg: `/message/fr: language "fr" is not in the site settings (use ja, en)` + "\n" +
+				"/message/ja: missing message or thanksPage in ja\n/message/en: missing message or thanksPage in en",
+		},
+		{
+			name:  "thanks page in another language",
+			in:    thanksPage(testAboutPage),
+			paths: []string{"/thanksPage/en"},
+			msg:   `/thanksPage/en: entry "` + testAboutPage + `" is in the language "ja", not "en"`,
+		},
+		{
+			name:  "thanks page that does not exist",
+			in:    thanksPage("ent_" + testMissing),
+			paths: []string{"/thanksPage/en"},
+			msg:   `/thanksPage/en: entry "ent_` + testMissing + `" does not exist`,
+		},
+		{name: "thanks page that does not exist without lookup", in: thanksPage("ent_" + testMissing), noLookup: true},
+		{
+			name:  "thanks page of another kind",
+			in:    thanksPage(testForm),
+			paths: []string{"/thanksPage/en"},
+			msg:   `/thanksPage/en: invalid entry ID "` + testForm + `"`,
+		},
+		{
+			// An empty value counts as no thanks page.
+			name:  "empty thanks page",
+			in:    thanksPage(""),
+			paths: []string{"/message/en", "/thanksPage/en"},
+			msg:   "/message/en: missing message or thanksPage in en\n/thanksPage/en: empty value; omit it",
+		},
+		{name: "tab in the message", in: form(contactForm, func(x *Form) { x.Message["en"] = "Thank you.\tWe will reply soon.\n" })},
+		{
+			name:  "message not in NFC",
+			in:    form(contactForm, func(x *Form) { x.Message["en"] = "cafe" + acute }),
+			paths: []string{"/message/en"},
+			msg:   "/message/en: not in Unicode NFC; normalize it first",
+		},
+		{
+			name:  "CR in the message",
+			in:    form(contactForm, func(x *Form) { x.Message["ja"] = "a\r\nb" }),
+			paths: []string{"/message/ja"},
+			msg:   "/message/ja: contains control characters; normalize it first",
+		},
+
+		{name: "without notify", in: form(contactForm, func(x *Form) { x.Notify = nil })},
+		{name: "most addresses", in: form(contactForm, func(x *Form) { x.Notify = addresses(MaxNotifyAddresses) })},
+		{
+			name:  "too many addresses",
+			in:    form(contactForm, func(x *Form) { x.Notify = addresses(MaxNotifyAddresses + 1) }),
+			paths: []string{"/notify"},
+			msg:   "/notify: too many addresses (11; max 10)",
+		},
+		{
+			name:  "address without a dot in the domain",
+			in:    form(contactForm, func(x *Form) { x.Notify = []string{"info@localhost"} }),
+			paths: []string{"/notify/0"},
+			msg:   `/notify/0: invalid email address "info@localhost": the domain needs a dot`,
+		},
+		{
+			name:  "upper case in the domain",
+			in:    form(contactForm, func(x *Form) { x.Notify = []string{"info@example.com", "sales@Example.com"} }),
+			paths: []string{"/notify/1"},
+			msg:   `/notify/1: invalid email address "sales@Example.com": upper case in the domain; normalize it first`,
+		},
+		{
+			name:  "duplicate address",
+			in:    form(contactForm, func(x *Form) { x.Notify = []string{"info@example.com", "sales@example.com", "info@example.com"} }),
+			paths: []string{"/notify/2"},
+			msg:   `/notify/2: duplicate address "info@example.com"`,
+		},
+		{
+			// The local part is case-sensitive.
+			name: "addresses in another case",
+			in:   form(contactForm, func(x *Form) { x.Notify = []string{"info@example.com", "Info@example.com"} }),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookup := testLookup
+			if tt.noLookup {
+				lookup = nil
+			}
+			err := tt.in.Validate(testSite(), lookup)
+			if tt.paths == nil && err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+			if got := errorPaths(t, err); !reflect.DeepEqual(got, tt.paths) {
+				t.Errorf("Validate() paths = %q, want %q", got, tt.paths)
+			}
+			if tt.msg != "" {
+				assertErrorMsg(t, err, tt.msg)
 			}
 		})
 	}
