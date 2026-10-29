@@ -86,6 +86,9 @@ func webpProbeTests() []probeTest {
 	img := func(w, h int) Info {
 		return Info{MIMEType: WebP, Width: w, Height: h, Orientation: 1}
 	}
+	oriented := func(w, h, o int) Info {
+		return Info{MIMEType: WebP, Width: w, Height: h, Orientation: o}
+	}
 	vp8 := riffChunk("VP8 ", vp8Frame(300, 200))
 	vp8l := riffChunk("VP8L", vp8lStream(vp8lBits(3, 2)))
 	anim := riffChunk("ANIM", []byte{0xff, 0xff, 0xff, 0xff, 0, 0}) // a white background, looping forever
@@ -93,6 +96,9 @@ func webpProbeTests() []probeTest {
 	animation := func(w, h int) []byte {
 		return webpFile(riffChunk("VP8X", vp8xData(vp8xAnimation, w, h)), anim, frame)
 	}
+	vp8xWithEXIF := riffChunk("VP8X", vp8xData(vp8xEXIF, 3, 2))
+	exif := riffChunk("EXIF", exifData(le, 6))
+	xmp := riffChunk("XMP ", []byte("<x:xmpmeta/>"))
 	// The largest RIFF size, 2^32-10, for a VP8 chunk cut after the header, as Probe does not read image data.
 	huge := patch(webpFile(vp8), 4, le32(4+8+0xffffffea)...)
 	huge = patch(huge, 16, le32(0xffffffea)...)
@@ -164,6 +170,58 @@ func webpProbeTests() []probeTest {
 		{name: "WebP VP8X animation 255x16777216", data: animation(255, 1<<24), want: img(255, 1<<24)},
 		{name: "WebP VP8X animation of 4294967295 pixels", data: animation(65537, 65535), want: img(65537, 65535)},
 		{name: "WebP with data after the RIFF chunk", data: append(webpFile(vp8l), "trailing data"...), want: img(3, 2)},
+		{name: "WebP VP8X with EXIF after the image data", data: webpFile(vp8xWithEXIF, vp8l, exif), want: oriented(2, 3, 6)},
+		{
+			name: "WebP VP8X with EXIF before the image data",
+			data: webpFile(vp8xWithEXIF, riffChunk("EXIF", exifData(be, 8)), vp8l),
+			want: oriented(2, 3, 8),
+		},
+		{
+			name: "WebP VP8X with EXIF of odd size before the image data",
+			data: webpFile(vp8xWithEXIF, riffChunk("EXIF", append(exifData(le, 5), 0)), vp8l),
+			want: oriented(2, 3, 5),
+		},
+		{
+			name: "WebP VP8X with EXIF with the Exif ID code",
+			data: webpFile(vp8xWithEXIF, vp8l, riffChunk("EXIF", append([]byte(exifHeader), exifData(le, 6)...))),
+			want: oriented(2, 3, 6),
+		},
+		{
+			name: "WebP VP8X with EXIF without the flag",
+			data: webpFile(riffChunk("VP8X", vp8xData(vp8xXMP, 3, 2)), vp8l, exif, xmp),
+			want: img(3, 2),
+		},
+		{
+			name: "WebP VP8X with EXIF before the image data without the flag",
+			data: webpFile(riffChunk("VP8X", vp8xData(vp8xXMP, 3, 2)), exif, xmp, vp8l),
+			want: img(3, 2),
+		},
+		{name: "WebP VP8X with the EXIF flag without EXIF", data: webpFile(vp8xWithEXIF, vp8l, xmp), want: img(3, 2)},
+		{name: "WebP VP8X with an empty EXIF", data: webpFile(vp8xWithEXIF, vp8l, riffChunk("EXIF", nil)), want: img(3, 2)},
+		{
+			name: "WebP VP8X with two EXIF chunks",
+			data: webpFile(vp8xWithEXIF, vp8l, riffChunk("EXIF", exifData(le, 3)), exif),
+			want: oriented(3, 2, 3),
+		},
+		{
+			name: "WebP VP8X with ICCP, ALPH, VP8, EXIF and XMP",
+			data: webpFile(
+				riffChunk("VP8X", vp8xData(vp8xICC|vp8xAlpha|vp8xEXIF|vp8xXMP, 300, 200)),
+				riffChunk("ICCP", []byte("not an ICC profile")),
+				riffChunk("ALPH", []byte("\x00not alpha data")),
+				vp8,
+				riffChunk("EXIF", exifData(be, 7)),
+				xmp,
+			),
+			want: oriented(200, 300, 7),
+		},
+		{
+			name: "WebP VP8X animation with EXIF",
+			data: webpFile(riffChunk("VP8X", vp8xData(vp8xAnimation|vp8xEXIF, 5, 4)), anim, frame, exif),
+			want: oriented(4, 5, 6),
+		},
+		{name: "WebP VP8 with EXIF", data: webpFile(vp8, exif), want: img(300, 200)},
+		{name: "WebP VP8L with EXIF", data: webpFile(vp8l, exif), want: img(3, 2)},
 	}
 }
 
@@ -186,6 +244,7 @@ func webpInvalidTests() []errorTest {
 	frame := riffChunk("ANMF", anmfData(0, 0, 3, 2, vp8l))
 	iccp := riffChunk("ICCP", make([]byte, 100))
 	next := riffChunk("XYZW", []byte("next chunk"))
+	exifFile := webpFile(riffChunk("VP8X", vp8xData(vp8xEXIF, 3, 2)), vp8l, riffChunk("EXIF", exifData(le, 6)))
 	const noImage = "invalid WebP: no image chunk"
 	const cut = "invalid WebP: unexpected EOF"
 	tests := []errorTest{
@@ -313,6 +372,23 @@ func webpInvalidTests() []errorTest {
 			data: webpFile(riffChunk("VP8X", vp8xData(vp8xAnimation, 1<<24, 1<<24)), anim, frame),
 			msg:  "invalid WebP: canvas too large (16777216x16777216)",
 		},
+		// With the EXIF flag, Probe reads the chunks after the image data.
+		{name: "WebP VP8X image data cut with the EXIF flag", data: exifFile[:12+18+8+10], msg: cut, is: io.ErrUnexpectedEOF},
+		{name: "WebP VP8X EXIF cut", data: exifFile[:len(exifFile)-10], msg: cut, is: io.ErrUnexpectedEOF},
+		{
+			name: "WebP VP8X EXIF of 4 GiB cut",
+			data: slices.Concat(
+				[]byte("RIFF"), le32(4+18+28+8+0xffffff00), []byte("WEBP"),
+				riffChunk("VP8X", vp8xData(vp8xEXIF, 3, 2)), vp8l, []byte("EXIF"), le32(0xffffff00), exifData(le, 6),
+			),
+			msg: cut,
+			is:  io.ErrUnexpectedEOF,
+		},
+		{
+			name: "WebP VP8X chunk after the image data larger than the RIFF size with the EXIF flag",
+			data: patch(webpFile(riffChunk("VP8X", vp8xData(vp8xEXIF, 3, 2)), vp8l, next), 4, le32(4+18+28+8+5)...),
+			msg:  `invalid WebP: "XYZW" chunk of 10 bytes exceeds the RIFF size`,
+		},
 	}
 	for i := range 3 {
 		tests = append(tests, errorTest{
@@ -368,6 +444,12 @@ func TestProbeWebPLargeChunk(t *testing.T) {
 	vp8l := riffChunk("VP8L", vp8lStream(vp8lBits(3, 2)))
 	riffSize := uint32(int64(4+len(vp8x)+8+len(vp8l)) + size)
 	head := slices.Concat([]byte("RIFF"), le32(riffSize), []byte("WEBP"), vp8x, []byte("XYZW"), le32(size))
+	// With the EXIF flag, the chunk comes between the image data and EXIF.
+	exif := riffChunk("EXIF", exifData(le, 6))
+	exifHead := slices.Concat(
+		[]byte("RIFF"), le32(uint32(int64(4+len(vp8x)+len(vp8l)+8+len(exif))+size)), []byte("WEBP"),
+		riffChunk("VP8X", vp8xData(vp8xEXIF, 3, 2)), vp8l, []byte("XYZW"), le32(size),
+	)
 	tests := []struct {
 		name string
 		r    io.Reader
@@ -380,6 +462,12 @@ func TestProbeWebPLargeChunk(t *testing.T) {
 			want: Info{MIMEType: WebP, Width: 3, Height: 2, Orientation: 1},
 		},
 		{name: "cut", r: io.MultiReader(bytes.NewReader(head), &sizedReader{n: size - 1}), is: io.ErrUnexpectedEOF},
+		{
+			name: "before EXIF",
+			r:    io.MultiReader(bytes.NewReader(exifHead), &sizedReader{n: size}, bytes.NewReader(exif)),
+			want: Info{MIMEType: WebP, Width: 2, Height: 3, Orientation: 6},
+		},
+		{name: "cut before EXIF", r: io.MultiReader(bytes.NewReader(exifHead), &sizedReader{n: size - 1}), is: io.ErrUnexpectedEOF},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

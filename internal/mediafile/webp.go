@@ -2,6 +2,7 @@ package mediafile
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -14,40 +15,44 @@ func isWebP(head string) bool {
 }
 
 func webpInfo(r *bufio.Reader) (Info, error) {
-	w, h, err := webpSize(r)
+	w, h, o, err := webpSize(r)
 	if err != nil {
 		return Info{}, fmt.Errorf("invalid WebP: %w", err)
 	}
-	return Info{MIMEType: WebP, Width: w, Height: h, Orientation: 1}, nil
+	return displayInfo(WebP, w, h, o), nil
 }
 
-func webpSize(r *bufio.Reader) (int, int, error) {
+// webpSize returns the width, the height and the orientation.
+func webpSize(r *bufio.Reader) (int, int, int, error) {
 	var h [12]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
-		return 0, 0, noEOF(err)
+		return 0, 0, 0, noEOF(err)
 	}
 	size := binary.LittleEndian.Uint32(h[4:])
 	if size > math.MaxUint32-9 { // the limit in RFC 9649 2.4
-		return 0, 0, fmt.Errorf("RIFF size too large (%d)", size)
+		return 0, 0, 0, fmt.Errorf("RIFF size too large (%d)", size)
 	}
 	// The RIFF size counts "WEBP" and the chunks after it.
 	c := &riffReader{r: r, left: int64(size) - 4}
 	err := c.next()
 	if errors.Is(err, io.EOF) {
-		return 0, 0, errors.New("no chunks")
+		return 0, 0, 0, errors.New("no chunks")
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
+	// Only the extended format, with VP8X, has metadata.
 	switch c.fourCC {
 	case "VP8 ":
-		return vp8Size(c)
+		width, height, err := vp8Size(c)
+		return width, height, 1, err
 	case "VP8L":
-		return vp8lSize(c)
+		width, height, err := vp8lSize(c)
+		return width, height, 1, err
 	case "VP8X":
 		return vp8xSize(c)
 	}
-	return 0, 0, fmt.Errorf("first chunk %q is not VP8, VP8L or VP8X", c.fourCC)
+	return 0, 0, 0, fmt.Errorf("first chunk %q is not VP8, VP8L or VP8X", c.fourCC)
 }
 
 // vp8Size reads the frame header of a VP8 key frame (RFC 6386 9.1).
@@ -88,38 +93,55 @@ func vp8lSize(c *riffReader) (int, int, error) {
 	return int(bits&0x3fff) + 1, int(bits>>14&0x3fff) + 1, nil
 }
 
-// vp8xSize reads the canvas size in VP8X and checks that the image data follows (RFC 9649 2.7).
-func vp8xSize(c *riffReader) (int, int, error) {
+// vp8xSize reads the canvas size in VP8X and checks that the image data follows (RFC 9649 2.7). If the flags say that
+// there is Exif, it also reads the orientation in the first EXIF chunk, which may come before or after the image data.
+func vp8xSize(c *riffReader) (int, int, int, error) {
 	var b [10]byte // the chunk may be longer, as later versions may add fields
 	if err := c.read(b[:]); err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	animation := b[0]&0x02 != 0 // the flags are Rsv Rsv I L E X A R from the most significant bit
+	exif := b[0]&0x08 != 0      // cleared once the EXIF chunk is read
 	w := int(uint24(b[4:])) + 1
 	h := int(uint24(b[7:])) + 1
 	if uint64(w)*uint64(h) > math.MaxUint32 { // the limit in RFC 9649 2.7
-		return 0, 0, fmt.Errorf("canvas too large (%dx%d)", w, h)
+		return 0, 0, 0, fmt.Errorf("canvas too large (%dx%d)", w, h)
 	}
-	for {
+	found, o := false, 1
+	for !found || exif {
 		err := c.next()
 		if errors.Is(err, io.EOF) {
-			return 0, 0, errors.New("no image chunk")
+			if found {
+				break
+			}
+			return 0, 0, 0, errors.New("no image chunk")
 		}
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, 0, err
 		}
 		// A still image has VP8 or VP8L, and an animation has ANIM, which readers ignore in a still image.
 		switch c.fourCC {
 		case "VP8 ", "VP8L":
 			if !animation {
-				return w, h, nil
+				found = true
 			}
 		case "ANIM":
 			if animation {
-				return w, h, nil
+				found = true
+			}
+		case "EXIF":
+			if exif {
+				exif = false
+				d := make([]byte, min(c.unread, 64<<10)) // not all of it, which may be up to 4 GiB
+				if err := c.read(d); err != nil {
+					return 0, 0, 0, err
+				}
+				// Some writers keep the Exif ID code of JPEG.
+				o = orientation(bytes.TrimPrefix(d, []byte(exifHeader)))
 			}
 		}
 	}
+	return w, h, o, nil
 }
 
 func uint24(b []byte) uint32 {

@@ -131,7 +131,7 @@ func probeTests(t testing.TB) []probeTest {
 		return Info{MIMEType: mimeType, Width: w, Height: h, Orientation: 1}
 	}
 	pdf := Info{MIMEType: PDF}
-	return append([]probeTest{
+	return slices.Concat([]probeTest{
 		{name: "PNG RGBA", data: encodePNG(t, image.NewRGBA(rect)), want: img(PNG, 3, 2)},
 		{name: "PNG gray", data: encodePNG(t, image.NewGray(rect)), want: img(PNG, 3, 2)},
 		{name: "PNG paletted", data: encodePNG(t, image.NewPaletted(rect, palette)), want: img(PNG, 3, 2)},
@@ -177,7 +177,7 @@ func probeTests(t testing.TB) []probeTest {
 		{name: "PDF 1.7", data: []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"), want: pdf},
 		{name: "PDF 2.0", data: []byte("%PDF-2.0\r\n%\xe2\xe3\xcf\xd3\r\n"), want: pdf},
 		{name: "PDF header only", data: []byte("%PDF-1.4"), want: pdf},
-	}, webpProbeTests()...)
+	}, webpProbeTests(), exifProbeTests(t))
 }
 
 func unsupportedTests(t testing.TB) []testFile {
@@ -351,6 +351,18 @@ func TestProbeReadError(t *testing.T) {
 			t.Errorf("Probe() = %+v, %v; want %v", got, err, io.ErrNoProgress)
 		}
 	})
+	// Probe reads up to 128 KiB of JPEG and PNG files for the orientation.
+	for _, f := range []testFile{
+		{name: "JPEG", data: encodeJPEG(t, image.NewRGBA(rect))},
+		{name: "PNG", data: encodePNG(t, image.NewRGBA(rect))},
+	} {
+		t.Run("no progress after the data/"+f.name, func(t *testing.T) {
+			got, err := Probe(io.MultiReader(bytes.NewReader(f.data), iotest.ErrReader(nil)))
+			if !errors.Is(err, io.ErrNoProgress) || got != (Info{}) {
+				t.Errorf("Probe() = %+v, %v; want %v", got, err, io.ErrNoProgress)
+			}
+		})
+	}
 	for _, tt := range probeTests(t) {
 		t.Run("with the data/"+tt.name, func(t *testing.T) {
 			if got, err := Probe(&failingReader{data: tt.data, err: errRead}); !isReadError(got, err) {
