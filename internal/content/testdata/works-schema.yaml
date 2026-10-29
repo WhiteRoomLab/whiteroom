@@ -1,0 +1,31 @@
+# 例：site/schema.yaml（スキーマのファイル。6.6.8）
+schemaVersion: 1
+types:
+  works:
+    label: 制作実績
+    url: /works/{slug}/
+    archive: /works/      # 一覧のパス（6.6.8）
+    taxonomies: [works_category]
+    body: true            # 本文（ブロック）を使う
+    fields:
+      client:
+        type: text
+        label: クライアント名
+        required: true
+        maxLength: 100
+      year:
+        type: number
+        label: 制作年
+        min: 1990
+        max: 2100
+        translatable: false   # 翻訳グループ内で同じ値に保つ
+      images:
+        type: list
+        label: 画像
+        of: { type: media, accept: [image] }
+        maxItems: 20
+
+taxonomies:
+  works_category:
+    label: 実績の種類
+    hierarchical: false

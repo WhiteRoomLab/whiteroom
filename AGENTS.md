@@ -22,13 +22,14 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 
 ## パッケージの置き場所
 
-- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`。
+- パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`、開発者が書くファイル（`site/schema.yaml`）の YAML を読む処理は `internal/yaml`。
 - コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
 
 ## 生成するファイル
 
 - `internal/nfc/tables.go` と `internal/nfc/testdata/NormalizationTest.txt.gz` は `go generate ./internal/nfc` で作る（unicode.org から UCD を取得するので、ネットが要る）。手で編集しない。
 - 表の Unicode の版は、Go の `unicode.Version` に合わせる。Go のマイナー版を上げて `unicode.Version` が変わると `internal/nfc` のテストが失敗するので、そのときに作り直す。
+- `internal/yaml/testdata/yaml-test-suite.json.gz` は `go generate ./internal/yaml` で作る（GitHub から yaml-test-suite の data-2022-01-17 を取得し、sha256 を確かめるので、ネットが要る）。手で編集しない。ライセンスは同じディレクトリの `YAML-TEST-SUITE-LICENSE.txt`。
 
 ## 規約
 

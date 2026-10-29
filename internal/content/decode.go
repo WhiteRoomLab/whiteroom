@@ -55,19 +55,24 @@ func (d *decoder) fail(err error) error {
 	// SyntacticError first: its JSONPointer is more precise than StackPointer, e.g. for truncated input.
 	var se *jsontext.SyntacticError
 	if errors.As(err, &se) {
-		msg := se.Err.Error()
-		switch {
-		case errors.Is(se.Err, io.ErrUnexpectedEOF):
-			msg = "unexpected end of JSON input"
-		case errors.Is(se.Err, jsontext.ErrDuplicateName):
-			msg = "duplicate key"
-		}
-		return &Error{Path: d.base + string(se.JSONPointer), Msg: msg}
+		return &Error{Path: d.base + string(se.JSONPointer), Msg: syntaxMsg(err)}
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return &Error{Path: d.pointer(), Msg: "unexpected end of JSON input"}
+	return &Error{Path: d.pointer(), Msg: syntaxMsg(err)}
+}
+
+// syntaxMsg returns the message for err, an error from a jsontext.Decoder.
+func syntaxMsg(err error) string {
+	var se *jsontext.SyntacticError
+	if errors.As(err, &se) {
+		err = se.Err
 	}
-	return &Error{Path: d.pointer(), Msg: err.Error()}
+	switch {
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+		return "unexpected end of JSON input"
+	case errors.Is(err, jsontext.ErrDuplicateName):
+		return "duplicate key"
+	}
+	return err.Error()
 }
 
 // next reads a token of the type want ("object", "string", ...).
