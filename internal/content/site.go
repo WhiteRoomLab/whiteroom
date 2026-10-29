@@ -1,6 +1,7 @@
 package content
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/url"
@@ -30,10 +31,11 @@ type Site struct {
 	FrontPage             Localized // ID of the page to show at the front in each language, instead of the latest posts
 	PostsPage             Localized // ID of the page to show the latest posts on, in each language with FrontPage
 	PostsPerPage          int       // entries on each page of a list; 0 is DefaultPostsPerPage
+	AuthorURL             string    // URL rule of the author pages; "" is DefaultAuthorURL
 	SEO                   SiteSEO
 	AllowHTML             bool          // html blocks are enabled
-	Types                 []TypeDef     // custom types, and the taxonomies and fields that post and page add
-	Taxonomies            []TaxonomyDef // custom taxonomies
+	Types                 []TypeDef     // custom types, and what post and page add, such as URL rules, taxonomies and fields
+	Taxonomies            []TaxonomyDef // custom taxonomies, and the labels and URL rules of category and tag
 }
 
 type SiteSEO struct {
@@ -47,6 +49,15 @@ const (
 	DefaultTitleFormat  = "{title} | {siteName}"
 )
 
+// URL rules without one in the site settings, as in WordPress. A custom type or taxonomy has "/<name>/{slug}/".
+const (
+	DefaultPostURL     = "/{yyyy}/{mm}/{dd}/{slug}/" // "Day and name" in the permalink settings of WordPress
+	DefaultPageURL     = "/{path}/"
+	DefaultCategoryURL = "/category/{path}/"
+	DefaultTagURL      = "/tag/{slug}/"
+	DefaultAuthorURL   = "/author/{slug}/"
+)
+
 const (
 	TypePost = "post"
 	TypePage = "page"
@@ -58,6 +69,8 @@ const (
 type TypeDef struct {
 	Name       string
 	Label      string
+	URL        string     // URL rule of the entries; "" is the default of URLRule
+	Archive    string     // path of the list of the entries of a custom type, such as "/works/"; "" for none
 	Body       bool       // entries have a body; post and page always do
 	Taxonomies []string   // for post, in addition to category and tag
 	Fields     []FieldDef // custom fields
@@ -66,6 +79,7 @@ type TypeDef struct {
 type TaxonomyDef struct {
 	Name         string
 	Label        string
+	URL          string // URL rule of the lists of the terms; "" is the default of URLRule
 	Hierarchical bool
 }
 
@@ -74,7 +88,9 @@ var builtinTaxonomies = []TaxonomyDef{
 	{Name: TaxonomyTag},
 }
 
-// Type returns the definition of the type name, with what post and page always have, or nil if the site has no such type.
+// Type returns the definition of the type name, or nil if the site has no such type. For post and page, it has what they
+// always have, and the label, the URL rule, the taxonomies and the fields of their definitions in Types, if any,
+// but not Archive, which they cannot have.
 func (s *Site) Type(name string) *TypeDef {
 	var def *TypeDef
 	if i := slices.IndexFunc(s.Types, func(t TypeDef) bool { return t.Name == name }); i >= 0 {
@@ -89,6 +105,7 @@ func (s *Site) Type(name string) *TypeDef {
 	}
 	if def != nil {
 		t.Label = def.Label
+		t.URL = def.URL
 		t.Taxonomies = append(t.Taxonomies, def.Taxonomies...)
 		t.Fields = def.Fields
 	}
@@ -96,20 +113,67 @@ func (s *Site) Type(name string) *TypeDef {
 }
 
 // Taxonomy returns the definition of the taxonomy name, built in or custom, or nil if the site has no such taxonomy.
+// For category and tag, it has the label and the URL rule of their definitions in Taxonomies, if any, but not Hierarchical.
 func (s *Site) Taxonomy(name string) *TaxonomyDef {
 	is := func(t TaxonomyDef) bool { return t.Name == name }
-	if i := slices.IndexFunc(builtinTaxonomies, is); i >= 0 {
-		t := builtinTaxonomies[i]
-		return &t
-	}
+	var def *TaxonomyDef
 	if i := slices.IndexFunc(s.Taxonomies, is); i >= 0 {
-		return &s.Taxonomies[i]
+		def = &s.Taxonomies[i]
 	}
-	return nil
+	i := slices.IndexFunc(builtinTaxonomies, is)
+	if i < 0 {
+		return def
+	}
+	t := builtinTaxonomies[i]
+	if def != nil {
+		t.Label = def.Label
+		t.URL = def.URL
+	}
+	return &t
 }
 
 func (s *Site) hasTaxonomy(name string) bool {
 	return s.Taxonomy(name) != nil
+}
+
+// URLRule returns URL, or the default: DefaultPostURL, DefaultPageURL, or "/<name>/{slug}/" for a custom type.
+func (t *TypeDef) URLRule() string {
+	switch {
+	case t.URL != "":
+		return t.URL
+	case t.Name == TypePost:
+		return DefaultPostURL
+	case t.Name == TypePage:
+		return DefaultPageURL
+	}
+	return "/" + t.Name + "/{slug}/"
+}
+
+// URLRule returns URL, or the default: DefaultCategoryURL, DefaultTagURL, or "/<name>/{slug}/" for a custom taxonomy,
+// even a hierarchical one, as in WordPress.
+func (t *TaxonomyDef) URLRule() string {
+	switch {
+	case t.URL != "":
+		return t.URL
+	case t.Name == TaxonomyCategory:
+		return DefaultCategoryURL
+	case t.Name == TaxonomyTag:
+		return DefaultTagURL
+	}
+	return "/" + t.Name + "/{slug}/"
+}
+
+func (s *Site) AuthorURLRule() string {
+	return cmp.Or(s.AuthorURL, DefaultAuthorURL)
+}
+
+// LanguagePath returns the path of language, which the paths of the URL rules follow, as in "/en/about/": "/" for the
+// default language without PrefixDefaultLanguage, or the language code in lower case, such as "/en/" or "/zh-hant/".
+func (s *Site) LanguagePath(language string) string {
+	if language == s.DefaultLanguage && !s.PrefixDefaultLanguage {
+		return "/"
+	}
+	return "/" + strings.ToLower(language) + "/"
 }
 
 // Validate checks s. Name in every language of s, URL, TimeZone, Languages and DefaultLanguage are required.
@@ -146,6 +210,7 @@ func (s *Site) check(c *checker) {
 	c.required("defaultLanguage", s.DefaultLanguage, func(l string) error { return checkSiteLanguage(s, l) })
 	s.FrontPage.checkPages(c, "/frontPage", s)
 	s.PostsPage.checkPages(c, "/postsPage", s)
+	pageRule := s.Type(TypePage).URLRule()
 	for _, l := range s.Languages {
 		id := s.PostsPage[l]
 		if id == "" {
@@ -158,36 +223,59 @@ func (s *Site) check(c *checker) {
 		case id:
 			c.addf(p, "cannot be the front page of %s", l)
 		}
+		if strings.HasSuffix(pageRule, ".html") {
+			c.addf(p, `the URL rule of page %q must end with "/" for the posts page`, pageRule)
+		}
 	}
 	if n := s.PostsPerPage; n != 0 && (n < 1 || n > MaxPostsPerPage) {
 		c.addf("/postsPerPage", "postsPerPage %d is out of range (1 to %d)", n, MaxPostsPerPage)
+	}
+	if s.AuthorURL != "" {
+		c.add("/authorUrl", checkURLRule(s.AuthorURL, authorRuleKind, s))
 	}
 	s.SEO.TitleFormat.checkValues(c, "/seo/titleFormat", s, false, func(p, _, v string) { c.add(p, checkTitleFormat(v)) })
 	s.SEO.OGImage.checkValues(c, "/seo/ogImage", s, false, func(p, _, id string) { c.media(p, id, MediaImage) })
 	for i := range s.Taxonomies {
 		t := &s.Taxonomies[i]
 		p := "/taxonomies/" + escapePointer(t.Name)
-		if err := checkName(t.Name); err != nil {
-			c.add(p, err)
-		} else if slices.ContainsFunc(builtinTaxonomies, func(b TaxonomyDef) bool { return b.Name == t.Name }) {
-			c.addf(p, "%s is a built-in taxonomy", t.Name)
+		nameErr := checkName(t.Name)
+		if nameErr != nil {
+			c.add(p, nameErr)
 		} else if slices.ContainsFunc(s.Taxonomies[:i], func(o TaxonomyDef) bool { return o.Name == t.Name }) {
 			c.addf(p, "duplicate taxonomy %q", t.Name)
 		}
 		if t.Label != "" {
 			c.add(p+"/label", checkLine(t.Label))
 		}
+		if nameErr == nil || t.URL != "" {
+			// The hierarchy of category and tag is that of Taxonomy, not of t.
+			c.add(p+"/url", checkURLRule(t.URLRule(), taxonomyRuleKind(s.Taxonomy(t.Name)), s))
+		}
+		if t.Hierarchical && slices.ContainsFunc(builtinTaxonomies, func(b TaxonomyDef) bool { return b.Name == t.Name }) {
+			c.addf(p+"/hierarchical", "not allowed for built-in taxonomies")
+		}
 	}
 	for i := range s.Types {
 		t := &s.Types[i]
 		p := "/types/" + escapePointer(t.Name)
-		if err := checkName(t.Name); err != nil {
-			c.add(p, err)
+		nameErr := checkName(t.Name)
+		if nameErr != nil {
+			c.add(p, nameErr)
 		} else if slices.ContainsFunc(s.Types[:i], func(o TypeDef) bool { return o.Name == t.Name }) {
 			c.addf(p, "duplicate type %q", t.Name)
 		}
 		if t.Label != "" {
 			c.add(p+"/label", checkLine(t.Label))
+		}
+		if nameErr == nil || t.URL != "" {
+			c.add(p+"/url", checkURLRule(t.URLRule(), entryRuleKind(t), s))
+		}
+		switch {
+		case t.Archive == "":
+		case t.Name == TypePost || t.Name == TypePage:
+			c.addf(p+"/archive", "not allowed for %s", t.Name)
+		default:
+			c.add(p+"/archive", checkURLRule(t.Archive, archiveRuleKind, s))
 		}
 		for j, name := range t.Taxonomies {
 			tp := p + "/taxonomies/" + strconv.Itoa(j)

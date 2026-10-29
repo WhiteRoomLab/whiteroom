@@ -238,6 +238,19 @@ func TestSiteType(t *testing.T) {
 	if got := (&Site{}).Type(TypePost); !reflect.DeepEqual(got, &TypeDef{Name: TypePost, Body: true, Taxonomies: []string{TaxonomyCategory, TaxonomyTag}}) {
 		t.Errorf("Type(post) of an empty site = %#v", got)
 	}
+	// post and page have the URL rules of their definitions, but not the archives, which they cannot have.
+	rules := &Site{Types: []TypeDef{
+		{Name: TypePost, URL: "/archives/{number}/", Archive: "/news/"},
+		{Name: TypePage, URL: "/{path}.html", Archive: "/pages/"},
+	}}
+	wantPost := &TypeDef{Name: TypePost, URL: "/archives/{number}/", Body: true, Taxonomies: []string{TaxonomyCategory, TaxonomyTag}}
+	if got := rules.Type(TypePost); !reflect.DeepEqual(got, wantPost) {
+		t.Errorf("Type(post) of a site with its URL rule = %#v, want %#v", got, wantPost)
+	}
+	wantPage := &TypeDef{Name: TypePage, URL: "/{path}.html", Body: true}
+	if got := rules.Type(TypePage); !reflect.DeepEqual(got, wantPage) {
+		t.Errorf("Type(page) of a site with its URL rule = %#v, want %#v", got, wantPage)
+	}
 	// The taxonomies of post are not shared between calls.
 	s.Type(TypePost).Taxonomies[0] = "x"
 	if got := s.Type(TypePost).Taxonomies[0]; got != TaxonomyCategory {
@@ -263,15 +276,69 @@ func TestSiteTaxonomy(t *testing.T) {
 			}
 		})
 	}
-	// Validate reports a custom taxonomy with the name of a built-in one, which Taxonomy ignores.
-	custom := &Site{Taxonomies: []TaxonomyDef{{Name: TaxonomyTag, Label: "タグ", Hierarchical: true}}}
-	if got := custom.Taxonomy(TaxonomyTag); !reflect.DeepEqual(got, &TaxonomyDef{Name: TaxonomyTag}) {
-		t.Errorf("Taxonomy(tag) of a site with a custom tag = %#v", got)
+	// The definition of tag gives the label and the URL rule, but not Hierarchical, which Validate reports.
+	custom := &Site{Taxonomies: []TaxonomyDef{{Name: TaxonomyTag, Label: "タグ", URL: "/tags/{slug}/", Hierarchical: true}}}
+	want := &TaxonomyDef{Name: TaxonomyTag, Label: "タグ", URL: "/tags/{slug}/"}
+	if got := custom.Taxonomy(TaxonomyTag); !reflect.DeepEqual(got, want) {
+		t.Errorf("Taxonomy(tag) of a site with a definition of tag = %#v, want %#v", got, want)
 	}
 	// The built-in definitions are not shared between calls.
 	s.Taxonomy(TaxonomyCategory).Hierarchical = false
 	if !s.Taxonomy(TaxonomyCategory).Hierarchical {
 		t.Error("Taxonomy(category) is not hierarchical after changing another result")
+	}
+}
+
+func TestURLRule(t *testing.T) {
+	s := testSite()
+	tests := []struct {
+		name string
+		rule string
+		want string
+	}{
+		{name: "post", rule: s.Type(TypePost).URLRule(), want: DefaultPostURL},
+		{name: "page", rule: s.Type(TypePage).URLRule(), want: DefaultPageURL},
+		{name: "custom type", rule: s.Type("works").URLRule(), want: "/works/{slug}/"},
+		{name: "post with a rule", rule: (&TypeDef{Name: TypePost, URL: "/archives/{number}/"}).URLRule(), want: "/archives/{number}/"},
+		{name: "custom type with a rule", rule: (&TypeDef{Name: "works", URL: "/実績/{slug}/"}).URLRule(), want: "/実績/{slug}/"},
+		{name: "category", rule: s.Taxonomy(TaxonomyCategory).URLRule(), want: DefaultCategoryURL},
+		{name: "tag", rule: s.Taxonomy(TaxonomyTag).URLRule(), want: DefaultTagURL},
+		// As in WordPress, the default of a custom taxonomy has no parents.
+		{name: "hierarchical custom taxonomy", rule: s.Taxonomy("series").URLRule(), want: "/series/{slug}/"},
+		{name: "category with a rule", rule: (&TaxonomyDef{Name: TaxonomyCategory, URL: "/topics/{path}/"}).URLRule(), want: "/topics/{path}/"},
+		{name: "author pages", rule: s.AuthorURLRule(), want: DefaultAuthorURL},
+		{name: "author pages with a rule", rule: (&Site{AuthorURL: "/writers/{slug}/"}).AuthorURLRule(), want: "/writers/{slug}/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.rule != tt.want {
+				t.Errorf("URL rule = %q, want %q", tt.rule, tt.want)
+			}
+		})
+	}
+}
+
+func TestLanguagePath(t *testing.T) {
+	s := &Site{Languages: []string{"ja", "en-US", "zh-Hant"}, DefaultLanguage: "ja"}
+	prefixed := &Site{Languages: s.Languages, DefaultLanguage: "ja", PrefixDefaultLanguage: true}
+	tests := []struct {
+		name     string
+		site     *Site
+		language string
+		want     string
+	}{
+		{name: "default language", site: s, language: "ja", want: "/"},
+		{name: "region", site: s, language: "en-US", want: "/en-us/"},
+		{name: "script", site: s, language: "zh-Hant", want: "/zh-hant/"},
+		{name: "default language with a prefix", site: prefixed, language: "ja", want: "/ja/"},
+		{name: "another language with a prefix for the default", site: prefixed, language: "en-US", want: "/en-us/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.site.LanguagePath(tt.language); got != tt.want {
+				t.Errorf("LanguagePath(%q) = %q, want %q", tt.language, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -522,12 +589,15 @@ func TestSiteValidate(t *testing.T) {
 				s.Tagline = Localized{"en": "a\nb"}
 				s.URL, s.TimeZone, s.Logo, s.Icon, s.DefaultLanguage = "https://example.com/", "Local", testPDF, testAboutPage, "fr"
 				s.FrontPage, s.PostsPage, s.PostsPerPage = Localized{"ja": testPost}, Localized{"en": testEnglishPage}, -1
+				s.AuthorURL = "/writers/"
 				s.SEO = SiteSEO{TitleFormat: Localized{"ja": "{siteName}"}, OGImage: Localized{"en": testPDF}}
-				s.Taxonomies[0].Label = "a\tb"
+				s.Taxonomies[0].Label, s.Taxonomies[0].URL = "a\tb", "/kinds/{path}/"
+				s.Types[0].URL, s.Types[0].Archive = "/works/{slug}", "/"
 			}),
 			paths: []string{
 				"/name/ja", "/name/en", "/name/de", "/tagline/en", "/url", "/timeZone", "/logo", "/icon", "/defaultLanguage",
-				"/frontPage/ja", "/postsPage/en", "/postsPerPage", "/seo/titleFormat/ja", "/seo/ogImage/en", "/taxonomies/works_category/label",
+				"/frontPage/ja", "/postsPage/en", "/postsPerPage", "/authorUrl", "/seo/titleFormat/ja", "/seo/ogImage/en",
+				"/taxonomies/works_category/label", "/taxonomies/works_category/url", "/types/works/url", "/types/works/archive",
 			},
 			msg: "/name/ja: contains a line break or tab\n/name/en: missing value; every language of the site needs one\n" +
 				`/name/de: language "de" is not in the site settings (use ja, en)` + "\n" +
@@ -539,9 +609,13 @@ func TestSiteValidate(t *testing.T) {
 				`/frontPage/ja: entry "` + testPost + `" is of the type "post" (use page)` + "\n" +
 				"/postsPage/en: not allowed while the front page of en shows the latest posts; set frontPage\n" +
 				"/postsPerPage: postsPerPage -1 is out of range (1 to 100)\n" +
+				`/authorUrl: invalid URL rule "/writers/": missing {slug}` + "\n" +
 				"/seo/titleFormat/ja: missing {title}\n" +
 				`/seo/ogImage/en: media "` + testPDF + `" (pdf) is not accepted here (accept: image)` + "\n" +
-				"/taxonomies/works_category/label: contains a line break or tab",
+				"/taxonomies/works_category/label: contains a line break or tab\n" +
+				`/taxonomies/works_category/url: invalid URL rule "/kinds/{path}/": placeholder "{path}" is not allowed for works_category (use {slug})` + "\n" +
+				`/types/works/url: invalid URL rule "/works/{slug}": must end with "/" or ".html"` + "\n" +
+				`/types/works/archive: invalid archive path "/": cannot be "/", the path of the front page`,
 		},
 
 		{
@@ -785,6 +859,21 @@ func TestSiteValidate(t *testing.T) {
 			paths: []string{"/frontPage/ja", "/postsPage/ja"},
 			msg:   "/frontPage/ja: empty value; omit it\n/postsPage/ja: not allowed while the front page of ja shows the latest posts; set frontPage",
 		},
+		{
+			name: "posts pages with pages ending with .html",
+			in: edit(pages(Localized{"ja": testPage, "en": testEnglishPage}, Localized{"ja": testAboutPage, "en": testEnglishPrivacyPage}), func(s *Site) {
+				s.Types = append(s.Types, TypeDef{Name: TypePage, URL: "/{path}.html"})
+			}),
+			paths: []string{"/postsPage/ja", "/postsPage/en"},
+			msg: `/postsPage/ja: the URL rule of page "/{path}.html" must end with "/" for the posts page` + "\n" +
+				`/postsPage/en: the URL rule of page "/{path}.html" must end with "/" for the posts page`,
+		},
+		{
+			name: "pages ending with .html without a posts page",
+			in: edit(pages(Localized{"ja": testPage}, nil), func(s *Site) {
+				s.Types = append(s.Types, TypeDef{Name: TypePage, URL: "/{path}.html"})
+			}),
+		},
 
 		{name: "posts per page omitted", in: edit(testSite(), func(s *Site) { s.PostsPerPage = 0 })},
 		{name: "one post per page", in: edit(testSite(), func(s *Site) { s.PostsPerPage = 1 })},
@@ -800,6 +889,20 @@ func TestSiteValidate(t *testing.T) {
 			in:    edit(testSite(), func(s *Site) { s.PostsPerPage = MaxPostsPerPage + 1 }),
 			paths: []string{"/postsPerPage"},
 			msg:   "/postsPerPage: postsPerPage 101 is out of range (1 to 100)",
+		},
+
+		{name: "URL rule of the author pages", in: edit(testSite(), func(s *Site) { s.AuthorURL = "/writers/{slug}/" })},
+		{
+			name:  "invalid URL rule of the author pages",
+			in:    edit(testSite(), func(s *Site) { s.AuthorURL = "/writers/{number}/" }),
+			paths: []string{"/authorUrl"},
+			msg:   `/authorUrl: invalid URL rule "/writers/{number}/": placeholder "{number}" is not allowed for author pages (use {slug})`,
+		},
+		{
+			name:  "author pages at the path of a language",
+			in:    edit(testSite(), func(s *Site) { s.AuthorURL = "/en/{slug}/" }),
+			paths: []string{"/authorUrl"},
+			msg:   `/authorUrl: invalid URL rule "/en/{slug}/": cannot start with "/en/", the path of the language en`,
 		},
 
 		{
@@ -880,12 +983,68 @@ func TestSiteValidate(t *testing.T) {
 					{Name: ""},
 				}
 			}),
-			paths: []string{"/taxonomies/a b", "/taxonomies/tag", "/taxonomies/x/label", "/taxonomies/x", "/taxonomies/"},
+			paths: []string{"/taxonomies/a b", "/taxonomies/x/label", "/taxonomies/x", "/taxonomies/"},
 			msg: `/taxonomies/a b: invalid name "a b": use ASCII letters, digits, "-" and "_"` + "\n" +
-				"/taxonomies/tag: tag is a built-in taxonomy\n" +
 				"/taxonomies/x/label: contains a line break or tab\n" +
 				`/taxonomies/x: duplicate taxonomy "x"` + "\n" +
 				"/taxonomies/: empty name",
+		},
+		{
+			// The URL rule of category can have {path} without hierarchical.
+			name: "built-in taxonomies",
+			in: edit(testSite(), func(s *Site) {
+				s.Taxonomies = append(s.Taxonomies, TaxonomyDef{Name: TaxonomyCategory, Label: "分類", URL: "/topics/{path}/"}, TaxonomyDef{Name: TaxonomyTag})
+			}),
+		},
+		{
+			// The URL rule is checked with the hierarchy of tag.
+			name: "hierarchical tag",
+			in: edit(testSite(), func(s *Site) {
+				s.Taxonomies = append(s.Taxonomies, TaxonomyDef{Name: TaxonomyTag, URL: "/tag/{path}/", Hierarchical: true})
+			}),
+			paths: []string{"/taxonomies/tag/url", "/taxonomies/tag/hierarchical"},
+			msg: `/taxonomies/tag/url: invalid URL rule "/tag/{path}/": placeholder "{path}" is not allowed for tag (use {slug})` + "\n" +
+				"/taxonomies/tag/hierarchical: not allowed for built-in taxonomies",
+		},
+		{
+			name: "hierarchical category",
+			in: edit(testSite(), func(s *Site) {
+				s.Taxonomies = append(s.Taxonomies, TaxonomyDef{Name: TaxonomyCategory, Hierarchical: true})
+			}),
+			paths: []string{"/taxonomies/category/hierarchical"},
+			msg:   "/taxonomies/category/hierarchical: not allowed for built-in taxonomies",
+		},
+		{
+			// Each definition is checked with its own URL rule.
+			name: "duplicate tag",
+			in: edit(testSite(), func(s *Site) {
+				s.Taxonomies = append(s.Taxonomies, TaxonomyDef{Name: TaxonomyTag, URL: "/tags/{slug}/"}, TaxonomyDef{Name: TaxonomyTag, URL: "/tags/"})
+			}),
+			paths: []string{"/taxonomies/tag", "/taxonomies/tag/url"},
+			msg:   `/taxonomies/tag: duplicate taxonomy "tag"` + "\n" + `/taxonomies/tag/url: invalid URL rule "/tags/": missing {slug}`,
+		},
+		{name: "URL rule of a taxonomy", in: edit(testSite(), func(s *Site) { s.Taxonomies[1].URL = "/series/{path}/" })},
+		{
+			name:  "invalid URL rule of a taxonomy",
+			in:    edit(testSite(), func(s *Site) { s.Taxonomies[1].URL = "/series/{path}" }),
+			paths: []string{"/taxonomies/series/url"},
+			msg:   `/taxonomies/series/url: invalid URL rule "/series/{path}": must end with "/"`,
+		},
+		{
+			// The default URL rule is checked too.
+			name:  "taxonomy with the name of a language",
+			in:    edit(testSite(), func(s *Site) { s.Taxonomies = append(s.Taxonomies, TaxonomyDef{Name: "en"}) }),
+			paths: []string{"/taxonomies/en/url"},
+			msg:   `/taxonomies/en/url: invalid URL rule "/en/{slug}/": cannot start with "/en/", the path of the language en`,
+		},
+		{
+			// The URL rule of a taxonomy with an invalid name is checked only if it is not the default.
+			name:  "URL rules of taxonomies with invalid names",
+			in:    edit(minimalSite(), func(s *Site) { s.Taxonomies = []TaxonomyDef{{Name: "a b", URL: "/a b/{slug}/"}, {Name: "c~d"}} }),
+			paths: []string{"/taxonomies/a b", "/taxonomies/a b/url", "/taxonomies/c~0d"},
+			msg: `/taxonomies/a b: invalid name "a b": use ASCII letters, digits, "-" and "_"` + "\n" +
+				`/taxonomies/a b/url: invalid URL rule "/a b/{slug}/": character ' ' (U+0020) is not allowed` + "\n" +
+				`/taxonomies/c~0d: invalid name "c~d"`,
 		},
 		{
 			name:  "escaped name",
@@ -909,6 +1068,83 @@ func TestSiteValidate(t *testing.T) {
 				"/types/post/taxonomies/0: post always uses tag\n" +
 				`/types/post/taxonomies/1: unknown taxonomy "unknown"` + "\n" +
 				`/types/page/taxonomies/2: duplicate taxonomy "category"`,
+		},
+		{
+			name: "URL rules and archives of types",
+			in: edit(testSite(), func(s *Site) {
+				s.Types[0].URL, s.Types[0].Archive = "/works/{slug}.html", "/works/"
+				s.Types[2].URL = "/archives/{number}/"
+				s.Types = append(s.Types,
+					TypeDef{Name: TypePage, URL: "/{path}.html"},
+					TypeDef{Name: "news", URL: "/news/{category}/{slug}/", Archive: "/news/", Taxonomies: []string{TaxonomyCategory}},
+				)
+			}),
+		},
+		{
+			name:  "invalid URL rule of a type",
+			in:    edit(testSite(), func(s *Site) { s.Types[0].URL = "/works/{path}/" }),
+			paths: []string{"/types/works/url"},
+			msg:   `/types/works/url: invalid URL rule "/works/{path}/": placeholder "{path}" is not allowed for works (use {slug}, {number})`,
+		},
+		{
+			name:  "invalid URL rule of post",
+			in:    edit(testSite(), func(s *Site) { s.Types[2].URL = "/{yyyy}/{mm}/{dd}/" }),
+			paths: []string{"/types/post/url"},
+			msg:   `/types/post/url: invalid URL rule "/{yyyy}/{mm}/{dd}/": missing {slug} or {number}`,
+		},
+		{
+			name: "archives of post and page",
+			in: edit(testSite(), func(s *Site) {
+				s.Types[2].Archive = "/news/"
+				s.Types = append(s.Types, TypeDef{Name: TypePage, Archive: "/pages/"})
+			}),
+			paths: []string{"/types/post/archive", "/types/page/archive"},
+			msg:   "/types/post/archive: not allowed for post\n/types/page/archive: not allowed for page",
+		},
+		{
+			name:  "archive with a placeholder",
+			in:    edit(testSite(), func(s *Site) { s.Types[0].Archive = "/works/{slug}/" }),
+			paths: []string{"/types/works/archive"},
+			msg:   `/types/works/archive: invalid archive path "/works/{slug}/": placeholders are not allowed`,
+		},
+		{
+			name:  "archive at the front page",
+			in:    edit(testSite(), func(s *Site) { s.Types[0].Archive = "/" }),
+			paths: []string{"/types/works/archive"},
+			msg:   `/types/works/archive: invalid archive path "/": cannot be "/", the path of the front page`,
+		},
+		{
+			// The default URL rule is checked too.
+			name:  "type with the name of a language",
+			in:    edit(testSite(), func(s *Site) { s.Types = append(s.Types, TypeDef{Name: "en"}) }),
+			paths: []string{"/types/en/url"},
+			msg:   `/types/en/url: invalid URL rule "/en/{slug}/": cannot start with "/en/", the path of the language en`,
+		},
+		{name: "type with the name of the default language", in: edit(testSite(), func(s *Site) { s.Types = append(s.Types, TypeDef{Name: "ja"}) })},
+		{
+			name: "type with the name of the default language with a prefix",
+			in: edit(testSite(), func(s *Site) {
+				s.PrefixDefaultLanguage = true
+				s.Types = append(s.Types, TypeDef{Name: "ja"})
+			}),
+			paths: []string{"/types/ja/url"},
+			msg:   `/types/ja/url: invalid URL rule "/ja/{slug}/": cannot start with "/ja/", the path of the language ja`,
+		},
+		{
+			// Each definition is checked with its own URL rule.
+			name:  "duplicate type",
+			in:    edit(testSite(), func(s *Site) { s.Types = append(s.Types, TypeDef{Name: "works", URL: "/works/"}) }),
+			paths: []string{"/types/works", "/types/works/url"},
+			msg:   `/types/works: duplicate type "works"` + "\n" + `/types/works/url: invalid URL rule "/works/": missing {slug} or {number}`,
+		},
+		{
+			// The URL rule of a type with an invalid name is checked only if it is not the default.
+			name:  "URL rules of types with invalid names",
+			in:    edit(minimalSite(), func(s *Site) { s.Types = []TypeDef{{Name: "a b", URL: "/a b/{slug}/"}, {Name: "c~d"}} }),
+			paths: []string{"/types/a b", "/types/a b/url", "/types/c~0d"},
+			msg: `/types/a b: invalid name "a b": use ASCII letters, digits, "-" and "_"` + "\n" +
+				`/types/a b/url: invalid URL rule "/a b/{slug}/": character ' ' (U+0020) is not allowed` + "\n" +
+				`/types/c~0d: invalid name "c~d"`,
 		},
 		{
 			name:  "field names",
