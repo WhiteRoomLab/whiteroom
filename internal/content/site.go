@@ -1,19 +1,35 @@
 package content
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	// checkTimeZone accepts the same names on systems without time zone data.
+	_ "time/tzdata"
 )
 
-// Site is the part of the site settings that entries depend on.
+// Site is the site settings, such as the general settings, the languages, the URL rules, and the types and the taxonomies.
 type Site struct {
-	Languages  []string      // language codes, such as "ja" and "en-US"
-	AllowHTML  bool          // html blocks are enabled
-	Types      []TypeDef     // custom types, and the taxonomies and fields that post and page add
-	Taxonomies []TaxonomyDef // custom taxonomies
+	Name                  Localized
+	Tagline               Localized
+	URL                   string   // such as "https://example.com" or "https://example.com/blog"
+	TimeZone              string   // an IANA name, such as "Asia/Tokyo"
+	Logo                  string   // ID of an image
+	Icon                  string   // ID of an image
+	Languages             []string // language codes, such as "ja" and "en-US"
+	DefaultLanguage       string
+	PrefixDefaultLanguage bool          // the default language has a path prefix too, such as "/ja/"
+	AllowHTML             bool          // html blocks are enabled
+	Types                 []TypeDef     // custom types, and the taxonomies and fields that post and page add
+	Taxonomies            []TaxonomyDef // custom taxonomies
 }
 
 const (
@@ -81,13 +97,25 @@ func (s *Site) hasTaxonomy(name string) bool {
 	return s.Taxonomy(name) != nil
 }
 
-func (s *Site) Validate() error {
-	var c checker
+// Validate checks s. Name in every language of s, URL, TimeZone, Languages and DefaultLanguage are required.
+// lookup tells about the logo and the icon as ValidateOptions.Lookup does; nil skips checking that they exist and are images.
+func (s *Site) Validate(lookup func(kind RefKind, id string) (Ref, bool)) error {
+	c := checker{doc: &docState{opts: ValidateOptions{Lookup: lookup}}}
 	s.check(&c)
 	return c.result()
 }
 
 func (s *Site) check(c *checker) {
+	s.Name.checkRequired(c, "/name", "name", s, false)
+	s.Tagline.check(c, "/tagline", s, false)
+	c.required("url", s.URL, checkSiteURL)
+	c.required("timeZone", s.TimeZone, checkTimeZone)
+	if s.Logo != "" {
+		c.media("/logo", s.Logo, MediaImage)
+	}
+	if s.Icon != "" {
+		c.media("/icon", s.Icon, MediaImage)
+	}
 	if len(s.Languages) == 0 {
 		c.addf("/languages", "missing languages")
 	}
@@ -99,6 +127,7 @@ func (s *Site) check(c *checker) {
 			c.addf(p, "duplicate language %q", l)
 		}
 	}
+	c.required("defaultLanguage", s.DefaultLanguage, func(l string) error { return checkSiteLanguage(s, l) })
 	for i := range s.Taxonomies {
 		t := &s.Taxonomies[i]
 		p := "/taxonomies/" + escapePointer(t.Name)
@@ -139,6 +168,56 @@ func (s *Site) check(c *checker) {
 	}
 }
 
+// checkSiteURL accepts an http or https URL of the scheme and the host in lower case ASCII, an optional port other than
+// the default, and an optional path not ending with "/", such as "https://example.com" or "https://example.com/blog".
+func checkSiteURL(s string) error {
+	if err := checkWebURL(s); err != nil {
+		return err
+	}
+	u, _ := url.Parse(s)
+	port := u.Port()
+	n, err := strconv.Atoi(port)
+	switch {
+	case !strings.HasPrefix(s, u.Scheme):
+		return errors.New("the scheme must be in lower case")
+	case u.Hostname() == "":
+		// checkHref passes "https://:8080", whose Host has only the port.
+		return errors.New("missing host")
+	case strings.ContainsFunc(u.Host, func(r rune) bool { return r >= utf8.RuneSelf }):
+		return errors.New("the host must be ASCII; write a domain name in the xn-- form")
+	case strings.ContainsFunc(u.Host, unicode.IsUpper):
+		return errors.New("the host must be in lower case")
+	case strings.HasSuffix(u.Host, ":"):
+		return errors.New(`empty port; remove the ":"`)
+	case port != "" && (err != nil || n < 1 || n > 65535):
+		return fmt.Errorf("port %s is out of range (1 to 65535)", port)
+	case u.Scheme == "http" && n == 80, u.Scheme == "https" && n == 443:
+		return fmt.Errorf("port %s is the default for %s; omit it", port, u.Scheme)
+	// Before checking the end: a query or a fragment may end with "/".
+	case strings.ContainsAny(s, "?#"):
+		return errors.New("queries and fragments are not allowed")
+	case strings.HasSuffix(s, "/"):
+		return errors.New(`must not end with "/"`)
+	case slices.ContainsFunc(strings.Split(u.Path, "/")[1:], func(seg string) bool { return seg == "" || seg == "." || seg == ".." }):
+		return errors.New(`the path cannot have empty, "." or ".." segments`)
+	}
+	return nil
+}
+
+// timeZonePattern matches the names in the time zone database, rejecting names such as "Asia/./Tokyo",
+// which time.LoadLocation may find in the files of the system.
+var timeZonePattern = regexp.MustCompile(`^[A-Za-z0-9+_-]+(?:/[A-Za-z0-9+_-]+)*$`)
+
+// checkTimeZone accepts an IANA name of a time zone, but not "Local", which depends on the machine.
+func checkTimeZone(s string) error {
+	if s != "Local" && timeZonePattern.MatchString(s) {
+		if _, err := time.LoadLocation(s); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf(`unknown time zone %q: use an IANA name such as "Asia/Tokyo" or "UTC"`, s)
+}
+
 // languagePattern matches BCP 47 language tags with a language, an optional script and an optional region, in their canonical case.
 var languagePattern = regexp.MustCompile(`^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?$`)
 
@@ -151,6 +230,9 @@ func checkLanguage(s string) error {
 
 func checkSiteLanguage(site *Site, language string) error {
 	if !slices.Contains(site.Languages, language) {
+		if len(site.Languages) == 0 {
+			return fmt.Errorf("language %q is not in the site settings", language)
+		}
 		return fmt.Errorf("language %q is not in the site settings (use %s)", language, strings.Join(site.Languages, ", "))
 	}
 	return nil

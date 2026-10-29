@@ -47,7 +47,11 @@ var postFields = []FieldDef{
 // a type with productFields, and post with postFields.
 func testSite() *Site {
 	return &Site{
-		Languages: []string{"ja", "en"},
+		Name:            Localized{"ja": "株式会社〇〇", "en": "Example Inc."},
+		URL:             "https://example.com",
+		TimeZone:        "Asia/Tokyo",
+		Languages:       []string{"ja", "en"},
+		DefaultLanguage: "ja",
 		Types: []TypeDef{
 			{
 				Name:       "works",
@@ -67,6 +71,17 @@ func testSite() *Site {
 			{Name: "works_category", Label: "実績の種類"},
 			{Name: "series", Label: "シリーズ", Hierarchical: true},
 		},
+	}
+}
+
+// minimalSite returns a site with only the required items, in one language.
+func minimalSite() *Site {
+	return &Site{
+		Name:            Localized{"ja": "株式会社〇〇"},
+		URL:             "https://example.com",
+		TimeZone:        "UTC",
+		Languages:       []string{"ja"},
+		DefaultLanguage: "ja",
 	}
 }
 
@@ -130,7 +145,7 @@ func testLookup(kind RefKind, id string) (Ref, bool) {
 }
 
 func TestTestSite(t *testing.T) {
-	if err := testSite().Validate(); err != nil {
+	if err := testSite().Validate(testLookup); err != nil {
 		t.Fatalf("Validate() = %v", err)
 	}
 	for id := range testRefs {
@@ -298,6 +313,111 @@ func TestCheckLanguage(t *testing.T) {
 	}
 }
 
+func TestCheckSiteURL(t *testing.T) {
+	const (
+		normalize     = "contains control characters or surrounding spaces; normalize it first"
+		web           = "must be an http or https URL"
+		nonASCII      = "the host must be ASCII; write a domain name in the xn-- form"
+		queryFragment = "queries and fragments are not allowed"
+		trailingSlash = `must not end with "/"`
+		segments      = `the path cannot have empty, "." or ".." segments`
+	)
+	tests := []struct {
+		name string
+		in   string
+		msg  string
+	}{
+		{name: "https", in: "https://example.com"},
+		{name: "http and port", in: "http://localhost:8080"},
+		{name: "path", in: "https://example.com/blog"},
+		{name: "path of two segments", in: "https://example.com/a/b"},
+		{name: "Japanese path", in: "https://example.com/ブログ"},
+		{name: "IDN in the xn-- form", in: "https://xn--eckwd4c7c.xn--zckzah"}, // ドメイン.テスト
+		{name: "IPv6 and port", in: "https://[::1]:8443"},
+		{name: "highest port", in: "https://example.com:65535"},
+		{name: "default port of the other scheme", in: "http://example.com:443"},
+
+		{name: "empty", in: "", msg: "empty URL"},
+		{name: "host without scheme", in: "example.com", msg: `must be an absolute URL or a path starting with "/"`},
+		{name: "path only", in: "/blog", msg: web},
+		{name: "ftp", in: "ftp://example.com", msg: `scheme "ftp" is not allowed`},
+		{name: "mailto", in: "mailto:a@example.com", msg: web},
+		{name: "without host", in: "https://", msg: "missing host"},
+		{name: "port without host", in: "https://:8080", msg: "missing host"},
+		{name: "colon without host", in: "https://:", msg: "missing host"},
+		{name: "credentials", in: "https://user:pass@example.com", msg: "credentials in URLs are not allowed"},
+		{name: "protocol-relative", in: "//example.com", msg: "protocol-relative URLs are not allowed"},
+		{name: "leading space", in: " https://example.com", msg: normalize},
+		{name: "trailing space", in: "https://example.com ", msg: normalize},
+		{name: "upper case scheme", in: "HTTPS://example.com", msg: "the scheme must be in lower case"},
+		{name: "upper case host", in: "https://Example.com", msg: "the host must be in lower case"},
+		{name: "Japanese host", in: "https://例え.jp", msg: nonASCII},
+		{name: "percent-encoded host", in: "https://%E4%BE%8B.jp", msg: nonASCII},
+		{name: "empty port", in: "https://example.com:", msg: `empty port; remove the ":"`},
+		{name: "port 0", in: "https://example.com:0", msg: "port 0 is out of range (1 to 65535)"},
+		{name: "port 65536", in: "https://example.com:65536", msg: "port 65536 is out of range (1 to 65535)"},
+		{
+			name: "port that overflows int",
+			in:   "https://example.com:99999999999999999999",
+			msg:  "port 99999999999999999999 is out of range (1 to 65535)",
+		},
+		{name: "default port of https", in: "https://example.com:443", msg: "port 443 is the default for https; omit it"},
+		{name: "default port of http", in: "http://localhost:80", msg: "port 80 is the default for http; omit it"},
+		{name: "default port with a leading zero", in: "https://example.com:0443", msg: "port 0443 is the default for https; omit it"},
+		{name: "query", in: "https://example.com?x=1", msg: queryFragment},
+		{name: "empty query", in: "https://example.com/?", msg: queryFragment},
+		{name: "query ending with a slash", in: "https://example.com/blog?next=/", msg: queryFragment},
+		{name: "fragment", in: "https://example.com#top", msg: queryFragment},
+		{name: "empty fragment", in: "https://example.com#", msg: queryFragment},
+		{name: "trailing slash", in: "https://example.com/", msg: trailingSlash},
+		{name: "path with a trailing slash", in: "https://example.com/blog/", msg: trailingSlash},
+		{name: "empty segment", in: "https://example.com//blog", msg: segments},
+		{name: "dot segment", in: "https://example.com/./blog", msg: segments},
+		{name: "dot-dot segment", in: "https://example.com/a/../blog", msg: segments},
+		{name: "percent-encoded dot-dot segment", in: "https://example.com/%2E%2E/blog", msg: segments},
+		{name: "dots in a segment", in: "https://example.com/a..b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertErrorMsg(t, checkSiteURL(tt.in), tt.msg)
+		})
+	}
+}
+
+// TestCheckTimeZone does not try names in another case, which the time zone data of macOS may have.
+func TestCheckTimeZone(t *testing.T) {
+	tests := []struct {
+		in string
+		ok bool
+	}{
+		{in: "Asia/Tokyo", ok: true},
+		{in: "UTC", ok: true},
+		{in: "America/New_York", ok: true},
+		{in: "Etc/GMT-9", ok: true},
+		{in: "Local"},
+		{in: ""},
+		{in: "Tokyo"},
+		{in: "Asia/Tokio"},
+		{in: "../etc/passwd"},
+		{in: "/etc/localtime"},
+		{in: "+09:00"},
+		// The files of the system may have these, but the time zone database does not.
+		{in: "Asia/./Tokyo"},
+		{in: "Asia//Tokyo"},
+		{in: "Asia/Tokyo/"},
+		{in: " Asia/Tokyo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			msg := ""
+			if !tt.ok {
+				msg = `unknown time zone "` + tt.in + `": use an IANA name such as "Asia/Tokyo" or "UTC"`
+			}
+			assertErrorMsg(t, checkTimeZone(tt.in), msg)
+		})
+	}
+}
+
 func TestSiteValidate(t *testing.T) {
 	// site returns testSite with its first type replaced by typ, if typ has a name.
 	site := func(typ TypeDef) *Site {
@@ -309,36 +429,185 @@ func TestSiteValidate(t *testing.T) {
 	}
 	// fields returns a site with a type "t" of fs.
 	fields := func(fs ...FieldDef) *Site { return site(TypeDef{Name: "t", Fields: fs}) }
+	// edit returns s changed by f.
+	edit := func(s *Site, f func(s *Site)) *Site {
+		f(s)
+		return s
+	}
 	tests := []struct {
-		name  string
-		in    *Site
-		paths []string
-		msg   string // part of the error text, a "path: message" line for each problem; not checked if ""
+		name     string
+		in       *Site
+		noLookup bool // validate without lookup
+		paths    []string
+		msg      string // part of the error text, a "path: message" line for each problem; not checked if ""
 	}{
 		{name: "test site", in: testSite()},
-		{name: "minimum", in: &Site{Languages: []string{"ja"}}},
-		{name: "missing languages", in: &Site{}, paths: []string{"/languages"}, msg: "/languages: missing languages"},
+		{name: "test site without lookup", in: testSite(), noLookup: true},
+		{name: "minimum", in: minimalSite()},
+		{
+			name: "general settings",
+			in: edit(testSite(), func(s *Site) {
+				s.Tagline = Localized{"ja": "暮らしに寄り添う道具をつくる", "en": "Tools for everyday life"}
+				s.Logo, s.Icon = testImage, testImage2
+			}),
+		},
+		{
+			name:  "empty",
+			in:    &Site{},
+			paths: []string{"/name", "/url", "/timeZone", "/languages", "/defaultLanguage"},
+			msg: "/name: missing name\n/url: missing url\n/timeZone: missing timeZone\n/languages: missing languages\n" +
+				"/defaultLanguage: missing defaultLanguage",
+		},
+		{
+			name:  "missing items",
+			in:    &Site{Languages: []string{"ja"}},
+			paths: []string{"/name", "/url", "/timeZone", "/defaultLanguage"},
+			msg:   "/name: missing name\n/url: missing url\n/timeZone: missing timeZone\n/defaultLanguage: missing defaultLanguage",
+		},
+		{
+			// The errors are in document order.
+			name: "invalid items",
+			in: edit(testSite(), func(s *Site) {
+				s.Name = Localized{"ja": "株式会社\t〇〇", "de": "Beispiel GmbH"}
+				s.Tagline = Localized{"en": "a\nb"}
+				s.URL, s.TimeZone, s.Logo, s.Icon, s.DefaultLanguage = "https://example.com/", "Local", testPDF, testAboutPage, "fr"
+			}),
+			paths: []string{"/name/ja", "/name/en", "/name/de", "/tagline/en", "/url", "/timeZone", "/logo", "/icon", "/defaultLanguage"},
+			msg: "/name/ja: contains a line break or tab\n/name/en: missing value; every language of the site needs one\n" +
+				`/name/de: language "de" is not in the site settings (use ja, en)` + "\n" +
+				"/tagline/en: contains a line break or tab\n" + `/url: must not end with "/"` + "\n" +
+				`/timeZone: unknown time zone "Local": use an IANA name such as "Asia/Tokyo" or "UTC"` + "\n" +
+				`/logo: media "` + testPDF + `" (pdf) is not accepted here (accept: image)` + "\n" +
+				`/icon: invalid media ID "` + testAboutPage + `": use "med_" and a ULID (26 characters in upper case)` + "\n" +
+				`/defaultLanguage: language "fr" is not in the site settings (use ja, en)`,
+		},
+
+		{
+			name:  "name in one language",
+			in:    edit(testSite(), func(s *Site) { delete(s.Name, "en") }),
+			paths: []string{"/name/en"},
+			msg:   "/name/en: missing value; every language of the site needs one",
+		},
+		{
+			name:  "line break in the name",
+			in:    edit(testSite(), func(s *Site) { s.Name["ja"] = "株式会社\n〇〇" }),
+			paths: []string{"/name/ja"},
+			msg:   "/name/ja: contains a line break or tab",
+		},
+		{
+			name: "name and tagline in languages not in the site settings",
+			in: edit(testSite(), func(s *Site) {
+				s.Name["de"] = "Beispiel GmbH"
+				s.Tagline = Localized{"ja": "暮らしに寄り添う道具をつくる", "fr": "Des outils du quotidien"}
+			}),
+			paths: []string{"/name/de", "/tagline/fr"},
+			msg: `/name/de: language "de" is not in the site settings (use ja, en)` + "\n" +
+				`/tagline/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{name: "tagline in one language", in: edit(testSite(), func(s *Site) { s.Tagline = Localized{"en": "Tools for everyday life"} })},
+		{
+			name:  "line break in the tagline",
+			in:    edit(testSite(), func(s *Site) { s.Tagline = Localized{"ja": "暮らしに寄り添う\n道具をつくる"} }),
+			paths: []string{"/tagline/ja"},
+			msg:   "/tagline/ja: contains a line break or tab",
+		},
+		{
+			name:  "empty tagline",
+			in:    edit(testSite(), func(s *Site) { s.Tagline = Localized{"ja": "暮らしに寄り添う道具をつくる", "en": ""} }),
+			paths: []string{"/tagline/en"},
+			msg:   "/tagline/en: empty value; omit it",
+		},
+		{
+			name:  "URL with a trailing slash",
+			in:    edit(testSite(), func(s *Site) { s.URL = "https://example.com/" }),
+			paths: []string{"/url"},
+			msg:   `/url: must not end with "/"`,
+		},
+		{
+			name:  "unknown time zone",
+			in:    edit(testSite(), func(s *Site) { s.TimeZone = "Tokyo" }),
+			paths: []string{"/timeZone"},
+			msg:   `/timeZone: unknown time zone "Tokyo": use an IANA name such as "Asia/Tokyo" or "UTC"`,
+		},
+
+		{
+			name:  "PDF for the logo",
+			in:    edit(testSite(), func(s *Site) { s.Logo = testPDF }),
+			paths: []string{"/logo"},
+			msg:   `/logo: media "` + testPDF + `" (pdf) is not accepted here (accept: image)`,
+		},
+		{name: "PDF for the logo without lookup", in: edit(testSite(), func(s *Site) { s.Logo = testPDF }), noLookup: true},
+		{
+			name:  "icon that does not exist",
+			in:    edit(testSite(), func(s *Site) { s.Icon = "med_" + testMissing }),
+			paths: []string{"/icon"},
+			msg:   `/icon: media "med_` + testMissing + `" does not exist`,
+		},
+		{
+			name:     "icon that does not exist without lookup",
+			in:       edit(testSite(), func(s *Site) { s.Icon = "med_" + testMissing }),
+			noLookup: true,
+		},
+		{
+			name:  "icon of another kind",
+			in:    edit(testSite(), func(s *Site) { s.Icon = testAboutPage }),
+			paths: []string{"/icon"},
+			msg:   `/icon: invalid media ID "` + testAboutPage + `": use "med_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			name:     "icon of another kind without lookup",
+			in:       edit(testSite(), func(s *Site) { s.Icon = testAboutPage }),
+			noLookup: true,
+			paths:    []string{"/icon"},
+			msg:      `/icon: invalid media ID "` + testAboutPage + `"`,
+		},
+
+		{
+			// The name in ja and the default language ja are not in the site settings either.
+			name:  "missing languages",
+			in:    edit(minimalSite(), func(s *Site) { s.Languages = nil }),
+			paths: []string{"/name/ja", "/languages", "/defaultLanguage"},
+			msg: `/name/ja: language "ja" is not in the site settings` + "\n/languages: missing languages\n" +
+				`/defaultLanguage: language "ja" is not in the site settings`,
+		},
 		{
 			name:  "invalid language",
-			in:    &Site{Languages: []string{"ja", "EN"}},
+			in:    edit(minimalSite(), func(s *Site) { s.Languages, s.Name["EN"] = []string{"ja", "EN"}, "Example Inc." }),
 			paths: []string{"/languages/1"},
 			msg:   `/languages/1: invalid language code "EN"`,
 		},
 		{
 			name:  "duplicate language",
-			in:    &Site{Languages: []string{"ja", "en", "ja"}},
+			in:    edit(minimalSite(), func(s *Site) { s.Languages, s.Name["en"] = []string{"ja", "en", "ja"}, "Example Inc." }),
 			paths: []string{"/languages/2"},
 			msg:   `/languages/2: duplicate language "ja"`,
 		},
+		{name: "default language other than the first", in: edit(testSite(), func(s *Site) { s.DefaultLanguage = "en" })},
+		{
+			name:  "default language not in the site settings",
+			in:    edit(testSite(), func(s *Site) { s.DefaultLanguage = "fr" }),
+			paths: []string{"/defaultLanguage"},
+			msg:   `/defaultLanguage: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "default language in another case",
+			in:    edit(testSite(), func(s *Site) { s.DefaultLanguage = "JA" }),
+			paths: []string{"/defaultLanguage"},
+			msg:   `/defaultLanguage: language "JA" is not in the site settings (use ja, en)`,
+		},
+		{name: "prefix for the default language", in: edit(testSite(), func(s *Site) { s.PrefixDefaultLanguage = true })},
+
 		{
 			name: "taxonomies",
-			in: &Site{Languages: []string{"ja"}, Taxonomies: []TaxonomyDef{
-				{Name: "a b"},
-				{Name: TaxonomyTag},
-				{Name: "x", Label: "a\nb"},
-				{Name: "x"},
-				{Name: ""},
-			}},
+			in: edit(minimalSite(), func(s *Site) {
+				s.Taxonomies = []TaxonomyDef{
+					{Name: "a b"},
+					{Name: TaxonomyTag},
+					{Name: "x", Label: "a\nb"},
+					{Name: "x"},
+					{Name: ""},
+				}
+			}),
 			paths: []string{"/taxonomies/a b", "/taxonomies/tag", "/taxonomies/x/label", "/taxonomies/x", "/taxonomies/"},
 			msg: `/taxonomies/a b: invalid name "a b": use ASCII letters, digits, "-" and "_"` + "\n" +
 				"/taxonomies/tag: tag is a built-in taxonomy\n" +
@@ -348,18 +617,20 @@ func TestSiteValidate(t *testing.T) {
 		},
 		{
 			name:  "escaped name",
-			in:    &Site{Languages: []string{"ja"}, Types: []TypeDef{{Name: "a/b~c"}}},
+			in:    edit(minimalSite(), func(s *Site) { s.Types = []TypeDef{{Name: "a/b~c"}} }),
 			paths: []string{"/types/a~1b~0c"},
 			msg:   `/types/a~1b~0c: invalid name "a/b~c"`,
 		},
 		{
 			name: "types",
-			in: &Site{Languages: []string{"ja"}, Types: []TypeDef{
-				{Name: "a", Label: "a\tb"},
-				{Name: "a"},
-				{Name: TypePost, Taxonomies: []string{TaxonomyTag, "unknown"}},
-				{Name: TypePage, Taxonomies: []string{TaxonomyCategory, TaxonomyTag, TaxonomyCategory}},
-			}},
+			in: edit(minimalSite(), func(s *Site) {
+				s.Types = []TypeDef{
+					{Name: "a", Label: "a\tb"},
+					{Name: "a"},
+					{Name: TypePost, Taxonomies: []string{TaxonomyTag, "unknown"}},
+					{Name: TypePage, Taxonomies: []string{TaxonomyCategory, TaxonomyTag, TaxonomyCategory}},
+				}
+			}),
 			paths: []string{"/types/a/label", "/types/a", "/types/post/taxonomies/0", "/types/post/taxonomies/1", "/types/page/taxonomies/2"},
 			msg: "/types/a/label: contains a line break or tab\n" +
 				`/types/a: duplicate type "a"` + "\n" +
@@ -539,7 +810,11 @@ func TestSiteValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.in.Validate()
+			lookup := testLookup
+			if tt.noLookup {
+				lookup = nil
+			}
+			err := tt.in.Validate(lookup)
 			if tt.paths == nil && err != nil {
 				t.Fatalf("Validate() = %v, want nil", err)
 			}
