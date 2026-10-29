@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
+  "hash": "sha256:fa6b1a13e38782a24e72fe6ec39feb7a16bd15ce3e3a9efe8750ff6c8b0c0f01",
+  "fileName": "会社外観.jpg",
+  "mimeType": "image/jpeg",
+  "size": 482133,
+  "width": 1600,
+  "height": 1067,
+  "alt": { "en": "Our office building", "ja": "会社外観" },
+  "caption": { "ja": "本社の外観（2024年撮影）" },
+  "uploadedAt": "2026-10-25T10:00:00+09:00",
+  "uploadedBy": "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+}
