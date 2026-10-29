@@ -385,15 +385,18 @@ func (x *Revision) checkParent(c *checker, e *Entry) {
 	}
 }
 
-// check checks x, the terms of an entry of the type t, at path.
-// The taxonomies that t does not use are reported in sorted order after the others.
+// check checks x, the terms of an entry of the type t, at path. Publishing needs a category if the URL rule of t
+// has {category}. The taxonomies that t does not use are reported in sorted order after the others.
 func (x Terms) check(c *checker, path string, t *TypeDef) {
 	for _, taxonomy := range t.Taxonomies {
+		p := path + "/" + escapePointer(taxonomy)
 		ids, ok := x[taxonomy]
 		if !ok {
+			if rule := t.URLRule(); taxonomy == TaxonomyCategory && c.doc.publish && hasPlaceholder(rule, "category") {
+				c.addf(p, "missing category; the URL rule %q of %s needs one", rule, t.Name)
+			}
 			continue
 		}
-		p := path + "/" + escapePointer(taxonomy)
 		if len(ids) == 0 {
 			c.addf(p, "empty value; omit it")
 		}
