@@ -624,6 +624,33 @@ func FuzzOutputFile(f *testing.F) {
 	})
 }
 
+// FuzzEntryPath checks that a valid URL rule of post gives the entries with valid values paths that OutputFile
+// accepts in every language, unless a segment is too long for a file name.
+func FuzzEntryPath(f *testing.F) {
+	for _, rule := range []string{DefaultPostURL, "/archives/{number}/", "/{category}/{slug}/", "/{yyyy}{mm}{dd}/{number}.html", "/お知らせ/{slug}/", "/a.b/{slug}.html"} {
+		f.Add(rule)
+	}
+	f.Fuzz(func(t *testing.T, rule string) {
+		s := testSite()
+		i := slices.IndexFunc(s.Types, func(d TypeDef) bool { return d.Name == TypePost })
+		s.Types[i].URL = rule
+		if checkURLRule(rule, entryRuleKind(&s.Types[i]), s) != nil {
+			t.Skip()
+		}
+		r := &Revision{Slug: "新サービス", Date: "2026-10-26T00:30:00+09:00", Terms: Terms{TaxonomyCategory: {testPressReleaseCategory}}}
+		for _, language := range s.Languages {
+			e := &Entry{ID: testPost, Number: 123, Type: TypePost, Language: language}
+			path, err := s.EntryPath(e, r, testPathLookup)
+			if err != nil {
+				t.Fatalf("EntryPath() with the rule %q = %v", rule, err)
+			}
+			if _, err := OutputFile(path); err != nil && !strings.Contains(err.Error(), "segment too long") {
+				t.Fatalf("OutputFile(%q) for the rule %q = %v", path, rule, err)
+			}
+		}
+	})
+}
+
 // unmarshalTestdata reads the testdata file name as a T.
 func unmarshalTestdata[T any](t *testing.T, name string) T {
 	t.Helper()

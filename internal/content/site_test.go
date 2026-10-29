@@ -445,6 +445,7 @@ func TestCheckSiteURL(t *testing.T) {
 		{name: "Japanese path", in: "https://example.com/ブログ"},
 		{name: "IDN in the xn-- form", in: "https://xn--eckwd4c7c.xn--zckzah"}, // ドメイン.テスト
 		{name: "IPv6 and port", in: "https://[::1]:8443"},
+		{name: "lowest port", in: "https://example.com:1"},
 		{name: "highest port", in: "https://example.com:65535"},
 		{name: "default port of the other scheme", in: "http://example.com:443"},
 

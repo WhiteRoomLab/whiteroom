@@ -227,7 +227,7 @@ func (s *Site) check(c *checker) {
 			c.addf(p, `the URL rule of page %q must end with "/" for the posts page`, pageRule)
 		}
 	}
-	if n := s.PostsPerPage; n != 0 && (n < 1 || n > MaxPostsPerPage) {
+	if n := s.PostsPerPage; n < 0 || n > MaxPostsPerPage {
 		c.addf("/postsPerPage", "postsPerPage %d is out of range (1 to %d)", n, MaxPostsPerPage)
 	}
 	if s.AuthorURL != "" {

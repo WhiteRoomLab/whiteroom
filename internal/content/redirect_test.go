@@ -612,6 +612,8 @@ func TestSitePath(t *testing.T) {
 		{name: "query", site: site, to: "https://example.com/?p=123", want: "/?p=123"},
 		{name: "query without a path", site: site, to: "https://example.com?p=123", want: "/?p=123"},
 		{name: "query left as it is", site: site, to: "https://example.com/?q=%e4%bc%9a&a", want: "/?q=%e4%bc%9a&a"},
+		// "'" is kept in paths, unlike in queries.
+		{name: "apostrophe", site: site, to: "https://example.com/it's/", want: "/it's/"},
 		{name: "empty query", site: site, to: "https://example.com/about/?", want: "/about/"},
 		{name: "fragment", site: site, to: "https://example.com/about/?a=1#team", want: "/about/?a=1"},
 		{name: "scheme in upper case", site: site, to: "HTTPS://example.com/about/", want: "/about/"},
