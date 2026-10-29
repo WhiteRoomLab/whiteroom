@@ -30,6 +30,21 @@ func TestError(t *testing.T) {
 	}{
 		{name: "root", err: &Error{Path: "", Msg: "m"}, want: "m"},
 		{name: "nested", err: &Error{Path: "/a/0", Msg: "m"}, want: "/a/0: m"},
+		{name: "position", err: &Error{Path: "/a/0", Msg: "m", Line: 3, Column: 15}, want: "3:15: /a/0: m"},
+		{
+			name: "file and position",
+			err:  &Error{Path: "/types/works/url", Msg: "m", File: "site/schema.yaml", Line: 12, Column: 5},
+			want: "site/schema.yaml:12:5: /types/works/url: m",
+		},
+		{name: "file", err: &Error{Path: "/a", Msg: "m", File: "settings.json"}, want: "settings.json: /a: m"},
+		{name: "file at the root", err: &Error{Msg: "m", File: "settings.json"}, want: "settings.json: m"},
+		{name: "position at the root", err: &Error{Msg: "m", Line: 1, Column: 1}, want: "1:1: m"},
+		{
+			name: "file and position without a path",
+			err:  &Error{Msg: "unexpected end of JSON input", File: "settings.json", Line: 4, Column: 2},
+			want: "settings.json:4:2: unexpected end of JSON input",
+		},
+		{name: "column without a line", err: &Error{Path: "/a", Msg: "m", Column: 7}, want: "/a: m"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,6 +63,14 @@ func TestErrors(t *testing.T) {
 	}{
 		{name: "one", errs: Errors{{Path: "/a", Msg: "m"}}, want: "/a: m"},
 		{name: "two", errs: Errors{{Path: "", Msg: "m"}, {Path: "/a/0", Msg: "n"}}, want: "m\n/a/0: n"},
+		{
+			name: "files",
+			errs: Errors{
+				{Msg: "m", File: "settings.json", Line: 1, Column: 1},
+				{Path: "/types", Msg: "n", File: "site/schema.yaml", Line: 2, Column: 1},
+			},
+			want: "settings.json:1:1: m\nsite/schema.yaml:2:1: /types: n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
