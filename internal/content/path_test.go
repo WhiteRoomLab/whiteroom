@@ -2,6 +2,8 @@ package content
 
 import (
 	"cmp"
+	"encoding/json/v2"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -620,4 +622,141 @@ func FuzzOutputFile(f *testing.F) {
 			}
 		}
 	})
+}
+
+// unmarshalTestdata reads the testdata file name as a T.
+func unmarshalTestdata[T any](t *testing.T, name string) T {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal([]byte(readTestdata(t, name)), &v); err != nil {
+		t.Fatalf("Unmarshal(%s) = %v", name, err)
+	}
+	return v
+}
+
+// TestNewsPost checks the post of the example in CONCEPT.md 6.11.9, which is a published entry and its revision.
+func TestNewsPost(t *testing.T) {
+	site := exampleSite()
+	entryJSON := readTestdata(t, "news-post-entry.json")
+	revisionJSON := readTestdata(t, "news-post-revision.json")
+	assertRoundTrip[Entry](t, entryJSON, entryJSON)
+	assertRoundTrip[Revision](t, revisionJSON, revisionJSON)
+	e := unmarshalTestdata[Entry](t, "news-post-entry.json")
+	if err := e.Validate(site); err != nil {
+		t.Errorf("Entry.Validate() = %v", err)
+	}
+	r := mustRevision(t, revisionJSON)
+	normalized := mustRevision(t, revisionJSON)
+	normalized.Normalize(site.Type(e.Type))
+	if !reflect.DeepEqual(normalized, r) {
+		t.Errorf("Normalize() changed the revision to %#v", normalized)
+	}
+	opts := RevisionOptions{Site: site, Entry: &e, Publish: true, Lookup: testLookup}
+	assertRevisionValidate(t, r, opts, nil, "")
+}
+
+// TestExamplePaths checks the paths of the example in CONCEPT.md 6.11.9 and the files to write them to. The lookup
+// tells the slugs and the parents of the pages and the terms in testdata.
+func TestExamplePaths(t *testing.T) {
+	s := exampleSite()
+	assertValidSite(t, s)
+	post := unmarshalTestdata[Entry](t, "news-post-entry.json")
+	postRev := unmarshalTestdata[Revision](t, "news-post-revision.json")
+	about := unmarshalTestdata[Entry](t, "about-page-entry.json")
+	aboutRev := unmarshalTestdata[Revision](t, "about-page-revision.json")
+	worksRev := unmarshalTestdata[Revision](t, "works-revision.json")
+	author := unmarshalTestdata[AuthorProfile](t, "author-profile.json")
+	news := unmarshalTestdata[Term](t, "news-category.json")
+	pressRelease := unmarshalTestdata[Term](t, "press-release-category.json")
+	event := unmarshalTestdata[Term](t, "event-tag-ja.json")
+	englishEvent := unmarshalTestdata[Term](t, "event-tag-en.json")
+	refs := map[string]PathRef{about.ID: {Slug: aboutRev.Slug, Parent: aboutRev.Parent}}
+	for _, x := range []Term{news, pressRelease, event, englishEvent} {
+		refs[x.ID] = PathRef{Slug: x.Slug, Parent: x.Parent}
+	}
+	lookup := func(kind RefKind, id string) (PathRef, bool) {
+		r, ok := refs[id]
+		return r, ok && strings.HasPrefix(id, idPrefixes[kind])
+	}
+	// path returns p, reporting err if any.
+	path := func(p string, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Error(err)
+		}
+		return p
+	}
+	// postPath returns the path of the post with rule as the URL rule of post.
+	postPath := func(rule string) string {
+		t.Helper()
+		site := exampleSite()
+		site.Types[0].URL = rule
+		assertValidSite(t, site)
+		return path(site.EntryPath(&post, &postRev, lookup))
+	}
+	// pagePath returns the path of the page id in language, whose slug is slug.
+	pagePath := func(id, language, slug string) string {
+		t.Helper()
+		return path(s.EntryPath(&Entry{ID: id, Type: TypePage, Language: language}, &Revision{Slug: slug}, lookup))
+	}
+	tests := []struct {
+		name string
+		got  string // the path
+		want string
+		file string // the output file of the path
+	}{
+		{name: "post", got: path(s.EntryPath(&post, &postRev, lookup)), want: "/2026/10/26/新サービス/", file: "2026/10/26/新サービス/index.html"},
+		{name: "numeric", got: postPath("/archives/{number}/"), want: "/archives/123/", file: "archives/123/index.html"},
+		{
+			name: "category and name",
+			got:  postPath("/{category}/{slug}/"),
+			want: "/news/press-release/新サービス/",
+			file: "news/press-release/新サービス/index.html",
+		},
+		{
+			name: "month and name with .html",
+			got:  postPath("/{yyyy}/{mm}/{slug}.html"),
+			want: "/2026/10/新サービス.html",
+			file: "2026/10/新サービス.html",
+		},
+		{name: "about page", got: path(s.EntryPath(&about, &aboutRev, lookup)), want: "/about/", file: "about/index.html"},
+		{name: "front page", got: pagePath(testHomePage, "ja", "home"), want: "/", file: "index.html"},
+		{name: "posts page", got: pagePath(testNewsPage, "ja", "news"), want: "/news/", file: "news/index.html"},
+		{
+			name: "page 2 of the posts page",
+			got:  PagedPath(pagePath(testNewsPage, "ja", "news"), 2),
+			want: "/news/page/2/",
+			file: "news/page/2/index.html",
+		},
+		{name: "front page in en", got: s.LanguagePath("en"), want: "/en/", file: "en/index.html"},
+		{name: "page 2 of the front page in en", got: PagedPath(s.LanguagePath("en"), 2), want: "/en/page/2/", file: "en/page/2/index.html"},
+		{name: "page in en", got: pagePath(testEnglishPage, "en", "about"), want: "/en/about/", file: "en/about/index.html"},
+		{name: "category", got: path(s.TermPath(&news, lookup)), want: "/category/news/", file: "category/news/index.html"},
+		{
+			name: "child category",
+			got:  path(s.TermPath(&pressRelease, lookup)),
+			want: "/category/news/press-release/",
+			file: "category/news/press-release/index.html",
+		},
+		{name: "tag", got: path(s.TermPath(&event, lookup)), want: "/tag/イベント/", file: "tag/イベント/index.html"},
+		{name: "tag in en", got: path(s.TermPath(&englishEvent, lookup)), want: "/en/tag/events/", file: "en/tag/events/index.html"},
+		{name: "author", got: path(s.AuthorPath(&author, "ja")), want: "/author/yamada/", file: "author/yamada/index.html"},
+		{name: "list of works", got: path(s.ArchivePath("works", "ja")), want: "/works/", file: "works/index.html"},
+		{
+			name: "works",
+			got:  path(s.EntryPath(testEntry("works"), &worksRev, lookup)),
+			want: "/works/example-corporate-site/",
+			file: "works/example-corporate-site/index.html",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("path = %q, want %q", tt.got, tt.want)
+			}
+			if file, err := OutputFile(tt.got); err != nil || file != tt.file {
+				t.Errorf("OutputFile(%q) = %q, %v, want %q", tt.got, file, err, tt.file)
+			}
+		})
+	}
 }

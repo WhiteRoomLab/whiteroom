@@ -85,6 +85,32 @@ func minimalSite() *Site {
 	}
 }
 
+// exampleSite returns the site settings of the example in CONCEPT.md 6.11.9: a site in Japanese and English whose posts
+// have the URL rule of "Day and name" in the permalink settings of WordPress.
+func exampleSite() *Site {
+	s := testSite()
+	works := *s.Type("works")
+	works.URL, works.Archive = "/works/{slug}/", "/works/"
+	return &Site{
+		Name:            Localized{"ja": "株式会社〇〇", "en": "Example Inc."},
+		Tagline:         Localized{"ja": "Webサイトの企画と制作"},
+		URL:             "https://example.com",
+		TimeZone:        "Asia/Tokyo",
+		Logo:            testLogo,
+		Icon:            testIcon,
+		Languages:       []string{"ja", "en"},
+		DefaultLanguage: "ja",
+		FrontPage:       Localized{"ja": testHomePage},
+		PostsPage:       Localized{"ja": testNewsPage},
+		SEO: SiteSEO{
+			TitleFormat: Localized{"ja": "{title}｜{siteName}", "en": "{title} | {siteName}"},
+			OGImage:     Localized{"ja": testOGImage},
+		},
+		Types:      []TypeDef{{Name: TypePost, URL: "/{yyyy}/{mm}/{dd}/{slug}/"}, works},
+		Taxonomies: []TaxonomyDef{*s.Taxonomy("works_category")},
+	}
+}
+
 // IDs of the entities that testLookup finds, and of others.
 const (
 	testAboutPage          = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" // page in ja
@@ -95,8 +121,13 @@ const (
 	testPrivacyPage        = "ent_01JBD1A2B3C4D5E6F7G8H9J0K1" // page in ja
 	testEnglishPrivacyPage = "ent_01JBD1M2N3P4Q5R6S7T8V9W0X1" // page in en
 	testContactPage        = "ent_01JBD1Y2Z3A4B5C6D7E8F9G0H1" // page in ja
+	testHomePage           = "ent_01JBG3N6S1V4X7Z0C3E6G9J2K5" // page in ja
+	testNewsPage           = "ent_01JBG3N6T2W5Y8B1D4F7H0K3M6" // page in ja
 	testImage              = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
 	testImage2             = "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"
+	testLogo               = "med_01JBG3N6V3X6Z9C2E5G8J1K4M7"
+	testIcon               = "med_01JBG3N6W4Y7B0D3F6H9K2M5P8"
+	testOGImage            = "med_01JBG3N6X5Z8C1E4G7J0K3N6Q9"
 	testPDF                = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
 	testForm               = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
 	testWorksTerm          = "trm_01JB9A00000000000000000001" // works_category in ja
@@ -123,8 +154,13 @@ var testRefs = map[string]Ref{
 	testPrivacyPage:          {Type: TypePage, Language: "ja"},
 	testEnglishPrivacyPage:   {Type: TypePage, Language: "en"},
 	testContactPage:          {Type: TypePage, Language: "ja"},
+	testHomePage:             {Type: TypePage, Language: "ja"},
+	testNewsPage:             {Type: TypePage, Language: "ja"},
 	testImage:                {Type: MediaImage},
 	testImage2:               {Type: MediaImage},
+	testLogo:                 {Type: MediaImage},
+	testIcon:                 {Type: MediaImage},
+	testOGImage:              {Type: MediaImage},
 	testPDF:                  {Type: MediaPDF},
 	testForm:                 {},
 	testWorksTerm:            {Type: "works_category", Language: "ja"},
@@ -135,6 +171,8 @@ var testRefs = map[string]Ref{
 	testSeries:               {Type: "series", Language: "ja"},
 	testNewsCategory:         {Type: TaxonomyCategory, Language: "ja"},
 	testPressReleaseCategory: {Type: TaxonomyCategory, Language: "ja"},
+	testEventTag:             {Type: TaxonomyTag, Language: "ja"},
+	testEnglishEventTag:      {Type: TaxonomyTag, Language: "en"},
 	testEnglishCategory:      {Type: TaxonomyCategory, Language: "en"},
 	testAuthor:               {},
 }
@@ -158,6 +196,12 @@ func TestTestSite(t *testing.T) {
 		if !found {
 			t.Errorf("invalid ID %q in testRefs", id)
 		}
+	}
+}
+
+func TestExampleSite(t *testing.T) {
+	if err := exampleSite().Validate(testLookup); err != nil {
+		t.Fatalf("Validate() = %v", err)
 	}
 }
 
