@@ -32,7 +32,7 @@ func (e *Error) Error() string {
 	return s
 }
 
-// Errors lists the problems found by Validate, in document order.
+// Errors lists the problems found by Validate, in document order, or by LoadSite in the files of the site settings.
 type Errors []*Error
 
 func (es Errors) Error() string {
