@@ -351,8 +351,8 @@ func TestFormNormalize(t *testing.T) {
 		},
 		{
 			name: "line breaks and tabs left in the title, the labels and the values",
-			in:   Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\ne"}, Options: []FormOption{{Value: "f\tg", Label: Localized{"ja": "h\r\ni"}}}}}},
-			want: Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\ne"}, Options: []FormOption{{Value: "f\tg", Label: Localized{"ja": "h\r\ni"}}}}}},
+			in:   Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}}},
+			want: Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}}},
 		},
 		{
 			name: "line breaks in the message",
@@ -576,6 +576,15 @@ func TestFormValidate(t *testing.T) {
 		{name: "name with digits, hyphens and underscores", in: form(contactForm, func(x *Form) { x.Fields[0].Name = "your_name-2" })},
 		{name: "names in another case", in: form(contactForm, func(x *Form) { x.Fields[2].Name = "Your-Name" })},
 		{
+			name: "names starting with a, z, A and Z",
+			in: fields(
+				FormField{Name: "area", Type: FormText, Label: label},
+				FormField{Name: "zip", Type: FormText, Label: label},
+				FormField{Name: "Address", Type: FormText, Label: label},
+				FormField{Name: "Zone", Type: FormText, Label: label},
+			),
+		},
+		{
 			name:  "missing name",
 			in:    form(contactForm, func(x *Form) { x.Fields[0].Name = "" }),
 			paths: []string{"/fields/0/name"},
@@ -776,6 +785,12 @@ func TestFormValidate(t *testing.T) {
 			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[0].Value = "quote\n" }),
 			paths: []string{"/fields/3/options/0/value"},
 			msg:   "/fields/3/options/0/value: contains a line break or tab",
+		},
+		{
+			name:  "line break in the label of an option",
+			in:    form(contactForm, func(x *Form) { x.Fields[3].Options[0].Label["ja"] = "お見積\nもり" }),
+			paths: []string{"/fields/3/options/0/label/ja"},
+			msg:   "/fields/3/options/0/label/ja: contains a line break or tab",
 		},
 		{
 			name:  "missing label of an option",

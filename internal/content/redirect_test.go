@@ -333,6 +333,7 @@ func TestNormalizeRedirectFrom(t *testing.T) {
 			want: "/wp-content/uploads/2020/05/写真-scaled.jpg",
 		},
 		{name: "unreserved", in: "/%41%7a%30%2D%2e%5F%7E", want: "/Az0-._~"},
+		{name: "first and last letters and digits", in: "/%41%5A%61%7A%30%39/AZaz09", want: "/AZaz09/AZaz09"},
 		{name: "reserved and others", in: "/%2F%3F%26%3D%2B%25%20", want: "/%2F%3F%26%3D%2B%25%20"},
 		{name: "lower case hex", in: "/%2f%3f%26%3d%2b%25%20?q=%2f%3d", want: "/%2F%3F%26%3D%2B%25%20?q=%2F%3D"},
 		{name: "characters to encode", in: "/a b\"<>^`{|}[]", want: "/a%20b%22%3C%3E%5E%60%7B%7C%7D%5B%5D"},
@@ -440,6 +441,7 @@ func TestCheckRedirectFrom(t *testing.T) {
 		{name: "percent without hex digits", in: "/100%", msg: escape},
 		{name: "percent with a hex digit", in: "/%4", msg: escape},
 		{name: "percent before an escape", in: "/%%41", msg: escape},
+		{name: "bad percent right after an escape", in: "/%41%zz", msg: escape},
 		{name: "bad percent in the query", in: "/?q=%zz", msg: escape},
 		{name: "dot segment", in: "/a/./b", msg: dots},
 		{name: "double-dot segment", in: "/a/../b", msg: dots},
@@ -529,4 +531,27 @@ func TestRedirectMatches(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FuzzNormalizeRedirectFrom checks that the canonical form does not change when normalized again,
+// that checkRedirectFrom does not ask to normalize it, and that a valid from matches the request it came from.
+func FuzzNormalizeRedirectFrom(f *testing.F) {
+	for _, s := range []string{
+		"/?p=123", "/%e4%bc%9a%e7%a4%be/", "/a b/?q=it's&a=1&&", "/%%34%31", "/a/.%2e/b", "/cafe" + acute + "/", "/%FF%E4%BC", " /x?#y\t",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		n := normalizeRedirectFrom(s)
+		if again := normalizeRedirectFrom(n); again != n {
+			t.Fatalf("normalizeRedirectFrom(%q) = %q, and again %q", s, n, again)
+		}
+		err := checkRedirectFrom(n)
+		if err != nil && strings.Contains(err.Error(), "normalize it first") {
+			t.Fatalf("checkRedirectFrom(%q) = %v for the canonical form of %q", n, err, s)
+		}
+		if err == nil && !redirectMatches(n, s) {
+			t.Fatalf("redirectMatches(%q, %q) = false", n, s)
+		}
+	})
 }

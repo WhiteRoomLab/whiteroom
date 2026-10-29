@@ -351,8 +351,8 @@ func TestMenuNormalize(t *testing.T) {
 		},
 		{
 			name: "line breaks and tabs left in the title and the labels",
-			in:   Menu{Title: "a\r\nb\tc", Items: []MenuItem{{Label: "d\ne"}}},
-			want: Menu{Title: "a\r\nb\tc", Items: []MenuItem{{Label: "d\ne"}}},
+			in:   Menu{Title: "a\r\nb\tc", Items: []MenuItem{{Label: "d\r\ne"}}},
+			want: Menu{Title: "a\r\nb\tc", Items: []MenuItem{{Label: "d\r\ne"}}},
 		},
 		{
 			name: "spaces and control characters in the href",
