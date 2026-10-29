@@ -6,7 +6,8 @@ import (
 	"slices"
 )
 
-// Localized holds a text in each language, such as {"ja": "会社外観", "en": "Our office building"}, for an entity that is not split by language.
+// Localized holds a value in each language for an entity that is not split by language: a text, such as
+// {"ja": "会社外観", "en": "Our office building"}, or another value such as the ID of an entry in the language.
 type Localized map[string]string
 
 func (x *Localized) UnmarshalJSON(data []byte) error { return decodeJSON(x, data) }
@@ -48,19 +49,44 @@ func (x *Localized) normalize(multiline bool) {
 // check checks x at path; the texts may have line breaks and tabs if multiline is true.
 // The languages that site does not have are reported in sorted order after the others, without checking their texts.
 func (x Localized) check(c *checker, path string, site *Site, multiline bool) {
-	for _, language := range site.Languages {
-		s, ok := x[language]
-		if !ok {
-			continue
+	x.checkTexts(c, path, site, multiline, false)
+}
+
+// checkRequired checks x at path as check does, and that it has a text in every language of site;
+// key names x in the message if it has none.
+func (x Localized) checkRequired(c *checker, path, key string, site *Site, multiline bool) {
+	if len(x) == 0 {
+		c.addf(path, "missing %s", key)
+		return
+	}
+	x.checkTexts(c, path, site, multiline, true)
+}
+
+// checkTexts checks x as check does, and reports the languages of site without a text if required.
+func (x Localized) checkTexts(c *checker, path string, site *Site, multiline, required bool) {
+	x.checkValues(c, path, site, required, func(p, _, s string) {
+		if multiline {
+			c.add(p, checkText(s, true))
+		} else {
+			c.add(p, checkLine(s))
 		}
+	})
+}
+
+// checkValues checks the value of each language of site in x at path with check, which gets the path and the language
+// of the value, and reports the empty values, or the languages without a value if required. The languages that site
+// does not have are reported in sorted order after the others, without checking their values.
+func (x Localized) checkValues(c *checker, path string, site *Site, required bool, check func(path, language, v string)) {
+	for _, language := range site.Languages {
+		v, ok := x[language]
 		p := path + "/" + escapePointer(language)
 		switch {
-		case s == "":
+		case v != "":
+			check(p, language, v)
+		case required:
+			c.addf(p, "missing value; every language of the site needs one")
+		case ok:
 			c.addf(p, "empty value; omit it")
-		case multiline:
-			c.add(p, checkText(s, true))
-		default:
-			c.add(p, checkLine(s))
 		}
 	}
 	for _, language := range slices.Sorted(maps.Keys(x)) {

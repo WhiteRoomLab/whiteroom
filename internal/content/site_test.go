@@ -72,49 +72,56 @@ func testSite() *Site {
 
 // IDs of the entities that testLookup finds, and of others.
 const (
-	testAboutPage       = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" // page in ja
-	testPage            = "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" // page in ja
-	testProduct         = "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4" // product in ja
-	testEnglishPage     = "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" // page in en
-	testPost            = "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" // post in ja
-	testImage           = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
-	testImage2          = "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"
-	testPDF             = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
-	testForm            = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
-	testWorksTerm       = "trm_01JB9A00000000000000000001" // works_category in ja
-	testCategory        = "trm_01JB9A00000000000000000002" // category in ja
-	testTag             = "trm_01JB9A00000000000000000003" // tag in ja
-	testTag2            = "trm_01JB9A00000000000000000004" // tag in ja
-	testEnglishTag      = "trm_01JB9A00000000000000000005" // tag in en
-	testSeries          = "trm_01JB9A00000000000000000006" // series in ja
-	testNewsCategory    = "trm_01JBA4C7E2G5J8K1M4P7R2T5W8" // category in ja
-	testEnglishCategory = "trm_01JB9A00000000000000000008" // category in en
-	testAuthor          = "aut_01JB9B00000000000000000001"
-	testRevision        = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9"
-	testGroup           = "tg_01JB8X4M7NB5D8F1H4J7K2M6P9"
-	testUser            = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
-	testMissing         = "01JB9Z00000000000000000000" // after a prefix, the ID of an entity that testLookup does not find
+	testAboutPage          = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" // page in ja
+	testPage               = "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" // page in ja
+	testProduct            = "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4" // product in ja
+	testEnglishPage        = "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" // page in en
+	testPost               = "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" // post in ja
+	testPrivacyPage        = "ent_01JBD1A2B3C4D5E6F7G8H9J0K1" // page in ja
+	testEnglishPrivacyPage = "ent_01JBD1M2N3P4Q5R6S7T8V9W0X1" // page in en
+	testContactPage        = "ent_01JBD1Y2Z3A4B5C6D7E8F9G0H1" // page in ja
+	testImage              = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+	testImage2             = "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"
+	testPDF                = "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"
+	testForm               = "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"
+	testWorksTerm          = "trm_01JB9A00000000000000000001" // works_category in ja
+	testCategory           = "trm_01JB9A00000000000000000002" // category in ja
+	testTag                = "trm_01JB9A00000000000000000003" // tag in ja
+	testTag2               = "trm_01JB9A00000000000000000004" // tag in ja
+	testEnglishTag         = "trm_01JB9A00000000000000000005" // tag in en
+	testSeries             = "trm_01JB9A00000000000000000006" // series in ja
+	testNewsCategory       = "trm_01JBA4C7E2G5J8K1M4P7R2T5W8" // category in ja
+	testEnglishCategory    = "trm_01JB9A00000000000000000008" // category in en
+	testAuthor             = "aut_01JB9B00000000000000000001"
+	testRevision           = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9"
+	testGroup              = "tg_01JB8X4M7NB5D8F1H4J7K2M6P9"
+	testUser               = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+	testMissing            = "01JB9Z00000000000000000000" // after a prefix, the ID of an entity that testLookup does not find
 )
 
 var testRefs = map[string]Ref{
-	testAboutPage:       {Type: TypePage, Language: "ja"},
-	testPage:            {Type: TypePage, Language: "ja"},
-	testProduct:         {Type: "product", Language: "ja"},
-	testEnglishPage:     {Type: TypePage, Language: "en"},
-	testPost:            {Type: TypePost, Language: "ja"},
-	testImage:           {Type: MediaImage},
-	testImage2:          {Type: MediaImage},
-	testPDF:             {Type: MediaPDF},
-	testForm:            {},
-	testWorksTerm:       {Type: "works_category", Language: "ja"},
-	testCategory:        {Type: TaxonomyCategory, Language: "ja"},
-	testTag:             {Type: TaxonomyTag, Language: "ja"},
-	testTag2:            {Type: TaxonomyTag, Language: "ja"},
-	testEnglishTag:      {Type: TaxonomyTag, Language: "en"},
-	testSeries:          {Type: "series", Language: "ja"},
-	testNewsCategory:    {Type: TaxonomyCategory, Language: "ja"},
-	testEnglishCategory: {Type: TaxonomyCategory, Language: "en"},
-	testAuthor:          {},
+	testAboutPage:            {Type: TypePage, Language: "ja"},
+	testPage:                 {Type: TypePage, Language: "ja"},
+	testProduct:              {Type: "product", Language: "ja"},
+	testEnglishPage:          {Type: TypePage, Language: "en"},
+	testPost:                 {Type: TypePost, Language: "ja"},
+	testPrivacyPage:          {Type: TypePage, Language: "ja"},
+	testEnglishPrivacyPage:   {Type: TypePage, Language: "en"},
+	testContactPage:          {Type: TypePage, Language: "ja"},
+	testImage:                {Type: MediaImage},
+	testImage2:               {Type: MediaImage},
+	testPDF:                  {Type: MediaPDF},
+	testForm:                 {},
+	testWorksTerm:            {Type: "works_category", Language: "ja"},
+	testCategory:             {Type: TaxonomyCategory, Language: "ja"},
+	testTag:                  {Type: TaxonomyTag, Language: "ja"},
+	testTag2:                 {Type: TaxonomyTag, Language: "ja"},
+	testEnglishTag:           {Type: TaxonomyTag, Language: "en"},
+	testSeries:               {Type: "series", Language: "ja"},
+	testNewsCategory:         {Type: TaxonomyCategory, Language: "ja"},
+	testPressReleaseCategory: {Type: TaxonomyCategory, Language: "ja"},
+	testEnglishCategory:      {Type: TaxonomyCategory, Language: "en"},
+	testAuthor:               {},
 }
 
 func testLookup(kind RefKind, id string) (Ref, bool) {
