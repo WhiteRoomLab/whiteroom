@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "mnu_01JBD2A3B4C5D6E7F8G9H0J1K2",
+  "title": "ヘッダー",
+  "location": "header",
+  "language": "ja",
+  "items": [
+    { "label": "会社概要", "entry": "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" },
+    {
+      "label": "サービス",
+      "children": [
+        { "label": "サービス一覧", "entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" },
+        { "label": "制作実績", "href": "/works/" }
+      ]
+    },
+    {
+      "term": "trm_01JBA4C7E2G5J8K1M4P7R2T5W8",
+      "children": [{ "term": "trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7" }]
+    },
+    { "label": "採用情報", "href": "https://recruit.example.com/", "newTab": true }
+  ]
+}

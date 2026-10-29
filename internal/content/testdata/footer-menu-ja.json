@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "mnu_01JBD2M5N6P7Q8R9S0T1V2W3X4",
+  "title": "フッター",
+  "location": "footer",
+  "language": "ja",
+  "items": [
+    { "label": "お問い合わせ", "entry": "ent_01JBD1Y2Z3A4B5C6D7E8F9G0H1" },
+    { "label": "プライバシーポリシー", "entry": "ent_01JBD1A2B3C4D5E6F7G8H9J0K1" },
+    { "label": "English", "entry": "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" }
+  ]
+}
