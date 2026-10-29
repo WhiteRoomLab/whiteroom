@@ -117,6 +117,17 @@ var toJSONTests = []struct {
 		pos:  map[string]Position{"/0": {1, 3}, "/0/0": {1, 5}, "/0/0/b": {2, 5}, "/0/0/b/0": {3, 7}},
 	},
 	{
+		name: "item one space deeper than its dash",
+		in:   "-\n x\n",
+		want: `["x"]`,
+		pos:  map[string]Position{"/0": {2, 2}},
+	},
+	{
+		name: "flow indicators in block items",
+		in:   "- a,b\n- c]d\n",
+		want: `["a,b","c]d"]`,
+	},
+	{
 		name: "scalar on the next line",
 		in:   "a:\n  x\nb:\n    'y' # c\n",
 		want: `{"a":"x","b":"y"}`,
@@ -190,6 +201,11 @@ var toJSONTests = []struct {
 		pos:  map[string]Position{"/a/1": {4, 3}, "/a/1/b": {4, 4}, "/a/2": {5, 2}, "/d/f": {7, 9}},
 	},
 	{
+		name: "comment lines at the start of a line in a flow",
+		in:   "a: [x,\n# c\n  y]\nb: [z\n# c\n  ]\n",
+		want: `{"a":["x","y"],"b":["z"]}`,
+	},
+	{
 		name: "trailing commas",
 		in:   "a: [x, y, ]\nb: {c: 1,}\n",
 		want: `{"a":["x","y"],"b":{"c":1}}`,
@@ -215,6 +231,11 @@ var toJSONTests = []struct {
 		in:   "{a\n: b, \"c\"\n:d, e # comment\n: f}",
 		want: `{"a":"b","c":"d","e":"f"}`,
 		pos:  map[string]Position{"/a": {1, 2}, "/c": {2, 6}, "/e": {3, 5}},
+	},
+	{
+		name: "colon alone on the line after a key in a flow mapping",
+		in:   "{a\n:\n  b}",
+		want: `{"a":"b"}`,
 	},
 	{
 		name: "plain scalars in flow collections",
@@ -258,11 +279,12 @@ var toJSONTests = []struct {
 		name: "core schema",
 		in: "a: no\nb: yes\nc: on\nd: off\ne: True\nf: FALSE\ng: 1e3\nh: -0\ni: 2.0\nj: 1_000\nk: 2026-10-30\n" +
 			"l: 0b101\nm: 1:30\nn: -.nan\no: 0o\np: 0x\nq: +\nr: .\ns: 1e\nt: 0.5\nu: 12345678901234567890\n" +
-			"v: -1.5E+3\nw: 1.5e-3\nx: '1'\ny: \"true\"\nz: 0O17\nA: 0X1F\nB: true\nC: false\nD: TRUE\nE: tRUE\n",
+			"v: -1.5E+3\nw: 1.5e-3\nx: '1'\ny: \"true\"\nz: 0O17\nA: 0X1F\nB: true\nC: false\nD: TRUE\nE: tRUE\n" +
+			"F: 9\nG: 0o8\nH: 0xg1\n",
 		want: `{"a":"no","b":"yes","c":"on","d":"off","e":true,"f":false,"g":1e3,"h":-0,"i":2.0,"j":"1_000",` +
 			`"k":"2026-10-30","l":"0b101","m":"1:30","n":"-.nan","o":"0o","p":"0x","q":"+","r":".","s":"1e",` +
 			`"t":0.5,"u":12345678901234567890,"v":-1.5E+3,"w":1.5e-3,"x":"1","y":"true","z":"0O17","A":"0X1F",` +
-			`"B":true,"C":false,"D":true,"E":"tRUE"}`,
+			`"B":true,"C":false,"D":true,"E":"tRUE","F":9,"G":"0o8","H":"0xg1"}`,
 	},
 	{
 		name: "Japanese",
@@ -276,6 +298,11 @@ var toJSONTests = []struct {
 		name: "characters that are not spaces",
 		in:   "a: x" + string(rune(0x85)) + "y" + string(rune(0x3000)) + "\n" + string(rune(0x3000)) + ": " + string(rune(0x2028)) + "\n",
 		want: `{"a":"x` + string(rune(0x85)) + "y" + string(rune(0x3000)) + `","` + string(rune(0x3000)) + `":"` + string(rune(0x2028)) + `"}`,
+	},
+	{
+		name: "edges of the allowed characters",
+		in:   "a: " + string([]rune{0xA0, 0xD7FF, 0xE000, 0xFFFD, 0x10000, 0x10FFFF}) + "\n",
+		want: `{"a":"` + string([]rune{0xA0, 0xD7FF, 0xE000, 0xFFFD, 0x10000, 0x10FFFF}) + `"}`,
 	},
 	{
 		name: "plain scalar at the root",
@@ -413,7 +440,8 @@ func TestToJSONStrings(t *testing.T) {
 		{in: `"\P"`, want: string(rune(0x2029))},
 		{in: `"\x41\x7e\xe9"`, want: "A~" + string(rune(0xE9))},
 		{in: "\"\\u00e9\\u00E9\\u0000\\u3042\"", want: string([]rune{0xE9, 0xE9, 0, 0x3042})},
-		{in: `"\U0001F600\U0010FFFD"`, want: string([]rune{0x1F600, 0x10FFFD})},
+		{in: `"\U0001F600\U0010FFFD\U0010FFFF"`, want: string([]rune{0x1F600, 0x10FFFD, 0x10FFFF})},
+		{in: `"\x4a\x4A"`, want: "JJ"},
 		{in: `"\x85"`, want: string(rune(0x85))},
 		{in: `"a 'b' \"c\" # d: e"`, want: `a 'b' "c" # d: e`},
 		{in: `""`, want: ""},
@@ -508,6 +536,7 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "tab before a comment line", in: "a: 1\n \t# c\n", msg: msgTab, line: 2, col: 2},
 		{name: "tab in a flow", in: "[a,\tb]", msg: msgTab, line: 1, col: 4},
 		{name: "tab in the indentation of a flow", in: "[a,\n\tb]", msg: msgTab, line: 2, col: 1},
+		{name: "tab on the line after a plain scalar in a flow", in: "[a\n\tb]", msg: msgTab, line: 2, col: 1},
 		{name: "tab after ---", in: "---\t\na: 1\n", msg: msgTab, line: 1, col: 4},
 		{name: "tab after a key in Japanese", in: "キー: 値\t\n", msg: msgTab, line: 1, col: 6},
 		{name: "CR", in: "a: 1\rb: 2\n", msg: "lone CR is not allowed; use LF or CRLF line breaks", line: 1, col: 5},
@@ -529,6 +558,7 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "percent sign in the document", in: "a: 1\n%b: 2\n", msg: `unquoted text cannot start with "%"`, line: 2, col: 1},
 		{name: "second document", in: "a: 1\n---\nb: 2\n", msg: `multiple documents are not supported; remove this "---"`, line: 2, col: 1},
 		{name: "two document starts", in: "---\n--- # c\na: 1\n", msg: "multiple documents", line: 2, col: 1},
+		{name: "second document after a tab", in: "a: 1\n---\tb: 2\n", msg: "multiple documents", line: 2, col: 1},
 		{name: "document end", in: "a: 1\n...\n", msg: `document end markers ("...") are not supported`, line: 2, col: 1},
 		{name: "document end before content", in: "...\na: 1\n", msg: "document end markers", line: 1, col: 1},
 		{name: "document end with a comment", in: "a: 1\n... # end\n", msg: "document end markers", line: 2, col: 1},
@@ -550,7 +580,10 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "more indented item", in: "- a\n - b\n", msg: indent, line: 2, col: 2},
 		{name: "deeper line after a quoted value", in: "a: 'b'\n  c\n", msg: indent, line: 2, col: 3},
 		{name: "deeper line after a comment", in: "a: b\n# c\n  d\n", msg: indent, line: 3, col: 3},
+		{name: "deeper line after a comment on the line", in: "a: b # c\n  d\n", msg: indent, line: 2, col: 3},
+		{name: "deeper line after a plain scalar two lines above", in: "a: b\nc: 'd'\n  e\n", msg: indent, line: 3, col: 3},
 		{name: "less indented than the root", in: "  a: 1\nb: 2\n", msg: indent, line: 2, col: 1},
+		{name: "less indented than a root sequence", in: "  - a\nb\n", msg: indent, line: 2, col: 1},
 		{name: "item where a key is expected", in: "a: b\n- c\n", msg: `expected "key: value"`, line: 2, col: 1},
 		{name: "flow where a key is expected", in: "a: b\n[c]: d\n", msg: `expected "key: value"`, line: 2, col: 1},
 		{name: "key where an item is expected", in: "- a\nb: c\n", msg: `expected "- " for a sequence item`, line: 2, col: 1},
@@ -595,6 +628,8 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "missing value before a comma", in: "{a:,}", msg: missing, line: 1, col: 2},
 		{name: "second key without a value", in: "{a: 1, b}", msg: missing, line: 1, col: 8},
 		{name: "colon after a key on the next line", in: "{a\n:b}", msg: msgMultiLine, line: 2, col: 1},
+		{name: "colon and a brace after a key on the next line", in: "{a\n:}", msg: missing, line: 1, col: 2},
+		{name: "colon and a tab after a key on the next line", in: "{a\n:\tb}", msg: msgTab, line: 2, col: 2},
 		{name: "number key", in: "1990: x\n", msg: `key "1990" must be a string; quote it`, line: 1, col: 1},
 		{name: "boolean key", in: "a: 1\ntrue: x\n", msg: `key "true" must be a string; quote it`, line: 2, col: 1},
 		{name: "null key", in: "null: x\n", msg: `key "null" must be a string`, line: 1, col: 1},
@@ -613,6 +648,8 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "two zeros", in: "a: 00\n", msg: `number "00" must be written as in JSON`, line: 1, col: 4},
 		{name: "hexadecimal", in: "a: 0x1F\n", msg: `number "0x1F" must be written as in JSON`, line: 1, col: 4},
 		{name: "octal", in: "a: 0o17\n", msg: `number "0o17" must be written as in JSON`, line: 1, col: 4},
+		{name: "one hexadecimal digit", in: "a: 0x1\n", msg: `number "0x1" must be written as in JSON`, line: 1, col: 4},
+		{name: "one octal digit", in: "a: 0o7\n", msg: `number "0o7" must be written as in JSON`, line: 1, col: 4},
 		{name: "fraction without a leading digit", in: "a: .5\n", msg: `number ".5" must be written as in JSON`, line: 1, col: 4},
 		{name: "fraction with a sign and without a leading digit", in: "a: -.5e3\n", msg: `number "-.5e3" must be`, line: 1, col: 4},
 		{name: "fraction without digits", in: "a: 1.\n", msg: `number "1." must be written as in JSON`, line: 1, col: 4},
@@ -650,11 +687,19 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "short \\x", in: `a: "\x4"`, msg: `escape \x needs 2 hex digits`, line: 1, col: 5},
 		{name: "short \\u", in: "a: \"\\u12g4\"", msg: `escape \u needs 4 hex digits`, line: 1, col: 5},
 		{name: "short \\U at the end", in: `a: "\U0001F60`, msg: `escape \U needs 8 hex digits`, line: 1, col: 5},
+		{name: "escape at the end of an unclosed quote", in: `a: "\x41`, msg: "missing closing quote", line: 1, col: 4},
+		{name: "first hex digit not hex", in: `a: "\xg1"`, msg: `escape \x needs 2 hex digits`, line: 1, col: 5},
 		{name: "surrogate pair", in: "a: \"\\ud83d\\ude00\"", msg: `surrogate escapes are not supported; write \U0001F600 or the character itself`, line: 1, col: 5},
 		{name: "lone surrogate", in: "a: \"x\\udc00\"", msg: `surrogate escapes are not supported; write \U and 8 hex digits, or the character itself`, line: 1, col: 6},
 		{name: "high surrogate without a low one", in: "a: \"\\ud83d\\u0041\"", msg: `write \U and 8 hex digits`, line: 1, col: 5},
 		{name: "high surrogate before an \\x escape", in: "a: \"\\ud83d\\xdc00\"", msg: `write \U and 8 hex digits`, line: 1, col: 5},
 		{name: "surrogate as \\U", in: `a: "\U0000D800"`, msg: `write \U and 8 hex digits`, line: 1, col: 5},
+		{name: "last surrogate", in: "a: \"\\uDFFF\"", msg: `write \U and 8 hex digits`, line: 1, col: 5},
+		{name: "first surrogate pair", in: "a: \"\\ud800\\udc00\"", msg: `write \U00010000 or the character itself`, line: 1, col: 5},
+		{name: "last surrogate pair", in: "a: \"\\udbff\\udfff\"", msg: `write \U0010FFFF or the character itself`, line: 1, col: 5},
+		{name: "high surrogate before a backslash at the end", in: "a: \"\\ud83d\\", msg: `write \U and 8 hex digits`, line: 1, col: 5},
+		{name: "surrogate pair at the end", in: "a: \"\\ud83d\\ude00", msg: `write \U0001F600`, line: 1, col: 5},
+		{name: "high surrogate before a short escape at the end", in: "a: \"\\ud83d\\ude0", msg: `write \U and 8 hex digits`, line: 1, col: 5},
 		{name: "beyond U+10FFFF", in: `a: "\U00110000"`, msg: `escape \U00110000 is beyond U+10FFFF`, line: 1, col: 5},
 		{name: "escaped DEL", in: `a: "\x7f"`, msg: "character U+007F is not allowed, even escaped", line: 1, col: 5},
 		{name: "escaped C1 control", in: `a: "\x9F"`, msg: "character U+009F is not allowed, even escaped", line: 1, col: 5},
@@ -694,6 +739,7 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "extra ]", in: "a: [b]]\n", msg: `unexpected text after "]"; to write a text that starts with "[", quote the whole value`, line: 1, col: 7},
 		{name: "extra ] at the root", in: "[b]]", msg: `unexpected text after "]"`, line: 1, col: 4},
 		{name: "text after a flow", in: "a: [b] c\n", msg: `unexpected text after "]"`, line: 1, col: 8},
+		{name: "colon after a flow value", in: "a: [b]: c\n", msg: `unexpected text after "]"`, line: 1, col: 7},
 		{name: "title format", in: "titleFormat: {title} | {siteName}\n", msg: `missing value; to write a text that starts with "{", quote the whole value`, line: 1, col: 15},
 		{name: "continuation of a flow at the key", in: "a: [b,\nc]\n", msg: `unexpected indentation; indent the lines of [ ] and { } deeper than their key or "-"`, line: 2, col: 1},
 		{name: "closing bracket at the key", in: "a: [\n  b,\n]\n", msg: "unexpected indentation; indent the lines of [ ]", line: 3, col: 1},
@@ -726,14 +772,18 @@ func TestToJSONErrors(t *testing.T) {
 	}
 }
 
-// TestToJSONHint checks that the hint about quoting is only for block values: a document is not a text.
-func TestToJSONHint(t *testing.T) {
+// TestToJSONHints checks whole messages, which TestToJSONErrors checks in part: the hint about quoting is only for
+// block values, as a document is not a text, and the hint about the space after ":" only for keys with ":".
+func TestToJSONHints(t *testing.T) {
 	for in, want := range map[string]string{
-		"[a] b":     `1:5: unexpected text after "]"`,
-		"{a}":       "1:2: missing value",
-		"a: [a] b":  `1:8: unexpected text after "]"; to write a text that starts with "[", quote the whole value`,
-		"- {a}":     `1:4: missing value; to write a text that starts with "{", quote the whole value`,
-		"a:\n  [[b": `2:4: unclosed "["; to write a text that starts with "[", quote the whole value`,
+		"[a] b":       `1:5: unexpected text after "]"`,
+		"{a}":         "1:2: missing value",
+		"a: [a] b":    `1:8: unexpected text after "]"; to write a text that starts with "[", quote the whole value`,
+		"- {a}":       `1:4: missing value; to write a text that starts with "{", quote the whole value`,
+		"a:\n  [[b":   `2:4: unclosed "["; to write a text that starts with "[", quote the whole value`,
+		"a: 1\nb\n":   `2:1: expected "key: value"`,
+		"a: 1\n'b'\n": `2:1: expected "key: value"`,
+		"a: 1\nb:2\n": `2:1: expected "key: value"; put a space after ":"`,
 	} {
 		if _, _, err := ToJSON([]byte(in)); err == nil || err.Error() != want {
 			t.Errorf("ToJSON(%q) = %v, want %s", in, err, want)
