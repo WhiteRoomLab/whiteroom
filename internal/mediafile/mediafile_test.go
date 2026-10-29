@@ -131,7 +131,7 @@ func probeTests(t testing.TB) []probeTest {
 		return Info{MIMEType: mimeType, Width: w, Height: h, Orientation: 1}
 	}
 	pdf := Info{MIMEType: PDF}
-	return []probeTest{
+	return append([]probeTest{
 		{name: "PNG RGBA", data: encodePNG(t, image.NewRGBA(rect)), want: img(PNG, 3, 2)},
 		{name: "PNG gray", data: encodePNG(t, image.NewGray(rect)), want: img(PNG, 3, 2)},
 		{name: "PNG paletted", data: encodePNG(t, image.NewPaletted(rect, palette)), want: img(PNG, 3, 2)},
@@ -177,14 +177,14 @@ func probeTests(t testing.TB) []probeTest {
 		{name: "PDF 1.7", data: []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"), want: pdf},
 		{name: "PDF 2.0", data: []byte("%PDF-2.0\r\n%\xe2\xe3\xcf\xd3\r\n"), want: pdf},
 		{name: "PDF header only", data: []byte("%PDF-1.4"), want: pdf},
-	}
+	}, webpProbeTests()...)
 }
 
 func unsupportedTests(t testing.TB) []testFile {
 	pngRGBA := encodePNG(t, image.NewRGBA(rect))
 	jpegRGBA := encodeJPEG(t, image.NewRGBA(rect))
 	gif89a := encodeGIF(t, image.NewPaletted(rect, palette))
-	return []testFile{
+	return append([]testFile{
 		{name: "empty", data: []byte{}},
 		{name: "one byte", data: []byte{0xff}},
 		{name: "JPEG SOI only", data: []byte("\xff\xd8")},
@@ -218,7 +218,7 @@ func unsupportedTests(t testing.TB) []testFile {
 		{name: "PDF minor version not a digit", data: []byte("%PDF-1.x\n")},
 		{name: "PDF version with a slash", data: []byte("%PDF-/.7\n")},
 		{name: "PDF version with a colon", data: []byte("%PDF-1.:\n")},
-	}
+	}, webpUnsupportedTests()...)
 }
 
 func invalidTests(t testing.TB) []errorTest {
@@ -229,7 +229,7 @@ func invalidTests(t testing.TB) []errorTest {
 	sof := jpegSegment(t, jpegRGBA, 0xc0)
 	sos := jpegSegment(t, jpegRGBA, 0xda)
 	gif89a := encodeGIF(t, image.NewPaletted(rect, palette))
-	return []errorTest{
+	return append([]errorTest{
 		{name: "PNG signature only", data: []byte("\x89PNG\r\n\x1a\n"), msg: "invalid PNG: ", is: io.ErrUnexpectedEOF},
 		{name: "PNG IHDR cut", data: pngRGBA[:20], msg: "invalid PNG: ", is: io.ErrUnexpectedEOF},
 		{name: "PNG IHDR checksum", data: badCRC, msg: "invalid PNG: ", is: png.FormatError("invalid checksum")},
@@ -255,7 +255,7 @@ func invalidTests(t testing.TB) []errorTest {
 		{name: "GIF color table cut", data: gif89a[:15], msg: "invalid GIF: "},
 		{name: "GIF zero width", data: patch(gif89a, 6, 0, 0), msg: "invalid GIF: zero width or height (0x2)"},
 		{name: "GIF zero height", data: patch(gif89a, 8, 0, 0), msg: "invalid GIF: zero width or height (3x0)"},
-	}
+	}, webpInvalidTests()...)
 }
 
 func testFiles(t testing.TB) []testFile {

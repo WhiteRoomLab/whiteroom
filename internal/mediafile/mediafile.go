@@ -47,7 +47,7 @@ func Probe(r io.Reader) (Info, error) {
 }
 
 func probe(r *bufio.Reader) (Info, error) {
-	b, err := r.Peek(8) // the longest signature below
+	b, err := r.Peek(12) // the longest signature below
 	if err != nil && !errors.Is(err, io.EOF) {
 		return Info{}, err
 	}
@@ -57,6 +57,8 @@ func probe(r *bufio.Reader) (Info, error) {
 		return imageInfo(r, JPEG, "JPEG", jpeg.DecodeConfig)
 	case strings.HasPrefix(head, "\x89PNG\r\n\x1a\n"):
 		return imageInfo(r, PNG, "PNG", png.DecodeConfig)
+	case isWebP(head):
+		return webpInfo(r)
 	case strings.HasPrefix(head, "GIF87a"), strings.HasPrefix(head, "GIF89a"):
 		return imageInfo(r, GIF, "GIF", gif.DecodeConfig)
 	case isPDF(head):
