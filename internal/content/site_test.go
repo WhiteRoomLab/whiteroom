@@ -418,6 +418,52 @@ func TestCheckTimeZone(t *testing.T) {
 	}
 }
 
+func TestCheckTitleFormat(t *testing.T) {
+	const (
+		missing   = "missing {title}"
+		use       = " (use {title} and {siteName})"
+		lineBreak = "contains a line break or tab"
+	)
+	tests := []struct {
+		name string
+		in   string
+		msg  string
+	}{
+		{name: "default", in: DefaultTitleFormat},
+		{name: "title only", in: "{title}"},
+		{name: "site name first", in: "{siteName} - {title}"},
+		{name: "brackets", in: "【{siteName}】{title}"},
+		{name: "full-width bar", in: "{title}｜{siteName}"},
+		{name: "surrounding spaces", in: " {title} | {siteName} "},
+
+		{name: "empty", in: "", msg: missing},
+		{name: "site name only", in: "{siteName}", msg: missing},
+		{name: "title twice", in: "{title}{title}", msg: "{title} can be used only once"},
+		{name: "site name twice", in: "{title} {siteName} {siteName}", msg: "{siteName} can be used only once"},
+		{name: "unknown placeholder", in: "{title} {name}", msg: `unknown placeholder "{name}"` + use},
+		{name: "placeholder in another case", in: "{Title}", msg: `unknown placeholder "{Title}"` + use},
+		{name: "spaces in a placeholder", in: "{ title }", msg: `unknown placeholder "{ title }"` + use},
+		{name: "empty placeholder", in: "{title}{}", msg: `unknown placeholder "{}"` + use},
+		{name: "brace in a placeholder", in: "{{title}}", msg: `unknown placeholder "{{title}"` + use},
+		{name: "unclosed brace", in: "{title} {", msg: `unclosed "{"`},
+		{name: "unclosed placeholder", in: "{title", msg: `unclosed "{"`},
+		{name: "closing brace", in: "{title} }", msg: `unexpected "}"`},
+		{name: "closing brace first", in: "}{title}", msg: `unexpected "}"`},
+		// The braces are checked before the counts.
+		{name: "title twice and an unclosed brace", in: "{title}{title}{", msg: `unclosed "{"`},
+		{name: "line break", in: "{title}\n", msg: lineBreak},
+		{name: "tab", in: "{title}\t{siteName}", msg: lineBreak},
+		{name: "control character", in: "{title}\x00", msg: "contains control characters; normalize it first"},
+		{name: "not NFC", in: "{title} | Cafe" + acute, msg: "not in Unicode NFC; normalize it first"},
+		{name: "invalid UTF-8", in: "{title}\xff", msg: "invalid UTF-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertErrorMsg(t, checkTitleFormat(tt.in), tt.msg)
+		})
+	}
+}
+
 func TestSiteValidate(t *testing.T) {
 	// site returns testSite with its first type replaced by typ, if typ has a name.
 	site := func(typ TypeDef) *Site {
@@ -433,6 +479,10 @@ func TestSiteValidate(t *testing.T) {
 	edit := func(s *Site, f func(s *Site)) *Site {
 		f(s)
 		return s
+	}
+	// pages returns testSite with front for the front pages and posts for the posts pages.
+	pages := func(front, posts Localized) *Site {
+		return edit(testSite(), func(s *Site) { s.FrontPage, s.PostsPage = front, posts })
 	}
 	tests := []struct {
 		name     string
@@ -471,15 +521,27 @@ func TestSiteValidate(t *testing.T) {
 				s.Name = Localized{"ja": "株式会社\t〇〇", "de": "Beispiel GmbH"}
 				s.Tagline = Localized{"en": "a\nb"}
 				s.URL, s.TimeZone, s.Logo, s.Icon, s.DefaultLanguage = "https://example.com/", "Local", testPDF, testAboutPage, "fr"
+				s.FrontPage, s.PostsPage, s.PostsPerPage = Localized{"ja": testPost}, Localized{"en": testEnglishPage}, -1
+				s.SEO = SiteSEO{TitleFormat: Localized{"ja": "{siteName}"}, OGImage: Localized{"en": testPDF}}
+				s.Taxonomies[0].Label = "a\tb"
 			}),
-			paths: []string{"/name/ja", "/name/en", "/name/de", "/tagline/en", "/url", "/timeZone", "/logo", "/icon", "/defaultLanguage"},
+			paths: []string{
+				"/name/ja", "/name/en", "/name/de", "/tagline/en", "/url", "/timeZone", "/logo", "/icon", "/defaultLanguage",
+				"/frontPage/ja", "/postsPage/en", "/postsPerPage", "/seo/titleFormat/ja", "/seo/ogImage/en", "/taxonomies/works_category/label",
+			},
 			msg: "/name/ja: contains a line break or tab\n/name/en: missing value; every language of the site needs one\n" +
 				`/name/de: language "de" is not in the site settings (use ja, en)` + "\n" +
 				"/tagline/en: contains a line break or tab\n" + `/url: must not end with "/"` + "\n" +
 				`/timeZone: unknown time zone "Local": use an IANA name such as "Asia/Tokyo" or "UTC"` + "\n" +
 				`/logo: media "` + testPDF + `" (pdf) is not accepted here (accept: image)` + "\n" +
 				`/icon: invalid media ID "` + testAboutPage + `": use "med_" and a ULID (26 characters in upper case)` + "\n" +
-				`/defaultLanguage: language "fr" is not in the site settings (use ja, en)`,
+				`/defaultLanguage: language "fr" is not in the site settings (use ja, en)` + "\n" +
+				`/frontPage/ja: entry "` + testPost + `" is of the type "post" (use page)` + "\n" +
+				"/postsPage/en: not allowed while the front page of en shows the latest posts; set frontPage\n" +
+				"/postsPerPage: postsPerPage -1 is out of range (1 to 100)\n" +
+				"/seo/titleFormat/ja: missing {title}\n" +
+				`/seo/ogImage/en: media "` + testPDF + `" (pdf) is not accepted here (accept: image)` + "\n" +
+				"/taxonomies/works_category/label: contains a line break or tab",
 		},
 
 		{
@@ -596,6 +658,216 @@ func TestSiteValidate(t *testing.T) {
 			msg:   `/defaultLanguage: language "JA" is not in the site settings (use ja, en)`,
 		},
 		{name: "prefix for the default language", in: edit(testSite(), func(s *Site) { s.PrefixDefaultLanguage = true })},
+
+		{name: "front pages", in: pages(Localized{"ja": testPage, "en": testEnglishPage}, nil)},
+		{name: "front page in one language", in: pages(Localized{"en": testEnglishPage}, nil)},
+		{
+			name:  "post for the front page",
+			in:    pages(Localized{"ja": testPost}, nil),
+			paths: []string{"/frontPage/ja"},
+			msg:   `/frontPage/ja: entry "` + testPost + `" is of the type "post" (use page)`,
+		},
+		{
+			name:  "front page in another language",
+			in:    pages(Localized{"ja": testEnglishPage}, nil),
+			paths: []string{"/frontPage/ja"},
+			msg:   `/frontPage/ja: entry "` + testEnglishPage + `" is in the language "en", not "ja"`,
+		},
+		{
+			name:  "post in another language for the front page",
+			in:    pages(Localized{"en": testPost}, nil),
+			paths: []string{"/frontPage/en", "/frontPage/en"},
+			msg: `/frontPage/en: entry "` + testPost + `" is of the type "post" (use page)` + "\n" +
+				`/frontPage/en: entry "` + testPost + `" is in the language "ja", not "en"`,
+		},
+		{
+			name:     "front pages of another type and language without lookup",
+			in:       pages(Localized{"ja": testEnglishPage, "en": testPost}, nil),
+			noLookup: true,
+		},
+		{
+			name:  "front page that does not exist",
+			in:    pages(Localized{"ja": "ent_" + testMissing}, nil),
+			paths: []string{"/frontPage/ja"},
+			msg:   `/frontPage/ja: entry "ent_` + testMissing + `" does not exist`,
+		},
+		{name: "front page that does not exist without lookup", in: pages(Localized{"ja": "ent_" + testMissing}, nil), noLookup: true},
+		{
+			name:  "front page of another kind",
+			in:    pages(Localized{"ja": testImage}, nil),
+			paths: []string{"/frontPage/ja"},
+			msg:   `/frontPage/ja: invalid entry ID "` + testImage + `": use "ent_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			name:  "front page in a language not in the site settings",
+			in:    pages(Localized{"ja": testPage, "fr": testPage}, nil),
+			paths: []string{"/frontPage/fr"},
+			msg:   `/frontPage/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "empty front page",
+			in:    pages(Localized{"ja": testPage, "en": ""}, nil),
+			paths: []string{"/frontPage/en"},
+			msg:   "/frontPage/en: empty value; omit it",
+		},
+
+		{
+			name: "posts pages",
+			in:   pages(Localized{"ja": testPage, "en": testEnglishPage}, Localized{"ja": testAboutPage, "en": testEnglishPrivacyPage}),
+		},
+		{name: "posts page in one language", in: pages(Localized{"ja": testPage, "en": testEnglishPage}, Localized{"ja": testAboutPage})},
+		{
+			name:  "posts page without a front page",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": testAboutPage, "en": testEnglishPage}),
+			paths: []string{"/postsPage/en"},
+			msg:   "/postsPage/en: not allowed while the front page of en shows the latest posts; set frontPage",
+		},
+		{
+			name:     "posts page without a front page without lookup",
+			in:       pages(Localized{"ja": testPage}, Localized{"ja": testAboutPage, "en": testEnglishPage}),
+			noLookup: true,
+			paths:    []string{"/postsPage/en"},
+			msg:      "/postsPage/en: not allowed while the front page of en shows the latest posts; set frontPage",
+		},
+		{
+			name:  "front page for the posts page",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": testPage}),
+			paths: []string{"/postsPage/ja"},
+			msg:   "/postsPage/ja: cannot be the front page of ja",
+		},
+		{
+			name:  "post for the posts page",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": testPost}),
+			paths: []string{"/postsPage/ja"},
+			msg:   `/postsPage/ja: entry "` + testPost + `" is of the type "post" (use page)`,
+		},
+		{
+			name:  "posts page in another language",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": testEnglishPage}),
+			paths: []string{"/postsPage/ja"},
+			msg:   `/postsPage/ja: entry "` + testEnglishPage + `" is in the language "en", not "ja"`,
+		},
+		{
+			name:     "posts page in another language without lookup",
+			in:       pages(Localized{"ja": testPage}, Localized{"ja": testEnglishPage}),
+			noLookup: true,
+		},
+		{
+			name:  "posts page that does not exist",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": "ent_" + testMissing}),
+			paths: []string{"/postsPage/ja"},
+			msg:   `/postsPage/ja: entry "ent_` + testMissing + `" does not exist`,
+		},
+		{
+			name:  "posts page of another kind",
+			in:    pages(Localized{"ja": testPage}, Localized{"ja": testImage}),
+			paths: []string{"/postsPage/ja"},
+			msg:   `/postsPage/ja: invalid entry ID "` + testImage + `": use "ent_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			// Only the language is reported, though fr has no front page either.
+			name:  "posts page in a language not in the site settings",
+			in:    pages(Localized{"ja": testPage}, Localized{"fr": testAboutPage}),
+			paths: []string{"/postsPage/fr"},
+			msg:   `/postsPage/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			// An empty value counts as no posts page.
+			name:  "empty posts page",
+			in:    pages(Localized{"ja": testPage}, Localized{"en": ""}),
+			paths: []string{"/postsPage/en"},
+			msg:   "/postsPage/en: empty value; omit it",
+		},
+		{
+			// An empty value counts as no front page.
+			name:  "posts page with an empty front page",
+			in:    pages(Localized{"ja": ""}, Localized{"ja": testAboutPage}),
+			paths: []string{"/frontPage/ja", "/postsPage/ja"},
+			msg:   "/frontPage/ja: empty value; omit it\n/postsPage/ja: not allowed while the front page of ja shows the latest posts; set frontPage",
+		},
+
+		{name: "posts per page omitted", in: edit(testSite(), func(s *Site) { s.PostsPerPage = 0 })},
+		{name: "one post per page", in: edit(testSite(), func(s *Site) { s.PostsPerPage = 1 })},
+		{name: "most posts per page", in: edit(testSite(), func(s *Site) { s.PostsPerPage = MaxPostsPerPage })},
+		{
+			name:  "negative posts per page",
+			in:    edit(testSite(), func(s *Site) { s.PostsPerPage = -1 }),
+			paths: []string{"/postsPerPage"},
+			msg:   "/postsPerPage: postsPerPage -1 is out of range (1 to 100)",
+		},
+		{
+			name:  "too many posts per page",
+			in:    edit(testSite(), func(s *Site) { s.PostsPerPage = MaxPostsPerPage + 1 }),
+			paths: []string{"/postsPerPage"},
+			msg:   "/postsPerPage: postsPerPage 101 is out of range (1 to 100)",
+		},
+
+		{
+			name: "SEO",
+			in: edit(testSite(), func(s *Site) {
+				s.SEO = SiteSEO{
+					TitleFormat: Localized{"ja": "{title}｜{siteName}", "en": "{title} | {siteName}"},
+					OGImage:     Localized{"ja": testImage, "en": testImage2},
+					NoIndex:     true,
+				}
+			}),
+		},
+		{name: "title format in one language", in: edit(testSite(), func(s *Site) { s.SEO.TitleFormat = Localized{"en": "{siteName} - {title}"} })},
+		{
+			name:  "title format without the title",
+			in:    edit(testSite(), func(s *Site) { s.SEO.TitleFormat = Localized{"ja": "{title}", "en": "{siteName}"} }),
+			paths: []string{"/seo/titleFormat/en"},
+			msg:   "/seo/titleFormat/en: missing {title}",
+		},
+		{
+			name:  "title format in a language not in the site settings",
+			in:    edit(testSite(), func(s *Site) { s.SEO.TitleFormat = Localized{"fr": "{title} | {siteName}"} }),
+			paths: []string{"/seo/titleFormat/fr"},
+			msg:   `/seo/titleFormat/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "empty title format",
+			in:    edit(testSite(), func(s *Site) { s.SEO.TitleFormat = Localized{"ja": ""} }),
+			paths: []string{"/seo/titleFormat/ja"},
+			msg:   "/seo/titleFormat/ja: empty value; omit it",
+		},
+		{name: "Open Graph image in one language", in: edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"ja": testImage} })},
+		{
+			name:  "PDF for the Open Graph image",
+			in:    edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"ja": testImage, "en": testPDF} }),
+			paths: []string{"/seo/ogImage/en"},
+			msg:   `/seo/ogImage/en: media "` + testPDF + `" (pdf) is not accepted here (accept: image)`,
+		},
+		{
+			name:     "PDF for the Open Graph image without lookup",
+			in:       edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"ja": testImage, "en": testPDF} }),
+			noLookup: true,
+		},
+		{
+			name:  "Open Graph image that does not exist",
+			in:    edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"ja": "med_" + testMissing} }),
+			paths: []string{"/seo/ogImage/ja"},
+			msg:   `/seo/ogImage/ja: media "med_` + testMissing + `" does not exist`,
+		},
+		{
+			name:  "Open Graph image of another kind",
+			in:    edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"ja": testPage} }),
+			paths: []string{"/seo/ogImage/ja"},
+			msg:   `/seo/ogImage/ja: invalid media ID "` + testPage + `": use "med_" and a ULID (26 characters in upper case)`,
+		},
+		{
+			name:  "Open Graph image in a language not in the site settings",
+			in:    edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"fr": testImage} }),
+			paths: []string{"/seo/ogImage/fr"},
+			msg:   `/seo/ogImage/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "empty Open Graph image",
+			in:    edit(testSite(), func(s *Site) { s.SEO.OGImage = Localized{"en": ""} }),
+			paths: []string{"/seo/ogImage/en"},
+			msg:   "/seo/ogImage/en: empty value; omit it",
+		},
+		{name: "noindex", in: edit(testSite(), func(s *Site) { s.SEO.NoIndex = true })},
 
 		{
 			name: "taxonomies",

@@ -16,4 +16,6 @@ const (
 	MaxFormFields      = 100  // fields in a form
 	MaxFormOptions     = 1000 // options of a field
 	MaxNotifyAddresses = 10   // email addresses that a form notifies
+
+	MaxPostsPerPage = 100 // entries on each page of a list, such as the latest posts
 )

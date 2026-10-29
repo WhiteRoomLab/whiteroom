@@ -26,11 +26,26 @@ type Site struct {
 	Icon                  string   // ID of an image
 	Languages             []string // language codes, such as "ja" and "en-US"
 	DefaultLanguage       string
-	PrefixDefaultLanguage bool          // the default language has a path prefix too, such as "/ja/"
+	PrefixDefaultLanguage bool      // the default language has a path prefix too, such as "/ja/"
+	FrontPage             Localized // ID of the page to show at the front in each language, instead of the latest posts
+	PostsPage             Localized // ID of the page to show the latest posts on, in each language with FrontPage
+	PostsPerPage          int       // entries on each page of a list; 0 is DefaultPostsPerPage
+	SEO                   SiteSEO
 	AllowHTML             bool          // html blocks are enabled
 	Types                 []TypeDef     // custom types, and the taxonomies and fields that post and page add
 	Taxonomies            []TaxonomyDef // custom taxonomies
 }
+
+type SiteSEO struct {
+	TitleFormat Localized // such as "{title} | {siteName}"; the languages without one use DefaultTitleFormat
+	OGImage     Localized // ID of the default image for Open Graph in each language
+	NoIndex     bool      // asks search engines not to index the whole site, such as before launch
+}
+
+const (
+	DefaultPostsPerPage = 10
+	DefaultTitleFormat  = "{title} | {siteName}"
+)
 
 const (
 	TypePost = "post"
@@ -98,7 +113,8 @@ func (s *Site) hasTaxonomy(name string) bool {
 }
 
 // Validate checks s. Name in every language of s, URL, TimeZone, Languages and DefaultLanguage are required.
-// lookup tells about the logo and the icon as ValidateOptions.Lookup does; nil skips checking that they exist and are images.
+// lookup tells about the images and the pages that s refers to as ValidateOptions.Lookup does; nil skips checking
+// that they exist and are images, or pages in the languages of their keys.
 func (s *Site) Validate(lookup func(kind RefKind, id string) (Ref, bool)) error {
 	c := checker{doc: &docState{opts: ValidateOptions{Lookup: lookup}}}
 	s.check(&c)
@@ -128,6 +144,26 @@ func (s *Site) check(c *checker) {
 		}
 	}
 	c.required("defaultLanguage", s.DefaultLanguage, func(l string) error { return checkSiteLanguage(s, l) })
+	s.FrontPage.checkPages(c, "/frontPage", s)
+	s.PostsPage.checkPages(c, "/postsPage", s)
+	for _, l := range s.Languages {
+		id := s.PostsPage[l]
+		if id == "" {
+			continue
+		}
+		p := "/postsPage/" + escapePointer(l)
+		switch s.FrontPage[l] {
+		case "":
+			c.addf(p, "not allowed while the front page of %s shows the latest posts; set frontPage", l)
+		case id:
+			c.addf(p, "cannot be the front page of %s", l)
+		}
+	}
+	if n := s.PostsPerPage; n != 0 && (n < 1 || n > MaxPostsPerPage) {
+		c.addf("/postsPerPage", "postsPerPage %d is out of range (1 to %d)", n, MaxPostsPerPage)
+	}
+	s.SEO.TitleFormat.checkValues(c, "/seo/titleFormat", s, false, func(p, _, v string) { c.add(p, checkTitleFormat(v)) })
+	s.SEO.OGImage.checkValues(c, "/seo/ogImage", s, false, func(p, _, id string) { c.media(p, id, MediaImage) })
 	for i := range s.Taxonomies {
 		t := &s.Taxonomies[i]
 		p := "/taxonomies/" + escapePointer(t.Name)
@@ -234,6 +270,62 @@ func checkSiteLanguage(site *Site, language string) error {
 			return fmt.Errorf("language %q is not in the site settings", language)
 		}
 		return fmt.Errorf("language %q is not in the site settings (use %s)", language, strings.Join(site.Languages, ", "))
+	}
+	return nil
+}
+
+// checkPages checks x at path as checkEntries does, and that the entries are pages.
+func (x Localized) checkPages(c *checker, path string, site *Site) {
+	x.checkValues(c, path, site, false, func(p, language, id string) {
+		r, ok := c.ref(p, RefEntry, id)
+		if !ok {
+			return
+		}
+		if r.Type != TypePage {
+			c.addf(p, "entry %q is of the type %q (use page)", id, r.Type)
+		}
+		if r.Language != language {
+			c.addf(p, "entry %q is in the language %q, not %q", id, r.Language, language)
+		}
+	})
+}
+
+// checkTitleFormat accepts a line with {title} once and {siteName} at most once, and no other braces.
+func checkTitleFormat(s string) error {
+	if err := checkLine(s); err != nil {
+		return err
+	}
+	var titles, siteNames int
+	rest := s
+	for {
+		i := strings.IndexAny(rest, "{}")
+		if i < 0 {
+			break
+		}
+		if rest[i] == '}' {
+			return errors.New(`unexpected "}"`)
+		}
+		name, after, ok := strings.Cut(rest[i+1:], "}")
+		if !ok {
+			return errors.New(`unclosed "{"`)
+		}
+		switch name {
+		case "title":
+			titles++
+		case "siteName":
+			siteNames++
+		default:
+			return fmt.Errorf("unknown placeholder %q (use {title} and {siteName})", "{"+name+"}")
+		}
+		rest = after
+	}
+	switch {
+	case titles == 0:
+		return errors.New("missing {title}")
+	case titles > 1:
+		return errors.New("{title} can be used only once")
+	case siteNames > 1:
+		return errors.New("{siteName} can be used only once")
 	}
 	return nil
 }
