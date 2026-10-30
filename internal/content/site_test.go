@@ -420,6 +420,7 @@ func TestCheckLanguage(t *testing.T) {
 				msg = `invalid language code "` + tt.in + `": use a language tag such as "ja", "en-US" or "zh-Hant"`
 			}
 			assertErrorMsg(t, checkLanguage(tt.in), msg)
+			assertErrorMsg(t, CheckLanguage(tt.in), msg)
 		})
 	}
 }

@@ -345,6 +345,11 @@ func checkTimeZone(s string) error {
 // languagePattern matches BCP 47 language tags with a language, an optional script and an optional region, in their canonical case.
 var languagePattern = regexp.MustCompile(`^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?$`)
 
+// CheckLanguage checks that s is a language code, a BCP 47 tag such as "ja", "en-US" or "zh-Hant".
+func CheckLanguage(s string) error {
+	return checkLanguage(s)
+}
+
 func checkLanguage(s string) error {
 	if !languagePattern.MatchString(s) {
 		return fmt.Errorf(`invalid language code %q: use a language tag such as "ja", "en-US" or "zh-Hant"`, s)

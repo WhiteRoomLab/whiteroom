@@ -94,6 +94,11 @@ func isLineBreakOrTab(r rune) bool {
 	return (unicode.IsControl(r) && unicode.IsSpace(r)) || r == '\u2028' || r == '\u2029'
 }
 
+// CheckName checks s by the rule for names, such as those of presets and types: ASCII letters, digits, "-" and "_".
+func CheckName(s string) error {
+	return checkName(s)
+}
+
 func checkName(s string) error {
 	if err := checkSize(s); err != nil {
 		return err
