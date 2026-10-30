@@ -1,7 +1,12 @@
 package theme
 
 import (
+	"encoding/hex"
+	"fmt"
 	"html/template"
+	"reflect"
+	"slices"
+	"strings"
 	"text/template/parse"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -163,4 +168,144 @@ func (w *treeWalker) dict(args []parse.Node) {
 			w.errorf(key, "missing value for key %q", key.Text)
 		}
 	}
+}
+
+// t returns the text of key in the language of r, with each placeholder replaced by its value in args, which
+// alternates names and values, as in {{t "pageOf" "page" 2 "total" 5}}. A nil value is an error.
+func (r *Renderer) t(key string, args ...any) (string, error) {
+	text, ok := r.text(key)
+	if !ok {
+		return "", fmt.Errorf("unknown key %q", key)
+	}
+	for i := 1; i < len(args); i += 2 {
+		if isNil(args[i]) {
+			return "", fmt.Errorf("nil value for placeholder {%v}", args[i-1])
+		}
+	}
+	if !strings.Contains(text, "{") {
+		return text, nil
+	}
+	// Every brace of a valid text belongs to a placeholder, and the values are written as they are, not scanned.
+	var b strings.Builder
+	for {
+		before, rest, ok := strings.Cut(text, "{")
+		b.WriteString(before)
+		if !ok {
+			return b.String(), nil
+		}
+		name, after, _ := strings.Cut(rest, "}")
+		v, ok := value(args, name)
+		if !ok {
+			return "", fmt.Errorf("missing value for placeholder {%s}", name)
+		}
+		fmt.Fprint(&b, v)
+		text = after
+	}
+}
+
+// text returns the text of key in the first translation of r that has it.
+func (r *Renderer) text(key string) (string, bool) {
+	for _, texts := range r.texts {
+		if s, ok := texts[key]; ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// value returns the value of name in args, which alternates names and values.
+func value(args []any, name string) (any, bool) {
+	for i := 0; i+1 < len(args); i += 2 {
+		if args[i] == name {
+			return args[i+1], true
+		}
+	}
+	return nil, false
+}
+
+var nilKinds = []reflect.Kind{reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer}
+
+// isNil reports whether v is nil, or a nil pointer, map, slice, channel or function, which fmt prints as "<nil>" or
+// as an empty value.
+func isNil(v any) bool {
+	rv := reflect.ValueOf(v)
+	return !rv.IsValid() || (slices.Contains(nilKinds, rv.Kind()) && rv.IsNil())
+}
+
+// asset returns the URL of the file at p in assets/, with a version that changes with its content, the first 8 hex
+// digits of its SHA-256, as in "/blog/assets/css/style.css?v=1a2b3c4d".
+func (r *Renderer) asset(p string) (string, error) {
+	a, ok := r.assets[p]
+	if !ok {
+		return "", fmt.Errorf("unknown asset %q", p)
+	}
+	return r.base + "/assets/" + p + "?v=" + hex.EncodeToString(a.sum[:4]), nil
+}
+
+// dict returns a map of the keys and values in args, which alternate, to pass several values to a template, as in
+// {{template "entry/card" dict "entry" . "level" 2}}.
+func dict(args ...any) (map[string]any, error) {
+	if len(args)%2 != 0 {
+		return nil, fmt.Errorf("missing value for key %#v", args[len(args)-1])
+	}
+	m := make(map[string]any, len(args)/2)
+	for i := 0; i < len(args); i += 2 {
+		key, ok := args[i].(string)
+		if !ok {
+			return nil, fmt.Errorf("key %#v is not a string", args[i])
+		}
+		m[key] = args[i+1]
+	}
+	return m, nil
+}
+
+// languageChain returns language and the languages without its last subtags, such as "zh-Hant-TW", "zh-Hant" and
+// "zh": the languages whose translations pages in language use before the default one.
+func languageChain(language string) []string {
+	chain := []string{language}
+	for {
+		i := strings.LastIndexByte(language, '-')
+		if i < 0 {
+			return chain
+		}
+		language = language[:i]
+		chain = append(chain, language)
+	}
+}
+
+// lookup returns the translations in which t looks up the texts of pages in language: those of languageChain, then
+// the default translation.
+func (t *Theme) lookup(language string) []map[string]string {
+	if t.keys == nil {
+		return nil
+	}
+	chain := languageChain(language)
+	if !slices.Contains(chain, t.Settings.DefaultLanguage) {
+		chain = append(chain, t.Settings.DefaultLanguage)
+	}
+	var texts []map[string]string
+	for _, lang := range chain {
+		if m := t.translations[lang]; m != nil {
+			texts = append(texts, m)
+		}
+	}
+	return texts
+}
+
+// MissingTranslations returns the keys of the default translation, in its order, whose texts pages in language take
+// from the default language: those that no translation file of language or of the languages without its last
+// subtags has, such as zh-Hant-TW, zh-Hant and zh. It returns nil when the default language is one of these
+// languages, and for a theme without translations.
+func (t *Theme) MissingTranslations(language string) []string {
+	chain := languageChain(language)
+	var missing []string
+	for _, key := range t.keys {
+		if !slices.ContainsFunc(chain, func(lang string) bool {
+			_, ok := t.translations[lang][key]
+			return ok
+		}) {
+			missing = append(missing, key)
+		}
+	}
+	return missing
 }
