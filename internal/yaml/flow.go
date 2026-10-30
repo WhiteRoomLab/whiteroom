@@ -199,10 +199,16 @@ func (p *parser) flowMapping(ptr string, f *flowCollection) error {
 		if c := p.peek(); !tok.quoted && c != 0 && c != ' ' && c != '\t' && c != ',' && c != '}' && c != ']' {
 			return p.errorf(p.here(), `missing space after ":"`)
 		}
+		n := indentOf(p.line()[p.off:])
+		comment := n > 0 && p.at(n) == '#'
 		if err := p.skipFlow(f); err != nil {
 			return err
 		}
 		if c := p.peek(); c == ',' || c == '}' {
+			if comment {
+				// Without f.hint: a flow that goes on after a comment is not a text that starts with "[" or "{".
+				return p.missingValue(tok.pos, true)
+			}
 			return f.errorf(tok.pos, "missing value")
 		}
 		if err := p.flowNode(m, f, removeKey); err != nil {
