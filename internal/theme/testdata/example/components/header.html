@@ -1,0 +1,6 @@
+<header class="site-header">
+<a href="{{.Site.Home}}"><img src="{{asset "images/logo.png"}}" alt="" width="32" height="32"> {{.Site.Name}}</a>
+{{- with .Menus.header}}
+<nav>{{template "menu" .}}</nav>
+{{- end}}
+</header>

@@ -1,0 +1,12 @@
+{{template "layout" .}}
+{{define "main"}}
+<section class="list posts">
+<h1>{{.Title}}</h1>
+{{- range .Entries}}
+{{template "entry/card" dict "entry" . "showAuthor" true}}
+{{- end}}
+{{- with .Pagination}}
+{{template "pagination" .}}
+{{- end}}
+</section>
+{{end}}

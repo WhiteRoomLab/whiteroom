@@ -1,0 +1,5 @@
+<ul>
+{{- range .}}
+<li><a href="{{.URL}}">{{.Label}}</a>{{with .Children}}{{template "menu" .}}{{end}}</li>
+{{- end}}
+</ul>

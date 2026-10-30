@@ -1,0 +1,61 @@
+/* The build defines the presets of theme.yaml as custom properties, such as --color-primary. */
+body {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-family-body);
+  line-height: 1.7;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+.site-header,
+.site-footer {
+  display: flex;
+  gap: var(--spacing-30);
+  align-items: center;
+  padding: var(--spacing-30);
+  background: var(--color-muted);
+}
+
+main {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: var(--spacing-40) var(--spacing-30);
+}
+
+h1 {
+  font-size: var(--font-size-large);
+}
+
+.landing h1 {
+  padding: var(--spacing-40);
+  color: #fff;
+  background: var(--gradient-sunset);
+}
+
+.card {
+  margin-block: var(--spacing-30);
+  padding: var(--spacing-30);
+  box-shadow: var(--shadow-soft);
+}
+
+.is-variant-lead {
+  font-size: var(--font-size-large);
+}
+
+.is-variant-box {
+  padding: var(--spacing-30);
+  border: 1px solid var(--color-primary);
+}
+
+.is-variant-note {
+  padding: var(--spacing-20) var(--spacing-30);
+  border-left: 4px solid var(--color-accent);
+  background: var(--color-muted);
+}
+
+.is-variant-marker {
+  background: linear-gradient(transparent 60%, var(--color-accent) 60%);
+}

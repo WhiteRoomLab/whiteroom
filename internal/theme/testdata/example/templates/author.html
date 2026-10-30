@@ -1,0 +1,13 @@
+{{template "layout" .}}
+{{define "main"}}
+<section class="list author">
+<h1>{{.Title}}</h1>
+<p>{{.Bio}}</p>
+{{- range .Entries}}
+{{template "entry/card" dict "entry" . "showAuthor" false}}
+{{- end}}
+{{- with .Pagination}}
+{{template "pagination" .}}
+{{- end}}
+</section>
+{{end}}
