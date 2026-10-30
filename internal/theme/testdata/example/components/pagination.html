@@ -1,0 +1,9 @@
+<nav class="pagination">
+{{- with .Previous}}
+<a href="{{.}}" rel="prev">{{t "previous"}}</a>
+{{- end}}
+<span>{{t "pageOf" "page" .Page "total" .Total}}</span>
+{{- with .Next}}
+<a href="{{.}}" rel="next">{{t "next"}}</a>
+{{- end}}
+</nav>

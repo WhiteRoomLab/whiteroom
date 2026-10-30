@@ -209,6 +209,7 @@ func TestCheckName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkName(tt.in), tt.msg)
+			assertErrorMsg(t, CheckName(tt.in), tt.msg)
 		})
 	}
 }

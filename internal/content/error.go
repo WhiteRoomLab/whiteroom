@@ -3,11 +3,12 @@ package content
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 // Error is a problem at Path, an RFC 6901 JSON Pointer ("" for the root). In a document read from a file, it is
-// also at Line and Column of File, which start at 1; Column counts characters.
+// also at Line and Column of File, which start at 1; Column counts characters, and is 0 if only the line is known.
 type Error struct {
 	Path   string
 	Msg    string
@@ -21,13 +22,18 @@ func (e *Error) Error() string {
 	if e.Path != "" {
 		s = e.Path + ": " + s
 	}
-	switch {
-	case e.Line > 0 && e.File != "":
-		s = fmt.Sprintf("%s:%d:%d: %s", e.File, e.Line, e.Column, s)
-	case e.Line > 0:
-		s = fmt.Sprintf("%d:%d: %s", e.Line, e.Column, s)
-	case e.File != "":
-		s = e.File + ": " + s
+	var loc []string
+	if e.File != "" {
+		loc = append(loc, e.File)
+	}
+	if e.Line > 0 {
+		loc = append(loc, strconv.Itoa(e.Line))
+		if e.Column > 0 {
+			loc = append(loc, strconv.Itoa(e.Column))
+		}
+	}
+	if len(loc) > 0 {
+		s = strings.Join(loc, ":") + ": " + s
 	}
 	return s
 }

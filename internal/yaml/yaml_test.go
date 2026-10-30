@@ -158,6 +158,28 @@ var toJSONTests = []struct {
 		pos:  map[string]Position{"": {2, 1}, "/d": {7, 1}, "/e/1": {10, 3}},
 	},
 	{
+		name: "quoted value that starts with #",
+		in:   "primary: \"#1e73be\"\n",
+		want: `{"primary":"#1e73be"}`,
+	},
+	{
+		name: "comment after a key with a nested mapping",
+		in:   "a: # comment\n  b: 1\n",
+		want: `{"a":{"b":1}}`,
+		pos:  map[string]Position{"/a": {1, 1}, "/a/b": {2, 3}},
+	},
+	{
+		name: "comment after a value",
+		in:   "a: x # comment\n",
+		want: `{"a":"x"}`,
+	},
+	{
+		name: "comment after a key in a flow mapping",
+		in:   "a: {b: # comment\n  c}\n",
+		want: `{"a":{"b":"c"}}`,
+		pos:  map[string]Position{"/a/b": {1, 5}},
+	},
+	{
 		name: "document start",
 		in:   "# comment\n\n--- # start\na: 1\n",
 		want: `{"a":1}`,
@@ -622,6 +644,14 @@ func TestToJSONErrors(t *testing.T) {
 		{name: "missing item before a key", in: "a:\n- # c\nb: 1\n", msg: missing, line: 2, col: 1},
 		{name: "missing item in a compact sequence", in: "- -\n", msg: missing, line: 1, col: 3},
 		{name: "missing value in a compact mapping", in: "- a:\n- b\n", msg: missing, line: 1, col: 3},
+		{name: "value that starts with #", in: "primary: #1e73be\n", msg: missing + quoteHash, line: 1, col: 1},
+		{name: "value that starts with # before a key", in: "a: #fff\nb: 1\n", msg: missing + quoteHash, line: 1, col: 1},
+		{name: "comment after a key at the end", in: "a: # comment\n", msg: missing + quoteHash, line: 1, col: 1},
+		{name: "item that starts with #", in: "colors:\n  - #fff\n", msg: missing + quoteHash, line: 2, col: 3},
+		{name: "item that starts with # before an item", in: "- #fff\n- '#000'\n", msg: missing + quoteHash, line: 1, col: 1},
+		{name: "value that starts with # in a compact mapping", in: "- a: #fff\n", msg: missing + quoteHash, line: 1, col: 3},
+		{name: "item that starts with # in a compact sequence", in: "- - #fff\n", msg: missing + quoteHash, line: 1, col: 3},
+		{name: "value that starts with # in a flow mapping", in: "a: {\n  b: #fff\n  }\n", msg: missing + quoteHash, line: 2, col: 3},
 		{name: "missing value in a flow mapping", in: "{a: }", msg: missing, line: 1, col: 2},
 		{name: "key without a value in a flow mapping", in: "{a}", msg: missing, line: 1, col: 2},
 		{name: "key with a colon in a flow mapping", in: "{a:b}", msg: missing, line: 1, col: 2},
@@ -773,7 +803,8 @@ func TestToJSONErrors(t *testing.T) {
 }
 
 // TestToJSONHints checks whole messages, which TestToJSONErrors checks in part: the hint about quoting is only for
-// block values, as a document is not a text, and the hint about the space after ":" only for keys with ":".
+// block values, as a document is not a text, and the hint about the space after ":" only for keys with ":". The hint
+// about "#" is only for a comment right after the ":" or "-", in place of the hint about quoting.
 func TestToJSONHints(t *testing.T) {
 	for in, want := range map[string]string{
 		"[a] b":       `1:5: unexpected text after "]"`,
@@ -784,6 +815,12 @@ func TestToJSONHints(t *testing.T) {
 		"a: 1\nb\n":   `2:1: expected "key: value"`,
 		"a: 1\n'b'\n": `2:1: expected "key: value"`,
 		"a: 1\nb:2\n": `2:1: expected "key: value"; put a space after ":"`,
+
+		"primary: #1e73be\n":     `1:1: missing value; a "#" after a space starts a comment, so quote a value that starts with "#", such as "#1e73be"`,
+		"colors:\n  - #fff\n":    `2:3: missing value; a "#" after a space starts a comment, so quote a value that starts with "#", such as "#1e73be"`,
+		"a: {\n  b: #fff\n  }\n": `2:3: missing value; a "#" after a space starts a comment, so quote a value that starts with "#", such as "#1e73be"`,
+		"a:\n  #fff\n":           "1:1: missing value",
+		"{a:\n  # c\n}":          "1:2: missing value",
 	} {
 		if _, _, err := ToJSON([]byte(in)); err == nil || err.Error() != want {
 			t.Errorf("ToJSON(%q) = %v, want %s", in, err, want)

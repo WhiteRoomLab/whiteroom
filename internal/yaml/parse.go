@@ -20,6 +20,7 @@ const (
 
 	removeKey  = "; remove the key"
 	removeItem = "; remove the item"
+	quoteHash  = `; a "#" after a space starts a comment, so quote a value that starts with "#", such as "#1e73be"`
 )
 
 type parser struct {
@@ -419,7 +420,8 @@ func (p *parser) mapValue(ptr string, ind int, keyPos Position) error {
 	if err := p.skipSpaces(); err != nil {
 		return err
 	}
-	if c := p.peek(); c != 0 && c != '#' {
+	c := p.peek()
+	if c != 0 && c != '#' {
 		return p.inlineValue(ptr, ind)
 	}
 	if err := p.nextLine(); err != nil {
@@ -433,7 +435,16 @@ func (p *parser) mapValue(ptr string, ind int, keyPos Position) error {
 	case p.col-1 == ind && p.peek() == '-' && p.blankAt(1):
 		return p.sequence(ptr, ind, true)
 	}
-	return p.errorf(keyPos, "missing value")
+	return p.missingValue(keyPos, c == '#')
+}
+
+// missingValue returns the error for the key or item at pos without a value. A comment right after its ":" or "-"
+// on the line (comment) may have been meant as the value.
+func (p *parser) missingValue(pos Position, comment bool) error {
+	if comment {
+		return p.errorf(pos, "missing value%s", quoteHash)
+	}
+	return p.errorf(pos, "missing value")
 }
 
 // inlineValue reads the value after "key: " on the same line, in a mapping whose keys have the indentation ind.
@@ -476,7 +487,7 @@ func (p *parser) sequence(ptr string, ind int, same bool) error {
 				return err
 			}
 			if p.eof() || p.col-1 <= ind {
-				return p.errorf(dash, "missing value")
+				return p.missingValue(dash, c == '#')
 			}
 		}
 		it := item(ptr, i)

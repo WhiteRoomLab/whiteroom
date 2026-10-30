@@ -1,0 +1,8 @@
+{{template "layout" .}}
+{{define "title"}}{{t "notFound"}} | {{.Site.Name}}{{end}}
+{{define "main"}}
+<section class="not-found">
+<h1>{{t "notFound"}}</h1>
+<p><a href="{{.Site.Home}}">{{.Site.Name}}</a></p>
+</section>
+{{end}}

@@ -1,0 +1,53 @@
+# 見本のテーマの設定ファイル（すべての項目を使う）
+schemaVersion: 1
+defaultLanguage: ja
+presets:
+  color:
+    primary: "#1e73be"
+    accent: "#e85d04"
+    muted: "#f5f5f5"
+    text: oklch(25% 0 0)
+  fontSize:
+    small: 0.875rem
+    medium: 1rem
+    large: clamp(1.25rem, 1rem + 1vw, 1.5rem)
+  spacing:
+    "10": 0.25rem
+    "20": 0.5rem
+    "30": 1rem
+    "40": 2rem
+  fontFamily:
+    body: '"Noto Sans JP", sans-serif'
+    mono: ui-monospace, monospace
+  gradient:
+    sunset: "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)"
+  shadow:
+    soft: 0 2px 4px rgba(0, 0, 0, 0.1)
+styles: [textColor, backgroundColor, linkColor, fontSize, fontWeight, lineHeight, padding, margin, blockGap, border]
+custom:
+  color: false
+blocks:
+  paragraph:
+    variants:
+      lead: リード文
+  heading:
+    styles: [textColor, gradient, fontSize, fontFamily, letterSpacing, margin]
+  code:
+    styles: [fontSize, backgroundColor]
+  group:
+    variants:
+      box: ボックス
+      note: 注意書き
+marks:
+  highlight:
+    variants:
+      marker: マーカー
+locations:
+  header: ヘッダー
+  footer: フッター
+pageTemplates:
+  landing: ランディングページ
+imageSizes:
+  thumbnail: { label: サムネイル, width: 150, height: 150, crop: true }
+  medium: { label: 中, width: 300 }
+  large: { label: 大, width: 1024 }

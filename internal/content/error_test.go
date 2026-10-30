@@ -45,6 +45,12 @@ func TestError(t *testing.T) {
 			want: "settings.json:4:2: unexpected end of JSON input",
 		},
 		{name: "column without a line", err: &Error{Path: "/a", Msg: "m", Column: 7}, want: "/a: m"},
+		{
+			name: "file and line without a column",
+			err:  &Error{Msg: "unexpected EOF", File: "templates/entry.html", Line: 3},
+			want: "templates/entry.html:3: unexpected EOF",
+		},
+		{name: "line without a column", err: &Error{Path: "/a", Msg: "m", Line: 3}, want: "3: /a: m"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

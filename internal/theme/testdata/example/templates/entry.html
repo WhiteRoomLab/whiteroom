@@ -1,0 +1,10 @@
+{{template "layout" .}}
+{{define "main"}}
+<article class="entry">
+<h1>{{.Title}}</h1>
+{{- if .Author}}
+<p><time>{{.Date}}</time> {{t "postedBy" "name" .Author}}</p>
+{{- end}}
+{{.Body}}
+</article>
+{{end}}

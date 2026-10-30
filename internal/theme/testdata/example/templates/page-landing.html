@@ -1,0 +1,11 @@
+{{template "layout" .}}
+{{define "main"}}
+<article class="landing">
+<h1>{{.Title}}</h1>
+{{- range .Sections}}
+<section class="{{.Class}}">
+{{.Body}}
+</section>
+{{- end}}
+</article>
+{{end}}

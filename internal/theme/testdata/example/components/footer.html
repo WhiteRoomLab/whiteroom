@@ -1,0 +1,6 @@
+<footer class="site-footer">
+{{- with .Menus.footer}}
+<nav>{{template "menu" .}}</nav>
+{{- end}}
+<small>&copy; {{.Site.Name}}</small>
+</footer>

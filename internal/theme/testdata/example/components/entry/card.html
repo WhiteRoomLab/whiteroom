@@ -1,0 +1,8 @@
+<article class="card">
+<h2><a href="{{.entry.URL}}">{{.entry.Title}}</a></h2>
+{{- if and .showAuthor .entry.Author}}
+<p>{{t "postedBy" "name" .entry.Author}}</p>
+{{- end}}
+<p>{{.entry.Excerpt}}</p>
+<a href="{{.entry.URL}}">{{t "readMore"}}</a>
+</article>

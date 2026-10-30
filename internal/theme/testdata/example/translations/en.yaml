@@ -1,0 +1,6 @@
+# postedBy is left out on purpose: pages in en take its text from ja, the default language.
+readMore: Read more
+previous: Previous
+next: Next
+pageOf: "Page {page} of {total}"
+notFound: Page not found
