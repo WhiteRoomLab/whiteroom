@@ -32,12 +32,12 @@ func (l *loader) readRoot() {
 				l.readTemplates()
 			}
 		case "components":
-			if l.checkType(name, d, true) {
-				l.readComponents()
+			if !l.checkType(name, d, true) || !l.readComponents() {
+				l.componentsMissing = true
 			}
 		case "assets":
-			if l.checkType(name, d, true) {
-				l.readAssets()
+			if !l.checkType(name, d, true) || !l.readAssets() {
+				l.assetsMissing = true
 			}
 		case "translations":
 			if !l.checkType(name, d, true) || !l.readTranslations() {
@@ -131,12 +131,15 @@ func (l *loader) readDir(dir string) ([]fs.DirEntry, bool) {
 
 // walk calls file for each regular file under dir, such as "components/entry/card.html", with its path rel from dir,
 // such as "entry/card.html". It ignores hidden entries, and reports the other entries that are neither regular files
-// nor directories, and the directories whose names check rejects.
-func (l *loader) walk(dir string, check func(name string) error, file func(p, rel string, d fs.DirEntry)) {
+// nor directories, and the directories whose names check rejects. It reports whether every entry that is not hidden
+// was a directory that it has read or a regular file that it has passed to file.
+func (l *loader) walk(dir string, check func(name string) error, file func(p, rel string, d fs.DirEntry)) bool {
+	complete := true
 	_ = fs.WalkDir(l.fsys, dir, func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
 			l.ioError(p, err)
+			complete = false
 			return fs.SkipDir
 		case p == dir:
 		case hidden(d.Name()):
@@ -149,13 +152,16 @@ func (l *loader) walk(dir string, check func(name string) error, file func(p, re
 			}
 		case d.Type()&fs.ModeSymlink != 0:
 			l.addf(p, "symbolic links are not allowed")
+			complete = false
 		case !d.Type().IsRegular():
 			l.addf(p, "must be a regular file or a directory")
+			complete = false
 		default:
 			file(p, p[len(dir)+1:], d)
 		}
 		return nil
 	})
+	return complete
 }
 
 // hidden reports whether name is that of a hidden entry, such as .git or .DS_Store.
@@ -244,9 +250,11 @@ func (l *loader) checkTemplates() {
 	}
 }
 
-// readComponents reads the components, named by their paths from components/ without ".html", such as "entry/card".
-func (l *loader) readComponents() {
-	l.walk("components", content.CheckName, func(p, rel string, d fs.DirEntry) {
+// readComponents reads the components, named by their paths from components/ without ".html", such as "entry/card",
+// and reports whether every entry that may be a component has loaded.
+func (l *loader) readComponents() bool {
+	loaded := true
+	complete := l.walk("components", content.CheckName, func(p, rel string, d fs.DirEntry) {
 		name, ok := strings.CutSuffix(rel, ".html")
 		if !ok {
 			l.addf(p, "unknown file %q; components are <name>.html files", d.Name())
@@ -254,10 +262,15 @@ func (l *loader) readComponents() {
 		}
 		if err := content.CheckName(path.Base(name)); err != nil {
 			l.add(p, err)
+			loaded = false
 			return
 		}
-		if data, ok := l.readFile(p, d, content.MaxTextBytes); ok {
-			l.t.components[name] = string(data)
+		data, ok := l.readFile(p, d, content.MaxTextBytes)
+		if !ok {
+			loaded = false
+			return
 		}
+		l.t.components[name] = string(data)
 	})
+	return complete && loaded
 }

@@ -103,6 +103,27 @@ func mustLoad(t *testing.T, fsys fs.FS) *Theme {
 	return th
 }
 
+// namespaceTexts returns the templates of each namespace of th, as their text by name.
+func namespaceTexts(th *Theme) map[string]map[string]string {
+	texts := make(map[string]map[string]string)
+	for page, ns := range th.namespaces {
+		m := make(map[string]string)
+		for _, x := range ns.Templates() {
+			m[x.Name()] = x.Tree.Root.String()
+		}
+		texts[page] = m
+	}
+	return texts
+}
+
+// withoutNamespaces returns a copy of th without its namespaces, which reflect.DeepEqual cannot compare since they
+// hold functions, and their texts.
+func withoutNamespaces(th *Theme) (*Theme, map[string]map[string]string) {
+	c := *th
+	c.namespaces = nil
+	return &c, namespaceTexts(th)
+}
+
 // fullThemeYAML is the settings file of fullTheme, which has a page template.
 const fullThemeYAML = `# A theme with every kind of file
 schemaVersion: 1
@@ -152,6 +173,13 @@ func TestLoad(t *testing.T) {
 	components := map[string]string{"header": "<header></header>", "entry/card": "<article></article>"}
 	if !reflect.DeepEqual(th.components, components) {
 		t.Errorf("components = %q, want %q", th.components, components)
+	}
+	namespaces := make(map[string]map[string]string)
+	for name, text := range templates {
+		namespaces[name] = map[string]string{name: text, "header": "<header></header>", "entry/card": "<article></article>"}
+	}
+	if got := namespaceTexts(th); !reflect.DeepEqual(got, namespaces) {
+		t.Errorf("namespaces = %q, want %q", got, namespaces)
 	}
 	translations := map[string]map[string]string{
 		"ja": {"readMore": "続きを読む", "pageOf": "{page} / {total} ページ"},

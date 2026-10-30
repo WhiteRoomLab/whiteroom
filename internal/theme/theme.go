@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"slices"
 	"strings"
@@ -24,11 +25,17 @@ type Theme struct {
 	templates    map[string]string            // sources of the page templates by file name, such as "entry.html"
 	components   map[string]string            // sources of the components by name, such as "entry/card"
 	assets       map[string]asset             // files in assets/ by their paths relative to it, such as "css/style.css"
+
+	// namespaces has, for each page template by file name, the template of that name with the components and the
+	// defines it can call, parsed with stubs for the functions. They are never executed, so that they can be cloned.
+	namespaces map[string]*template.Template
 }
 
 // Load reads the theme in fsys: theme.yaml, templates/ and, if there are any, components/, assets/ and
 // translations/. It ignores hidden entries, whose names start with ".", everywhere, and the other entries at the root,
 // such as README.md. Symbolic links and the other entries that are neither regular files nor directories are errors.
+// It parses the page templates and the components, and checks the templates that each page template can reach: their
+// template calls, their calls of the functions, and the escaping of html/template.
 // The error is content.Errors, each with File set to the path of its file from the root, such as
 // "templates/entry.html", sorted by file, with theme.yaml first, then translations/, components/, templates/ and
 // assets/, and by position. The theme is nil with an error.
@@ -40,12 +47,14 @@ func Load(fsys fs.FS) (*Theme, error) {
 			templates:    make(map[string]string),
 			components:   make(map[string]string),
 			assets:       make(map[string]asset),
+			namespaces:   make(map[string]*template.Template),
 		},
 		translations: make(map[string]*translationFile),
 	}
 	l.readRoot()
 	l.checkTemplates()
 	l.checkTranslations()
+	l.parseTemplates()
 	if len(l.errs) > 0 {
 		slices.SortStableFunc(l.errs, compareErrors)
 		return nil, l.errs
@@ -63,6 +72,9 @@ type loader struct {
 
 	templatesRead bool     // whether templates/ has been read
 	templateFiles []string // names of the entries in templates/ except hidden ones, whatever they are
+
+	componentsMissing bool // whether components/ may have components that have not loaded
+	assetsMissing     bool // whether assets/ may have files that have not loaded
 
 	translationsUnread bool                        // whether translations/ is there but has not been read
 	languages          []string                    // languages of the files in translations/, loaded or not

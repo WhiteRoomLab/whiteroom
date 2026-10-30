@@ -19,16 +19,23 @@ type asset struct {
 	sum  [sha256.Size]byte
 }
 
-func (l *loader) readAssets() {
-	l.walk("assets", checkAssetName, func(p, rel string, d fs.DirEntry) {
+// readAssets reads the files in assets/ and reports whether every one has loaded.
+func (l *loader) readAssets() bool {
+	loaded := true
+	complete := l.walk("assets", checkAssetName, func(p, rel string, d fs.DirEntry) {
 		if err := checkAssetName(d.Name()); err != nil {
 			l.add(p, err)
+			loaded = false
 			return
 		}
-		if data, ok := l.readFile(p, d, MaxAssetBytes); ok {
-			l.t.assets[rel] = asset{data: data, sum: sha256.Sum256(data)}
+		data, ok := l.readFile(p, d, MaxAssetBytes)
+		if !ok {
+			loaded = false
+			return
 		}
+		l.t.assets[rel] = asset{data: data, sum: sha256.Sum256(data)}
 	})
+	return complete && loaded
 }
 
 // assetNameChars are the characters of the names in the paths of assets, which URLs have as they are.

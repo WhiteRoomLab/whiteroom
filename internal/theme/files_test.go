@@ -60,11 +60,15 @@ func TestLoadIgnored(t *testing.T) {
 			},
 		},
 	}
-	want := mustLoad(t, themeFS(nil))
+	want, wantTexts := withoutNamespaces(mustLoad(t, themeFS(nil)))
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := mustLoad(t, themeFS(tt.changes)); !reflect.DeepEqual(got, want) {
+			got, gotTexts := withoutNamespaces(mustLoad(t, themeFS(tt.changes)))
+			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load() = %+v, want %+v", got, want)
+			}
+			if !reflect.DeepEqual(gotTexts, wantTexts) {
+				t.Errorf("namespaces = %q, want %q", gotTexts, wantTexts)
 			}
 		})
 	}
