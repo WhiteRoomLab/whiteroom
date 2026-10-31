@@ -24,8 +24,8 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 
 - パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`、開発者が書くファイル（`site/schema.yaml`、テーマの `theme.yaml` と翻訳ファイル）の YAML を読む処理は `internal/yaml`。
 - テーマ（`CONCEPT.md` の 5.4）の設定ファイルと翻訳ファイルの型・読み込み・検証は、コンテンツの検証からも使うので `internal/content` に置く。テーマのディレクトリ（設定・ページとブロックのテンプレート（`blocks/`）・部品・翻訳・assets）を読み、テンプレートを実行する処理は `internal/theme`。
-- 文中装飾とブロックの HTML は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（`CONCEPT.md` の 6.8）は `internal/render/blocks/` に置く。
-- ほかの描画とビルドのパッケージは、作るときに置く：`style` の CSS は `internal/css`、`html`・`legacy` のサニタイズは `internal/sanitize`、公開する画像は `internal/imaging`、静的ビルドは `internal/build`。依存の向きは `build` → `render`・`css`・`sanitize`・`imaging` → `theme` → `content`。
+- 文中装飾とブロックの HTML と、`style` などの見た目の CSS（ページの CSS とサイトの CSS。`CONCEPT.md` の 6.5.3）は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（`CONCEPT.md` の 6.8）は `internal/render/blocks/` に、本体が付けるクラスの CSS（`CONCEPT.md` の 6.5.4。サイトの CSS に入る）は `internal/render/classes.css` に置く。
+- ほかの描画とビルドのパッケージは、作るときに置く：`html`・`legacy` のサニタイズは `internal/sanitize`、公開する画像は `internal/imaging`、静的ビルドは `internal/build`。依存の向きは `build` → `render`・`sanitize`・`imaging` → `theme` → `content`。
 - コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
 
 ## 生成するファイル
@@ -34,7 +34,7 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 - 表の Unicode の版は、Go の `unicode.Version` に合わせる。Go のマイナー版を上げて `unicode.Version` が変わると `internal/nfc` のテストが失敗するので、そのときに作り直す。
 - `internal/yaml/testdata/yaml-test-suite.json.gz` は `go generate ./internal/yaml` で作る（GitHub から yaml-test-suite の data-2022-01-17 を取得し、sha256 を確かめるので、ネットが要る）。手で編集しない。ライセンスは同じディレクトリの `YAML-TEST-SUITE-LICENSE.txt`。
 - `internal/theme/testdata/example-out/` は、見本のテーマ（`internal/theme/testdata/example/`）で描画したページの正解で、`go test ./internal/theme -run TestExamplePages -update` で作る（`-update` はパッケージの後ろに書く）。手で編集しない。出力が変わる変更をしたら作り直し、差分を確かめる。
-- `internal/render/testdata/out/` は、テストの文書（`internal/content/testdata/` の `every-block.json`・`about-page-body.json` と、`internal/render/testdata/every-mark.json`）を、ブロックのテンプレートの無いテーマ（`default`。本体の既定のテンプレートで描画する）と見本のテーマ（`example`）で、日本語（サイトのパスなし）と英語（`/blog`）に描画した HTML と警告の正解で、`go test ./internal/render -run TestGolden -update` で作る（`-update` はパッケージの後ろに書く）。手で編集しない。出力が変わる変更をしたら作り直し、差分を確かめる。見本のテーマを変えたときは、`internal/theme/testdata/example-out/` の作り直しも要ることがある（`assets/css/style.css` を変えると、`?v=` が変わる）。
+- `internal/render/testdata/out/` は、テストの文書（`internal/content/testdata/` の `every-block.json`・`about-page-body.json` と、`internal/render/testdata/` の `every-mark.json`・`every-style.json`）を、ブロックのテンプレートとプリセットの無いテーマ（`default`。本体の既定のテンプレートで描画し、`style` は直接指定だけが残る）と見本のテーマ（`example`）で、日本語（サイトのパスなし）と英語（`/blog`）に描画した正解で、`go test ./internal/render -run TestGolden -update` で作る（`-update` はパッケージの後ろに書く）。ファイルは、`<テーマ>/<言語>/<文書>.html`（HTML）・`.txt`（警告）・`.css`（ページの CSS。言語によらず同じ）と、`<テーマ>/site.css`（サイトの CSS）。手で編集しない。出力が変わる変更（`internal/render/classes.css` を変えると `site.css` が変わる）をしたら作り直し、差分を確かめる。見本のテーマを変えたときは、`internal/theme/testdata/example-out/` の作り直しも要ることがある（`assets/css/style.css` を変えると、`?v=` が変わる）。
 
 ## 規約
 
