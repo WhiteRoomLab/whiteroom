@@ -1,0 +1,17 @@
+<figure{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}><div class="table-scroll"><table>
+{{- with .Head -}}
+<thead>
+{{.}}
+</thead>
+{{- end}}
+{{- with .Body -}}
+<tbody>
+{{.}}
+</tbody>
+{{- end}}
+{{- with .Foot -}}
+<tfoot>
+{{.}}
+</tfoot>
+{{- end -}}
+</table></div>{{with .Caption}}<figcaption>{{.}}</figcaption>{{end}}</figure>

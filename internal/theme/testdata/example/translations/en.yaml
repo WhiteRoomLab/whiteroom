@@ -4,3 +4,4 @@ previous: Previous
 next: Next
 pageOf: "Page {page} of {total}"
 notFound: Page not found
+download: Download

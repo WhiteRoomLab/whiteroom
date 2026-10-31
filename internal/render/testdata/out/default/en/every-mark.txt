@@ -1,0 +1,3 @@
+/5/content/0/marks/0: the theme has no highlight variant "marker"; rendered without its class
+/5/content/2/marks/0: the theme has no highlight variant "wave"; rendered without its class
+/6/content/24/marks/0: entry "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" is not published; rendered without the link

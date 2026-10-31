@@ -153,7 +153,7 @@
     "type": "group",
     "id": "b_00group2",
     "attrs": {"layout": {"type": "grid", "columns": 3, "minColumnWidth": "12rem"}},
-    "content": [{"type": "image", "id": "b_0grpimg1", "attrs": {"media": "med_01JB8Z3K5TM8A1C5F9V3J6K2N7", "alt": "Product"}}]
+    "content": [{"type": "image", "id": "b_0grpimg1", "attrs": {"media": "med_01JB8Z3K5XQ2F5H8K3M6R9V4Y7", "alt": "Product"}}]
   },
   {"type": "group", "id": "b_00group3", "attrs": {"layout": {"type": "stack", "justify": "stretch", "verticalAlign": "spaceBetween"}}},
   {"type": "file", "id": "b_0000file", "attrs": {"media": "med_01JB8Z3K5WN9C2E6H1K4P7S3T8", "label": "Brochure (PDF)"}},

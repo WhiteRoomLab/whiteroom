@@ -1,0 +1,113 @@
+[
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk1",
+    "content": [{"type": "text", "text": "1 < 2 & 3 > 2、\"二重引用符\"と'一重引用符'"}]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk2",
+    "content": [
+      {"type": "text", "text": "太字", "marks": [{"type": "bold"}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "斜体", "marks": [{"type": "italic"}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "下線", "marks": [{"type": "underline"}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "取り消し線", "marks": [{"type": "strike"}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "fmt.Println", "marks": [{"type": "code"}]},
+      {"type": "text", "text": "、H"},
+      {"type": "text", "text": "2", "marks": [{"type": "subscript"}]},
+      {"type": "text", "text": "O、E=mc"},
+      {"type": "text", "text": "2", "marks": [{"type": "superscript"}]}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk3",
+    "content": [
+      {"type": "text", "text": "当社の", "marks": [{"type": "bold"}]},
+      {"type": "text", "text": "事業", "marks": [{"type": "italic"}, {"type": "bold"}]},
+      {"type": "text", "text": "内容", "marks": [{"type": "bold"}]},
+      {"type": "text", "text": "をご紹介します。"}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk4",
+    "content": [
+      {"type": "text", "text": "サービス", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}]},
+      {"type": "text", "text": "一覧", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}, {"type": "bold"}]},
+      {"type": "text", "text": "と", "marks": [{"type": "bold"}]},
+      {"type": "text", "text": "会社概要", "marks": [{"type": "bold"}, {"type": "link", "attrs": {"href": "/about/"}}]}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk5",
+    "content": [
+      {"type": "text", "text": "一行目", "marks": [{"type": "bold"}]},
+      {"type": "hardBreak"},
+      {"type": "text", "text": "二行目", "marks": [{"type": "bold"}]},
+      {"type": "hardBreak"},
+      {"type": "text", "text": "三行目"}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk6",
+    "content": [
+      {"type": "text", "text": "マーカー", "marks": [{"type": "highlight", "attrs": {"variant": "marker"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "波線", "marks": [{"type": "highlight", "attrs": {"variant": "wave"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "文字色", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "accent"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "背景色", "marks": [{"type": "highlight", "attrs": {"backgroundColor": {"value": "#fff4e5"}}}]}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk7",
+    "content": [
+      {"type": "text", "text": "検索", "marks": [{"type": "link", "attrs": {"href": "https://example.com/search?q=\"a b\"&lang='ja'<x>"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "メール", "marks": [{"type": "link", "attrs": {"href": "mailto:info@example.com?subject=お問い合わせ"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "電話", "marks": [{"type": "link", "attrs": {"href": "tel:+81-3-1234-5678"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "アクセス", "marks": [{"type": "link", "attrs": {"href": "/about/?x=1&y=2#access"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "パス", "marks": [{"type": "link", "attrs": {"href": "http://example.com/パス"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "サービス", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "フォーム", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4", "anchor": "form"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "会社案内", "marks": [{"type": "link", "attrs": {"media": "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "ページの先頭", "marks": [{"type": "link", "attrs": {"anchor": "top"}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "新しいタブ", "marks": [{"type": "link", "attrs": {"href": "https://example.com/", "newTab": true}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "広告", "marks": [{"type": "link", "attrs": {"href": "https://example.com/ad", "newTab": true, "rel": ["nofollow", "sponsored"]}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "投稿", "marks": [{"type": "link", "attrs": {"href": "https://example.com/forum", "rel": ["ugc"]}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "下書き", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8"}}]}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0000mrk8",
+    "anchor": "b_0000head",
+    "content": [{"type": "text", "text": "見出しのIDをアンカーにした段落"}]
+  },
+  {
+    "type": "heading",
+    "id": "b_0000head",
+    "attrs": {"level": 2},
+    "content": [{"type": "text", "text": "自動のアンカー"}]
+  }
+]
