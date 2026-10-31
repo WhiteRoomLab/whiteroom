@@ -19,15 +19,33 @@ func (w *walker) image(b *content.Block, path string) (Image, bool) {
 		w.warnf(path+"/attrs/media", "media %q is not an image; not rendered", a.Media)
 		return Image{}, false
 	}
-	d := Image{
-		Common: w.common(b, path), Src: src, Size: a.Size, Width: a.Width, AspectRatio: a.AspectRatio, Align: a.Align,
-	}
+	s := w.begin(b, path)
+	d := Image{Src: src, Size: a.Size, Width: a.Width, AspectRatio: a.AspectRatio, Align: a.Align}
 	if d.Alt, d.HasAlt = b.ImageAlt(m, w.r.language); !d.HasAlt {
 		w.warnf(path+"/attrs/alt",
 			"no alt in %s: neither the block nor its medium has one; rendered without the alt attribute", w.r.language)
 	}
 	d.Caption = template.HTML(w.richText(a.Caption, path+"/attrs/caption"))
 	d.Link = w.link(a.Link, path+"/attrs/link")
+	width := w.length(path+"/attrs/width", a.Width, content.LengthRule{Percent: true})
+	ratio := a.AspectRatio
+	if ratio != "" {
+		if err := content.CheckAspectRatio(ratio); err != nil {
+			w.warnf(path+"/attrs/aspectRatio", "%v; ignored", err)
+			ratio = ""
+		}
+	}
+	if width != "" {
+		s.img = append(s.img, important("width", width))
+	}
+	if ratio != "" {
+		s.img = append(s.img, important("aspect-ratio", ratio), important("object-fit", "cover"))
+	}
+	if width != "" || ratio != "" {
+		s.img = append(s.img, important("height", "auto"))
+	}
+	s.addClass(w.choice(path+"/attrs", "align", a.Align, imageAlignClasses))
+	d.Common = w.finish(s)
 	return d, true
 }
 

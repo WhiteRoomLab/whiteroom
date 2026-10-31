@@ -133,7 +133,7 @@ func TestCheckColor(t *testing.T) {
 			if !tt.ok {
 				msg = fmt.Sprintf("invalid color %q", tt.in)
 			}
-			assertErrorMsg(t, checkColor(tt.in), msg)
+			assertErrorMsg(t, CheckColor(tt.in), msg)
 		})
 	}
 }
@@ -144,11 +144,11 @@ func TestCheckLength(t *testing.T) {
 		negative   = "negative length %q is not allowed here"
 		percentage = "percentage %q is not allowed here"
 	)
-	lenient := lengthRule{negative: true, percent: true}
+	lenient := LengthRule{Negative: true, Percent: true}
 	tests := []struct {
 		name string
 		in   string
-		rule lengthRule
+		rule LengthRule
 		msg  string // format of the message for in, or "" for no error
 	}{
 		{name: "zero", in: "0"},
@@ -159,17 +159,17 @@ func TestCheckLength(t *testing.T) {
 		{name: "vw", in: "100vw"},
 		{name: "vh", in: "50vh"},
 
-		{name: "preset allowed", in: "1rem", rule: lengthRule{preset: true}},
-		{name: "percentage allowed", in: "50%", rule: lengthRule{percent: true}},
+		{name: "preset allowed", in: "1rem", rule: LengthRule{Preset: true}},
+		{name: "percentage allowed", in: "50%", rule: LengthRule{Percent: true}},
 		{name: "percentage not allowed", in: "50%", msg: percentage},
-		{name: "percentage with preset", in: "50%", rule: lengthRule{preset: true}, msg: percentage},
-		{name: "negative allowed", in: "-1px", rule: lengthRule{negative: true}},
-		{name: "negative not allowed", in: "-1px", rule: lengthRule{percent: true}, msg: negative},
-		{name: "negative with preset", in: "-1px", rule: lengthRule{preset: true}, msg: negative},
-		{name: "invalid with preset", in: "auto", rule: lengthRule{preset: true}, msg: invalid},
+		{name: "percentage with preset", in: "50%", rule: LengthRule{Preset: true}, msg: percentage},
+		{name: "negative allowed", in: "-1px", rule: LengthRule{Negative: true}},
+		{name: "negative not allowed", in: "-1px", rule: LengthRule{Percent: true}, msg: negative},
+		{name: "negative with preset", in: "-1px", rule: LengthRule{Preset: true}, msg: negative},
+		{name: "invalid with preset", in: "auto", rule: LengthRule{Preset: true}, msg: invalid},
 		{name: "negative percentage allowed", in: "-50%", rule: lenient},
-		{name: "negative percentage without negative", in: "-50%", rule: lengthRule{percent: true}, msg: negative},
-		{name: "negative percentage without percent", in: "-50%", rule: lengthRule{negative: true}, msg: percentage},
+		{name: "negative percentage without negative", in: "-50%", rule: LengthRule{Percent: true}, msg: negative},
+		{name: "negative percentage without percent", in: "-50%", rule: LengthRule{Negative: true}, msg: percentage},
 		{name: "negative before percentage", in: "-50%", msg: negative},
 		{name: "invalid before negative", in: "-1.px", msg: invalid},
 		{name: "invalid before percentage", in: "1.%", msg: invalid},
@@ -200,7 +200,60 @@ func TestCheckLength(t *testing.T) {
 			if tt.msg != "" {
 				msg = fmt.Sprintf(tt.msg, tt.in)
 			}
-			assertErrorMsg(t, checkLength(tt.in, tt.rule), msg)
+			assertErrorMsg(t, CheckLength(tt.in, tt.rule), msg)
+		})
+	}
+}
+
+// mobileWidthHint follows the value in the message of CheckMobileWidth.
+const mobileWidthHint = ": use a length greater than 0 in px, em or rem, such as 781px"
+
+func TestCheckMobileWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{name: "px", in: "781px", ok: true},
+		{name: "rem", in: "48rem", ok: true},
+		{name: "fractional em", in: "37.5em", ok: true},
+		{name: "leading dot", in: ".5rem", ok: true},
+		{name: "small", in: "0.01px", ok: true},
+		{name: "leading zero", in: "0781px", ok: true},
+
+		{name: "empty", in: ""},
+		{name: "unitless zero", in: "0"},
+		{name: "zero px", in: "0px"},
+		{name: "zero with a fraction", in: "0.0em"},
+		{name: "negative", in: "-1px"},
+		{name: "plus sign", in: "+1px"},
+		{name: "percentage", in: "10%"},
+		{name: "vw", in: "10vw"},
+		{name: "vh", in: "10vh"},
+		{name: "pt", in: "10pt"},
+		{name: "unitless", in: "781"},
+		{name: "unit only", in: "px"},
+		{name: "space before unit", in: "781 px"},
+		{name: "leading space", in: " 781px"},
+		{name: "trailing space", in: "781px "},
+		{name: "exponent", in: "1e2px"},
+		{name: "trailing dot", in: "1.px"},
+		{name: "two dots", in: "1.2.3px"},
+		{name: "upper-case unit", in: "781PX"},
+		{name: "two units", in: "1pxpx"},
+		{name: "calc", in: "calc(781px)"},
+		{name: "var", in: "var(--x)"},
+		{name: "end of a media query", in: "781px) and (min-width: 0px"},
+		{name: "semicolon", in: "781px;"},
+		{name: "too large", in: strings.Repeat("9", 400) + "px"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := ""
+			if !tt.ok {
+				msg = fmt.Sprintf("invalid mobileWidth %q", tt.in) + mobileWidthHint
+			}
+			assertErrorMsg(t, CheckMobileWidth(tt.in), msg)
 		})
 	}
 }

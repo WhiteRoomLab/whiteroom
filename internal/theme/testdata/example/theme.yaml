@@ -51,3 +51,4 @@ imageSizes:
   thumbnail: { label: サムネイル, width: 150, height: 150, crop: true }
   medium: { label: 中, width: 300 }
   large: { label: 大, width: 1024 }
+mobileWidth: 600px

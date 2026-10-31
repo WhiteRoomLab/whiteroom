@@ -19,7 +19,7 @@ func (w *walker) form(b *content.Block, path string) (Form, bool) {
 		return Form{}, false
 	}
 	language := w.r.language
-	d := Form{Common: w.common(b, path), Action: template.URL(w.r.sitePath("/_forms/" + id)), Language: language}
+	d := Form{Action: template.URL(w.r.sitePath("/_forms/" + id)), Language: language}
 	// text returns l in the language of the page; what names l in the warning if it is missing there.
 	text := func(l content.Localized, what string) string {
 		s := l[language]
@@ -28,6 +28,7 @@ func (w *walker) form(b *content.Block, path string) (Form, bool) {
 		}
 		return s
 	}
+	s := w.begin(b, path)
 	for i := range f.Fields {
 		x := &f.Fields[i]
 		switch x.Type {
@@ -55,6 +56,7 @@ func (w *walker) form(b *content.Block, path string) (Form, bool) {
 		d.Fields = append(d.Fields, field)
 	}
 	d.SubmitLabel = text(f.SubmitLabel, "submitLabel")
+	d.Common = w.finish(s)
 	return d, true
 }
 

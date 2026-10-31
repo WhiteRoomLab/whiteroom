@@ -216,6 +216,7 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 | `locations` | メニューの表示場所（6.6.4） | |
 | `pageTemplates` | 固定ページのテンプレート（6.4.3の `template`）。テンプレートのファイルは `templates/page-<名前>.html`（5.4.4） | |
 | `imageSizes` | 画像のサイズ（6.5.4の `size`）。サイズの名前から、`label`・`width`・`height`・`crop`（下記）のマッピングへ | |
+| `mobileWidth` | カラム（6.5.4の `columns`）を縦に積む、画面の最大の幅。`px`・`em`・`rem` の、0より大きい長さ（例：`600px`）。省けば `781px`（WordPressと同じ） | |
 
 `variants`・`locations`・`pageTemplates` は、名前から表示名（管理画面で示す名前）へのマッピングで書く（例：`box: ボックス`）。プリセットは、表示名を持たない（6.12の73）。全体の例は5.4.9。
 
@@ -227,16 +228,17 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 - 見た目の項目：`styles` と `blocks` の `styles` には、段階1の13の項目（6.5.3。`textColor`・`backgroundColor`・`linkColor`・`gradient`・`fontSize`・`letterSpacing`・`fontFamily`・`fontWeight`・`lineHeight`・`padding`・`margin`・`blockGap`・`border`）を書ける。知らない項目と、同じ項目を2回書いたものはエラー。空の列は書けない（6.12の75）。
 - `blocks` のキー：段階1のブロックの種類（6.5.4）。部品（`listItem`・`tableRow`・`tableCell`。6.5.1）は、見た目もバリエーションも持たないので書けない。拡張ブロック（6.5.6）も、いまは書けない。
 - 画像のサイズ：`label` は必須の表示名。`width`・`height` は、画像の最大の幅と高さ（画素数）で、1〜10000の整数。どちらか一方か、両方を書く。整数の属性（6.7）と同じく、読み込みでも書き方と範囲を確かめる（0は省略と区別できないため）。`crop` を `true` にすると、`width`×`height` ちょうどに切り抜く（`width` と `height` の両方が要る）。
+- `mobileWidth`：数と単位で書く（数の書き方は6.5.3の「共通」）。単位は `px`・`em`・`rem` だけで、値は0より大きくする（本体のクラスのCSSのメディアクエリーの幅に使うため。6.5.4）。合わないものはエラーにする（`invalid mobileWidth "50%": use a length greater than 0 in px, em or rem, such as 781px`）。
 - `defaultLanguage`：言語コードの書式（6.4.5）だけを確かめる。サイトの言語（6.6.8の `languages`）にあるかは問わない（テーマは、サイト設定を知らずに読み込む）。
 - プリセットの値：5.4.3。
 - プリセットとの組み合わせ：`custom`・`styles` と、プリセットの組み合わせ（直接指定を許さない種類に、プリセットがあるかなど）は確かめない（6.12の76）。
 - 正規化しない：スキーマのファイル（6.6.8）と同じく、開発者が書いたものは変えず、正規化していない値（NFCでない表示名など）は、検証でエラーにする。
-- コンテンツとの照合：テーマの名前を使うコンテンツの値（`style` のプリセット名、`variant`、固定ページの `template`、メニューの `location`、画像の `size`）は、いまは名前の書式だけを確かめ、テーマにあるかは確かめない（6.5.3の「検証のタイミング」）。テーマに無い名前は、エラーにせず、ビルドで警告する（6.2の4）。
+- コンテンツとの照合：`style` の値（項目・プリセット名・直接指定）と、`spacer` の `height`、`highlight` の色は、保存の検証で、この設定と照合する（取り込みと、前のリビジョンから変えていない値は受け付ける。6.5.3の「検証のタイミング」）。テーマの名前を使うほかの値（`variant`、固定ページの `template`、メニューの `location`、画像の `size`）は、いまは名前の書式だけを確かめ、テーマにあるかは確かめない（6.12の91）。テーマに無い名前と、テーマが許さない値は、ビルドで警告する（6.2の4）。
 
 #### 5.4.3 プリセットの値
 
 - プリセットの値は、CSSの値として書く。本文の直接指定（6.5.3）と違い、`clamp()`・`calc()`・`var()`・`oklch()` などの関数も書ける（テーマは開発者が書き、`assets/` のCSSも自由に書けるため）。値が種類に合うか（色のプリセットが色か）は確かめない。
-- 出力：ビルドで、CSSのカスタムプロパティの値として書く（`--color-primary: #1e73be;` のように。6.5.3の出力）。`assets/` のCSSからも、同じ変数で使える。書く場所（CSSのファイルか、`<style>` の要素か）と、プロパティの名前は6.12の72。
+- 出力：サイトのCSS（6.5.3の出力）の `:root` の規則に、CSSのカスタムプロパティとして、値をそのまま書く（`--color-primary: #1e73be;`）。プロパティの名前は、`--` の後ろに、種類の名前をケバブケースにしたものと、`-` と、プリセットの名前を続けたもの（`--color-primary`・`--font-size-large`・`--spacing-30`・`--font-family-body`・`--gradient-sunset`・`--shadow-soft`）で、本体の接頭辞は付けない。種類は `color`・`fontSize`・`spacing`・`fontFamily`・`gradient`・`shadow` の順（書いた順によらない）に、その中はプリセットを書いた順に並べる。ページのCSSは、プリセットをこの変数で参照し（`var(--color-primary)`。6.5.3）、`assets/` のCSSからも、同じ変数で使える（`shadow` は、いまは `style` の項目に無い（段階2）ので、`assets/` のCSSからだけ使う）。例は5.4.9。
 - 書けないもの：値が、それを書いた宣言・規則・`<style>` の要素を終わらせないように、次のものはエラーにする。
   - 1行テキスト（6.7）でないもの、空の値、前後に空白のあるもの。
   - 引用符の外の記号：書けるのは、ASCIIの英字・数字・空白と `#`・`%`・`(`・`)`・`,`・`.`・`/`・`+`・`-`・`*`・`_`、引用符（`"`・`'`）と、ASCII以外の文字だけ。ほかの記号（`;`・`{`・`}`・`!`・`\`・`<`・`>`・`:`・`@`・`[`・`]`・`=`・`&`・`?`・`^`・`|`・`~`・`$`・`` ` ``）は書けない（`!important` も書けない）。
@@ -293,7 +295,8 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 
 ブロックのテンプレートのデータ：
 
-- 部品のブロックを除くどの種類のデータも、`.ID`（ブロックのID）、`.Anchor`（`id` の属性の値。`anchor` か、見出しの自動のアンカー（6.5.1）。無ければ空）、`.Class`（`class` の属性の値。6.5.4。無ければ空）を持つ。
+- 部品のブロックを除くどの種類のデータも、`.ID`（ブロックのID）、`.Anchor`（`id` の属性の値。`anchor` か、見出しの自動のアンカー（6.5.1）。無ければ空）、`.Class`（`class` の属性の値。ページのCSSに規則のあるブロックの `b-<ID>`、見た目の属性のクラス、バリエーションのクラス、`className` を、この順に空白で区切ったもの。6.5.4。無ければ空）を持つ。
+- 見た目：ページのCSS（6.5.3の出力）の規則は、`.Class` を付けた要素と、その中の `img`（画像）と、子の `blockquote`（`citation` のある `quote`）を選ぶ。テーマのブロックのテンプレートも、既定のテンプレートと同じく、`.Class` をブロックの最初の要素に付け、この形を保つ（6.12の96）。
 - 文中装飾は、描画したHTML（6.5.2）で渡す。子ブロックも、描画したHTMLを改行でつないで、`.Children` で渡す（表は、区分ごとの行を `.Head`・`.Body`・`.Foot` で渡す）。テンプレートは、これらをエスケープせずに出力する。
 - 参照は、解決して渡す（6.8）。URLは、エンコードしたもの（6.5.2）を、`html/template` が置き換えない値で渡す（`html/template` は、`http`・`https`・`mailto` のほかのURLを `#ZgotmplZ` に置き換えるが、データのURLは、`tel:` のリンクもそのまま出力される）。言語ごとの値（メディアの `alt`、フォームの文字など）は、ページの言語の値にする。
 - 項目の値は、表の括弧に書いたもののほかは、ブロックの属性を書いたままにし、書いていない属性は、空の文字か0にする。データに無い項目（`.Titel` など）を読むと、ページのテンプレートと同じく、実行のエラーにする。
@@ -308,7 +311,7 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 | `image` | `.Src`（メディアの公開するファイルのURL）、`.Alt`（6.6.2の「描画に使う `alt`」。`decorative` なら空）、`.HasAlt`（`alt` がどこにも無ければ `false`。そのときは `alt` の属性を書かない）、`.Caption`、`.Link`、`.Size`、`.Width`、`.AspectRatio`、`.Align` |
 | `table` | `.Caption`、`.Head`・`.Body`・`.Foot`（区分ごとの行を、表の中の順に。行の無い区分は空） |
 | `tableRow` | `.Section`（`head`・`foot` のほかは `body`）、`.Children`（セル） |
-| `tableCell` | `.Header`、`.Colspan`、`.Rowspan`、`.TextAlign`、`.Content` |
+| `tableCell` | `.Header`、`.Colspan`、`.Rowspan`、`.TextAlign`、`.Class`（`class` の属性の値。`textAlign` のクラス（6.5.4）。無ければ空）、`.Content` |
 | `buttons` | `.Justify`、`.Children` |
 | `button` | `.Label`、`.Link`、`.Width` |
 | `separator` | （共通の項目だけ） |
@@ -359,7 +362,7 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 
 - `assets/` のファイルは、出力先の `assets/` の下に、そのままコピーする（`assets/css/style.css` は `/assets/css/style.css`。サイトのURLにパスがあれば、その後ろ。6.6.8）。CSSの中身なども変えない。
 - 名前：パスの区切りごとに、ASCIIの英字・数字と `-`・`_`・`.`・`~`・`@`・`+` だけ（URLにそのまま書ける文字）で、255バイトまで（出力するパスの区切りと同じ。6.6.8）。`.` で始まるものは無視する（5.4.1）。
-- URL：テンプレートでは、`asset`（5.4.5）で得る。URLには、ファイルの中身から求めた版（SHA-256の先頭の16進数8桁）を付け、ファイルを変えるとURLも変わるようにする（`/assets/css/style.css?v=1d92febb`。ブラウザーのキャッシュが、古いファイルを使い続けないように）。
+- URL：テンプレートでは、`asset`（5.4.5）で得る。URLには、ファイルの中身から求めた版（SHA-256の先頭の16進数8桁）を付け、ファイルを変えるとURLも変わるようにする（`/assets/css/style.css?v=32d0cea3`。ブラウザーのキャッシュが、古いファイルを使い続けないように）。
 - 出力：読み込んだときの中身を書く（ファイルは読み込みでメモリに読んでおくので、その後にファイルが変わっても、確かめた中身と同じものを書く）。出力先の外には書かず（出力先の中のシンボリックリンクをたどっても）、すでにあるファイルは上書きせずにエラーにする。出力するほかのパスと同じファイルになるもの（テーマの `assets/index.html` と、スラッグが `assets` の固定ページの `/assets/` など）は、出力パスの重複（4.1）になる（URLの形は6.12の80）。
 - 数と合計の大きさには、いまは上限が無い（6.12の81）。
 
@@ -377,7 +380,7 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 
 #### 5.4.9 例
 
-見本のテーマ（`internal/theme/testdata/example/`）は、設定ファイルのすべての項目と、ページのテンプレートのすべての名前の形（5.4.4。`entry-{type}.html` は `entry-works.html` など）を使う。ブロックのテンプレートは、表とファイルの2つだけを置き、ほかの種類のブロックは、本体の既定のテンプレート（6.8）で描画する。テストでは、読み込みと検証を通し、日本語と英語のページを描画して、正解のHTMLと比べる（ブロックも、ブロックのテンプレートの無いテーマと、このテーマで描画して比べる）。
+見本のテーマ（`internal/theme/testdata/example/`）は、設定ファイルのすべての項目と、ページのテンプレートのすべての名前の形（5.4.4。`entry-{type}.html` は `entry-works.html` など）を使う。ブロックのテンプレートは、表とファイルの2つだけを置き、ほかの種類のブロックは、本体の既定のテンプレート（6.8）で描画する。テストでは、読み込みと検証を通し、日本語と英語のページを描画して、正解のHTMLと比べる（ブロックも、ブロックのテンプレートとプリセットの無いテーマと、このテーマで描画し、HTMLと警告と、ページのCSS・サイトのCSS（6.5.3の出力）を比べる）。
 
 設定ファイル（`theme.yaml`）：
 
@@ -435,12 +438,36 @@ imageSizes:
   thumbnail: { label: サムネイル, width: 150, height: 150, crop: true }
   medium: { label: 中, width: 300 }
   large: { label: 大, width: 1024 }
+mobileWidth: 600px
 ```
 
 - 色の値と `sunset` の値は、`#` を含むので引用符で囲む。`spacing` の名前は数なので、キーを引用符で囲む。`body` の値は `"` で始まるので、全体を `'` で囲む（5.4.3）。
 - `custom` の `color: false` で、色はプリセットからだけ選べる。`fontSize`・`spacing` は省いたので、直接指定もできる。
 - `heading` と `code` は、最上位の `styles` の代わりに、自分の `styles` を使う（`heading` の `gradient`・`fontFamily`・`letterSpacing` は、最上位の `styles` に無い）。`paragraph` と `group` は、最上位の `styles` を使う。
 - `pageTemplates` の `landing` には、`templates/page-landing.html` がある。
+- `mobileWidth` が `600px` なので、幅が600px以下の画面で、カラムを縦に積む（省けば781px。6.5.4）。
+
+このテーマのサイトのCSS（6.5.3の出力）は、プリセットの変数の `:root` の規則（5.4.3）で始まり、本体のクラスのCSS（6.5.4。メディアクエリーの幅は `600px`）が続く。`:root` の規則（`internal/render/testdata/out/example/site.css` の最初の規則）：
+
+```css
+:root {
+  --color-primary: #1e73be;
+  --color-accent: #e85d04;
+  --color-muted: #f5f5f5;
+  --color-text: oklch(25% 0 0);
+  --font-size-small: 0.875rem;
+  --font-size-medium: 1rem;
+  --font-size-large: clamp(1.25rem, 1rem + 1vw, 1.5rem);
+  --spacing-10: 0.25rem;
+  --spacing-20: 0.5rem;
+  --spacing-30: 1rem;
+  --spacing-40: 2rem;
+  --font-family-body: "Noto Sans JP", sans-serif;
+  --font-family-mono: ui-monospace, monospace;
+  --gradient-sunset: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  --shadow-soft: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+```
 
 既定の翻訳の `translations/ja.yaml`：
 
@@ -527,6 +554,37 @@ download: Download
 </div>
 ```
 
+テーマのCSS（`assets/css/style.css`）の一部。`align` のクラス（本体のクラスのCSSには無い。6.5.4）と、本体のクラスのCSSの既定を上書きする例（カラムの間隔。本体の既定は、`:where()` の中の `2em`）：
+
+```css
+.alignleft {
+  float: left;
+  margin-inline: 0 var(--spacing-30);
+}
+
+.aligncenter {
+  margin-inline: auto;
+  width: fit-content;
+}
+
+.alignright {
+  float: right;
+  margin-inline: var(--spacing-30) 0;
+}
+
+.alignwide {
+  margin-inline: calc(50% - min(32rem, 50vw - var(--spacing-30)));
+}
+
+.alignfull {
+  margin-inline: calc(50% - 50vw);
+}
+
+.is-layout-columns {
+  gap: var(--spacing-40);
+}
+```
+
 ---
 
 ## 6. コンテンツモデル
@@ -551,7 +609,7 @@ download: Download
 1. **モデルが正、HTMLは出力。** 本文をHTML文字列として保存しない。HTMLはビルド時にモデルから生成する。
 2. **見た目の自由度は確保し、値は型付きで持つ。** 編集者はブロックごとに色・文字サイズ・余白・枠線などを指定できる。値は生のCSSではなく、**テーマのプリセット名**か、**書式を検証した値**（色コード、単位付きの長さなど）として持つ。どの項目を使えるかはテーマが決める（6.5.3）。
 3. **参照はIDで持つ。** メディア、内部リンク、カテゴリー、共有ブロックは、URLではなくIDで参照する。スラッグを変えてもリンクが切れず、どのページが何に依存しているかも分かる。
-4. **構造は厳格に、テーマに依存する名前は寛容に。** 未知のブロックや項目、型の違反、書式の正しくない値はエラーにする。テーマに存在しないプリセット名やバリエーション名は、警告したうえで既定の表示にする（テーマを替えても壊れない）。
+4. **構造は厳格に、テーマに依存する名前は寛容に。** 未知のブロックや項目、型の違反、書式の正しくない値はエラーにする。テーマに存在しないプリセット名やバリエーション名は、ビルドでは、警告したうえで既定の表示にする（テーマを替えても壊れない）。保存では、テーマに無いプリセット名を新しく書くことはエラーにするが、取り込んだ値と、前のリビジョンから変えていない値は受け付ける（6.5.3）。
 5. **文中の装飾は「テキスト＋マーク」で持つ。** ProseMirror系エディタと同じ考え方にして、変換を単純にする。ただしエディタの形式そのものではなく、自前で定義してバージョン管理する。
 6. **多言語を前提にする。** 1つの言語版を1つのエントリーとし、同じ内容の各言語版を「翻訳グループ」で結ぶ（6.4.5）。
 7. **WordPressとの対応関係を必ず用意する。** すべての語彙について、WordPressの何に当たるかを明記する。
@@ -843,7 +901,7 @@ taxonomies:
 - 入れ子の順：1つの `text` のマークは、外側から `link`・`highlight`・`bold`・`italic`・`underline`・`strike`・`subscript`・`superscript`・`code` の順に入れ子にする（JSONに書いた順によらない）。同じ種類のマークが2つ以上あるもの（検証を通っていないもの）は、最初のものだけを使う。
 - まとめ方：隣り合う `text` で、外側から同じマーク（開始タグが同じもの）が続く間は、その要素を閉じずに続け、ほかのマークは閉じてから開き直す。`当社の`（`bold`）・`事業`（`bold` と `italic`）・`内容`（`bold`）は `<strong>当社の<em>事業</em>内容</strong>` に、2つの `text` にまたがる同じリンクは1つの `<a>` になる（`<a href="/services/">サービス<strong>一覧</strong></a>`）。行き先や `newTab` の違うリンクは、別の `<a>` になる。
 - `hardBreak`：マークを閉じも開きもせず、前後の `text` の両方に続くマークの中に `<br>` を置く（`<strong>一行目<br>二行目</strong><br>三行目`）。
-- `highlight`：テーマにある `variant` は、`<mark class="is-variant-marker">` のようにクラスを付ける。テーマに無いものは `<mark>` にして、警告する（6.2の4）。色（`color`・`backgroundColor`）は、`style` のCSS（6.5.3の出力）と合わせて作る（いまは `<mark>` だけ）。
+- `highlight`：テーマにある `variant` は、`<mark class="is-variant-marker">` のようにクラスを付ける。テーマに無いものは `<mark>` にして、警告する（6.2の4）。`variant` の無いものの色（`color`・`backgroundColor`）は、`hl-` と16進数8桁のクラス（`<mark class="hl-065c532e">`）と、ページのCSSのそのクラスの規則にする（6.5.3の出力）。色は、`style` の値と同じく、書式とテーマの許可を確かめ、通らないものは警告して無視する（残る色が無ければ `<mark>`）。`variant` と色の両方を持つもの（検証を通っていないもの）は、色を使わない。
 - 文字：`&`・`<`・`>` を `&amp;`・`&lt;`・`&gt;` にし、引用符はそのままにする（`1 < 2 & 3 > 2、"二重引用符"` は `1 &lt; 2 &amp; 3 &gt; 2、"二重引用符"`）。属性の値では、`"`・`'` も `&#34;`・`&#39;` にする。U+0000は、U+FFFDにする。
 - リンクの行き先：`entry` はそのエントリーのページ、`media` は公開するファイル。`anchor` は、`entry` があればそのURLの後ろに `#` で付け（`/contact/#form`）、無ければ同じページの中の位置（`#top`）にする。
 - サイトのパス：エントリーとメディアのURLは、サイトのURL（6.6.8）からのパスの前に、サイトのURLのパスを付けたもの（`/services/`。`https://example.com/blog` のサイトでは `/blog/services/`。URLの全体が要るもの（フィードなど）では、サイトのURLを付ける）。`/` で始まる `href` も、サイトのURLからのパスとして、同じく前に付ける（`/about/` は `/blog/about/`。6.12の56）。サイトの外のページへは、同じホストのもの（`/shop/` など）も、`https://example.com/shop/` のようにURLで書く。`http`・`https`・`mailto`・`tel` の `href` には、サイトのURLのパスを付けない。
@@ -920,16 +978,132 @@ blocks:
 
 - 直接指定を使えるロールを絞れる（例：editor はプリセットだけ、admin は直接指定も可）。制作会社が納品したサイトで、デザインが崩れるのを防ぎたい場合に使う。ロールの権限モデル（7章）と合わせて決めるので、いまはサイト設定に持たない（案。6.12の62）。
 
-**検証のタイミング**
+**検証のタイミング**（案）
 
-- 保存するとき：テーマが許可していない項目や直接指定はエラーにする。
-- ビルドするとき（テーマを替えた後など）：許可されていない値や存在しないプリセットは、警告したうえで無視する。
-- テーマとの照合（案）：テーマの設定の形式は5.4のとおり。テーマに依存する検証（プリセット名がテーマにあるか、項目と直接指定が許可されているか）は、`style` のCSSの出力（下記）と合わせて作る。それまでは、プリセット名の書式（6.7の名前の規則）だけを確かめる。
+- 保存するとき：検証にサイトのテーマの設定（5.4.2）を渡すと、書式の検査に続けてテーマと照合し、次のものをエラーにする（渡さなければ照合しない）。
+  - テーマが、そのブロックの種類に許していない項目（`blocks` のその種類の `styles`。無ければ最上位の `styles` で、どちらも無ければ、すべての項目を許す。5.4.2）：`/0/style/gradient: the theme does not allow gradient for group blocks`。項目の値の書式が正しくなくても示す。
+  - テーマに無いプリセット：`/0/style/fontSize/preset: the theme has no fontSize preset "huge"`（種類の名前は、テーマの設定ファイルの `presets` のキー）。
+  - テーマがプリセットだけを許す種類（`custom` を `false` にしたもの）の直接指定：`/0/style/backgroundColor/value: the theme allows only presets for color`。
+  - `spacer` の `height`（6.5.4）と `highlight` の色（6.5.2）も、プリセットと直接指定を同じく照合する（`style` の項目ではないので、`styles` とは照合しない）。
+  - 書式の正しくない値は、テーマと照合しない（書式のエラーだけを示す）。1つのブロックの中では、`style` の書式、`blockGap` の構造の規則（下記）、`style` のテーマとの照合の順にエラーを並べ、属性（`spacer` の `height` を含む）と中身（`highlight` を含む）のエラーは、その後ろに置く。
+- 受け付けるもの：取り込みでは、テーマと照合しない。前のリビジョンから変えていない値も受け付ける（テーマを替えた後や、取り込んだ後も、ほかの部分を編集して保存できるように）。前のリビジョンのブロックは、6.7の「取り込みと前のリビジョン」と同じく `id` で探し、位置は問わない。
+  - `style` の項目：前のリビジョンの、同じ `id` で同じ種類のブロックに、同じ値の同じ項目があれば受け付ける。項目の全体で比べる（`padding` の1辺を変えると、`padding` のすべての辺を照合する）。
+  - `spacer` の `height`：前のリビジョンの同じ `id` のブロックが、同じ `height` の `spacer` なら受け付ける。
+  - `highlight` の色：前のリビジョンのどこか（ブロックの文中装飾・`citation`・`caption` と、`richText` 型のフィールド。どれも入れ子の中も）に、同じもの（`variant` と2つの色がすべて同じもの）があれば受け付ける。
+- `blockGap`：子ブロックを持つ `list`・`quote`・`buttons`・`columns`・`column`・`group` だけが持てる。テーマによらない構造の規則で、ほかの種類（`table` も）はエラーにし（`/0/style/blockGap: blockGap is not allowed for paragraph blocks`）、その `blockGap` はテーマと照合しない。
+- 照合しない名前：バリエーション（ブロックと `highlight`）、固定ページの `template`、メニューの `location`、画像の `size` は、いまも名前の書式だけを確かめる（6.12の91）。
+- ビルドするとき（テーマを替えた後など）：描画は、書式の正しくない値と、テーマが許さない値（保存のエラーと同じもの。取り込んだ値と、変えずに残した値も）を、警告して無視する（6.2の4）。警告の文は、エラーの文の後ろに `; ignored` を付けたもの（`/0/style/fontSize/preset: the theme has no fontSize preset "huge"; ignored`、`/0/style/blockGap: blockGap is not allowed for paragraph blocks; ignored`）。テーマが許さない項目は、値を確かめずに、項目の警告だけを示す。
 
-**出力**
+**出力**（案）
 
-- インラインの `style` 属性は使わず、ビルド時にページごとのCSSとして生成する（ブロックIDに対応するクラス。例：`.b-9x3v7k5m { … }`）。インラインのスタイルを禁止する厳格なCSPと両立できる。
-- プリセットは、テーマのCSS変数（例：`var(--color-primary)`）として出力する（書く場所と変数の名前は6.12の72）。テーマ側でプリセットの値を変えれば、サイト全体の見た目がまとめて変わる。
+- ページのCSSとサイトのCSS：インラインの `style` 属性と `<style>` の要素は使わず、見た目はCSSのファイルにして `<link>` で読む（インラインのスタイルを禁止する厳格なCSP（`style-src 'self'`）と両立できる）。CSSは次の2つに分ける。描画はCSSの中身を作り、ファイルのパスと、ページのテンプレートへの渡し方は、ビルドで決める（6.12の88）。
+  - ページのCSS：ページごとの、ブロックと `highlight` の規則（下記）。ファイルの名前は、中身のハッシュから作る（同じ中身のページは、同じファイルを使える）。
+  - サイトのCSS：サイトで1つの、テーマのプリセットの変数（5.4.3）と、本体が付けるクラスのCSS（6.5.4）。
+- 読み込む順：サイトのCSS、テーマのCSS（`assets/`。5.4.7）、ページのCSSの順にする。テーマのCSSは、本体のクラスのCSSを上書きできる（6.5.4）。
+- `!important`：ページのCSSの宣言には、`border` の線種の既定（下記）を除いて、すべて `!important` を付ける。編集者の選んだ値が、テーマのCSSの詳細度によらずに効くように（WordPressのインラインの `style` 属性と、`!important` の付いたプリセットのクラス（`has-primary-color` など）に当たる）。テーマのCSSは、編集者の値を上書きできないので、画面の幅で変えたい値は、プリセットで書く（テーマが、プリセットの値に `clamp()` などを書くか、テーマのCSSのメディアクエリーの中で、変数の値を変える。6.12の93）。
+- ブロックの規則：規則のあるブロック（`style` か、長さと数の見た目の属性（6.5.4）の値が残ったもの）には、IDの `b_` を `b-` にしたクラスを付け（6.5.4。IDの正しくないものと重なったものは6.8）、そのクラスで次の規則を、この順に作る（宣言の無い規則は作らない）。
+  1. `.b-<ID>`：`style` の宣言（`linkColor` と、通常の並びの `blockGap` を除く。項目の順で、`padding`・`margin` の中は `top`・`right`・`bottom`・`left`、`border` の中は `width`・`style`・`color`・`radius` の順）と、その後ろに、属性の宣言（6.5.4）。
+  2. `:where(.b-<ID>)`：`border` の `width` か `color` が残り、`style` が残らないときの `border-style: solid`（線を表示するための既定。`!important` を付けず、詳細度を0にして、テーマのCSSが書いた線種を優先する）。
+  3. `.b-<ID> :where(a)`：`linkColor`。ブロックの中のリンクの `color`（6.12の90）。
+  4. `.b-<ID> img`：画像の `width`・`aspectRatio`（6.5.4）。
+  5. `.b-<ID> > *` と `.b-<ID> > * + *`：子ブロックの間の `blockGap`（下記）。
+- 項目とプロパティ：
+
+| 項目 | プロパティ |
+| --- | --- |
+| `textColor` | `color` |
+| `backgroundColor` | `background-color` |
+| `linkColor` | `color`（`.b-<ID> :where(a)` の規則） |
+| `gradient` | `background-image` |
+| `fontSize` | `font-size` |
+| `letterSpacing` | `letter-spacing` |
+| `fontFamily` | `font-family` |
+| `fontWeight` | `font-weight` |
+| `lineHeight` | `line-height` |
+| `padding` | `padding-top`・`padding-right`・`padding-bottom`・`padding-left` |
+| `margin` | `margin-top`・`margin-right`・`margin-bottom`・`margin-left` |
+| `blockGap` | `gap`、または子ブロックの `margin-top`（下記） |
+| `border` | `border-width`・`border-style`・`border-color`・`border-radius` |
+
+- 値：プリセットは、サイトのCSSの変数を参照する（`var(--color-primary)`・`var(--font-size-large)`・`var(--spacing-30)`。名前は5.4.3）。種類は、`textColor`・`backgroundColor`・`linkColor`・`border` の `color` と `highlight` の色が `color`、`padding`・`margin`・`blockGap` と `spacer` の `height` が `spacing` で、ほかは項目と同じ名前（`gradient`・`fontSize`・`fontFamily`）。直接指定は、書いた値をそのまま使う（`#1e73be`・`-1rem`・`700`・`1.5`・`solid`）。どちらも、検証と同じ規則で確かめてから使う（CSSに入る値は、書式の決まった文字だけになり、宣言や規則を終わらせない）。
+- `blockGap`：子を横並び・縦積み・グリッドに並べるブロック（`buttons`・`columns` と、`layout` が `row`・`stack`・`grid` の `group`）では、`.b-<ID>` の `gap` にする。通常の並びのブロック（`list`・`quote`・`column` と、`layout` が無いか `flow` の `group`）では、子ブロックの間の余白にする（`.b-<ID> > *` の `margin-top`・`margin-bottom` を0にし、`.b-<ID> > * + *` の `margin-top` を `blockGap` にする）。`citation` のある `quote` では、既定のテンプレートがクラスを `<figure>` に付けるので、その子の `blockquote` の子にする（`.b-<ID> > blockquote > *`・`.b-<ID> > blockquote > * + *`）。
+- `highlight` の規則：`variant` の無い `highlight` の色は、`hl-` と16進数8桁のクラスの規則にし（6.5.2）、`color` と `background-color` を、`!important` を付けて書く。クラスの名前の16進数は、規則の `{` から、`}` の後ろの改行までのSHA-256の先頭の8桁で、同じ色の組は同じクラスになり、規則は1つだけ書く。
+- 並び：規則は、文書の中の順に並べる。ブロックの規則は、そのブロックの `citation`・`caption` の `highlight` の規則の後ろで、中身（文中装飾と子ブロック）の規則の前に置く。1つのページのCSSは、本文と `blocks` 型のフィールド（1つの文書。6.5.1）と、ページに出す `richText` 型のフィールドのCSSを合わせ、同じ規則を1回だけ書いたもの。
+- 書き方：セレクターの後ろに空白と `{` を置き、宣言を1行ずつ、2つの空白で字下げして `;` で終え、`}` の行で閉じる。規則の間には空行を入れる。
+
+例：テストの文書（`internal/render/testdata/every-style.json`）の最初のブロック（IDが `b_00style1` の、`layout` の無い `group`）の `style`：
+
+```json
+{
+  "textColor": { "preset": "text" },
+  "backgroundColor": { "value": "#fff4e5" },
+  "linkColor": { "preset": "accent" },
+  "gradient": { "preset": "sunset" },
+  "fontSize": { "value": "1.125rem" },
+  "letterSpacing": { "value": "-0.01em" },
+  "fontFamily": { "preset": "body" },
+  "fontWeight": { "value": 500 },
+  "lineHeight": { "value": 1.8 },
+  "padding": { "top": { "preset": "10" }, "right": { "value": "5%" }, "bottom": { "preset": "20" }, "left": { "value": "1.5em" } },
+  "margin": { "top": { "value": "-1rem" }, "right": { "value": "0" }, "bottom": { "preset": "40" }, "left": { "value": "2vw" } },
+  "blockGap": { "preset": "30" },
+  "border": { "width": { "value": "1px" }, "style": { "value": "dotted" }, "color": { "preset": "muted" }, "radius": { "value": "8px" } }
+}
+```
+
+見本のテーマ（5.4.9）で描画したページのCSS（`internal/render/testdata/out/example/ja/every-style.css` の最初の4つの規則）。見本のテーマは、色の直接指定と、`group` の `gradient`・`letterSpacing`・`fontFamily` を許さないので、それらは警告して無視する（`/0/style/backgroundColor/value: the theme allows only presets for color; ignored`、`/0/style/gradient: the theme does not allow gradient for group blocks; ignored` など）：
+
+```css
+.b-00style1 {
+  color: var(--color-text) !important;
+  font-size: 1.125rem !important;
+  font-weight: 500 !important;
+  line-height: 1.8 !important;
+  padding-top: var(--spacing-10) !important;
+  padding-right: 5% !important;
+  padding-bottom: var(--spacing-20) !important;
+  padding-left: 1.5em !important;
+  margin-top: -1rem !important;
+  margin-right: 0 !important;
+  margin-bottom: var(--spacing-40) !important;
+  margin-left: 2vw !important;
+  border-width: 1px !important;
+  border-style: dotted !important;
+  border-color: var(--color-muted) !important;
+  border-radius: 8px !important;
+}
+
+.b-00style1 :where(a) {
+  color: var(--color-accent) !important;
+}
+
+.b-00style1 > * {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.b-00style1 > * + * {
+  margin-top: var(--spacing-30) !important;
+}
+```
+
+同じ文書の、`border` の `width` だけが残ったボタン（ID `b_0button2`。`border` の `color` を含む色の直接指定は、見本のテーマが許さない）と、`color` がプリセットの `primary` の `highlight`：
+
+```css
+.b-0button2 {
+  border-width: 2px !important;
+}
+
+:where(.b-0button2) {
+  border-style: solid;
+}
+```
+
+```css
+.hl-065c532e {
+  color: var(--color-primary) !important;
+}
+```
 
 #### 6.5.4 ブロック一覧（段階1）
 
@@ -1026,7 +1200,7 @@ blocks:
 描画（案）：
 
 - ブロックは、テーマのブロックのテンプレート（5.4.4）か、それが無い種類は本体の既定のテンプレート（6.8）で、HTMLにする。下の表は、既定のテンプレートのHTML。
-- `id` と `class`：部品以外のブロックでは、最初の要素に、`id`（`anchor` か、見出しの自動のアンカー。6.5.1）と `class` を、この順に、値のあるときだけ付ける（表では省く）。`class` には、`style` のあるブロックではIDの `b_` を `b-` にしたもの（`b_9x3v7k5m` は `b-9x3v7k5m`。CSSは6.5.3の出力）、テーマにあるバリエーションでは `is-variant-<名前>`、`className` を、この順に空白で区切って並べる（`<p id="intro" class="b-0paragr1 is-variant-lead intro">`）。テーマに無いバリエーション（5.4.2の `blocks` の `variants`）は、クラスを付けずに警告する（6.2の4）。
+- `id` と `class`：部品以外のブロックでは、最初の要素に、`id`（`anchor` か、見出しの自動のアンカー。6.5.1）と `class` を、この順に、値のあるときだけ付ける（表では省く）。`class` には、ページのCSS（6.5.3の出力）に規則のあるブロックではIDの `b_` を `b-` にしたもの（`b_9x3v7k5m` は `b-9x3v7k5m`。IDの正しくないものと重なったものは6.8）、見た目の属性のクラス（下記）、テーマにあるバリエーションでは `is-variant-<名前>`、`className` を、この順に空白で区切って並べる（`<p id="intro" class="b-0paragr1 has-text-align-center is-variant-lead intro">`）。テーマに無いバリエーション（5.4.2の `blocks` の `variants`）は、クラスを付けずに警告する（6.2の4）。部品の `tableCell` には、`textAlign` のクラスだけを `class` に付ける（`colspan`・`rowspan` より前に。`<td class="has-text-align-center">`）。
 - 子ブロック：子ブロック（リストの項目と、表の行とセルも）は、行を分けて並べ、親の開始タグ（`group` の `label` の `<header>` は、その後ろに続ける）の後ろと、終了タグの前で改行する（`listItem` の `<li>` の後ろと `</li>` の前は除く。下の例）。文中装飾は改行しない。中身の無い要素は、開始タグと終了タグを続ける（`<div></div>`）。
 - エスケープ：テンプレートが出力する値は、`html/template` が文脈に合わせてエスケープする（文中装飾は6.5.2）。
 
@@ -1065,7 +1239,7 @@ blocks:
 | `form` | 6.6.5 |
 | `html`、`legacy` | 出力しない（下記） |
 
-- 見た目の属性：`textAlign`・`justify`・`verticalAlign`・`stackOnMobile`・`layout`・`align`、ボタンとカラムの `width`、`spacer` の `height`、画像の `size`・`width`・`aspectRatio` は、テンプレートのデータで渡す（5.4.4）が、既定のテンプレートは、まだ出力しない（`style` のCSS（6.5.3の出力）と合わせて作る。画像の大きさと `srcset` は、公開する画像（6.6.2）と合わせて作る）。
+- 見た目の属性：`textAlign`・`justify`・`verticalAlign`・`stackOnMobile`・`layout`・`align`、ボタンとカラムの `width`、`spacer` の `height`、画像の `size`・`width`・`aspectRatio` は、テンプレートのデータでは、書いた値のまま渡す（5.4.4）。`class` とページのCSSには、下記の「見た目の属性（案）」のとおりにする。画像の `size` と `srcset` は、公開する画像（6.6.2）と合わせて作る。
 - 画像：`src` は、メディアの公開するファイルのURL（6.5.2のサイトのパス）。`alt` は6.6.2の「描画に使う `alt`」のとおりで、`decorative` の画像は `alt=""`。`alt` がどこにも無い画像は、`alt` の属性を付けずに描画し、警告する（空の `alt` は、装飾の画像を表すため）。
 - 埋め込み：iframeのHTMLは、提供元ごとに決まった形で作り、ビルドでは提供元に問い合わせない（補足）。iframeには、`src`・`width`・`height`・`title`・`loading="lazy"`・`allow`・`referrerpolicy`・`allowfullscreen` を、この順に付ける（`allow` と `referrerpolicy` は、値のあるときだけ）。`title` は `caption` の文字（`hardBreak` は空白）で、`caption` が無ければ提供元の名前（`YouTube`・`Vimeo`・`Google Maps`）。大きさは仮の値（6.12の85）。
   - `youtube`：`src` は `https://www.youtube-nocookie.com/embed/<動画のID>`（プライバシー強化モード）。URLのほかのクエリ（再生位置の `t` など）は捨てる。560×315で、`allow` は `accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share`、`referrerpolicy` は `strict-origin-when-cross-origin`（YouTubeは、リファラーの無い再生を拒むため）。
@@ -1075,7 +1249,55 @@ blocks:
   - 例（`caption` が `Our video` のYouTubeの動画）：`<iframe src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" width="560" height="315" title="Our video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`
 - `html`・`legacy`：中身のサニタイズ（補足）を作るまで、描画しない（何も出力せず、ブロックごとに警告する）。
 - 描画しないもの：メディアの無い `image`・`file`、画像でないメディアを指す `image`、フォームの無い `form`、`provider` か `url` を埋め込めない `embed`（検証を通っていないもの）は、描画せず（何も出力しない）、警告する。リンクにできない `link`（6.5.2）のある画像とボタンは、リンクを付けずに描画する。
-- 正しくないコンテンツ：描画は、検証（6.7）を通ったコンテンツを受け取る前提だが、通っていないもの（知らない種類のブロックやマークなど）でも、正しく入れ子になった安全なHTMLを返し、描画できないものは、警告して飛ばす（検証の誤りを、すべて警告するわけではない）。
+- 正しくないコンテンツ：描画は、検証（6.7）を通ったコンテンツを受け取る前提だが、通っていないもの（知らない種類のブロックやマークなど）でも、正しく入れ子になった安全なHTMLを返し、描画できないものは、警告して飛ばす（検証の誤りを、すべて警告するわけではない）。見た目の値（`style` と見た目の属性）は、検証と同じ規則で確かめ、通らないものは、クラスにもCSSにもせずに警告する（6.5.3・下記）。
+
+見た目の属性（案）：
+
+- クラス：選択肢の決まった属性は、決まったクラス（下の表）にして、`class` に並べる（データの `.Class`。5.4.4）。値ごとのクラスの名前は、属性ごとの前置き（`has-text-align-` など）に、値をケバブケースにしたもの（`spaceBetween` は `space-between`、ボタンの `25%` は `%` を除いた `25`）を続けたもので、WordPressに同じものがあれば、その名前にする（本体の接頭辞は付けない）。属性の値を、そのままクラスに入れることはしない。1つのブロックのクラスは、表の順に並べる。
+
+| ブロック | 属性 | クラス | WordPressと同じ名前 |
+| --- | --- | --- | --- |
+| `paragraph`、`heading`、`tableCell` | `textAlign` | `has-text-align-left`・`has-text-align-center`・`has-text-align-right` | ○ |
+| `image` | `align` | `alignleft`・`aligncenter`・`alignright`・`alignwide`・`alignfull` | ○ |
+| `buttons` | （いつも付ける） | `is-layout-row` | |
+| `buttons` | `justify` | `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between` | ○ |
+| `button` | `width` | `has-width-25`・`has-width-50`・`has-width-75`・`has-width-100` | |
+| `columns` | （いつも付ける） | `is-layout-columns` | |
+| `columns` | `verticalAlign` | `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom` | ○ |
+| `columns` | `stackOnMobile` | `false` なら `is-not-stacked-on-mobile` | ○ |
+| `column` | `verticalAlign` | `is-vertically-aligned-top`・`is-vertically-aligned-center`・`is-vertically-aligned-bottom`・`is-vertically-aligned-stretch` | ○ |
+| `group` | `layout` の `type` | `is-layout-flow`・`is-layout-row`・`is-layout-stack`・`is-layout-grid` | `flow`・`grid` だけ |
+| `group` | `layout` の `justify` | `row` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between`、`stack` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-stretch` | ○ |
+| `group` | `layout` の `verticalAlign` | `row` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-stretch`、`stack` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-space-between` | |
+| `group` | `layout` の `nowrap` | `is-nowrap` | ○ |
+| `group` | `align` | `alignwide`・`alignfull` | ○ |
+
+- 属性の規則：長さと数の属性は、ページのCSSのブロックの規則にし（6.5.3の出力）、`!important` を付ける。`.b-<ID>` の規則では、`style` の宣言の後ろに置く。
+  - 画像の `width`・`aspectRatio`：`.b-<ID> img` の規則に、`width`、`aspect-ratio` と `object-fit: cover`（縦横比を変えた画像は、切り抜いて表示する）、`height: auto`（どちらかがあるとき）を、この順に書く。
+  - カラムの `width`：`.b-<ID>` の `flex-basis` と `flex-grow: 0`（`width` の無いカラムは、残りの幅を等分する。下記。`padding` のあるカラムの幅は6.12の95）。
+  - `spacer` の `height`：`.b-<ID>` の `height`。プリセットと直接指定は、`style` の値と同じく、テーマのプリセットと `custom` の `spacing` とで照合する（6.5.3）。
+  - `grid` の `columns`・`minColumnWidth`：`.b-<ID>` の `grid-template-columns` にする。`columns` だけなら `repeat(<columns>, minmax(0, 1fr))`（列の数を決める）、`minColumnWidth` だけなら `repeat(auto-fill, minmax(min(<minColumnWidth>, 100%), 1fr))`（その幅以上の列を、入るだけ並べる）、両方なら `repeat(auto-fill, minmax(max(min(<minColumnWidth>, 100%), (100% - <columns - 1> * <間隔>) / <columns>), 1fr))`（`minColumnWidth` 以上の列を、多くても `columns` 列並べる）。`<columns - 1>` は計算した数で、`<間隔>` は、そのグループの残った `blockGap` の値（プリセットは `var()`）か、無ければグリッドの間隔の既定の `0.5em`（6.12の92）。どちらも無いグリッドは、本体のクラスのCSSの既定（下記）で並べる。
+
+例：`columns` が3、`minColumnWidth` が `10rem`、`blockGap` がプリセットの `20` のグリッド（`every-style.json` の、IDが `b_00grid03` の `group`）の規則：
+
+```css
+.b-00grid03 {
+  gap: var(--spacing-20) !important;
+  grid-template-columns: repeat(auto-fill, minmax(max(min(10rem, 100%), (100% - 2 * var(--spacing-20)) / 3), 1fr)) !important;
+}
+```
+
+- 本体のクラスのCSS：表のクラス（`align` のクラスを除く）のCSSは、本体が書き（`internal/render/classes.css`）、サイトのCSSに入れる（6.5.3の出力）。テーマのCSSは、後から読むので、同じ詳細度の規則で上書きできる。
+  - 文字の配置：`has-text-align-left` などは、`text-align`。
+  - 並べ方：`is-layout-row` は、横に並べて、入らなければ折り返す（`display: flex`・`flex-wrap: wrap`・`align-items: center`。`is-nowrap` は `flex-wrap: nowrap`）。`is-layout-stack` は、縦に積む（`display: flex`・`flex-direction: column`・`align-items: flex-start`）。`is-layout-grid` は、12rem以上の列を、入るだけ並べる（`display: grid`・`grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr))`）。`is-layout-columns` は、横に並べて、折り返さない（`display: flex`）。`is-layout-flow` には、CSSが無い（通常の並び）。
+  - 間隔：`row`・`stack`・`grid` は `gap: 0.5em`、カラム群は `gap: 2em`。`:where()` の中に書いて詳細度を0にし、テーマのCSSが上書きしやすいようにする（例は5.4.9）。この4つの並べ方の子は、`margin` を0にする（間隔は `gap` で空ける）。
+  - 見出し：`group` の `label` の `<header>` は、子ブロックの並びの外に置く。`row` では1行を占め（`flex-basis: 100%`）、`grid` ではすべての列にまたがる（`grid-column: 1 / -1`）。HTMLは変えない（6.12の87）。
+  - 配置：`row` では、`is-content-justification-*` が `justify-content`、`are-vertically-aligned-*` が `align-items` になり、`stack` では逆に、`is-content-justification-*` が `align-items`、`are-vertically-aligned-*` が `justify-content` になる。カラム群の `are-vertically-aligned-*` は `align-items`、カラムの `is-vertically-aligned-*` は `align-self`。値は、`left`・`top` が `flex-start`、`right`・`bottom` が `flex-end` で、`center`・`stretch`・`spaceBetween`（`space-between`）は同じ名前の値。
+  - カラム：カラムは、幅を等分する（`flex: 1 1 0`・`min-width: 0`）。`width` のあるカラムは、ページのCSSで、その幅にして伸ばさない（上記）。
+  - 狭い画面：画面の幅が、テーマの `mobileWidth`（5.4.2。省けば781px）以下のとき、`is-not-stacked-on-mobile` の無いカラム群は、カラムを縦に積む（`@media (max-width: <mobileWidth>)` の中で、カラム群を `flex-wrap: wrap` にし、カラムを `flex-basis: 100% !important` にする。`!important` は、ページのCSSのカラムの `width` より優先するため）。
+  - ボタンの幅：4つのクラスは、`flex: 1 1 0`・`box-sizing: border-box`・`width: 100%` で、`has-width-25`・`has-width-50`・`has-width-75` は `max-width` を `25%`・`50%`・`75%` に、`has-width-100` は `flex-basis` を `100%` にする（1行を占める）。指定した幅は、最大の幅として働く（6.12の94）。
+- `align` のクラス：`alignleft`・`aligncenter`・`alignright`・`alignwide`・`alignfull` のCSSは、テーマが書く（コンテンツの幅を知っているのはテーマなので、本体のクラスのCSSには無い。例は5.4.9）。
+- 正しくない値：検証を通っていない属性の値は、クラスにもページのCSSにもせず、`<ブロックのパス>/attrs/<キー>`（`layout` の中のものは `<ブロックのパス>/attrs/layout/<キー>`）で警告して無視する。選択肢に無い値は `unknown textAlign "middle"; ignored`、`layout` の `type` が無いものと知らないものは `missing layout type; ignored`・`unknown layout type "column"; ignored`（`layout` のクラスとCSSを作らず、`layout` の無いグループとして描画する）、`type` に使えないキーは `not allowed for flow layout; ignored`、範囲の外の `columns` は `columns 17 is out of range (1-16); ignored`、正しくない長さと縦横比は、検証のエラーの文の後ろに `; ignored` を付けたもの（`invalid length "300"; ignored`・`negative length "-1px" is not allowed here; ignored`・`invalid aspect ratio "16:9"; ignored`）。`spacer` の `height` は、`style` の値と同じ（6.5.3）。
 
 #### 6.5.5 ブロック一覧（段階2）
 
@@ -1488,12 +1710,12 @@ YAMLの範囲（案）：
 - 日時：時差付きのRFC 3339で、秒まで書く（例：`2026-10-25T10:00:00+09:00`。決定済み。6.1）。小数の秒は使えず、`T` と `Z` は大文字、時差は `Z` か `±hh:mm`（00:00〜23:59）にする（案）。日付だけのもの（`date` のフィールド）は `YYYY-MM-DD`。
 - サイト設定（案）：サイトのURL・タイムゾーン（IANAの名前）・タイトルの書式・URLの規則（一覧のパスを含む）は、6.6.8の規則で確かめる。サイト設定の正規化（制御文字の除去など）は、設定の文書の項目に、管理画面が保存する前に6.6.8のとおり行い、スキーマのファイルの項目には行わない（どちらも、正規化していない値は、検証でエラーにする）。
 - 複数のエンティティにまたがる検証：スラッグの一意性（エントリーは6.4.2のとおり、タームは同じタクソノミー・同じ言語の中、著者プロフィールはサイト内）、翻訳グループの中で同じ言語は1件まで（エントリーとターム）、同じ言語・同じ表示場所のメニューは1つまで（6.6.4）、同期する項目の一致（6.4.5）、親の循環（固定ページとターム）、リダイレクトのループと `from` の重複、出力パスの重複（4.1。パスの求め方は6.6.8、リダイレクトの `from` の比べ方は6.6.6）は、保存先と索引を決めてから扱う。それまで、検証に差し込み口は用意しない（案。必要な照会の形は、索引と合わせて決める）。
-- 取り込みと前のリビジョン（案）：検証には、`html` ブロックを有効にしたか（サイト設定の `allowHtml`。6.6.8）、取り込みかどうか、前のリビジョンのブロックを渡す。`html` は有効にしたときだけ受け付ける。`legacy` と、`alt` の無い画像（`decorative` でないもの）は、取り込みのときと、前のリビジョンの同じ `id` のブロックから変えていないとき（`legacy` は `html` と `reason` が同じ、画像は同じ `media` で `alt` が無いまま）だけ受け付ける。前のリビジョンのブロックは `id` で探し、位置は問わない。リビジョンの検証では、前のリビジョンの本文と、`blocks` 型のフィールド（`group`・`list` の中も含む）のブロックをまとめて探す（本文からフィールドへ移したブロックも、変えていなければ受け付ける）。
+- 取り込みと前のリビジョン（案）：検証には、`html` ブロックを有効にしたか（サイト設定の `allowHtml`。6.6.8）、取り込みかどうか、前のリビジョンのブロックと、サイトのテーマの設定（5.4.2。渡さなければ、テーマと照合しない）を渡す。`html` は有効にしたときだけ受け付ける。`legacy` と、`alt` の無い画像（`decorative` でないもの）は、取り込みのときと、前のリビジョンの同じ `id` のブロックから変えていないとき（`legacy` は `html` と `reason` が同じ、画像は同じ `media` で `alt` が無いまま）だけ受け付ける。テーマとの照合（6.5.3）でも、取り込みと、前のリビジョンから変えていない値は受け付ける。前のリビジョンのブロックは `id` で探し、位置は問わない（同じ `id` が2つ以上あれば、最初のもの）。リビジョンの検証では、前のリビジョンの本文と、`blocks` 型のフィールド（`group`・`list` の中も含む）のブロックをまとめて探す（本文からフィールドへ移したブロックも、変えていなければ受け付ける）。`highlight` の色は、`richText` 型のフィールド（`group`・`list` の中も含む）の中も探す。
 - URL：許可したスキームだけを通す。`//` で始まるURLは不可。制御文字（途中にあるものも）と前後の空白は取り除く。6.5.2の `href` の追加の規則（案）のとおり、`\` と認証情報を含むURLは拒否し、URLにはNFCをかけない。リダイレクトの `from` は、サイト内のパスだけで、6.6.6の正規の形にそろえる（案）。
 - メールアドレス（案）：フォームの通知先（`notify`。6.6.5）と、送られた `email` の項目の値（8.2）に使う。ASCIIだけを受け付け、ローカル部（`@` の前）は、英数字と、RFC 5322の `atext` の記号（`` !#$%&'*+-/=?^_`{|}~ ``）と `.` で書く。`.` は先頭と末尾に置けず、2つ続けられない。ドメイン（`@` の後ろ）は、英数字と `-` からなるラベルを `.` で区切って2つ以上並べ、ラベルの先頭と末尾に `-` は置けない。最後のラベル（トップレベルドメイン）は、数字だけにはできない（RFC 3696。`192.0.2.1` のようなIPアドレスを拒むため）。長さは、ローカル部が64バイト、ラベルが63文字、全体が254バイトまで（RFC 5321とDNSの制限）。引用符で囲んだローカル部（`"a b"@example.com`）と、ドメインの代わりのIPアドレス（`[192.0.2.1]` など）は受け付けない。正規化では、URLと同じく制御文字と前後の空白を取り除き、ドメインの英字を小文字にする（ローカル部の大文字と小文字は変えず、`Info@example.com` と `info@example.com` は別のアドレスとして扱う）。検証では、正規化していないもの（ドメインの大文字など）をエラーにする。国際化ドメイン名は、`xn--` の形で書く（Unicodeのドメインを `xn--` の形に変えるIDNAの処理は、いまは持たない）。ローカル部にUnicodeを使う国際化メールアドレスは、使うSMTPサーバーと相手のサーバーがSMTPUTF8（RFC 6531）に対応していないと送れないので、いまは受け付けない（6.12の54）。
 - テキスト：制御文字を取り除いてから、Unicodeの正規化（NFC）を行う。ただし、段落などのテキストの改行（`\n`・`\r`・U+2028などの改行に当たる文字）とタブは、取り除かずにエラーにする（改行は `hardBreak` で表す）。`code` は例外で、改行とタブを残し、`\r\n` と `\r` を `\n` にそろえる（改行とタブの扱いは案）。NFCは外部のライブラリに頼らず自前で実装した（`internal/nfc`）。Unicodeの版はGoの `unicode` パッケージに合わせる（いまは17.0.0）。Unicodeの公式の適合テスト `NormalizationTest.txt` をgzipで圧縮して `testdata` に置き、NFCに関わる条件をすべて確かめる。検証では、NFCでないテキストをエラーにする。NFCは `text` ごとにかけるので、隣り合う `text` をつなげた文字列はNFCになるとは限らない（扱いは6.12の14）。結合文字が続く数に上限は設けず、ストリームセーフ形式（30個ごとにU+034Fを挟む）も使わない（案。上限は6.12の9）。ここでいう制御文字は、Unicodeの一般カテゴリーCc（C0制御文字・DEL・C1制御文字）で、双方向の上書き（U+202E）やゼロ幅接合子（U+200D）などの書式文字は含まない（扱いは6.12の15）。`alt`・`label`・`reason` などの1行テキストも、段落と同じく改行とタブをエラーにする（案）。`html` と `legacy` の `html` は、`code` と同じく改行とタブを残して改行をそろえ、制御文字を取り除くが、NFCはかけない（中の `src`・`href` のURLが変わり、リンクが切れることがあるため。案）。
-- 見た目：色・長さ・数値の書式を厳密に検証する。テーマの許可との照合は6.5.3のとおり（保存時は厳格、ビルド時は寛容）。
-- 名前：`className`・`anchor` は、ASCIIの英数字・ハイフン・アンダースコアだけを許可する。プリセット名・`variant` にも同じ規則を使う（案）。画像の `size`、`code` の `language`、固定ページの `template`、タイプ・タクソノミー・フィールドの名前、メニューの `location` も同じ。テーマの設定ファイルの名前（プリセット・バリエーション・表示場所・ページのテンプレート・画像のサイズ）、翻訳ファイルのキーと置き換えの名前、部品の名前と `define`・`block` の名前（`/` で区切った部分ごと）も同じ（5.4。`assets/` のファイルの名前は5.4.7）。カスタムタイプとカスタムタクソノミーの名前は、既定のURLの規則にも使う（`works` は `/works/{slug}/`。6.6.8）。フォームの入力の項目の `name` も同じ規則で、ASCIIの英字で始める（案。`_` で始まる名前は、迷惑送信の対策と、ページの言語を送る `_language` などに本体が使う。6.6.5・8.2）。ブロックの `id`（6.5.1）とエンティティのID（上記）は、それぞれの書式にする。メディアのファイル名は、6.6.2の規則にする（案）。
+- 見た目：色・長さ・数値の書式を厳密に検証する。`blockGap` は、子ブロックを持つ種類（`list`・`quote`・`buttons`・`columns`・`column`・`group`）だけが持てる。テーマの許可との照合は6.5.3のとおり（保存では、検証にテーマの設定を渡すと、テーマが許さない項目・テーマに無いプリセット・許されない直接指定をエラーにし、取り込みと、前のリビジョンから変えていない値は受け付ける。ビルドでは、警告して無視する）。
+- 名前：`className`・`anchor` は、ASCIIの英数字・ハイフン・アンダースコアだけを許可する。プリセット名・`variant` にも同じ規則を使う（案）。画像の `size`、`code` の `language`、固定ページの `template`、タイプ・タクソノミー・フィールドの名前、メニューの `location` も同じ。テーマの設定ファイルの名前（プリセット・バリエーション・表示場所・ページのテンプレート・画像のサイズ）、翻訳ファイルのキーと置き換えの名前、部品の名前と `define`・`block` の名前（`/` で区切った部分ごと）も同じ（5.4。`assets/` のファイルの名前は5.4.7）。カスタムタイプとカスタムタクソノミーの名前は、既定のURLの規則にも使う（`works` は `/works/{slug}/`。6.6.8）。フォームの入力の項目の `name` も同じ規則で、ASCIIの英字で始める（案。`_` で始まる名前は、迷惑送信の対策と、ページの言語を送る `_language` などに本体が使う。6.6.5・8.2）。ブロックの `id`（6.5.1）とエンティティのID（上記）は、それぞれの書式にする。メディアのファイル名は、6.6.2の規則にする（案）。`className` には、さらに、本体が値から作るクラスの形（`b-` と小文字の英数字8文字、`hl-` と小文字の16進数8桁。6.5.3の出力）を書けない（`reserved className "b-0paragr1": the core gives classes of the forms b-xxxxxxxx and hl-xxxxxxxx`。案）。ほかの本体のクラス（`has-text-align-center`・`alignwide` など。6.5.4）は書けて、書けば、属性で付けたときと同じCSSが効く。
 - 多言語：言語コードはサイト設定にあるものだけ（書式は6.4.5）。言語ごとの値（6.3）のキーも同じ（案）。翻訳グループの中に同じ言語は1件まで。エントリーとタームのスラッグの一意性は、言語ごとに確認する。
 
 ### 6.8 描画の取り決め（Renderer）
@@ -1502,8 +1724,9 @@ YAMLの範囲（案）：
 - ブロックごとに、テーマのブロックのテンプレート（`blocks/image.html` など。5.4.4）で描画する。テーマに無いものは、本体の既定のテンプレート（`internal/render/blocks/`。出力するHTMLは6.5.4・6.6.5）を使う。既定のテンプレートは、本体が足す関数（5.4.5）を使わないので、テーマの `blocks/` にそのまま置け、書き換える元にできる（テストでは、`blocks/` にコピーしたテーマでも、同じHTMLになることを確かめる）。
 - テンプレートには、検証済みの表示用データだけを渡す（参照はURLなどに解決済みの状態にする。ブロックのテンプレートのデータは5.4.4、ページのテンプレートのデータの形は6.12の77）。テンプレートで使える関数は、5.4.5のものだけにする。
 - 参照の解決（案）：描画は、本文などが参照するエントリー（タイトルと、ページのパス。公開していなければパスは無い）・メディア（公開するファイルのパス）・フォームを、ビルドが渡す照会の関数で調べる。パスは、出力するパス（6.6.8）と同じく、サイトのURLからのパスにする（サイトのURLのパスは、描画が前に付ける。6.5.2）。
-- `style` は6.5.3のとおり、ページごとのCSSとして出力する（`style` のあるブロックには、`b-9x3v7k5m` のようなクラスを付ける。6.5.4）。バリエーションは、決まった形のクラス名（例：`is-variant-box`）として出力する（テーマに無いものは付けない。6.5.4）。
-- 警告（案）：描画は、テーマに無いバリエーション、リンクにできないリンク（6.5.2）、`alt` の無い画像、描画しないブロック（6.5.4）などを、エラーにせずに警告して、描画を続ける（6.2の4）。警告は英語の文で、ブロックの列（または文中装飾）の中の位置を表すJSON Pointer（RFC 6901）を前に付け（`/9/variant: the theme has no separator variant "wide"; rendered without its class`）、文書の中の順に並べる。本文と `blocks` 型のフィールドを一緒に描画したときは、どの列のものかも示す。ビルドでの示し方は6.12の82。テーマのテンプレートの実行のエラー（データに無い項目を読むものなど。5.4.4）は、警告ではなく、描画のエラーにする。
+- 見た目（案）：描画は、HTMLと一緒に、そのHTMLに要るページのCSS（6.5.3の出力）を返す（1つの文書（本文と `blocks` 型のフィールド）と、`richText` 型のフィールドなどの文中装飾ごとに。ビルドは、1つのページに出すものを合わせ、同じ規則を1回だけ書く）。`style` と、長さと数の見た目の属性は、ブロックの規則にして、規則のあるブロックだけに `b-9x3v7k5m` のようなクラスを付ける。選択肢の決まった見た目の属性は、決まったクラスにし（6.5.4）、`highlight` の色は、`hl-` のクラスの規則にする（6.5.2）。バリエーションは、決まった形のクラス名（例：`is-variant-box`）として出力する（テーマに無いものは付けない。6.5.4）。
+- ブロックのID（案）：規則のあるブロックのうち、IDの正しくないものと、規則のある前のブロック（文書の中の、ほかの列のものも）と同じIDのもの（どちらも検証を通っていないもの）は、規則を捨てて、`b-` のクラスを付けずに描画し、そのブロックのほかの警告より前に、`id` の位置で警告する（`/0/id: invalid block ID "b_x"; rendered without its CSS`、`/5/id: duplicate block ID "b_0paragr1"; rendered without its CSS`）。規則の無いブロックは、IDを確かめず、重なりにも数えない。ほかの文書のブロックとの重なりは、避けない（6.12の89）。
+- 警告（案）：描画は、テーマに無いバリエーション、テーマが許さない見た目の値（6.5.3）、リンクにできないリンク（6.5.2）、`alt` の無い画像、描画しないブロック（6.5.4）などを、エラーにせずに警告して、描画を続ける（6.2の4）。警告は英語の文で、ブロックの列（または文中装飾）の中の位置を表すJSON Pointer（RFC 6901）を前に付け（`/9/variant: the theme has no separator variant "wide"; rendered without its class`）、文書の中の順に並べる。本文と `blocks` 型のフィールドを一緒に描画したときは、どの列のものかも示す。ビルドでの示し方は6.12の82。テーマのテンプレートの実行のエラー（データに無い項目を読むものなど。5.4.4）は、警告ではなく、描画のエラーにする。
 - 構造化データ（JSON-LD）やOGPはモデルから自動で生成し、本文には持たない。
 - 多言語：`<html lang>`、翻訳版どうしの `hreflang`、サイトマップでの言語の対応を出力する。言語の切り替えに使う「現在のページの翻訳一覧」をテーマに渡す。テーマ内の固定の文言（「続きを読む」など）は、テーマの翻訳ファイル（5.4.6）で扱う。
 
@@ -2055,7 +2278,7 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 2. **多言語のURL**：言語ごとに別のドメイン（例：`example.com` と `example.jp`）も選べるようにするか。
 3. **右から左に書く言語**：アラビア語などを対象にするか。
 4. **翻訳の同期**：既定でどの項目を同期するか。
-5. **見た目の直接指定**：テーマの既定で直接指定を許すか、プリセットだけにするか（いまは、テーマの設定ファイルの `custom` で省いた種類は許す。5.4.2）。使える単位の範囲（6.5.3のとおり仮に決めた）。
+5. **見た目の直接指定**：テーマの既定では直接指定を許す（テーマの設定ファイルの `custom` で省いた種類は許す。5.4.2）と決めた（案）。残るのは、使える単位の範囲（6.5.3のとおり仮に決めた）。
 6. **`html` ブロックのスクリプト**：スクリプトを許すか。許す場合、公開サイトのCSP（スクリプトの実行制限）とどう両立させるか。いまは許さない前提で、検証では中身を確かめない。
 7. **エントリーの状態**：`status` の値（公開モデルと合わせて決める。いまは仮に `draft`・`published`・`scheduled`・`archived`。6.4.1）。予約の日時と予約するリビジョンの持ち方、公開中のエントリーの変更を予約で公開するか、アーカイブしたエントリーのURLの扱い（404・410・リダイレクト）と、リダイレクトに `410`（転送せずに、ページが無くなったことを返す）を足すか（いまのリダイレクトの `status` は `301`・`302` だけで、`to` は必須。6.6.6）も、あわせて決める。
 8. **スラッグの自動生成**：タイトルからスラッグを作る方式（WordPressと同じく日本語のまま作るか、英数字を勧めるか）。管理画面のフェーズで決める。新規作成でも日本語スラッグを使えることと、使える文字は決定済み（6.1・6.4.2）。
@@ -2112,7 +2335,7 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 59. **既定の言語にパスを付けたときの `/`**：`prefixDefaultLanguage` を `true` にしたサイト（6.6.8）では、既定の言語のトップページも言語のパス（`/ja/`）に出力するので、`/` に出力するページが無い。`/` から既定の言語のトップページへ転送するか、言語を選ぶページを出力するか。閲覧者のブラウザーの言語（`Accept-Language`）で行き先を選ぶには、サーバーの設定かJavaScriptが要る（静的なファイルだけでは選べない）。
 60. **URLの変わる変更**：公開済みのエントリーのパスは、スラッグのほか、規則に使う `date`・`parent`・`terms` の `category` の最初のタームを変えても変わる（6.6.8）。親の固定ページやカテゴリーのスラッグ、URLの規則（`authorUrl` を含む）と一覧のパス（`archive`）、`frontPage`・`postsPage`、`defaultLanguage`・`prefixDefaultLanguage` を変えると、ほかのエンティティや一覧のパスも変わる（カテゴリーのスラッグを変えると、子のタームの一覧と、`{category}` を規則に使う投稿のパスも変わる）。これらの旧URLからのリダイレクトを自動で登録するか（いまは、公開済みのエントリーが自分のスラッグを変えたときだけ登録する。6.4.2。タームと著者プロフィールのスラッグの変更は38）。トップページにした固定ページの規則のパス（`/home/`）から、言語のパス（`/`）へ転送するか（WordPressは転送する。6.10.4）。
 61. **ページのタイトル**：タイトルの書式（`seo.titleFormat`。6.6.8）の `{title}` に、ページごとに何を入れるか（描画で決める）。エントリーでは、`title` と `seo.title`（6.4.2）のどちらを入れるか（`seo.title` を、書式を使わないタイトルの全体にするか）。最新の投稿の一覧を出すトップページには、タイトルが無い（WordPressのトップページのタイトルは、固定ページを表示するときも「サイト名 - キャッチフレーズ」で、キャッチフレーズが空ならサイト名だけ）。タームの一覧・タイプの一覧・著者ページ（WordPressでは、タームの名前・投稿タイプのラベル・投稿者の表示名。このCMSのタイプの `label`（管理画面での名前。6.4.4）と著者の `name`（35）は、言語で分けない）と、2ページ目からの一覧（WordPressは「タイトル - Page 2 - サイト名」のように、ページの番号を入れる。`Page 2` の部分は翻訳される）も決める。
-62. **見た目の直接指定を使えるロール**：直接指定（6.5.3）を使えるロールを絞る設定（editor はプリセットだけ、admin は直接指定も可など。6.5.3の「サイト設定で決められること」）を、サイト設定に持つか。ロールの権限モデル（7章）と合わせて決める（いまはサイト設定に持たない。6.6.8）。絞るなら、直接指定を使えないロールの人が、ほかの人の書いた直接指定を含むエントリーを編集して保存できるか（`legacy` のブロックのように、前のリビジョンから変えていない値は受け付けるか。6.7）も決める。
+62. **見た目の直接指定を使えるロール**：直接指定（6.5.3）を使えるロールを絞る設定（editor はプリセットだけ、admin は直接指定も可など。6.5.3の「サイト設定で決められること」）を、サイト設定に持つか。ロールの権限モデル（7章）と合わせて決める（いまはサイト設定に持たない。6.6.8）。絞るなら、直接指定を使えないロールの人が、ほかの人の書いた直接指定を含むエントリーを編集して保存できるか（テーマとの照合（6.5.3）や `legacy` のブロックのように、前のリビジョンから変えていない値は受け付けるか。6.7）も決める。
 63. **WordPressのパーマリンクのタグ**：WordPressの共通設定のタグのうち、`%author%`（投稿者のスラッグ）と、`%hour%`・`%minute%`・`%second%`（公開日の時・分・秒）に当たる置き換えを、URLの規則（6.6.8）に足すか。いまは持たず、これらを使う共通設定のサイトでは、取り込むときにほかの規則を選んでもらい、旧URLはリダイレクトで転送する（6.10.4）。`%author%` に当たるものを足すと、著者プロフィールのスラッグを変えたときに、その著者の投稿のURLも変わる（38・60）。
 64. **スキーマのファイルの分け方**：スキーマのファイル（6.6.8）は、いまは `site/schema.yaml` の1つだけ。タイプやフィールドの多いサイトのために、タイプごとのファイルにも分けられるようにするか。分けるなら、ファイルの置き場所と、タイプを並べる順（いまは書いた順で、管理画面での並びにも使う。6.6.8）も決める。
 65. **YAMLの範囲**：スキーマのファイルで読むYAMLの範囲（6.6.8）を広げて、ブロックスカラー（`|`・`>`）と複数行にまたがる値、アンカーとエイリアス（定義の使い回し）、区切りのタブ（`キー:` と値の間など）、JSONで書けない数の書き方（`+1`・`007`・`0x1F`・`.5` など）を読めるようにするか。いまはスキーマの値がすべて1行で書けるので、範囲の外にしている。範囲の外の書き方は、違う値に読まずにエラーにしているので、後で範囲を広げても、いま読めるファイルの値は変わらない。
@@ -2122,7 +2345,7 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 69. **本体の既定のテーマ**：テーマを用意していないサイトでも描画できるよう、本体に既定のテーマを入れるか。いまは入れず、サイトにはテーマが要る（5.4。ブロックの既定のテンプレートだけは、本体にある。6.8）。すべての項目を使う見本のテーマは、テストのデータ（`internal/theme/testdata/example/`。5.4.9）に置いている。テンプレートに渡すデータの形（77）を決めてから、`cms init`（9.2）で作るものとあわせて決める。
 70. **テーマの情報と選び方**：テーマの名前・版・作者・説明・ライセンス（WordPressのテーマの `style.css` の見出しに当たるもの）を、設定ファイル（5.4.2）に持つか。いまは持たない。設定ファイルの `schemaVersion` は、語彙全体の版（6.9）と同じ番号で、テーマの版ではない（テーマの形式の版を、語彙の版と分けるかも決める）。管理画面でテーマを選ぶとき（5.3のテーマ編集の段階的強化）や、第三者製のテーマを配布するとき（5.3）に要る。サイトが使うテーマを、どこに置き、どう選ぶか（決まったディレクトリに置くか、サイト設定に書くか）も、ビルドと合わせて決める（いまの読み込みは、テーマのディレクトリを渡して読む）。
 71. **親テーマと子テーマ**：WordPressの子テーマ（親テーマのテンプレートやファイルを、一部だけ置き換えるテーマ）に当たるものを持つか。いまは、1つのディレクトリに、テーマのすべてを書く（5.4.1）。
-72. **プリセットのCSS**：プリセットを、CSSのカスタムプロパティとして、どこに書くか（CSSのファイルか、ページの `<style>` の要素か。どちらに書いても、値が宣言や要素を終わらせないことは、読み込みで確かめている。5.4.3）と、プロパティの名前（見本のテーマのCSSは、種類をケバブケースにして名前を続けた `--color-primary`・`--font-size-large`・`--spacing-30` を仮定している）。`style` のCSS（6.5.3の出力）と合わせて決める。
+72. **プリセットのCSS**：決めた（案）。プリセットは、サイトで1つのCSSのファイル（サイトのCSS。6.5.3の出力）の `:root` に、CSSのカスタムプロパティとして書き、プロパティの名前は、種類をケバブケースにして名前を続けたもの（`--color-primary`・`--font-size-large`・`--spacing-30`）にする（5.4.3）。WordPressの `--wp--preset--color--primary` の `wp` のような、本体の接頭辞は付けない。サイトのCSSのファイルのパスと名前は88。
 73. **プリセットの表示名**：プリセットは名前だけを持ち、管理画面で示す表示名を持たない（バリエーション・表示場所・ページのテンプレート・画像のサイズは、表示名を持つ。5.4.2）。プリセットにも表示名を持たせるか。表示名を言語ごとにするか（いまの表示名は1つの値で、管理画面の言語では分けない）。
 74. **プリセットの値の数**：YAMLでは、引用符で囲まない `0`・`1.5` は数になるので、プリセットの値に書くと、読み込みのエラーになる（`"0"` と書く。5.4.3）。名前の `"10"` と同じく、引用符が要るままにするか、値に書いた数を、書いたままの文字列として読むか。
 75. **見た目の項目を使わないブロック**：`styles` と `blocks` の `styles` は、空の列にできない（空の値は読み込みのエラー。5.4.2）ので、ある種類のブロックに見た目の項目を1つも使わせないことを、書く方法が無い（省くと、最上位の `styles` か、それも無ければ段階1のすべての項目を使える）。空の列を「使える項目が無い」として受け付けるか。
@@ -2130,14 +2353,23 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 77. **テンプレートに渡すデータ**：ページの種類（5.4.4）ごとに、ページのテンプレートに渡すデータ（タイトル・本文・メニュー・ページ送り・翻訳版の一覧（6.8）など）の形を、ビルドと合わせて決める（見本のテーマのデータは、テストのための仮の形。5.4.9）。ブロックのテンプレートのデータは、5.4.4の案で決めた。Goのテンプレートは型を持たないので、データに無い項目を読むもの（`.Titel` のような書き間違い）は、読み込みではエラーにならず、その箇所を実行したときにエラーになる（5.4.4）。データの形を決めたら、テンプレートが読む項目を、読み込みで確かめるか（ブロックのテンプレートは、いまのデータの形で確かめられる）。
 78. **見つからないページ**：テーマの `404.html`（5.4.4）で描画したページを、どのパスに出力するか（`/404.html` だけか、言語ごとに `/en/404.html` なども出すか）と、内蔵サーバーや、書き出すNginx・Apacheの設定（6.6.6）で、どう返すか。ビルドと合わせて決める。
 79. **翻訳の複数形と書式**：翻訳ファイルの文言（5.4.6）には、数による形の違い（英語の `1 comment`・`2 comments` など）を書き分けられない。`t` は、置き換えの値を、言語によらない形で文字にする（数は `1234` のように区切らない。5.4.5）。複数形の書き方（ICUのメッセージ形式など）と、数と日付を言語ごとの形で書く関数を足すか。日付の表示の形は、テーマが決める（6.10.1）。
-80. **`assets/` のURL**：テーマの `assets/` のファイルは、サイトのページと同じ出力先の、`/assets/` の下に出力する（5.4.7）。スラッグが `assets` の固定ページを作ると、そのページとテーマのファイルが同じディレクトリに混ざり、同じファイルになるもの（テーマの `assets/index.html` など）は、出力パスの重複（4.1）でビルドが失敗する。テーマの名前をパスに含めるか（`/themes/<名前>/` など）、ほかのパスにするか。版は、URLの `?v=` で付け、ファイル名は変えない（5.4.7）が、ファイル名にハッシュを入れるか（`style.1d92febb.css` など）。`assets/` のCSSから相対URLで読む画像やフォントには、版が付かない（ファイルを変えても、ブラウザーが古いものを使い続けることがある）。
+80. **`assets/` のURL**：テーマの `assets/` のファイルは、サイトのページと同じ出力先の、`/assets/` の下に出力する（5.4.7）。スラッグが `assets` の固定ページを作ると、そのページとテーマのファイルが同じディレクトリに混ざり、同じファイルになるもの（テーマの `assets/index.html` など）は、出力パスの重複（4.1）でビルドが失敗する。テーマの名前をパスに含めるか（`/themes/<名前>/` など）、ほかのパスにするか。版は、URLの `?v=` で付け、ファイル名は変えない（5.4.7）が、ファイル名にハッシュを入れるか（`style.32d0cea3.css` など）。`assets/` のCSSから相対URLで読む画像やフォントには、版が付かない（ファイルを変えても、ブラウザーが古いものを使い続けることがある）。
 81. **テーマのファイルの上限**：`assets/` のファイルは、1つ64MiBまでだが、数と合計の大きさには上限が無く、読み込むときに、すべてをメモリに持つ（5.4.7）。数と合計に上限を設けるか、出力するときに読み直すか（読み直すと、確かめた後に変わったファイルを書くことになる）。ハードリンク（シンボリックリンクと違い、ふつうのファイルと見分けにくい）は、いまは見分けない（テーマの外のファイルと中身を共有するファイルも、テーマのファイルとして読む）。
 82. **描画の警告**：描画は、テーマに無いバリエーション、リンクにできないリンク、`alt` の無い画像、描画しないブロック（`html`・`legacy` など）を、警告して続ける（6.8）。警告を、ビルドでどう示すか（ビルドの出力、管理画面のエントリーの一覧など）と、どの警告でビルドや公開を止めるか（`alt` の無い画像や、描画しない `legacy` のあるページを、公開させないかなど）。
 83. **自動のアンカーが変わること**：見出しの自動のアンカー（6.5.1）はブロックのIDなので、文書のどこかに同じ `anchor` を書くと、`<ID>-2` に変わり、その見出しへのリンク（ほかのページからのものも）は、`anchor` を書いたブロックを指すようになる。ブロックのIDを振り直したとき（23）も変わる。ブロックのIDの形（`b_` と8文字。6.5.1）の `anchor` を、書けないようにするか。
 84. **ブロックのテンプレートの範囲**：テーマのブロックのテンプレート（5.4.4）から、本体の既定のテンプレートを呼べるようにするか（いまは呼べないので、一部だけを変えるときも、既定のテンプレートをコピーして書き換える。6.8）。子ブロックは描画したHTMLで渡すので、テンプレートは、子ブロックのデータ（カラムの数など）を読めない。子ブロックのデータも渡すか。`html`・`legacy`（サニタイズの後。6.5.4）と、拡張ブロック（6.5.6）のテンプレートを、どこにどう置くか。
 85. **埋め込みの大きさと再生位置**：iframeの大きさは、提供元ごとに決まった値（YouTubeは560×315、Vimeoは640×360、Googleマップは600×450。6.5.4）で、画面の幅に合わせて縮めるCSS（`max-width` と `aspect-ratio` など）は、テーマが書く。縦長の動画（YouTubeのショートなど）や、貼り付けたiframeの大きさ（Googleマップで選んだ地図の大きさなど）のために、ブロックに大きさか縦横比を持たせるか（ビルドでは提供元に問い合わせないので、動画の大きさは分からない）。YouTubeのURLの再生位置（`t`）などのクエリは、いまは描画で捨てる（6.5.4）が、iframeの `src` の `start` に引き継ぐか。
 86. **フォームの送り先と確かめ方**：フォームのHTML（6.6.5）は、`/_forms/<フォームのID>` へPOSTで送る。このパスで受け付けるお問い合わせの処理（8章）と、内蔵サーバー・書き出すNginx・Apacheの設定での振り分けは、まだ無い。送った後の表示（`message`・`thanksPage`）を、静的なページからどう出すかも、あわせて決める。選択肢が2つ以上の `checkbox` を必須にしたものは、HTMLでは確かめられないので、お問い合わせの処理が確かめる。ブラウザーでも、JavaScriptで確かめるか。迷惑送信の対策の項目（ハニーポットと、表示した時刻。8.2・53）も、まだ出力していない。
-87. **グループの見出しとレイアウト**：`group` の `label` は、開始タグの直後の `<header>` にする（6.5.4。`main` や `section` などの中では、ページのヘッダーのランドマークにならない）。`layout` が `row`・`grid` のグループでは、見出しも子ブロックと同じく並べられてしまうので、`layout` のCSS（`style` のCSSと合わせて作る。6.5.3）で、見出しを並びの外に置くか、子ブロックを別の要素で囲むか。
+87. **グループの見出しとレイアウト**：`group` の `label` は、開始タグの直後の `<header>` にする（6.5.4。`main` や `section` などの中では、ページのヘッダーのランドマークにならない）。`layout` が `row`・`grid` のグループでは、見出しも子ブロックと同じく並べられてしまうので、本体のクラスのCSSで、見出しを並びの外に置くことにした（案。`row` では1行を占め、`grid` ではすべての列にまたがる。HTMLは変えない。6.5.4）。残るのは、`nowrap` の `row` で、見出しが子ブロックと同じ行に並ぶこと（折り返さないので、1行を占められない）。子ブロックを別の要素で囲むか。
+88. **ページとサイトのCSSのファイル**：ページのCSSとサイトのCSS（6.5.3の出力）を、どのパスに、どんな名前で出力するか（ページのCSSは、中身のハッシュから名前を作ることだけを決めた）と、そのURLを、ページのテンプレートにどう渡すか（ページのデータの形（77）と合わせて）を、ビルドで決める。規則の無いページで、ページのCSSを読まないようにするか。パスは、テーマの `assets/` のURL（80）と同じく、サイトのページと重ならないようにする必要がある。サイトのCSSには、プリセットの値のASCII以外の文字（フォントの名前など。5.4.3）がそのまま入るので、UTF-8として読まれるようにする方法（配信の `Content-Type` に `charset=utf-8` を付けるか、先頭に `@charset "UTF-8";` を書くか）も、あわせて決める（ページのCSSは、ASCIIの文字だけになる）。
+89. **1つのページの複数の文書**：ブロックのIDは、1つの文書（6.5.1）の中だけで一意なので、複数のエントリーの本文を1つのページに描画すると（一覧のページに本文を出すなど）、ほかのエントリーのブロックと同じクラス（`b-<ID>`）になり、規則が混ざることがある（描画が重なりを避けるのは、1つの文書の中だけ。6.8）。そのようなページのために、クラスにエントリーごとの印を入れるか、ブロックのIDをサイトで一意にするか。一覧のページの形（39）と合わせて決める。`highlight` のクラスは、色から決まるので、重なっても同じ規則になる。
+90. **リンクの色とボタン**：`linkColor` の規則（`.b-<ID> :where(a)`。6.5.3の出力）は、ブロックの中のすべての `<a>` にかかるので、子のボタン（`button` の `<a>`）の文字の色も変える。WordPressは、ボタンを除く（`a:where(:not(.wp-element-button))`）。ボタンを除くか（ボタンに決まったクラスを付けて、`:not()` で除くなど）。
+91. **テーマの名前の照合**：保存の検証では、`style` のプリセットなどをテーマと照合する（6.5.3）が、バリエーション（ブロックと `highlight`）、固定ページの `template`、メニューの `location`、画像の `size` は、名前の書式だけを確かめ、テーマにあるかは確かめない（5.4.2）。テーマに無い名前は、ビルドで警告する（バリエーションには、クラスを付けない。6.5.4）。これらも、保存でテーマと照合するか（照合するなら、`style` と同じく、取り込みと、前のリビジョンから変えていない値を受け付けるか）。
+92. **本体のクラスの既定の値**：本体のクラスのCSSの既定の値（`row`・`stack`・`grid` の間隔の `0.5em`、カラム群の間隔の `2em`、グリッドの列の最小の幅の `12rem`。6.5.4）を、テーマの設定ファイル（5.4.2）で決められるようにするか。いまは、テーマのCSSで上書きする（間隔は `:where()` の中にあり、詳細度が0。例は5.4.9）。ただし、`columns` と `minColumnWidth` の両方を書いたグリッドの式（6.5.4）は、`blockGap` の無いグループでは、間隔を既定の `0.5em` として計算するので、テーマがグリッドの間隔を `0.5em` より広げると、1行に並ぶ列が `columns` より少なくなることがある。
+93. **画面の幅で変える値**：ページのCSSの宣言は `!important` なので（6.5.3の出力）、テーマのCSSは、編集者の値を画面の幅で変えられない（広い画面のための大きな `padding` を、狭い画面で小さくするなど）。いまは、画面の幅で変えたい値をプリセットで書く（テーマが、プリセットの値に `clamp()` などを書くか、テーマのCSSのメディアクエリーの中で、変数の値を変える）。編集者が、画面の幅ごとに値を指定できるようにするか。
+94. **ボタンの幅**：ボタンの `width`（6.5.4）は、`flex: 1 1 0` と `max-width`（`25%` など）で表すので、最大の幅として働き、同じ行の、ほかの幅のあるボタンと、残りの幅を分け合う（`50%` と `75%` のボタンは、同じ行に、ほぼ半分ずつ並ぶ）。WordPressは、`width` を、間隔を引いた割合の幅にし、合わせて100%を超えるボタンを、次の行に送る。WordPressと同じにするか。
+95. **カラムの幅と余白**：カラムの `width`（6.5.4）は `flex-basis` にするが、カラムの `box-sizing` は変えない（`content-box`）ので、`padding` や `border` のあるカラムは、`width` よりその分だけ広くなる（`width` が `40%` で、左右の `padding` が `1rem` のカラムは、`40%` と `2rem` の幅）。本体のクラスのCSSで、カラムを `border-box` にするか（ボタンの幅（94）は `border-box`。テーマのCSSでも変えられる）。
+96. **見た目の規則を付ける要素**：ページのCSSの規則は、ブロックの最初の要素（`class` を付けた要素）にかかる（6.5.3の出力）ので、画像と表の `border`・`padding` などは、`<img>`・`<table>` ではなく、それを囲む `<figure>` にかかる（WordPressは、画像と表の枠線を `<img>`・`<table>` に付ける）。また、画像の大きさの規則（`.b-<ID> img`）と、`citation` のある `quote` の `blockGap` の規則（`.b-<ID> > blockquote > *`）は、既定のテンプレートの形を前提にするので、テーマのブロックのテンプレート（5.4.4）で形を変えると、規則が合わなくなる。ブロックの種類ごとに、規則を付ける要素を決めて、テンプレートのデータで、要素ごとのクラスを渡すか。
 
 ---
 

@@ -258,6 +258,14 @@ func (x *Attrs) normalize() {
 	}
 }
 
+// HeightValue returns the height of a spacer, or the zero StyleValue if it is not set.
+func (x Attrs) HeightValue() StyleValue {
+	if x.Height == (Length{}) {
+		return StyleValue{}
+	}
+	return x.Height.value("height", "", "spacing", LengthRule{Preset: true})
+}
+
 var textAligns = []string{"left", "center", "right"}
 
 // embedProviderNames are the keys of embedProviders, in the order that messages list them.
@@ -312,7 +320,7 @@ func (x *Block) checkAttrs(c *checker, path string) {
 			c.add(path+"/size", checkName(a.Size))
 		}
 		if a.Width != "" {
-			c.add(path+"/width", checkLength(a.Width, lengthRule{percent: true}))
+			c.add(path+"/width", checkLength(a.Width, LengthRule{Percent: true}))
 		}
 		if a.AspectRatio != "" {
 			c.add(path+"/aspectRatio", checkAspectRatio(a.AspectRatio))
@@ -346,7 +354,11 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		if a.Height == (Length{}) {
 			c.addf(path+"/height", "missing height")
 		} else {
-			a.Height.check(c, path+"/height", lengthRule{preset: true})
+			v := a.HeightValue()
+			v.check(c, path+v.Path())
+			if c.themed() && !c.unchangedHeight(x) {
+				c.themeValue(path+v.Path(), v)
+			}
 		}
 	case BlockCode:
 		if a.Language != "" {
@@ -373,7 +385,7 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		choice("verticalAlign", a.VerticalAlign, "top", "center", "bottom")
 	case BlockColumn:
 		if a.Width != "" {
-			c.add(path+"/width", checkLength(a.Width, lengthRule{percent: true}))
+			c.add(path+"/width", checkLength(a.Width, LengthRule{Percent: true}))
 		}
 		choice("verticalAlign", a.VerticalAlign, "top", "center", "bottom", "stretch")
 	case BlockGroup:
@@ -458,7 +470,7 @@ func (x Layout) check(c *checker, path string) {
 		c.add(path+"/columns", checkGridColumns(x.Columns))
 	}
 	if x.MinColumnWidth != "" && allowed("minColumnWidth", "grid") {
-		c.add(path+"/minColumnWidth", checkLength(x.MinColumnWidth, lengthRule{}))
+		c.add(path+"/minColumnWidth", checkLength(x.MinColumnWidth, LengthRule{}))
 	}
 }
 
@@ -497,7 +509,12 @@ func checkChoice(name, v string, choices ...string) error {
 	return nil
 }
 
-// checkAspectRatio accepts a positive number, such as "1.5", or a ratio of two, such as "16/9".
+// CheckAspectRatio checks s by the rule for aspect ratios: a positive number, such as "1.5", or a ratio of two, such
+// as "16/9".
+func CheckAspectRatio(s string) error {
+	return checkAspectRatio(s)
+}
+
 func checkAspectRatio(s string) error {
 	positive := func(s string) bool {
 		v, ok := parseNumber(s)

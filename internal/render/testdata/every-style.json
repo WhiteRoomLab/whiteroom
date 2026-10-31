@@ -1,0 +1,270 @@
+[
+  {
+    "type": "group",
+    "id": "b_00style1",
+    "style": {
+      "textColor": {"preset": "text"},
+      "backgroundColor": {"value": "#fff4e5"},
+      "linkColor": {"preset": "accent"},
+      "gradient": {"preset": "sunset"},
+      "fontSize": {"value": "1.125rem"},
+      "letterSpacing": {"value": "-0.01em"},
+      "fontFamily": {"preset": "body"},
+      "fontWeight": {"value": 500},
+      "lineHeight": {"value": 1.8},
+      "padding": {"top": {"preset": "10"}, "right": {"value": "5%"}, "bottom": {"preset": "20"}, "left": {"value": "1.5em"}},
+      "margin": {"top": {"value": "-1rem"}, "right": {"value": "0"}, "bottom": {"preset": "40"}, "left": {"value": "2vw"}},
+      "blockGap": {"preset": "30"},
+      "border": {"width": {"value": "1px"}, "style": {"value": "dotted"}, "color": {"preset": "muted"}, "radius": {"value": "8px"}}
+    },
+    "content": [
+      {
+        "type": "paragraph",
+        "id": "b_0stylep1",
+        "content": [
+          {"type": "text", "text": "すべての見た目の項目と、"},
+          {"type": "text", "text": "リンク", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"}}]},
+          {"type": "text", "text": "の色"}
+        ]
+      },
+      {"type": "paragraph", "id": "b_0stylep2", "content": [{"type": "text", "text": "段落の間は blockGap"}]}
+    ]
+  },
+  {
+    "type": "heading",
+    "id": "b_heading1",
+    "style": {
+      "textColor": {"preset": "primary"},
+      "gradient": {"preset": "sunset"},
+      "fontSize": {"preset": "large"},
+      "letterSpacing": {"value": "0.05em"},
+      "fontFamily": {"preset": "mono"},
+      "padding": {"bottom": {"value": "0.5rem"}},
+      "margin": {"top": {"value": "0"}, "bottom": {"preset": "20"}}
+    },
+    "attrs": {"level": 2},
+    "content": [{"type": "text", "text": "見出しの見た目"}]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0paragr1",
+    "style": {"linkColor": {"value": "#c2410c"}, "fontSize": {"preset": "small"}},
+    "content": [
+      {"type": "text", "text": "詳しくは"},
+      {"type": "text", "text": "お問い合わせ", "marks": [{"type": "link", "attrs": {"entry": "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4"}}]},
+      {"type": "text", "text": "から"}
+    ]
+  },
+  {
+    "type": "paragraph",
+    "id": "b_0hilite1",
+    "content": [
+      {"type": "text", "text": "文字色", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "primary"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "背景色", "marks": [{"type": "highlight", "attrs": {"backgroundColor": {"value": "#fff4e5"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "プリセットの両方", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "text"}, "backgroundColor": {"preset": "muted"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "直接指定の両方", "marks": [{"type": "highlight", "attrs": {"color": {"value": "#7c2d12"}, "backgroundColor": {"value": "#ffedd5"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "プリセットと直接指定", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "accent"}, "backgroundColor": {"value": "#fff4e5"}}}]},
+      {"type": "text", "text": "、"},
+      {"type": "text", "text": "隣の", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "primary"}}}]},
+      {"type": "text", "text": "同じ色", "marks": [{"type": "bold"}, {"type": "highlight", "attrs": {"color": {"preset": "primary"}}}]}
+    ]
+  },
+  {
+    "type": "group",
+    "id": "b_000row01",
+    "style": {"blockGap": {"value": "1rem"}},
+    "attrs": {"layout": {"type": "row", "justify": "left", "verticalAlign": "top"}, "label": "横並び"},
+    "content": [
+      {"type": "paragraph", "id": "b_0rowpar1", "content": [{"type": "text", "text": "左"}]},
+      {"type": "paragraph", "id": "b_0rowpar2", "content": [{"type": "text", "text": "右"}]}
+    ]
+  },
+  {"type": "group", "id": "b_000row02", "style": {"blockGap": {"preset": "20"}}, "attrs": {"layout": {"type": "row", "justify": "center", "verticalAlign": "bottom"}}},
+  {"type": "group", "id": "b_000row03", "attrs": {"layout": {"type": "row", "justify": "right", "verticalAlign": "stretch"}}},
+  {"type": "group", "id": "b_0stack01", "style": {"blockGap": {"value": "0.5em"}}, "attrs": {"layout": {"type": "stack", "justify": "left", "verticalAlign": "top"}}},
+  {"type": "group", "id": "b_0stack02", "attrs": {"layout": {"type": "stack", "justify": "center", "verticalAlign": "center"}}},
+  {"type": "group", "id": "b_0stack03", "attrs": {"layout": {"type": "stack", "justify": "right", "verticalAlign": "bottom"}}},
+  {
+    "type": "group",
+    "id": "b_00flow01",
+    "style": {"blockGap": {"value": "0.75rem"}},
+    "attrs": {"layout": {"type": "flow"}},
+    "content": [
+      {"type": "paragraph", "id": "b_0flowpa1", "content": [{"type": "text", "text": "上"}]},
+      {"type": "paragraph", "id": "b_0flowpa2", "content": [{"type": "text", "text": "下"}]}
+    ]
+  },
+  {
+    "type": "group",
+    "id": "b_00grid01",
+    "attrs": {"layout": {"type": "grid", "columns": 2}, "label": "グリッド"},
+    "content": [
+      {"type": "paragraph", "id": "b_0gridpa1", "content": [{"type": "text", "text": "一"}]},
+      {"type": "paragraph", "id": "b_0gridpa2", "content": [{"type": "text", "text": "二"}]}
+    ]
+  },
+  {"type": "group", "id": "b_00grid02", "style": {"blockGap": {"value": "1rem"}}, "attrs": {"layout": {"type": "grid", "minColumnWidth": "15rem"}}},
+  {"type": "group", "id": "b_00grid03", "style": {"blockGap": {"preset": "20"}}, "attrs": {"layout": {"type": "grid", "columns": 3, "minColumnWidth": "10rem"}}},
+  {"type": "group", "id": "b_00grid04", "style": {"blockGap": {"value": "2%"}}, "attrs": {"layout": {"type": "grid", "columns": 4, "minColumnWidth": "8rem"}}},
+  {
+    "type": "group",
+    "id": "b_00group1",
+    "style": {"backgroundColor": {"preset": "muted"}, "padding": {"top": {"preset": "30"}, "bottom": {"preset": "30"}}},
+    "attrs": {"tagName": "aside", "align": "wide"},
+    "content": [{"type": "paragraph", "id": "b_0grppar1", "content": [{"type": "text", "text": "幅の広い囲み"}]}]
+  },
+  {
+    "type": "columns",
+    "id": "b_columns1",
+    "style": {"blockGap": {"value": "3rem"}},
+    "attrs": {"verticalAlign": "center", "stackOnMobile": true},
+    "content": [
+      {
+        "type": "column",
+        "id": "b_0column1",
+        "attrs": {"width": "25%", "verticalAlign": "top"},
+        "content": [{"type": "paragraph", "id": "b_0colpar1", "content": [{"type": "text", "text": "狭い列"}]}]
+      },
+      {
+        "type": "column",
+        "id": "b_0column2",
+        "style": {"blockGap": {"value": "0.5rem"}},
+        "attrs": {"verticalAlign": "center"},
+        "content": [
+          {"type": "paragraph", "id": "b_0colpar2", "content": [{"type": "text", "text": "広い列の上"}]},
+          {"type": "paragraph", "id": "b_0colpar3", "content": [{"type": "text", "text": "広い列の下"}]}
+        ]
+      },
+      {"type": "column", "id": "b_0column3", "attrs": {"width": "20rem", "verticalAlign": "bottom"}}
+    ]
+  },
+  {
+    "type": "columns",
+    "id": "b_columns2",
+    "style": {"blockGap": {"preset": "40"}},
+    "attrs": {"verticalAlign": "bottom"},
+    "content": [
+      {"type": "column", "id": "b_0column4", "style": {"padding": {"top": {"value": "1rem"}, "bottom": {"value": "1rem"}}}, "attrs": {"width": "40%"}},
+      {"type": "column", "id": "b_0column5"}
+    ]
+  },
+  {
+    "type": "buttons",
+    "id": "b_buttons1",
+    "style": {"blockGap": {"preset": "10"}},
+    "attrs": {"justify": "left"},
+    "content": [
+      {
+        "type": "button",
+        "id": "b_0button1",
+        "style": {
+          "textColor": {"preset": "muted"},
+          "backgroundColor": {"preset": "primary"},
+          "padding": {"top": {"preset": "10"}, "right": {"preset": "30"}, "bottom": {"preset": "10"}, "left": {"preset": "30"}},
+          "border": {"radius": {"value": "999px"}}
+        },
+        "attrs": {"label": "資料請求", "link": {"href": "https://example.com/request"}, "width": "25%"}
+      },
+      {
+        "type": "button",
+        "id": "b_0button2",
+        "style": {
+          "textColor": {"value": "#ffffff"},
+          "backgroundColor": {"value": "#e85d04"},
+          "border": {"width": {"value": "2px"}, "color": {"value": "#9a3412"}}
+        },
+        "attrs": {"label": "お問い合わせ", "link": {"entry": "ent_01JB8Y6T2SA3F6H9J2K5M8N1P4"}, "width": "75%"}
+      }
+    ]
+  },
+  {"type": "buttons", "id": "b_buttons2", "attrs": {"justify": "center"}, "content": [{"type": "button", "id": "b_0button3", "attrs": {"label": "全幅", "width": "100%"}}]},
+  {"type": "buttons", "id": "b_buttons3", "attrs": {"justify": "right"}, "content": [{"type": "button", "id": "b_0button4", "attrs": {"label": "右寄せ"}}]},
+  {"type": "image", "id": "b_00image1", "attrs": {"media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "alt": "会社外観", "width": "240px", "align": "left"}},
+  {"type": "image", "id": "b_00image2", "attrs": {"media": "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9", "decorative": true, "aspectRatio": "4/3", "align": "center"}},
+  {
+    "type": "image",
+    "id": "b_00image3",
+    "style": {"border": {"width": {"value": "1px"}, "color": {"preset": "muted"}}},
+    "attrs": {"media": "med_01JB8Z3K5XQ2F5H8K3M6R9V4Y7", "alt": "製品", "width": "50%", "aspectRatio": "1", "align": "right"}
+  },
+  {
+    "type": "image",
+    "id": "b_00image4",
+    "attrs": {
+      "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
+      "alt": "会社外観",
+      "caption": [{"type": "text", "text": "本社", "marks": [{"type": "highlight", "attrs": {"color": {"preset": "primary"}}}]}],
+      "align": "full"
+    }
+  },
+  {"type": "spacer", "id": "b_0spacer1", "attrs": {"height": {"preset": "40"}}},
+  {"type": "spacer", "id": "b_0spacer2", "attrs": {"height": {"value": "3rem"}}},
+  {
+    "type": "list",
+    "id": "b_00list01",
+    "style": {"blockGap": {"value": "0.5em"}},
+    "content": [
+      {"type": "listItem", "content": [{"type": "paragraph", "id": "b_0litem01", "content": [{"type": "text", "text": "一つ目"}]}]},
+      {"type": "listItem", "content": [{"type": "paragraph", "id": "b_0litem02", "content": [{"type": "text", "text": "二つ目"}]}]}
+    ]
+  },
+  {
+    "type": "quote",
+    "id": "b_000quote",
+    "style": {"blockGap": {"value": "1rem"}},
+    "attrs": {"citation": [{"type": "text", "text": "お客様の声", "marks": [{"type": "highlight", "attrs": {"backgroundColor": {"value": "#fff4e5"}}}]}]},
+    "content": [
+      {"type": "paragraph", "id": "b_0quotep1", "content": [{"type": "text", "text": "早くて丁寧でした。"}]},
+      {"type": "paragraph", "id": "b_0quotep2", "content": [{"type": "text", "text": "また頼みます。"}]}
+    ]
+  },
+  {
+    "type": "quote",
+    "id": "b_000quot2",
+    "style": {"blockGap": {"value": "1.5rem"}},
+    "content": [
+      {"type": "paragraph", "id": "b_0quotep3", "content": [{"type": "text", "text": "出典の無い引用"}]},
+      {"type": "paragraph", "id": "b_0quotep4", "content": [{"type": "text", "text": "の二段落目"}]}
+    ]
+  },
+  {
+    "type": "table",
+    "id": "b_000table",
+    "style": {"border": {"width": {"value": "1px"}}},
+    "content": [
+      {
+        "type": "tableRow",
+        "attrs": {"section": "head"},
+        "content": [
+          {"type": "tableCell", "attrs": {"header": true}, "content": [{"type": "text", "text": "項目"}]},
+          {"type": "tableCell", "attrs": {"header": true, "textAlign": "center"}, "content": [{"type": "text", "text": "人数"}]}
+        ]
+      },
+      {
+        "type": "tableRow",
+        "content": [
+          {"type": "tableCell", "content": [{"type": "text", "text": "社員"}]},
+          {"type": "tableCell", "attrs": {"textAlign": "center"}, "content": [{"type": "text", "text": "42"}]}
+        ]
+      }
+    ]
+  },
+  {"type": "separator", "id": "b_separat1", "style": {"border": {"color": {"preset": "muted"}}}},
+  {"type": "separator", "id": "b_separat2", "style": {"border": {"color": {"value": "#999999"}}}},
+  {
+    "type": "code",
+    "id": "b_0000code",
+    "style": {
+      "backgroundColor": {"preset": "muted"},
+      "fontSize": {"preset": "small"},
+      "fontFamily": {"preset": "mono"},
+      "padding": {"top": {"value": "1rem"}, "right": {"value": "1rem"}, "bottom": {"value": "1rem"}, "left": {"value": "1rem"}}
+    },
+    "attrs": {"language": "css"},
+    "content": "p {\n  margin: 0;\n}\n"
+  }
+]

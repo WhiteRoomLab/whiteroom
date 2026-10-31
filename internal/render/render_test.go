@@ -123,9 +123,9 @@ func TestNilResolver(t *testing.T) {
 			{Type: content.MarkLink, Link: &content.Link{Media: "med_01JB8Z3K5TM8A1C5F9V3J6K2N7"}},
 		}},
 	}
-	html, warnings := r.RichText(rt)
-	if want := "会社概要と会社案内"; string(html) != want {
-		t.Errorf("RichText() = %q, want %q", html, want)
+	html, css, warnings := r.RichText(rt)
+	if want := "会社概要と会社案内"; string(html) != want || css.rules != nil {
+		t.Errorf("RichText() = %q, %q, want %q and no CSS", html, css, want)
 	}
 	want := []string{
 		`/0/marks/0: entry "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" does not exist; rendered without the link`,
@@ -157,8 +157,9 @@ func TestNew(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := New(tr, testResolver{entries: map[string][2]string{"ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3": {"About", "/about/"}}})
-	if r.tr != tr || r.language != "en-US" || r.base != "/blog" {
-		t.Errorf("tr, language, base = %p, %q, %q, want %p, en-US and /blog", r.tr, r.language, r.base, tr)
+	if r.tr != tr || r.language != "en-US" || r.base != "/blog" || r.settings != th.Settings || r.settings == nil {
+		t.Errorf("tr, language, base, settings = %p, %q, %q, %p, want %p, en-US, /blog and %p",
+			r.tr, r.language, r.base, r.settings, tr, th.Settings)
 	}
 	if _, path, ok := r.res.Entry("ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3"); path != "/about/" || !ok {
 		t.Errorf("res.Entry() = %q, %v, want the entry of the Resolver", path, ok)
@@ -173,7 +174,9 @@ func TestNew(t *testing.T) {
 		t.Errorf("variants = %v, want %v", r.variants, want)
 	}
 	// A zero Theme has no settings.
-	if r := newRenderer(t, &theme.Theme{}, "ja", "", nil); len(r.highlights) != 0 || len(r.variants) != 0 {
-		t.Errorf("highlights and variants of a zero Theme = %v, %v, want none", r.highlights, r.variants)
+	r = newRenderer(t, &theme.Theme{}, "ja", "", nil)
+	if len(r.highlights) != 0 || len(r.variants) != 0 || r.settings != nil {
+		t.Errorf("highlights, variants and settings of a zero Theme = %v, %v, %p, want none",
+			r.highlights, r.variants, r.settings)
 	}
 }

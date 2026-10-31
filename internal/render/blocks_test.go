@@ -8,9 +8,10 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
-// blocksTheme is the settings file of a theme whose paragraphs have the variant lead and whose groups have box.
-const blocksTheme = "schemaVersion: 1\nblocks:\n  paragraph:\n    variants:\n      lead: リード\n" +
-	"  group:\n    variants:\n      box: ボックス\n"
+// blocksTheme is the settings file of a theme with the colors primary and muted, whose paragraphs have the variant lead
+// and whose groups have box.
+const blocksTheme = "schemaVersion: 1\npresets:\n  color:\n    primary: \"#1e73be\"\n    muted: \"#f5f5f5\"\n" +
+	"blocks:\n  paragraph:\n    variants:\n      lead: リード\n  group:\n    variants:\n      box: ボックス\n"
 
 // decodeBlocks returns the blocks of s, a JSON array.
 func decodeBlocks(t *testing.T, s string) content.Blocks {
@@ -27,12 +28,13 @@ func paragraphJSON(id, s string) string {
 	return `{"type": "paragraph", "id": "` + id + `", "content": [{"type": "text", "text": "` + s + `"}]}`
 }
 
-// blockTest is a list of blocks and the HTML and the warnings of its Document.
+// blockTest is a list of blocks and the HTML, the CSS and the warnings of its Document.
 type blockTest struct {
 	name     string
 	json     string         // the blocks, unless in has them
 	in       content.Blocks // blocks that JSON cannot hold
 	want     string
+	css      string
 	warnings []string
 }
 
@@ -56,12 +58,15 @@ func checkBlocks(t *testing.T, tests []blockTest, settings, language, base strin
 				bs = decodeBlocks(t, tt.json)
 			}
 			for _, x := range renderers {
-				html, warnings, err := x.r.Document(bs)
+				html, css, warnings, err := x.r.Document(bs)
 				if err != nil || len(html) != 1 {
 					t.Fatalf("%s: Document() = %q, %v, want one list", x.name, html, err)
 				}
 				if string(html[0]) != tt.want {
 					t.Errorf("%s: Document() =\n%s\nwant\n%s", x.name, html[0], tt.want)
+				}
+				if got := css.String(); got != tt.css {
+					t.Errorf("%s: CSS:\n%s\nwant:\n%s", x.name, got, tt.css)
 				}
 				if got := warningStrings(warnings); !slices.Equal(got, tt.warnings) {
 					t.Errorf("%s: warnings:\n%s\nwant:\n%s", x.name, strings.Join(got, "\n"), strings.Join(tt.warnings, "\n"))
@@ -96,7 +101,9 @@ func TestBlocks(t *testing.T) {
 					{"type": "text", "text": "をご紹介します。"}
 				]
 			}]`,
-			want: `<p id="intro" class="b-0paragr1 is-variant-lead intro">当社の<strong>事業</strong>をご紹介します。</p>`,
+			want: `<p id="intro" class="b-0paragr1 has-text-align-center is-variant-lead intro">` +
+				"当社の<strong>事業</strong>をご紹介します。</p>",
+			css: ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n",
 		},
 		{name: "empty paragraph", json: `[{"type": "paragraph", "id": "b_0paragr2"}]`, want: "<p></p>"},
 		{
@@ -108,7 +115,8 @@ func TestBlocks(t *testing.T) {
 					"content": [{"type": "text", "text": "b"}]
 				}
 			]`,
-			want: "<p class=\"is-variant-lead\">a</p>\n<p class=\"note\">b</p>",
+			want:     "<p class=\"is-variant-lead\">a</p>\n<p class=\"note\">b</p>",
+			warnings: []string{`/1/id: invalid block ID "b_x"; rendered without its CSS`},
 		},
 		{
 			name: "escaping",
@@ -131,7 +139,7 @@ func TestBlocks(t *testing.T) {
 				},
 				{"type": "heading", "id": "b_heading6", "attrs": {"level": 6}, "content": [{"type": "text", "text": "注記"}]}
 			]`,
-			want: `<h3 id="services">Services</h3>
+			want: `<h3 id="services" class="has-text-align-right">Services</h3>
 <h2 id="b_heading2" class="title">会社<em>概要</em></h2>
 <h6 id="b_heading6">注記</h6>`,
 		},
@@ -250,7 +258,7 @@ func TestBlocks(t *testing.T) {
 </thead><tbody>
 <tr>
 <th rowspan="2">Address</th>
-<td>Tokyo</td>
+<td class="has-text-align-left">Tokyo</td>
 </tr>
 <tr>
 <td></td>
@@ -356,12 +364,13 @@ func TestBlocks(t *testing.T) {
 					{"type": "button", "id": "b_0button4", "attrs": {"label": "下書き", "link": {"entry": "` + draftEntry + `"}}}
 				]
 			}]`,
-			want: `<div>
-<a id="about" class="primary" href="/about/#access">会社概要</a>
+			want: `<div class="is-layout-row is-content-justification-center">
+<a id="about" class="has-width-50 primary" href="/about/#access">会社概要</a>
 <a class="b-0button2" href="https://example.com/?a=1&amp;b=2" target="_blank" rel="noopener nofollow">Example &amp; Co</a>
 <a>リンクなし</a>
 <a>下書き</a>
 </div>`,
+			css:      ".b-0button2 {\n  background-color: #1e73be !important;\n}\n",
 			warnings: []string{"/0/content/3/attrs/link: " + unpublished},
 		},
 		{
@@ -381,7 +390,9 @@ func TestBlocks(t *testing.T) {
 					"attrs": {"height": {"value": "40px"}}
 				}
 			]`,
-			want: "<div aria-hidden=\"true\"></div>\n<div class=\"b-0spacer2\" aria-hidden=\"true\"></div>",
+			want:     "<div aria-hidden=\"true\"></div>\n<div class=\"b-0spacer2\" aria-hidden=\"true\"></div>",
+			css:      ".b-0spacer2 {\n  margin-top: 1rem !important;\n  height: 40px !important;\n}\n",
+			warnings: []string{`/0/attrs/height/preset: the theme has no spacing preset "large"; ignored`},
 		},
 		{
 			name: "code",
@@ -406,12 +417,14 @@ func TestBlocks(t *testing.T) {
 					{"type": "column", "id": "b_0column2"}
 				]
 			}]`,
-			want: `<div id="cols">
-<div class="b-0column1">
+			want: `<div id="cols" class="is-layout-columns are-vertically-aligned-top is-not-stacked-on-mobile">
+<div class="b-0column1 is-vertically-aligned-stretch">
 <p>Left</p>
 </div>
 <div></div>
 </div>`,
+			css: ".b-0column1 {\n  background-color: var(--color-muted) !important;\n  flex-basis: 33.33% !important;\n" +
+				"  flex-grow: 0 !important;\n}\n",
 		},
 		{
 			name: "group section with label",
@@ -420,7 +433,8 @@ func TestBlocks(t *testing.T) {
 				"attrs": {"layout": {"type": "row", "justify": "spaceBetween"}, "tagName": "section", "label": "お知らせ", "align": "full"},
 				"content": [` + paragraphJSON("b_0grppar1", "日曜は休業です。") + `]
 			}]`,
-			want: "<section id=\"notice\" class=\"is-variant-box\"><header>お知らせ</header>\n<p>日曜は休業です。</p>\n</section>",
+			want: "<section id=\"notice\" class=\"is-layout-row is-content-justification-space-between alignfull is-variant-box\">" +
+				"<header>お知らせ</header>\n<p>日曜は休業です。</p>\n</section>",
 		},
 		{
 			name: "groups",
@@ -582,7 +596,7 @@ func TestBlocks(t *testing.T) {
 <td>x</td>
 </tr>
 </tbody></table><figcaption>t</figcaption></figure>
-<div>
+<div class="is-layout-row">
 <a>x</a>
 </div>
 <ul>

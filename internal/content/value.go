@@ -36,7 +36,12 @@ func isPercentage(s string) bool {
 	return ok && inRange(num, 100)
 }
 
-// checkColor accepts hex colors and the rgb(), rgba(), hsl() and hsla() functions.
+// CheckColor checks s by the rule for colors written directly: hex colors and the rgb(), rgba(), hsl() and hsla()
+// functions.
+func CheckColor(s string) error {
+	return checkColor(s)
+}
+
 func checkColor(s string) error {
 	if !isColor(s) {
 		return fmt.Errorf("invalid color %q", s)
@@ -113,15 +118,21 @@ func colorArgs(s string) (args []string, comma bool) {
 	return append(args, alphas[0]), false
 }
 
-type lengthRule struct {
-	preset   bool // theme presets are allowed; checkLength ignores it
-	negative bool // negative lengths are allowed
-	percent  bool // percentages are allowed
+type LengthRule struct {
+	Preset   bool // theme presets are allowed; CheckLength ignores it
+	Negative bool // negative lengths are allowed
+	Percent  bool // percentages are allowed
 }
 
 var lengthUnits = []string{"px", "rem", "em", "%", "vw", "vh"}
 
-func checkLength(s string, r lengthRule) error {
+// CheckLength checks s by the rule for lengths written directly: "0", or a number and one of the units px, rem, em, %,
+// vw and vh, such as "1.5rem". r tells whether negative lengths and percentages are allowed.
+func CheckLength(s string, r LengthRule) error {
+	return checkLength(s, r)
+}
+
+func checkLength(s string, r LengthRule) error {
 	// "0" is the only unitless length; "0.0", "00" and "-0" are invalid.
 	if s == "0" {
 		return nil
@@ -131,11 +142,21 @@ func checkLength(s string, r lengthRule) error {
 	if _, ok := parseNumber(strings.TrimSuffix(body, unit)); !ok || !slices.Contains(lengthUnits, unit) {
 		return fmt.Errorf("invalid length %q", s)
 	}
-	if negative && !r.negative {
+	if negative && !r.Negative {
 		return fmt.Errorf("negative length %q is not allowed here", s)
 	}
-	if unit == "%" && !r.percent {
+	if unit == "%" && !r.Percent {
 		return fmt.Errorf("percentage %q is not allowed here", s)
+	}
+	return nil
+}
+
+// CheckMobileWidth checks s by the rule for the mobileWidth of a theme: a length greater than 0 in px, em or rem.
+func CheckMobileWidth(s string) error {
+	unit := strings.TrimLeft(s, "0123456789.")
+	v, ok := parseNumber(strings.TrimSuffix(s, unit))
+	if !ok || v <= 0 || !slices.Contains([]string{"px", "em", "rem"}, unit) {
+		return fmt.Errorf("invalid mobileWidth %q: use a length greater than 0 in px, em or rem, such as 781px", s)
 	}
 	return nil
 }

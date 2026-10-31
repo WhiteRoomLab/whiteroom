@@ -1,0 +1,210 @@
+:root {
+  --color-primary: #1e73be;
+  --color-accent: #e85d04;
+  --color-muted: #f5f5f5;
+  --color-text: oklch(25% 0 0);
+  --font-size-small: 0.875rem;
+  --font-size-medium: 1rem;
+  --font-size-large: clamp(1.25rem, 1rem + 1vw, 1.5rem);
+  --spacing-10: 0.25rem;
+  --spacing-20: 0.5rem;
+  --spacing-30: 1rem;
+  --spacing-40: 2rem;
+  --font-family-body: "Noto Sans JP", sans-serif;
+  --font-family-mono: ui-monospace, monospace;
+  --gradient-sunset: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  --shadow-soft: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.has-text-align-left {
+  text-align: left;
+}
+
+.has-text-align-center {
+  text-align: center;
+}
+
+.has-text-align-right {
+  text-align: right;
+}
+
+.is-layout-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.is-layout-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.is-layout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr));
+}
+
+.is-layout-columns {
+  display: flex;
+}
+
+:where(.is-layout-row, .is-layout-stack, .is-layout-grid) {
+  gap: 0.5em;
+}
+
+:where(.is-layout-columns) {
+  gap: 2em;
+}
+
+.is-layout-row > *,
+.is-layout-stack > *,
+.is-layout-grid > *,
+.is-layout-columns > * {
+  margin: 0;
+}
+
+.is-layout-row > header {
+  flex-basis: 100%;
+}
+
+.is-layout-grid > header {
+  grid-column: 1 / -1;
+}
+
+.is-layout-row.is-nowrap {
+  flex-wrap: nowrap;
+}
+
+.is-layout-row.is-content-justification-left {
+  justify-content: flex-start;
+}
+
+.is-layout-row.is-content-justification-center {
+  justify-content: center;
+}
+
+.is-layout-row.is-content-justification-right {
+  justify-content: flex-end;
+}
+
+.is-layout-row.is-content-justification-space-between {
+  justify-content: space-between;
+}
+
+.is-layout-row.are-vertically-aligned-top {
+  align-items: flex-start;
+}
+
+.is-layout-row.are-vertically-aligned-center {
+  align-items: center;
+}
+
+.is-layout-row.are-vertically-aligned-bottom {
+  align-items: flex-end;
+}
+
+.is-layout-row.are-vertically-aligned-stretch {
+  align-items: stretch;
+}
+
+.is-layout-stack.is-content-justification-left {
+  align-items: flex-start;
+}
+
+.is-layout-stack.is-content-justification-center {
+  align-items: center;
+}
+
+.is-layout-stack.is-content-justification-right {
+  align-items: flex-end;
+}
+
+.is-layout-stack.is-content-justification-stretch {
+  align-items: stretch;
+}
+
+.is-layout-stack.are-vertically-aligned-top {
+  justify-content: flex-start;
+}
+
+.is-layout-stack.are-vertically-aligned-center {
+  justify-content: center;
+}
+
+.is-layout-stack.are-vertically-aligned-bottom {
+  justify-content: flex-end;
+}
+
+.is-layout-stack.are-vertically-aligned-space-between {
+  justify-content: space-between;
+}
+
+.is-layout-columns > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.is-layout-columns.are-vertically-aligned-top {
+  align-items: flex-start;
+}
+
+.is-layout-columns.are-vertically-aligned-center {
+  align-items: center;
+}
+
+.is-layout-columns.are-vertically-aligned-bottom {
+  align-items: flex-end;
+}
+
+.is-layout-columns > .is-vertically-aligned-top {
+  align-self: flex-start;
+}
+
+.is-layout-columns > .is-vertically-aligned-center {
+  align-self: center;
+}
+
+.is-layout-columns > .is-vertically-aligned-bottom {
+  align-self: flex-end;
+}
+
+.is-layout-columns > .is-vertically-aligned-stretch {
+  align-self: stretch;
+}
+
+@media (max-width: 600px) {
+  .is-layout-columns:not(.is-not-stacked-on-mobile) {
+    flex-wrap: wrap;
+  }
+
+  /* !important: beats the flex-basis of the width of a column in the page CSS. */
+  .is-layout-columns:not(.is-not-stacked-on-mobile) > * {
+    flex-basis: 100% !important;
+  }
+}
+
+.has-width-25,
+.has-width-50,
+.has-width-75,
+.has-width-100 {
+  flex: 1 1 0;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.has-width-25 {
+  max-width: 25%;
+}
+
+.has-width-50 {
+  max-width: 50%;
+}
+
+.has-width-75 {
+  max-width: 75%;
+}
+
+.has-width-100 {
+  flex-basis: 100%;
+}

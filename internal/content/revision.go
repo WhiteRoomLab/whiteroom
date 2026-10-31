@@ -260,10 +260,11 @@ func (x *Fields) normalize(fs []FieldDef) {
 
 type RevisionOptions struct {
 	Site     *Site
-	Entry    *Entry    // the state of the entry; the revision is checked with its ID, type and language
-	Publish  bool      // the revision is to be published or scheduled, which needs the required items
-	Import   bool      // as in ValidateOptions
-	Previous *Revision // the previous revision of the entry, whose blocks are matched by ID as in ValidateOptions
+	Entry    *Entry         // the state of the entry; the revision is checked with its ID, type and language
+	Publish  bool           // the revision is to be published or scheduled, which needs the required items
+	Import   bool           // as in ValidateOptions
+	Previous *Revision      // the previous revision of the entry, whose blocks are matched by ID as in ValidateOptions
+	Theme    *ThemeSettings // as in ValidateOptions
 	Lookup   func(kind RefKind, id string) (Ref, bool)
 }
 
@@ -271,13 +272,18 @@ type RevisionOptions struct {
 func (x Revision) Validate(opts RevisionOptions) error {
 	t := opts.Site.Type(opts.Entry.Type)
 	var prev Blocks
+	var prevTexts []RichText
 	if opts.Previous != nil {
 		prev = opts.Previous.blocks(t)
+		prevTexts = opts.Previous.richTexts(t)
 	}
 	c := checker{doc: &docState{
-		opts:     ValidateOptions{AllowHTML: opts.Site.AllowHTML, Import: opts.Import, Previous: prev, Lookup: opts.Lookup},
-		publish:  opts.Publish,
-		language: opts.Entry.Language,
+		opts: ValidateOptions{
+			AllowHTML: opts.Site.AllowHTML, Import: opts.Import, Previous: prev, Theme: opts.Theme, Lookup: opts.Lookup,
+		},
+		publish:   opts.Publish,
+		language:  opts.Entry.Language,
+		prevTexts: prevTexts,
 	}}
 	x.check(&c, t, opts.Entry)
 	return c.result()
@@ -297,6 +303,20 @@ func (x *Revision) blocks(t *TypeDef) Blocks {
 		}
 	}
 	return bs
+}
+
+// richTexts returns the values of the richText fields of x, also in groups and lists.
+func (x *Revision) richTexts(t *TypeDef) []RichText {
+	if t == nil {
+		return nil
+	}
+	var rts []RichText
+	for _, name := range slices.Sorted(maps.Keys(x.Fields)) {
+		if f := field(t.Fields, name); f != nil {
+			rts = append(rts, f.richTexts(x.Fields[name])...)
+		}
+	}
+	return rts
 }
 
 // check checks x as a revision of e, whose type is t (nil if the site has no such type).

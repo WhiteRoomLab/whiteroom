@@ -19,9 +19,10 @@ const (
 	guidePath  = "/media/%E4%BC%9A%E7%A4%BE%E6%A1%88%E5%86%85.pdf"
 )
 
-// mediaTheme is the settings file of a theme whose images have the variant rounded and whose files have button.
-const mediaTheme = "schemaVersion: 1\nblocks:\n  image:\n    variants:\n      rounded: 角丸\n" +
-	"  file:\n    variants:\n      button: ボタン\n"
+// mediaTheme is the settings file of a theme with the color primary, whose images have the variant rounded and whose
+// files have button.
+const mediaTheme = "schemaVersion: 1\npresets:\n  color:\n    primary: \"#1e73be\"\n" +
+	"blocks:\n  image:\n    variants:\n      rounded: 角丸\n  file:\n    variants:\n      button: ボタン\n"
 
 // mediaResolver returns a Resolver with the entries of linkResolver; the media of office-image.json and of
 // company-guide-pdf.json (guideMedia) at /media/<file name>; enAltImage, noAltImage and svgMedia; and nilMedia.
@@ -65,8 +66,10 @@ func TestImage(t *testing.T) {
 				"link": {"href": "https://example.com/office", "newTab": true},
 				"size": "large", "width": "300px", "aspectRatio": "16/9", "align": "wide"
 			}`),
-			want: `<figure><a href="https://example.com/office" target="_blank" rel="noopener"><img src="` + officePath +
-				`" alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
+			want: `<figure class="b-000image alignwide"><a href="https://example.com/office" target="_blank" rel="noopener">` +
+				`<img src="` + officePath + `" alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
+			css: ".b-000image img {\n  width: 300px !important;\n  aspect-ratio: 16/9 !important;\n" +
+				"  object-fit: cover !important;\n  height: auto !important;\n}\n",
 		},
 		{
 			name: "decorative",
@@ -152,6 +155,7 @@ func TestImage(t *testing.T) {
 				"style": {"border": {"radius": {"value": "8px"}}}, "attrs": {"media": "` + officeImage + `", "decorative": true}
 			}]`,
 			want: `<figure id="photo" class="b-000image is-variant-rounded shadow"><img src="` + officePath + `" alt=""></figure>`,
+			css:  ".b-000image {\n  border-radius: 8px !important;\n}\n",
 		},
 		{
 			name: "escaping",
@@ -250,6 +254,7 @@ func TestFile(t *testing.T) {
 				"style": {"textColor": {"preset": "primary"}}, "attrs": {"media": "` + guideMedia + `"}
 			}]`,
 			want: `<div id="guide" class="b-0000file is-variant-button download"><a href="` + guidePath + `">会社案内.pdf</a></div>`,
+			css:  ".b-0000file {\n  color: var(--color-primary) !important;\n}\n",
 		},
 		{
 			name: "escaping",
@@ -285,7 +290,7 @@ func TestMediaData(t *testing.T) {
 	w := &walker{r: r}
 	got, ok := w.image(&image, "/0")
 	want := Image{
-		Common:      Common{ID: "b_000image", Anchor: "photo", Class: "is-variant-rounded"},
+		Common:      Common{ID: "b_000image", Anchor: "photo", Class: "b-000image alignwide is-variant-rounded"},
 		Src:         "/blog" + officePath,
 		Alt:         "Our office building",
 		HasAlt:      true,
@@ -298,6 +303,11 @@ func TestMediaData(t *testing.T) {
 	}
 	if !ok || !reflect.DeepEqual(got, want) || w.warnings != nil {
 		t.Errorf("image() = %+v, %v, warnings %q, want %+v", got, ok, w.warnings, want)
+	}
+	const css = ".b-000image img {\n  width: 300px !important;\n  aspect-ratio: 16/9 !important;\n" +
+		"  object-fit: cover !important;\n  height: auto !important;\n}\n"
+	if w.css.String() != css {
+		t.Errorf("image() CSS:\n%s\nwant:\n%s", w.css, css)
 	}
 	noAlt := decodeBlocks(t, `[{"type": "image", "id": "b_00image2", "attrs": {"media": "`+noAltImage+`"}}]`)[0]
 	w = &walker{r: r, list: 1}

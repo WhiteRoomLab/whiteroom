@@ -20,7 +20,11 @@ type ThemeSettings struct {
 	Locations         []ThemeName  // menu locations
 	PageTemplates     []ThemeName  // templates of pages, in templates/page-<name>.html
 	ImageSizes        []ImageSize
+	MobileWidth       string // the widest screen on which columns stack, such as "781px"; "": DefaultMobileWidth
 }
+
+// DefaultMobileWidth is the MobileWidth of a theme that omits it, as in WordPress.
+const DefaultMobileWidth = "781px"
 
 // Presets are the values that styles refer to by name, of each kind in the written order.
 type Presets struct{ Color, FontSize, Spacing, FontFamily, Gradient, Shadow []Preset }
@@ -177,6 +181,8 @@ func (s *ThemeSettings) decode(d *decoder) error {
 				s.ImageSizes = append(s.ImageSizes, x)
 				return err
 			})
+		case "mobileWidth":
+			s.MobileWidth, err = d.string()
 		default:
 			return d.errorf("unknown key")
 		}
@@ -383,6 +389,9 @@ func (s *ThemeSettings) check(c *checker) {
 			c.add(p+"/height", checkImageSide("height", x.Height))
 		}
 	}
+	if s.MobileWidth != "" {
+		c.add("/mobileWidth", CheckMobileWidth(s.MobileWidth))
+	}
 }
 
 // checkStyleItems checks items, a list of style items at path.
@@ -412,4 +421,45 @@ func checkThemeNames(c *checker, path, what string, names []ThemeName) {
 			c.add(p, checkLine(x.Label))
 		}
 	}
+}
+
+// CheckStyleItem checks that the theme allows item, a key of Style such as "textColor", for blocks of type t. A nil s
+// is no theme, which allows any item.
+func (s *ThemeSettings) CheckStyleItem(t BlockType, item string) error {
+	if s == nil {
+		return nil
+	}
+	items := s.Styles
+	i := slices.IndexFunc(s.Blocks, func(b ThemeBlock) bool { return b.Type == t })
+	if i >= 0 && s.Blocks[i].Styles != nil {
+		items = s.Blocks[i].Styles
+	}
+	if items == nil {
+		items = styleItems
+	}
+	if !slices.Contains(items, item) {
+		return fmt.Errorf("the theme does not allow %s for %s blocks", item, t)
+	}
+	return nil
+}
+
+// CheckPreset checks that the theme has the preset name of kind, a key of the presets in theme.yaml such as
+// "fontSize". A nil s is no theme, which has no presets.
+func (s *ThemeSettings) CheckPreset(kind, name string) error {
+	if s != nil {
+		presets := s.Presets.kind(kind)
+		if presets != nil && slices.ContainsFunc(*presets, func(p Preset) bool { return p.Name == name }) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the theme has no %s preset %q", kind, name)
+}
+
+// CheckCustom checks that the theme allows values of kind, such as "color", written directly instead of as presets:
+// it does unless custom is false for kind in theme.yaml. A nil s is no theme, which allows them.
+func (s *ThemeSettings) CheckCustom(kind string) error {
+	if s != nil && slices.Contains(s.PresetsOnly, kind) {
+		return fmt.Errorf("the theme allows only presets for %s", kind)
+	}
+	return nil
 }

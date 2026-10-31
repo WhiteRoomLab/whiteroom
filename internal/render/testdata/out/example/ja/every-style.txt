@@ -1,0 +1,17 @@
+/0/style/backgroundColor/value: the theme allows only presets for color; ignored
+/0/style/gradient: the theme does not allow gradient for group blocks; ignored
+/0/style/letterSpacing: the theme does not allow letterSpacing for group blocks; ignored
+/0/style/fontFamily: the theme does not allow fontFamily for group blocks; ignored
+/1/style/padding: the theme does not allow padding for heading blocks; ignored
+/2/style/linkColor/value: the theme allows only presets for color; ignored
+/3/content/2/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+/3/content/6/marks/0/attrs/color/value: the theme allows only presets for color; ignored
+/3/content/6/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+/3/content/8/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+/18/content/1/style/textColor/value: the theme allows only presets for color; ignored
+/18/content/1/style/backgroundColor/value: the theme allows only presets for color; ignored
+/18/content/1/style/border/color/value: the theme allows only presets for color; ignored
+/28/attrs/citation/0/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+/32/style/border/color/value: the theme allows only presets for color; ignored
+/33/style/fontFamily: the theme does not allow fontFamily for code blocks; ignored
+/33/style/padding: the theme does not allow padding for code blocks; ignored

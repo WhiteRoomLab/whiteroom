@@ -8,9 +8,10 @@ import (
 )
 
 type ValidateOptions struct {
-	AllowHTML bool   // html blocks are enabled in the site settings
-	Import    bool   // the blocks come from an import, which may create legacy blocks and images without alt
-	Previous  Blocks // blocks of the previous revision, matched by ID
+	AllowHTML bool           // html blocks are enabled in the site settings
+	Import    bool           // the blocks come from an import, which may create legacy blocks and images without alt
+	Previous  Blocks         // blocks of the previous revision, matched by ID
+	Theme     *ThemeSettings // the settings of the theme of the site, which styles must keep to; nil skips those checks
 	// Lookup tells about the entry, medium, form, term or author with the ID, and whether it exists.
 	// nil skips checking referenced entities.
 	Lookup func(kind RefKind, id string) (Ref, bool)
@@ -18,13 +19,15 @@ type ValidateOptions struct {
 
 // docState is shared by the checks of a document, such as the body and the fields of a revision.
 type docState struct {
-	opts     ValidateOptions
-	publish  bool              // the document is to be published, which needs its required items
-	language string            // language of the entry or the term of the document
-	blocks   int               // blocks checked so far
-	ids      map[string]string // block ID to the path of its "id" where first used
-	anchors  map[string]string // anchor to the path of its "anchor" where first used
-	prev     map[string]*Block // blocks of opts.Previous by ID; built on first use
+	opts           ValidateOptions
+	publish        bool               // the document is to be published, which needs its required items
+	language       string             // language of the entry or the term of the document
+	blocks         int                // blocks checked so far
+	ids            map[string]string  // block ID to the path of its "id" where first used
+	anchors        map[string]string  // anchor to the path of its "anchor" where first used
+	prev           map[string]*Block  // blocks of opts.Previous by ID; built on first use
+	prevTexts      []RichText         // values of the richText fields of the previous revision
+	prevHighlights map[Highlight]bool // highlights in opts.Previous and prevTexts; built on first use
 }
 
 func (x Blocks) Validate(opts ValidateOptions) error {
@@ -125,12 +128,16 @@ func (x *Block) check(c *checker, path string, spec blockSpec, depth int, inColu
 			c.add(path+"/variant", checkName(x.Variant))
 		}
 		if x.ClassName != "" {
-			c.add(path+"/className", checkName(x.ClassName))
+			c.add(path+"/className", checkClassName(x.ClassName))
 		}
 		if x.Anchor != "" {
 			c.anchor(path+"/anchor", x.Anchor)
 		}
 		x.Style.check(c, path+"/style")
+		if x.Style.BlockGap != (Length{}) && !x.Type.AllowsBlockGap() {
+			c.addf(path+"/style/blockGap", "blockGap is not allowed for %s blocks", x.Type)
+		}
+		c.themeStyle(x, path)
 	}
 	for _, k := range x.Attrs.keys() {
 		if !slices.Contains(spec.attrs, k) {
@@ -281,4 +288,99 @@ func (c *checker) unchangedLegacy(x *Block) bool {
 func (c *checker) keptWithoutAlt(x *Block) bool {
 	p := c.previous(x.ID)
 	return p != nil && p.Type == BlockImage && p.Attrs.Media == x.Attrs.Media && p.Attrs.Alt == "" && !p.Attrs.Decorative
+}
+
+// unchangedHeight reports whether opts.Previous has x, a spacer, with the same height.
+func (c *checker) unchangedHeight(x *Block) bool {
+	p := c.previous(x.ID)
+	return p != nil && p.Type == BlockSpacer && p.Attrs.Height == x.Attrs.Height
+}
+
+// keptHighlight reports whether the previous revision has a highlight equal to x anywhere: in the rich text of the
+// blocks of opts.Previous, at any depth, or in prevTexts.
+func (c *checker) keptHighlight(x Highlight) bool {
+	d := c.doc
+	if d.prevHighlights == nil {
+		d.prevHighlights = make(map[Highlight]bool)
+		add := func(rt RichText) {
+			for _, n := range rt {
+				for _, m := range n.Marks {
+					if m.Type == MarkHighlight && m.Highlight != nil {
+						d.prevHighlights[*m.Highlight] = true
+					}
+				}
+			}
+		}
+		var walk func(bs Blocks)
+		walk = func(bs Blocks) {
+			for i := range bs {
+				b := &bs[i]
+				add(b.Text)
+				add(b.Attrs.Citation)
+				add(b.Attrs.Caption)
+				walk(b.Children)
+			}
+		}
+		walk(d.opts.Previous)
+		for _, rt := range d.prevTexts {
+			add(rt)
+		}
+	}
+	return d.prevHighlights[x]
+}
+
+// themed reports whether to check styles, the heights of spacers and the colors of highlights against opts.Theme:
+// there is a theme, and the document is not an import.
+func (c *checker) themed() bool {
+	return c.doc != nil && c.doc.opts.Theme != nil && !c.doc.opts.Import
+}
+
+// themeStyle checks the style of x, a block that is not a part, against the theme: that the theme allows its items for
+// the type of x, and then their values. It accepts the items whose values are the same in the block of the previous
+// revision with the same ID and type.
+func (c *checker) themeStyle(x *Block, path string) {
+	if !c.themed() {
+		return
+	}
+	prev := c.previous(x.ID)
+	if prev != nil && prev.Type != x.Type {
+		prev = nil
+	}
+	// allowed reports whether to check the values of item, after reporting the item if the theme does not allow it.
+	allowed := func(item string) bool {
+		switch {
+		case prev != nil && prev.Style.item(item) == x.Style.item(item):
+			return false
+		case item == "blockGap" && !x.Type.AllowsBlockGap():
+			// The structural rule has reported it.
+			return false
+		}
+		err := c.doc.opts.Theme.CheckStyleItem(x.Type, item)
+		c.add(path+"/style/"+item, err)
+		return err == nil
+	}
+	vs := x.Style.Values()
+	ok := false
+	for i, v := range vs {
+		if i == 0 || v.Item != vs[i-1].Item {
+			ok = allowed(v.Item)
+		}
+		if ok {
+			c.themeValue(path+"/style"+v.Path(), v)
+		}
+	}
+}
+
+// themeValue checks v, a value at path, against the theme unless its format is invalid: the theme must have its preset,
+// and allow values of its kind written directly.
+func (c *checker) themeValue(path string, v StyleValue) {
+	if v.Check() != nil {
+		return
+	}
+	if v.Preset != "" {
+		c.add(path+"/preset", c.doc.opts.Theme.CheckPreset(v.Kind, v.Preset))
+	}
+	if v.Value != "" {
+		c.add(path+"/value", c.doc.opts.Theme.CheckCustom(v.Kind))
+	}
 }

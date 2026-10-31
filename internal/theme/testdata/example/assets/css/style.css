@@ -49,6 +49,33 @@ h1 {
   margin-inline-start: var(--spacing-20);
 }
 
+.alignleft {
+  float: left;
+  margin-inline: 0 var(--spacing-30);
+}
+
+.aligncenter {
+  margin-inline: auto;
+  width: fit-content;
+}
+
+.alignright {
+  float: right;
+  margin-inline: var(--spacing-30) 0;
+}
+
+.alignwide {
+  margin-inline: calc(50% - min(32rem, 50vw - var(--spacing-30)));
+}
+
+.alignfull {
+  margin-inline: calc(50% - 50vw);
+}
+
+.is-layout-columns {
+  gap: var(--spacing-40);
+}
+
 .is-variant-lead {
   font-size: var(--font-size-large);
 }

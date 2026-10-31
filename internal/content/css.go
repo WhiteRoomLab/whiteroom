@@ -12,9 +12,13 @@ import (
 // "linear-gradient(135deg, #f093fb 0%)" read as "linear-gradient(135deg,".
 const yamlCommentHint = `; a "#" after a space starts a comment in YAML, so quote the whole value`
 
-// checkCSSValue checks a preset of a theme, a CSS value written as that of a custom property, such as
-// "--color-primary: #1e73be;" in a CSS file or a <style> element: it cannot end the declaration, the rule or the
-// element. The kind of the value, such as a color, is not checked.
+// CheckPresetValue checks s, the value of a preset of a theme, as loading theme.yaml does: a CSS value written as that
+// of a custom property, such as "--color-primary: #1e73be;" in a CSS file or a <style> element, which cannot end the
+// declaration, the rule or the element. The kind of the value, such as a color, is not checked.
+func CheckPresetValue(s string) error {
+	return checkCSSValue(s)
+}
+
 func checkCSSValue(s string) error {
 	if err := checkLine(s); err != nil {
 		return err

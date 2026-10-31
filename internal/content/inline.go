@@ -446,6 +446,25 @@ func (x Highlight) check(c *checker, path string) {
 	if x.Variant != "" {
 		c.add(path+"/variant", checkName(x.Variant))
 	}
-	x.Color.check(c, path+"/color")
-	x.BackgroundColor.check(c, path+"/backgroundColor")
+	vs := x.Values()
+	for _, v := range vs {
+		v.check(c, path+v.Path())
+	}
+	if c.themed() && !c.keptHighlight(x) {
+		for _, v := range vs {
+			c.themeValue(path+v.Path(), v)
+		}
+	}
+}
+
+// Values returns the colors that x sets, color before backgroundColor.
+func (x Highlight) Values() []StyleValue {
+	var vs []StyleValue
+	if x.Color != (Color{}) {
+		vs = append(vs, x.Color.value("color", ""))
+	}
+	if x.BackgroundColor != (Color{}) {
+		vs = append(vs, x.BackgroundColor.value("backgroundColor", ""))
+	}
+	return vs
 }

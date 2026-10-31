@@ -130,9 +130,9 @@ var checkCSSValueTests = []struct {
 func TestCheckCSSValue(t *testing.T) {
 	for _, tt := range checkCSSValueTests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkCSSValue(tt.in)
+			err := CheckPresetValue(tt.in)
 			if got := errorMsg(err); got != tt.msg {
-				t.Errorf("checkCSSValue(%q) = %q, want %q", tt.in, got, tt.msg)
+				t.Errorf("CheckPresetValue(%q) = %q, want %q", tt.in, got, tt.msg)
 			}
 			if ok := cssValueOK(tt.in); ok != (tt.msg == "") {
 				t.Errorf("cssValueOK(%q) = %t", tt.in, ok)

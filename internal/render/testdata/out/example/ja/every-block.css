@@ -1,0 +1,25 @@
+.b-0paragr1 {
+  color: var(--color-primary) !important;
+  padding-top: 1rem !important;
+}
+
+.b-000image img {
+  width: 300px !important;
+  aspect-ratio: 16/9 !important;
+  object-fit: cover !important;
+  height: auto !important;
+}
+
+.b-0spacer2 {
+  height: 40px !important;
+}
+
+.b-0column1 {
+  background-color: var(--color-muted) !important;
+  flex-basis: 33.33% !important;
+  flex-grow: 0 !important;
+}
+
+.b-00group2 {
+  grid-template-columns: repeat(auto-fill, minmax(max(min(12rem, 100%), (100% - 2 * 0.5em) / 3), 1fr)) !important;
+}

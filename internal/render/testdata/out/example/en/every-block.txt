@@ -1,5 +1,7 @@
 /4/variant: the theme has no quote variant "pull"; rendered without its class
 /8/content/0/variant: the theme has no button variant "outline"; rendered without its class
+/8/content/0/style/backgroundColor/value: the theme allows only presets for color; ignored
 /9/variant: the theme has no separator variant "wide"; rendered without its class
+/10/attrs/height/preset: the theme has no spacing preset "large"; ignored
 /21: html blocks are not rendered yet
 /22: legacy blocks are not rendered yet

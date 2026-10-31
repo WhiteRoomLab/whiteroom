@@ -1151,7 +1151,7 @@ func TestCheckAspectRatio(t *testing.T) {
 			if !tt.ok {
 				msg = fmt.Sprintf("invalid aspect ratio %q", tt.in)
 			}
-			assertErrorMsg(t, checkAspectRatio(tt.in), msg)
+			assertErrorMsg(t, CheckAspectRatio(tt.in), msg)
 		})
 	}
 }
