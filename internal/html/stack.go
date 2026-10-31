@@ -36,6 +36,7 @@ func (p *parser) popTo(i int) {
 // popUntil pops elements from the stack of open elements until an HTML element named name has been popped.
 func (p *parser) popUntil(name string) {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		if p.stack[i].isHTML(name) {
 			p.popTo(i)
 			return
@@ -46,6 +47,7 @@ func (p *parser) popUntil(name string) {
 // stackIndex returns the index of n in the stack of open elements, or -1.
 func (p *parser) stackIndex(n *Node) int {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		if p.stack[i] == n {
 			return i
 		}
@@ -54,12 +56,14 @@ func (p *parser) stackIndex(n *Node) int {
 }
 
 func (p *parser) removeFromStack(i int) {
+	p.step(len(p.stack) - i)
 	p.stack = slices.Delete(p.stack, i, i+1)
 }
 
 // templateOnStack reports whether there is a template element on the stack of open elements.
 func (p *parser) templateOnStack() bool {
 	for _, n := range p.stack {
+		p.step(1)
 		if n.isHTML("template") {
 			return true
 		}
@@ -113,6 +117,7 @@ func (s scope) bounds(n *Node) bool {
 // inScope reports whether the stack of open elements has an HTML element named name in the scope s.
 func (p *parser) inScope(name string, s scope) bool {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if n.isHTML(name) {
 			return true
@@ -127,6 +132,7 @@ func (p *parser) inScope(name string, s scope) bool {
 // nodeInScope reports whether the stack of open elements has the element target in the scope s.
 func (p *parser) nodeInScope(target *Node, s scope) bool {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if n == target {
 			return true
@@ -152,6 +158,7 @@ func isHeading(n *Node) bool {
 // headingInScope reports whether the stack of open elements has an HTML h1-h6 element in scope.
 func (p *parser) headingInScope() bool {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if isHeading(n) {
 			return true
@@ -166,6 +173,7 @@ func (p *parser) headingInScope() bool {
 // popUntilHeading pops elements from the stack of open elements until an HTML h1-h6 element has been popped.
 func (p *parser) popUntilHeading() {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		if isHeading(p.stack[i]) {
 			p.popTo(i)
 			return
@@ -205,6 +213,7 @@ func isSpecial(n *Node) bool {
 // generateImpliedEndTags generates implied end tags (13.2.6.3), except for HTML elements named except.
 func (p *parser) generateImpliedEndTags(except string) {
 	for {
+		p.step(1)
 		n := p.currentNode()
 		if n.Namespace != HTML || n.Name == except {
 			return
@@ -221,6 +230,7 @@ func (p *parser) generateImpliedEndTags(except string) {
 // generateAllImpliedEndTagsThoroughly generates all implied end tags thoroughly (13.2.6.3).
 func (p *parser) generateAllImpliedEndTagsThoroughly() {
 	for {
+		p.step(1)
 		n := p.currentNode()
 		if n.Namespace != HTML {
 			return
@@ -251,6 +261,7 @@ func (p *parser) closePInButtonScope() {
 // resetInsertionMode resets the insertion mode appropriately (13.2.4.1).
 func (p *parser) resetInsertionMode() {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		node := p.stack[i]
 		last := i == 0
 		if last && p.context != nil {
@@ -311,6 +322,7 @@ func (p *parser) resetInsertionMode() {
 // activeIndex returns the index of n in the list of active formatting elements, or -1.
 func (p *parser) activeIndex(n *Node) int {
 	for i := len(p.active) - 1; i >= 0; i-- {
+		p.step(1)
 		if p.active[i] == n {
 			return i
 		}
@@ -319,6 +331,7 @@ func (p *parser) activeIndex(n *Node) int {
 }
 
 func (p *parser) removeActive(i int) {
+	p.step(len(p.active) - i)
 	p.active = slices.Delete(p.active, i, i+1)
 }
 
@@ -331,8 +344,9 @@ func (p *parser) insertMarker() {
 func (p *parser) pushActive(n *Node) {
 	count, earliest := 0, -1
 	for i := len(p.active) - 1; i >= 0 && p.active[i] != nil; i-- {
+		p.step(1)
 		e := p.active[i]
-		if e.Name == n.Name && e.Namespace == n.Namespace && sameAttrs(e.Attrs, n.Attrs) {
+		if e.Name == n.Name && e.Namespace == n.Namespace && p.sameAttrs(e.Attrs, n.Attrs) {
 			count++
 			earliest = i
 		}
@@ -344,7 +358,7 @@ func (p *parser) pushActive(n *Node) {
 }
 
 // sameAttrs reports whether a and b, each without repeated names, have the same attributes in any order.
-func sameAttrs(a, b []Attr) bool {
+func (p *parser) sameAttrs(a, b []Attr) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -352,6 +366,7 @@ func sameAttrs(a, b []Attr) bool {
 	next:
 		for _, x := range a {
 			for _, y := range b {
+				p.step(1)
 				if x == y {
 					continue next
 				}
@@ -360,6 +375,7 @@ func sameAttrs(a, b []Attr) bool {
 		}
 		return true
 	}
+	p.step(len(a) + len(b))
 	m := make(map[Attr]struct{}, len(a))
 	for _, x := range a {
 		m[x] = struct{}{}
@@ -388,13 +404,14 @@ func (p *parser) reconstructActive() {
 		i--
 	}
 	for ; i < len(p.active); i++ {
-		p.active[i] = p.insertHTMLElement(tokenFor(p.active[i]))
+		p.active[i] = p.insertHTMLElement(p.tokenFor(p.active[i]))
 	}
 }
 
 // clearActiveToMarker clears the list of active formatting elements up to the last marker.
 func (p *parser) clearActiveToMarker() {
 	for len(p.active) > 0 {
+		p.step(1)
 		i := len(p.active) - 1
 		e := p.active[i]
 		p.active[i] = nil

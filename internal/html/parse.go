@@ -1,34 +1,101 @@
 package html
 
+import (
+	"errors"
+	"math"
+)
+
 // Options are the options of Parse and ParseFragment.
 type Options struct {
 	// Scripting is the scripting flag. Browsers parse with it set, so that the content of a noscript element is
 	// text; without it, noscript elements hold markup.
 	Scripting bool
+
+	// MaxNodes and MaxSteps, if positive, limit a parse: past either, Parse and ParseFragment stop and return ErrLimit.
+	// MaxNodes limits the size of the tree. Each node counts one, and each attribute of an element one more; an element
+	// that the parser copies from a formatting element (to reconstruct it, or in the adoption agency algorithm) also
+	// counts one for each 16 bytes of the names and values of its attributes, which it shares with the original but
+	// which Render writes again. MaxSteps limits the work: a step is a token, a node or attribute counted against
+	// MaxNodes, an element of the stack of open elements or an entry of the list of active formatting elements that a
+	// scan looks at, and the like. A parse then takes time linear in len(s) and MaxSteps, and Render writes its tree in
+	// time linear in len(s) and MaxNodes.
+	MaxNodes, MaxSteps int
 }
+
+// ErrLimit is the error of Parse and ParseFragment when a parse passes Options.MaxNodes or Options.MaxSteps.
+var ErrLimit = errors.New("html: the input passes the limits of the parser")
 
 // Parse parses s as an HTML document, as the HTML Standard does for a document whose input is s (13.2), and returns
 // its Document node. Scripts are not run, and parse errors are not reported. The parsed contents of a template element
 // always go to its Content: declarative shadow roots and content patching (the for attribute of template) are not
-// supported.
+// supported. The only error is ErrLimit.
 func Parse(s string, opts Options) (*Node, error) {
-	p := newParser(s, opts)
-	p.run()
+	p, err := parse(s, nil, opts)
+	if err != nil {
+		return nil, err
+	}
 	return p.doc, nil
+}
+
+// parse parses s as a document or, if context is not nil, as a fragment for context. The only error is ErrLimit.
+func parse(s string, context *Node, opts Options) (p *parser, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(limitPassed); !ok {
+				panic(r)
+			}
+			err = ErrLimit
+		}
+	}()
+	p = newParser(s, opts)
+	if context != nil {
+		p.initFragment(context)
+	}
+	p.run()
+	return p, nil
 }
 
 func newParser(s string, opts Options) *parser {
 	p := &parser{
 		z:               newTokenizer(s),
-		doc:             &Node{Type: DocumentNode},
 		mode:            initialMode,
 		scripting:       opts.Scripting,
 		framesetOK:      true,
 		texts:           make(map[*Node][]byte),
 		htmlAnnotations: make(map[*Node]bool),
+		maxNodes:        limit(opts.MaxNodes),
+		maxSteps:        limit(opts.MaxSteps),
 	}
+	p.grow(1)
+	p.doc = &Node{Type: DocumentNode}
 	p.z.cdataAllowed = func() bool { return len(p.stack) > 0 && p.adjustedCurrentNode().Namespace != HTML }
 	return p
+}
+
+// limit returns the limit n of Options, or the largest int for no limit.
+func limit(n int) int {
+	if n <= 0 {
+		return math.MaxInt
+	}
+	return n
+}
+
+// limitPassed is the panic of step and grow when a limit is passed, which parse recovers.
+type limitPassed struct{}
+
+// step counts n steps against MaxSteps.
+func (p *parser) step(n int) {
+	if p.steps += n; p.steps > p.maxSteps {
+		panic(limitPassed{})
+	}
+}
+
+// grow counts n nodes against MaxNodes, and as many steps for making them.
+func (p *parser) grow(n int) {
+	p.step(n)
+	if p.nodes += n; p.nodes > p.maxNodes {
+		panic(limitPassed{})
+	}
 }
 
 // insertionMode is an insertion mode of the tree construction stage (13.2.4.1).
@@ -97,6 +164,9 @@ type parser struct {
 	// The MathML annotation-xml elements that are HTML integration points, the context element among them: found once,
 	// since their attributes can be many.
 	htmlAnnotations map[*Node]bool
+
+	nodes, steps       int // counted against the limits
+	maxNodes, maxSteps int
 }
 
 // run runs the tree construction stage over the tokens up to the end of the input, then the steps of 13.2.7 that
@@ -127,6 +197,7 @@ func (p *parser) run() {
 // dispatch processes tok as the tree construction dispatcher of 13.2.6 says, and reports whether tok must be
 // reprocessed.
 func (p *parser) dispatch(tok *token) bool {
+	p.step(1)
 	if p.htmlContent(tok) {
 		return p.process(p.mode, tok)
 	}

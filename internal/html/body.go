@@ -47,14 +47,14 @@ func (p *parser) inBodyStartTag(tok *token) bool {
 	switch tok.name {
 	case "html":
 		if !p.templateOnStack() {
-			addMissingAttrs(p.stack[0], tok.attrs)
+			p.addMissingAttrs(p.stack[0], tok.attrs)
 		}
 	case "base", "basefont", "bgsound", "link", "meta", "noframes", "script", "style", "template", "title":
 		return p.inHead(tok)
 	case "body":
 		if len(p.stack) > 1 && p.stack[1].isHTML("body") && !p.templateOnStack() {
 			p.framesetOK = false
-			addMissingAttrs(p.stack[1], tok.attrs)
+			p.addMissingAttrs(p.stack[1], tok.attrs)
 		}
 	case "frameset":
 		if len(p.stack) == 1 || !p.stack[1].isHTML("body") || !p.framesetOK {
@@ -116,6 +116,7 @@ func (p *parser) inBodyStartTag(tok *token) bool {
 		p.framesetOK = false
 	case "a":
 		for i := len(p.active) - 1; i >= 0 && p.active[i] != nil; i-- {
+			p.step(1)
 			if a := p.active[i]; a.Name == "a" {
 				p.adoptionAgency(tok)
 				if j := p.activeIndex(a); j >= 0 {
@@ -269,9 +270,11 @@ func (p *parser) inBodyStartTag(tok *token) bool {
 
 // addMissingAttrs adds to n each attribute of attrs that n does not have, as the html and body start tags in "in body"
 // do.
-func addMissingAttrs(n *Node, attrs []Attr) {
+func (p *parser) addMissingAttrs(n *Node, attrs []Attr) {
 	for _, a := range attrs {
+		p.step(1 + len(n.Attrs))
 		if !slices.ContainsFunc(n.Attrs, func(b Attr) bool { return b.Name == a.Name }) {
+			p.grow(1)
 			n.Attrs = append(n.Attrs, a)
 		}
 	}
@@ -281,6 +284,7 @@ func addMissingAttrs(n *Node, attrs []Attr) {
 // first element that item reports true for, unless a special element other than address, div and p comes first.
 func (p *parser) closeListItem(item func(*Node) bool) {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if item(n) {
 			p.generateImpliedEndTags(n.Name)
@@ -368,6 +372,7 @@ func (p *parser) inBodyEndTag(tok *token) bool {
 // anyOtherEndTag handles an end tag named name as "any other end tag" in "in body".
 func (p *parser) anyOtherEndTag(name string) {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if n.isHTML(name) {
 			p.generateImpliedEndTags(name)
@@ -390,8 +395,10 @@ func (p *parser) adoptionAgency(tok *token) {
 		return
 	}
 	for range 8 {
+		p.step(1)
 		fi := -1
 		for i := len(p.active) - 1; i >= 0 && p.active[i] != nil; i-- {
+			p.step(1)
 			if p.active[i].Name == subject {
 				fi = i
 				break
@@ -412,6 +419,7 @@ func (p *parser) adoptionAgency(tok *token) {
 		}
 		fbi := -1
 		for i := si + 1; i < len(p.stack); i++ {
+			p.step(1)
 			if isSpecial(p.stack[i]) {
 				fbi = i
 				break
@@ -428,6 +436,7 @@ func (p *parser) adoptionAgency(tok *token) {
 		bookmarkMoved := false
 		last := furthest
 		for inner, ni := 1, fbi; ; inner++ {
+			p.step(1)
 			ni--
 			node := p.stack[ni]
 			if node == formatting {
@@ -446,7 +455,7 @@ func (p *parser) adoptionAgency(tok *token) {
 				fbi--
 				continue
 			}
-			node = p.createElement(tokenFor(node), HTML)
+			node = p.createElement(p.tokenFor(node), HTML)
 			p.active[ai] = node
 			p.stack[ni] = node
 			if !bookmarkMoved {
@@ -468,17 +477,20 @@ func (p *parser) adoptionAgency(tok *token) {
 			(ref == nil || ref.Parent == parent) {
 			parent.InsertBefore(last, ref)
 		}
-		n := p.createElement(tokenFor(formatting), HTML)
+		n := p.createElement(p.tokenFor(formatting), HTML)
 		fi = p.activeIndex(formatting)
 		p.removeActive(fi)
 		if fi < bookmark {
 			bookmark--
 		}
+		p.step(len(p.active) - bookmark)
 		p.active = slices.Insert(p.active, bookmark, n)
 		p.removeFromStack(si)
 		fbi--
+		p.step(len(p.stack) - fbi)
 		p.stack = slices.Insert(p.stack, fbi+1, n)
 		for c := furthest.FirstChild; c != nil; c = furthest.FirstChild {
+			p.step(1)
 			furthest.RemoveChild(c)
 			n.AppendChild(c)
 		}

@@ -48,6 +48,7 @@ func (p *parser) initial(tok *token) bool {
 		return false
 	case doctypeToken:
 		if !hasDoctypeOrElementChild(p.doc) {
+			p.grow(1)
 			p.doc.AppendChild(&Node{Type: DoctypeNode, Name: tok.name, PublicID: tok.publicID, SystemID: tok.systemID})
 		}
 		p.docMode = doctypeMode(tok)

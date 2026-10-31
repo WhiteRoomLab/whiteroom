@@ -110,6 +110,7 @@ func breaksOut(tok *token) bool {
 // HTML element, then processes tok by the rules of the insertion mode, and reports whether tok must be reprocessed.
 func (p *parser) popForeign(tok *token) bool {
 	for {
+		p.step(1)
 		n := p.currentNode()
 		if n.Namespace == HTML || isMathMLTextIntegrationPoint(n) || p.isHTMLIntegrationPoint(n) {
 			break
@@ -133,8 +134,11 @@ func (p *parser) foreignStartTag(tok *token) {
 	case HTML:
 	}
 	adjustForeignAttrs(tok)
-	if n := p.insertForeignElement(tok, ns); ns == MathML && htmlAnnotation(n) {
-		p.htmlAnnotations[n] = true
+	if n := p.insertForeignElement(tok, ns); ns == MathML && n.Name == "annotation-xml" {
+		p.step(len(n.Attrs))
+		if htmlAnnotation(n) {
+			p.htmlAnnotations[n] = true
+		}
 	}
 	if tok.selfClosing {
 		// For an SVG script element, this is also what a script end tag does when scripts are not run.
@@ -145,6 +149,11 @@ func (p *parser) foreignStartTag(tok *token) {
 // foreignEndTag handles "any other end tag" in foreign content, and reports whether tok must be reprocessed.
 func (p *parser) foreignEndTag(tok *token) bool {
 	for i := len(p.stack) - 1; i > 0; {
+		p.step(1)
+		if len(p.stack[i].Name) == len(tok.name) {
+			// equalFold compares a byte at a time.
+			p.step(len(tok.name) / 8)
+		}
 		if equalFold(p.stack[i].Name, tok.name) {
 			p.popTo(i)
 			return false

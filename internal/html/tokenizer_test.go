@@ -245,7 +245,7 @@ func TestTokenizerLinear(t *testing.T) {
 				size += len(a.Name) + len(a.Value)
 			}
 		}
-		if d := time.Since(start); d > time.Second {
+		if d := time.Since(start); d > timeBound {
 			t.Errorf("%s: %v for %d bytes", tt.name, d, len(tt.in))
 		}
 		if tt.size >= 0 && size != tt.size {

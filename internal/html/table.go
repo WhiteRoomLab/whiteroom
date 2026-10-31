@@ -120,6 +120,7 @@ func hiddenInput(tok *token) bool {
 // "tfoot", "thead") or a table row context ("tr").
 func (p *parser) clearStackBack(names ...string) {
 	for {
+		p.step(1)
 		n := p.currentNode()
 		if n.Namespace == HTML && (n.Name == "html" || n.Name == "template" || slices.Contains(names, n.Name)) {
 			return
@@ -301,6 +302,7 @@ func (p *parser) closeTableSection() bool {
 // tableSectionInScope reports whether the stack of open elements has a tbody, thead or tfoot element in table scope.
 func (p *parser) tableSectionInScope() bool {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		n := p.stack[i]
 		if n.isHTML("tbody") || n.isHTML("thead") || n.isHTML("tfoot") {
 			return true
@@ -392,6 +394,7 @@ func (p *parser) inCell(tok *token) bool {
 func (p *parser) closeCell() {
 	p.generateImpliedEndTags("")
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		if n := p.stack[i]; n.isHTML("td") || n.isHTML("th") {
 			p.popTo(i)
 			break

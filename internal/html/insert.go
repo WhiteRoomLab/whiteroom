@@ -26,6 +26,7 @@ func (p *parser) appropriatePlace(override *Node) (parent, ref *Node) {
 // elements (13.2.6.1).
 func (p *parser) fosterPlace() (parent, ref *Node) {
 	for i := len(p.stack) - 1; i >= 0; i-- {
+		p.step(1)
 		switch n := p.stack[i]; {
 		case n.isHTML("template"):
 			return n, nil
@@ -50,8 +51,10 @@ func (p *parser) adjusted(parent, ref *Node) (*Node, *Node) {
 // createElement creates an element for the token tok in the namespace ns (13.2.6.1). There are no custom elements and
 // no sanitizer configuration. An HTML template element gets empty template contents.
 func (p *parser) createElement(tok *token, ns Namespace) *Node {
+	p.grow(1 + len(tok.attrs))
 	n := &Node{Type: ElementNode, Namespace: ns, Name: tok.name, Attrs: tok.attrs}
 	if ns == HTML && tok.name == "template" {
+		p.grow(1)
 		n.Content = &Node{Type: DocumentFragmentNode}
 		if p.hosts == nil {
 			p.hosts = make(map[*Node]*Node)
@@ -62,10 +65,20 @@ func (p *parser) createElement(tok *token, ns Namespace) *Node {
 }
 
 // tokenFor returns a start tag token like the one that e, an element of the list of active formatting elements, was
-// created for: the parser never changes the attributes of those elements.
-func tokenFor(e *Node) *token {
+// created for: the parser never changes the attributes of those elements. The element made from it shares the names
+// and values of the attributes, but Render writes them again for each copy: they count a node for each copyBytes bytes.
+func (p *parser) tokenFor(e *Node) *token {
+	p.step(len(e.Attrs))
+	size := 0
+	for _, a := range e.Attrs {
+		size += len(a.Namespace) + len(a.Name) + len(a.Value)
+	}
+	p.grow(size / copyBytes)
 	return &token{typ: startTagToken, name: e.Name, attrs: slices.Clone(e.Attrs)}
 }
+
+// copyBytes is the bytes of the attributes of a copied element that count as a node.
+const copyBytes = 16
 
 // insertElement inserts n, a new element, at the adjusted insertion location given (parent, ref). Since n has no
 // parent and no children, it cannot be a host-including inclusive ancestor of the parent.
@@ -120,6 +133,7 @@ func (p *parser) insertText(s string) {
 		p.texts[prev] = append(b, s...)
 		return
 	}
+	p.grow(1)
 	parent.InsertBefore(&Node{Type: TextNode, Data: s}, ref)
 }
 
@@ -130,6 +144,7 @@ func (p *parser) insertComment(data string, parent, ref *Node) {
 		parent, ref = p.appropriatePlace(nil)
 	}
 	parent, ref = p.adjusted(parent, ref)
+	p.grow(1)
 	parent.InsertBefore(&Node{Type: CommentNode, Data: data}, ref)
 }
 
@@ -140,6 +155,7 @@ func (p *parser) insertProcessingInstruction(tok *token, parent, ref *Node) {
 		parent, ref = p.appropriatePlace(nil)
 	}
 	parent, ref = p.adjusted(parent, ref)
+	p.grow(1)
 	parent.InsertBefore(&Node{Type: ProcessingInstructionNode, Name: tok.name, Data: tok.data}, ref)
 }
 
@@ -156,6 +172,7 @@ func (p *parser) parseText(tok *token, st state) {
 // of b or, if the root of b is the template contents of a template element, of that element.
 func (p *parser) hostIncludingInclusiveAncestor(a, b *Node) bool {
 	for n := b; n != nil; {
+		p.step(1)
 		if n == a {
 			return true
 		}

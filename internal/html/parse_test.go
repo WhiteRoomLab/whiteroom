@@ -42,7 +42,7 @@ type treeTest struct {
 
 // readTreeTests reads the tests of the .dat file text. The data can have CR and NUL characters: only LF separates
 // lines.
-func readTreeTests(t *testing.T, name, text string) []treeTest {
+func readTreeTests(t testing.TB, name, text string) []treeTest {
 	t.Helper()
 	var tests []treeTest
 	var section string
@@ -98,7 +98,7 @@ func readTreeTests(t *testing.T, name, text string) []treeTest {
 // dumpTree writes the children of n as the tests write trees: a line for each node, after "| " and two spaces for each
 // ancestor below n; the attributes of an element on the lines after it, sorted by name; the template contents of a
 // template element under a "content" line. It checks the links between the nodes.
-func dumpTree(t *testing.T, n *Node) string {
+func dumpTree(t testing.TB, n *Node) string {
 	t.Helper()
 	type item struct {
 		n       *Node
@@ -201,6 +201,13 @@ func fragmentDump(t *testing.T, s string, context *Node, scripting bool) (dump s
 	if err != nil {
 		return "", err
 	}
+	return dumpNodes(t, nodes)
+}
+
+// dumpNodes dumps nodes, which must have no parent and no siblings, as the children of a fragment, which it appends
+// them to.
+func dumpNodes(t testing.TB, nodes []*Node) (string, error) {
+	t.Helper()
 	f := &Node{Type: DocumentFragmentNode}
 	for _, n := range nodes {
 		if n.Parent != nil || n.PrevSibling != nil || n.NextSibling != nil {
@@ -441,7 +448,7 @@ func TestParseTextLinear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := time.Since(start); d > time.Second {
+	if d := time.Since(start); d > timeBound {
 		t.Errorf("%v for %d characters", d, n)
 	}
 	body := doc.LastChild.LastChild
@@ -452,7 +459,8 @@ func TestParseTextLinear(t *testing.T) {
 }
 
 // TestParseAnnotationLinear parses 2^16 tags in an annotation-xml element with 2^16 attributes: looking for its
-// encoding attribute again at each tag, to know whether it is an HTML integration point, would take seconds.
+// encoding attribute again at each tag, to know whether it is an HTML integration point, would take 2^32 steps and
+// seconds.
 func TestParseAnnotationLinear(t *testing.T) {
 	const n = 1 << 16
 	var b strings.Builder
@@ -469,14 +477,14 @@ func TestParseAnnotationLinear(t *testing.T) {
 	}
 	for _, tt := range tests {
 		start := time.Now()
-		doc, err := Parse(tt.in, Options{})
+		p, err := parse(tt.in, nil, Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("%v for %d %s elements", d, n, tt.tag)
+		if d := time.Since(start); d > timeBound || p.steps > 2*len(tt.in) {
+			t.Errorf("%v and %d steps for %d %s elements and %d bytes", d, p.steps, n, tt.tag, len(tt.in))
 		}
-		annotation := doc.LastChild.LastChild.FirstChild.FirstChild
+		annotation := p.doc.LastChild.LastChild.FirstChild.FirstChild
 		count := 0
 		for c := annotation.FirstChild; c != nil; c = c.NextSibling {
 			if c.Name == tt.tag {
