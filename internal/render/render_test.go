@@ -14,7 +14,7 @@ import (
 
 // testTheme loads the smallest valid theme with files, by path: theme.yaml (schemaVersion 1 unless files has it),
 // templates/entry.html and templates/list.html.
-func testTheme(t *testing.T, files map[string]string) *theme.Theme {
+func testTheme(t testing.TB, files map[string]string) *theme.Theme {
 	t.Helper()
 	fsys := fstest.MapFS{
 		"theme.yaml":           {Data: []byte("schemaVersion: 1\n")},
@@ -61,7 +61,7 @@ func (r testResolver) Form(id string) (*content.Form, bool) {
 
 // decodeTestdata decodes the file of ../content/testdata with the name with decode, such as the UnmarshalJSON method of
 // a content.Form.
-func decodeTestdata(t *testing.T, name string, decode func([]byte) error) {
+func decodeTestdata(t testing.TB, name string, decode func([]byte) error) {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "content", "testdata", name))
 	if err != nil {
@@ -72,7 +72,7 @@ func decodeTestdata(t *testing.T, name string, decode func([]byte) error) {
 	}
 }
 
-func newRenderer(t *testing.T, th *theme.Theme, language, base string, res Resolver) *Renderer {
+func newRenderer(t testing.TB, th *theme.Theme, language, base string, res Resolver) *Renderer {
 	t.Helper()
 	tr, err := th.Renderer(language, base)
 	if err != nil {

@@ -34,7 +34,7 @@ type goldenTheme struct {
 
 // goldenThemes returns the themes of TestGolden: default, which has no block templates, so that the default templates
 // of the core render the blocks, and example, the sample theme of internal/theme.
-func goldenThemes(t *testing.T) []goldenTheme {
+func goldenThemes(t testing.TB) []goldenTheme {
 	t.Helper()
 	example, err := theme.Load(os.DirFS("../theme/testdata/example"))
 	if err != nil {
@@ -46,7 +46,7 @@ func goldenThemes(t *testing.T) []goldenTheme {
 // goldenResolver returns a Resolver with what the golden documents refer to: entries, one of them not published; the
 // media of office-image.json and company-guide-pdf.json and others made up, at /media/<file name>; and the form of
 // contact-form.json.
-func goldenResolver(t *testing.T) testResolver {
+func goldenResolver(t testing.TB) testResolver {
 	t.Helper()
 	var office, guide content.Media
 	decodeTestdata(t, "office-image.json", office.UnmarshalJSON)
