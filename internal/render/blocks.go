@@ -24,8 +24,8 @@ func (w *walker) blocks(bs content.Blocks, path string) (string, error) {
 }
 
 // block returns the HTML of b, a block at path, or "" for a block that is not rendered, which it warns about. It reads
-// the variant, then the attrs, then the content of b, the order in which blocks are written, so that the warnings are
-// in document order.
+// the ID, the variant and the style, then the attrs, then the content of b, the order in which blocks are written, so
+// that the warnings are in document order; the rules of b go to the CSS before those of its content.
 func (w *walker) block(b *content.Block, path string) (string, error) {
 	a := &b.Attrs
 	var data any
@@ -52,8 +52,14 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockQuote:
-		d := Quote{Common: w.common(b, path)}
+		s := w.begin(b, path)
+		var d Quote
 		d.Citation = template.HTML(w.richText(a.Citation, path+"/attrs/citation"))
+		if d.Citation != "" {
+			// The default template puts the class on a figure around the blockquote.
+			s.inside = "blockquote"
+		}
+		d.Common = w.finish(s)
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockImage:
@@ -73,8 +79,10 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockButton:
-		d := Button{Common: w.common(b, path), Label: a.Label, Width: a.Width}
+		s := w.begin(b, path)
+		d := Button{Label: a.Label, Width: a.Width}
 		d.Link = w.link(a.Link, path+"/attrs/link")
+		d.Common = w.finish(s)
 		data = d
 	case content.BlockSeparator:
 		data = Separator{Common: w.common(b, path)}
@@ -132,25 +140,27 @@ func (w *walker) children(b *content.Block, path string) (template.HTML, error) 
 // table returns the data of b, a table at path. Its children go to the sections that they name, in their order; those
 // that are not rows of the head or the foot go to the body.
 func (w *walker) table(b *content.Block, path string) (Table, error) {
-	d := Table{Common: w.common(b, path)}
+	s := w.begin(b, path)
+	var d Table
 	d.Caption = template.HTML(w.richText(b.Attrs.Caption, path+"/attrs/caption"))
+	d.Common = w.finish(s)
 	var head, body, foot []string
 	for i := range b.Children {
 		row := &b.Children[i]
-		s, err := w.block(row, path+"/content/"+strconv.Itoa(i))
+		html, err := w.block(row, path+"/content/"+strconv.Itoa(i))
 		if err != nil {
 			return Table{}, err
 		}
-		if s == "" {
+		if html == "" {
 			continue
 		}
 		switch rowSection(row) {
 		case "head":
-			head = append(head, s)
+			head = append(head, html)
 		case "foot":
-			foot = append(foot, s)
+			foot = append(foot, html)
 		default:
-			body = append(body, s)
+			body = append(body, html)
 		}
 	}
 	d.Head = template.HTML(strings.Join(head, "\n"))
@@ -176,29 +186,184 @@ func groupTag(s string) string {
 	return "div"
 }
 
-// common returns the Common of b, a block at path that is not a part, and warns about a variant that the theme does not
-// have. A heading without an anchor gets its automatic anchor.
-func (w *walker) common(b *content.Block, path string) Common {
-	c := Common{ID: b.ID, Anchor: b.Anchor}
-	if c.Anchor == "" && b.Type == content.BlockHeading {
-		c.Anchor = w.autoAnchor(b.ID)
-	}
-	var class []string
-	if b.Style != (content.Style{}) && content.CheckBlockID(b.ID) == nil {
-		class = append(class, "b-"+strings.TrimPrefix(b.ID, "b_"))
+// styling holds what begin reads of a block that is not a part, before its attrs, for finish, which turns it into the
+// Common and the rules of the block after its attrs.
+type styling struct {
+	block   *content.Block
+	path    string
+	common  Common   // without Class
+	variant string   // the class of its variant, if the theme has it
+	at      int      // the number of warnings of the walker before those of the block
+	main    []string // the declarations of its rule .b-<ID>
+	solid   bool     // the border has a width or a color but no style, which the rule :where(.b-<ID>) gives it
+	link    string   // the color of its links, in the rule .b-<ID> :where(a); "" if none
+	gap     string   // the CSS of its blockGap; "" if none
+	inside  string   // the element of the default template between that of the block and its children, if any
+}
+
+// begin starts b, a block at path that is not a part: it takes its ID and its anchor, or the automatic anchor of a
+// heading, and reads its variant and its style, warning about what it ignores of them.
+func (w *walker) begin(b *content.Block, path string) styling {
+	s := styling{block: b, path: path, common: Common{ID: b.ID, Anchor: b.Anchor}, at: len(w.warnings)}
+	if s.common.Anchor == "" && b.Type == content.BlockHeading {
+		s.common.Anchor = w.autoAnchor(b.ID)
 	}
 	if v := b.Variant; v != "" {
 		if w.r.variants[b.Type][v] {
-			class = append(class, "is-variant-"+v)
+			s.variant = "is-variant-" + v
 		} else {
 			w.warnf(path+"/variant", "the theme has no %s variant %q; rendered without its class", b.Type, v)
 		}
+	}
+	w.style(&s)
+	return s
+}
+
+// finish ends the block of s, after its attrs: it adds its rules to the CSS and returns its Common. A block whose ID is
+// invalid, or is that of another block whose rules are in the CSS, is rendered without its rules, which it warns about
+// before the other warnings of the block.
+func (w *walker) finish(s styling) Common {
+	b := s.block
+	c := s.common
+	var class []string
+	if len(s.main) > 0 || s.link != "" || s.gap != "" {
+		name := "b-" + strings.TrimPrefix(b.ID, "b_")
+		switch {
+		case content.CheckBlockID(b.ID) != nil:
+			w.warnAt(s.at, s.path+"/id", "invalid block ID %q; rendered without its CSS", b.ID)
+		case !w.addRules(name, s.rules("."+name)...):
+			w.warnAt(s.at, s.path+"/id", "duplicate block ID %q; rendered without its CSS", b.ID)
+		default:
+			class = append(class, name)
+		}
+	}
+	if s.variant != "" {
+		class = append(class, s.variant)
 	}
 	if b.ClassName != "" {
 		class = append(class, b.ClassName)
 	}
 	c.Class = strings.Join(class, " ")
 	return c
+}
+
+// common returns the Common of b, a block at path that is not a part whose attrs make no classes, rules or warnings,
+// and adds its rules to the CSS.
+func (w *walker) common(b *content.Block, path string) Common {
+	return w.finish(w.begin(b, path))
+}
+
+// rules returns the rules of the block of s, whose selector is sel, such as ".b-0paragr1": the main rule, the default
+// border style, the color of links, and the margins between the children of a flow container, in this order.
+func (s *styling) rules(sel string) []string {
+	var rules []string
+	add := func(selector string, decls ...string) {
+		if len(decls) > 0 {
+			rules = append(rules, rule(selector, decls))
+		}
+	}
+	add(sel, s.main...)
+	if s.solid {
+		add(":where("+sel+")", "border-style: solid")
+	}
+	if s.link != "" {
+		add(sel+" :where(a)", important("color", s.link))
+	}
+	if s.gap != "" && !gapContainer(s.block) {
+		children := sel + " > *"
+		if s.inside != "" {
+			children = sel + " > " + s.inside + " > *"
+		}
+		add(children, important("margin-top", "0"), important("margin-bottom", "0"))
+		add(children+" + *", important("margin-top", s.gap))
+	}
+	return rules
+}
+
+// style reads the style of the block of s: it keeps the values that the block can have and the theme allows, as
+// declarations in the order of the items, and warns about the others.
+func (w *walker) style(s *styling) {
+	b := s.block
+	path := s.path + "/style"
+	vs := b.Style.Values()
+	keep := false
+	lined, styled := false, false // the border has a width or a color, and a style
+	for i, v := range vs {
+		if i == 0 || v.Item != vs[i-1].Item {
+			keep = w.styleItem(b, path, v.Item)
+		}
+		if !keep {
+			continue
+		}
+		value, ok := w.cssValue(v, path)
+		if !ok {
+			continue
+		}
+		switch v.Item {
+		case "linkColor":
+			s.link = value
+		case "blockGap":
+			s.gap = value
+			if gapContainer(b) {
+				s.main = append(s.main, important("gap", value))
+			}
+		default:
+			s.main = append(s.main, important(styleProperty(v), value))
+		}
+		if v.Item == "border" {
+			lined = lined || v.Key == "width" || v.Key == "color"
+			styled = styled || v.Key == "style"
+		}
+	}
+	s.solid = lined && !styled
+}
+
+// styleItem reports whether to keep the values of item, a style item of b at path, after warning about it if b cannot
+// have it or the theme does not allow it.
+func (w *walker) styleItem(b *content.Block, path, item string) bool {
+	if item == "blockGap" && !b.Type.AllowsBlockGap() {
+		w.warnf(path+"/blockGap", "blockGap is not allowed for %s blocks; ignored", b.Type)
+		return false
+	}
+	if err := w.r.settings.CheckStyleItem(b.Type, item); err != nil {
+		w.warnf(path+"/"+item, "%v; ignored", err)
+		return false
+	}
+	return true
+}
+
+// styleProperty returns the property that v, a value of a style that is neither linkColor nor blockGap, sets in the
+// rule of its block. padding, margin and border set one for each of their keys, such as padding-top.
+func styleProperty(v content.StyleValue) string {
+	switch v.Item {
+	case "textColor":
+		return "color"
+	case "backgroundColor":
+		return "background-color"
+	case "gradient":
+		return "background-image"
+	case "fontSize":
+		return "font-size"
+	case "letterSpacing":
+		return "letter-spacing"
+	case "fontFamily":
+		return "font-family"
+	case "fontWeight":
+		return "font-weight"
+	case "lineHeight":
+		return "line-height"
+	}
+	return v.Item + "-" + v.Key
+}
+
+// gapContainer reports whether b places its children as a flex or grid container, whose blockGap is its gap; the others
+// place them in flow, whose blockGap is the margin between them.
+func gapContainer(b *content.Block) bool {
+	if b.Type == content.BlockGroup {
+		t := b.Attrs.Layout.Type
+		return t == "row" || t == "stack" || t == "grid"
+	}
+	return b.Type == content.BlockButtons || b.Type == content.BlockColumns
 }
 
 // autoAnchor returns the automatic anchor of a heading whose ID is id, and takes it: id if it is free, else the first

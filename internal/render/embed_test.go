@@ -187,6 +187,7 @@ func TestEmbed(t *testing.T) {
 			}]`,
 			want: `<figure id="video" class="b-000embed is-variant-wide big"><p><a href="https://x.com/jack/status/20">` +
 				"https://x.com/jack/status/20</a></p></figure>",
+			css: ".b-000embed {\n  margin-top: 1rem !important;\n}\n",
 		},
 		{
 			name: "warnings in document order",

@@ -2,6 +2,8 @@ package render
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,11 +114,18 @@ func (w *walker) markTags(m content.Mark, path string) (start, end string, ok bo
 		}
 		return start + ">", "</a>", true
 	case content.MarkHighlight:
-		if h := m.Highlight; h != nil && h.Variant != "" {
+		h := m.Highlight
+		switch {
+		case h == nil:
+		case h.Variant != "":
 			if w.r.highlights[h.Variant] {
 				return `<mark class="is-variant-` + escapeAttr(h.Variant) + `">`, "</mark>", true
 			}
 			w.warnf(path, "the theme has no highlight variant %q; rendered without its class", h.Variant)
+		default:
+			if class := w.highlightClass(h, path+"/attrs"); class != "" {
+				return `<mark class="` + class + `">`, "</mark>", true
+			}
 		}
 		return "<mark>", "</mark>", true
 	case content.MarkBold:
@@ -135,6 +144,32 @@ func (w *walker) markTags(m content.Mark, path string) (start, end string, ok bo
 		return "<code>", "</code>", true
 	}
 	return "", "", false
+}
+
+// highlightClass returns the class of the colors of h, a highlight without a variant whose attrs are at path, and adds
+// its rule to the CSS unless it has it; "" if h keeps no color. The class is "hl-" and the first 8 hex digits of the
+// SHA-256 of the block of the rule, so that the same colors get the same class.
+func (w *walker) highlightClass(h *content.Highlight, path string) string {
+	var decls []string
+	for _, v := range h.Values() {
+		value, ok := w.cssValue(v, path)
+		if !ok {
+			continue
+		}
+		property := "color"
+		if v.Item == "backgroundColor" {
+			property = "background-color"
+		}
+		decls = append(decls, important(property, value))
+	}
+	if len(decls) == 0 {
+		return ""
+	}
+	body := ruleBody(decls)
+	sum := sha256.Sum256([]byte(body))
+	class := "hl-" + hex.EncodeToString(sum[:4])
+	w.addRules(class, "."+class+" "+body)
+	return class
 }
 
 var (

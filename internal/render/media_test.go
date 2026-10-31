@@ -19,9 +19,10 @@ const (
 	guidePath  = "/media/%E4%BC%9A%E7%A4%BE%E6%A1%88%E5%86%85.pdf"
 )
 
-// mediaTheme is the settings file of a theme whose images have the variant rounded and whose files have button.
-const mediaTheme = "schemaVersion: 1\nblocks:\n  image:\n    variants:\n      rounded: 角丸\n" +
-	"  file:\n    variants:\n      button: ボタン\n"
+// mediaTheme is the settings file of a theme with the color primary, whose images have the variant rounded and whose
+// files have button.
+const mediaTheme = "schemaVersion: 1\npresets:\n  color:\n    primary: \"#1e73be\"\n" +
+	"blocks:\n  image:\n    variants:\n      rounded: 角丸\n  file:\n    variants:\n      button: ボタン\n"
 
 // mediaResolver returns a Resolver with the entries of linkResolver; the media of office-image.json and of
 // company-guide-pdf.json (guideMedia) at /media/<file name>; enAltImage, noAltImage and svgMedia; and nilMedia.
@@ -152,6 +153,7 @@ func TestImage(t *testing.T) {
 				"style": {"border": {"radius": {"value": "8px"}}}, "attrs": {"media": "` + officeImage + `", "decorative": true}
 			}]`,
 			want: `<figure id="photo" class="b-000image is-variant-rounded shadow"><img src="` + officePath + `" alt=""></figure>`,
+			css:  ".b-000image {\n  border-radius: 8px !important;\n}\n",
 		},
 		{
 			name: "escaping",
@@ -250,6 +252,7 @@ func TestFile(t *testing.T) {
 				"style": {"textColor": {"preset": "primary"}}, "attrs": {"media": "` + guideMedia + `"}
 			}]`,
 			want: `<div id="guide" class="b-0000file is-variant-button download"><a href="` + guidePath + `">会社案内.pdf</a></div>`,
+			css:  ".b-0000file {\n  color: var(--color-primary) !important;\n}\n",
 		},
 		{
 			name: "escaping",

@@ -5,6 +5,7 @@ package render
 import (
 	"fmt"
 	"html/template"
+	"slices"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
@@ -36,6 +37,7 @@ type Renderer struct {
 	res        Resolver
 	language   string
 	base       string
+	settings   *content.ThemeSettings                // of the theme; nil for a zero Theme, which has no presets
 	highlights map[string]bool                       // the variants of the highlight mark that the theme has
 	variants   map[content.BlockType]map[string]bool // the variants of each block type that the theme has
 }
@@ -51,6 +53,7 @@ func New(tr *theme.Renderer, res Resolver) *Renderer {
 		res:        res,
 		language:   tr.Language(),
 		base:       tr.Base(),
+		settings:   tr.Settings(),
 		highlights: make(map[string]bool),
 		variants:   make(map[content.BlockType]map[string]bool),
 	}
@@ -86,9 +89,11 @@ func (w Warning) String() string {
 }
 
 // Document renders the lists of blocks of one document, such as the body of a revision and its fields of type blocks,
-// and returns the HTML of each, in order. The automatic anchors of headings avoid the anchors in all of the lists. The
-// error is that of executing a template, such as a block template of the theme that reads a field that the data lacks.
-func (r *Renderer) Document(lists ...content.Blocks) ([]template.HTML, []Warning, error) {
+// and returns the HTML of each, in order, and the CSS of their styles and highlights, which the page needs. The
+// automatic anchors of headings avoid the anchors in all of the lists; of the blocks with CSS that have the same ID in
+// them, only the first keeps its CSS. The error is that of executing a template, such as a block template of the theme
+// that reads a field that the data lacks.
+func (r *Renderer) Document(lists ...content.Blocks) ([]template.HTML, CSS, []Warning, error) {
 	w := &walker{r: r, anchors: make(map[string]bool)}
 	for _, bs := range lists {
 		addAnchors(w.anchors, bs)
@@ -98,17 +103,19 @@ func (r *Renderer) Document(lists ...content.Blocks) ([]template.HTML, []Warning
 		w.list = i
 		s, err := w.blocks(bs, "")
 		if err != nil {
-			return nil, nil, err
+			return nil, CSS{}, nil, err
 		}
 		html[i] = template.HTML(s)
 	}
-	return html, w.warnings, nil
+	return html, w.css, w.warnings, nil
 }
 
-// RichText renders rich text outside blocks, such as a richText field.
-func (r *Renderer) RichText(rt content.RichText) (template.HTML, []Warning) {
+// RichText renders rich text outside blocks, such as a richText field, and returns its HTML and the CSS of its
+// highlights, which the page needs.
+func (r *Renderer) RichText(rt content.RichText) (template.HTML, CSS, []Warning) {
 	w := &walker{r: r}
-	return template.HTML(w.richText(rt, "")), w.warnings
+	html := template.HTML(w.richText(rt, ""))
+	return html, w.css, w.warnings
 }
 
 // walker holds the state of one call of the renderer, so that Renderer stays read only.
@@ -116,9 +123,16 @@ type walker struct {
 	r        *Renderer
 	list     int             // the index of the list of blocks that is being rendered
 	anchors  map[string]bool // the anchors of the blocks of the document and the automatic anchors given so far
+	classes  map[string]bool // the classes whose rules are in css, such as "b-0paragr1" and "hl-1a2b3c4d"
+	css      CSS
 	warnings []Warning
 }
 
 func (w *walker) warnf(path, format string, args ...any) {
 	w.warnings = append(w.warnings, Warning{List: w.list, Path: path, Msg: fmt.Sprintf(format, args...)})
+}
+
+// warnAt inserts a warning at the index i of the warnings, before those that were given since.
+func (w *walker) warnAt(i int, path, format string, args ...any) {
+	w.warnings = slices.Insert(w.warnings, i, Warning{List: w.list, Path: path, Msg: fmt.Sprintf(format, args...)})
 }

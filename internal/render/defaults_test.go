@@ -23,17 +23,21 @@ func TestDefaultTemplatesAsTheme(t *testing.T) {
 		for _, p := range goldenDocuments {
 			doc := strings.TrimSuffix(filepath.Base(p), ".json")
 			bs := goldenBlocks(t, p)
-			wantHTML, wantWarnings, err := want.Document(bs)
+			wantHTML, wantCSS, wantWarnings, err := want.Document(bs)
 			if err != nil {
 				t.Fatalf("Document(%s) in %s error: %v", doc, site.language, err)
 			}
-			gotHTML, gotWarnings, err := got.Document(bs)
+			gotHTML, gotCSS, gotWarnings, err := got.Document(bs)
 			if err != nil {
 				t.Fatalf("Document(%s) in %s with the default templates in blocks/ error: %v", doc, site.language, err)
 			}
 			if !slices.Equal(gotHTML, wantHTML) {
 				t.Errorf("Document(%s) in %s with the default templates in blocks/ =\n%s\nwant\n%s",
 					doc, site.language, gotHTML, wantHTML)
+			}
+			if gotCSS.String() != wantCSS.String() {
+				t.Errorf("Document(%s) in %s with the default templates in blocks/: CSS\n%s\nwant\n%s",
+					doc, site.language, gotCSS, wantCSS)
 			}
 			if !slices.Equal(gotWarnings, wantWarnings) {
 				t.Errorf("Document(%s) in %s with the default templates in blocks/: warnings\n%q\nwant\n%q",

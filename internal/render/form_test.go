@@ -281,6 +281,7 @@ func TestForm(t *testing.T) {
 <input type="hidden" name="_language" value="ja">
 <p><button type="submit">送信</button></p>
 </form>`,
+			css: ".b-0000form {\n  padding-top: 1rem !important;\n}\n",
 		},
 		{
 			name: "missing form",

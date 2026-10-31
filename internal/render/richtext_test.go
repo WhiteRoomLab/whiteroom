@@ -32,8 +32,9 @@ func highlightMark(h content.Highlight) content.Mark {
 	return content.Mark{Type: content.MarkHighlight, Highlight: &h}
 }
 
-// markerTheme is the settings file of a theme whose highlight has the variant marker.
-const markerTheme = "schemaVersion: 1\nmarks:\n  highlight:\n    variants:\n      marker: マーカー\n"
+// markerTheme is the settings file of a theme with the color accent, whose highlight has the variant marker.
+const markerTheme = "schemaVersion: 1\npresets:\n  color:\n    accent: \"#e85d04\"\n" +
+	"marks:\n  highlight:\n    variants:\n      marker: マーカー\n"
 
 func TestRichText(t *testing.T) {
 	var (
@@ -51,11 +52,14 @@ func TestRichText(t *testing.T) {
 	const (
 		unpublished = `entry "` + draftEntry + `" is not published; rendered without the link`
 		noWave      = `the theme has no highlight variant "wave"; rendered without its class`
+		accentCSS   = ".hl-4e6255fc {\n  color: var(--color-accent) !important;\n}\n"
+		creamCSS    = ".hl-a70e621a {\n  background-color: #fff4e5 !important;\n}\n"
 	)
 	tests := []struct {
 		name     string
 		in       content.RichText
 		want     string
+		css      string
 		warnings []string
 	}{
 		{name: "empty"},
@@ -174,14 +178,25 @@ func TestRichText(t *testing.T) {
 			want:     "<mark>a</mark>",
 			warnings: []string{"/0/marks/0: " + noWave},
 		},
-		{name: "colors", in: content.RichText{textNode("a", accent)}, want: "<mark>a</mark>"},
+		{
+			name: "colors",
+			in:   content.RichText{textNode("a", accent)},
+			want: `<mark class="hl-4e6255fc">a</mark>`,
+			css:  accentCSS,
+		},
 		{
 			name: "variant next to colors",
 			in:   content.RichText{textNode("a", marker), textNode("b", cream)},
-			want: `<mark class="is-variant-marker">a</mark><mark>b</mark>`,
+			want: `<mark class="is-variant-marker">a</mark><mark class="hl-a70e621a">b</mark>`,
+			css:  creamCSS,
 		},
-		// Until colors have their classes.
-		{name: "colors next to colors", in: content.RichText{textNode("a", accent), textNode("b", cream)}, want: "<mark>ab</mark>"},
+		{
+			name: "colors next to colors",
+			in:   content.RichText{textNode("a", accent), textNode("b", cream), textNode("c", accent)},
+			want: `<mark class="hl-4e6255fc">a</mark><mark class="hl-a70e621a">b</mark>` +
+				`<mark class="hl-4e6255fc">c</mark>`,
+			css: accentCSS + "\n" + creamCSS,
+		},
 		{
 			name: "highlight without attributes",
 			in:   content.RichText{textNode("a", content.Mark{Type: content.MarkHighlight})},
@@ -270,9 +285,12 @@ func TestRichText(t *testing.T) {
 	r := newRenderer(t, testTheme(t, map[string]string{"theme.yaml": markerTheme}), "ja", "", linkResolver)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, warnings := r.RichText(tt.in)
+			got, css, warnings := r.RichText(tt.in)
 			if string(got) != tt.want {
 				t.Errorf("RichText() =\n%s\nwant\n%s", got, tt.want)
+			}
+			if css.String() != tt.css {
+				t.Errorf("CSS:\n%s\nwant:\n%s", css, tt.css)
 			}
 			if got := warningStrings(warnings); !slices.Equal(got, tt.warnings) {
 				t.Errorf("warnings:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(tt.warnings, "\n"))

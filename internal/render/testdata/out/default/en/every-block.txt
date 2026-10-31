@@ -1,7 +1,9 @@
 /0/variant: the theme has no paragraph variant "lead"; rendered without its class
+/0/style/textColor/preset: the theme has no color preset "primary"; ignored
 /4/variant: the theme has no quote variant "pull"; rendered without its class
 /8/content/0/variant: the theme has no button variant "outline"; rendered without its class
 /9/variant: the theme has no separator variant "wide"; rendered without its class
+/15/content/0/style/backgroundColor/preset: the theme has no color preset "muted"; ignored
 /16/variant: the theme has no group variant "box"; rendered without its class
 /21: html blocks are not rendered yet
 /22: legacy blocks are not rendered yet

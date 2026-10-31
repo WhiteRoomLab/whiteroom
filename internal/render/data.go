@@ -14,8 +14,8 @@ import (
 type Common struct {
 	ID     string // its block ID, such as "b_9x3v7k5m"
 	Anchor string // for the id attribute: its anchor, or the automatic anchor of a heading; "" if none
-	// For the class attribute: "b-<ID without b_>" if it has a style, "is-variant-<variant>" if the theme has its
-	// variant, and its className, separated by spaces; "" if none.
+	// For the class attribute: "b-<ID without b_>" if the CSS of the page has rules for it, "is-variant-<variant>" if
+	// the theme has its variant, and its className, separated by spaces; "" if none.
 	Class string
 }
 

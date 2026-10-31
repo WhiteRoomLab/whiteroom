@@ -39,7 +39,7 @@ var markElements = map[content.MarkType]string{
 var (
 	// The start tags of links and highlights in rich text, whose attribute values are checked further.
 	richLinkTag = regexp.MustCompile(`^<a href="([^"'<>]*)"(?: target="_blank")?(?: rel="([^"'<>]+)")?>$`)
-	richMarkTag = regexp.MustCompile(`^<mark(?: class="is-variant-([^"'<>]+)")?>$`)
+	richMarkTag = regexp.MustCompile(`^<mark(?: class="(?:is-variant-([^"'<>]+)|hl-[0-9a-f]{8})")?>$`)
 	// A start tag with its attributes, whose values are in double quotes, and one of the attributes.
 	htmlStartTag = regexp.MustCompile(`^<([a-z][a-z0-9]*)((?: [a-z][a-z-]*(?:="[^"'<>]*")?)*)>$`)
 	htmlAttr     = regexp.MustCompile(` ([a-z][a-z-]*)(?:="([^"'<>]*)")?`)
@@ -263,7 +263,7 @@ func markNames(ms []content.Mark, ws []Warning) []string {
 // from the outermost on stay open, and the others close before the <br> of the hardBreaks between the texts and open
 // after them. The warnings are those of the texts alone.
 func checkRichText(r *Renderer, rt content.RichText) error {
-	out, warnings := r.RichText(rt)
+	out, _, warnings := r.RichText(rt)
 	pieces, err := checkRichHTML(string(out), r.highlights)
 	if err != nil {
 		return fmt.Errorf("%q: %w", out, err)
@@ -299,7 +299,7 @@ func checkRichText(r *Renderer, rt content.RichText) error {
 			k++
 		case content.InlineText:
 			text := strings.ReplaceAll(n.Text, "\x00", string(utf8.RuneError))
-			alone, ws := r.RichText(rt[i : i+1])
+			alone, _, ws := r.RichText(rt[i : i+1])
 			ps, err := checkRichHTML(string(alone), r.highlights)
 			if err != nil {
 				return fmt.Errorf("/%d alone: %q: %w", i, alone, err)
@@ -423,7 +423,8 @@ func FuzzRichText(f *testing.F) {
 
 // FuzzDocument checks that Document renders any list of blocks that decodes, as both lists of a document, in each
 // golden theme and site: without an error, as HTML that checkHTML accepts, and with the warnings of the first list
-// again for the second.
+// again for the second, apart from those about duplicate block IDs: the blocks of the second list have the IDs of
+// those of the first, so that its blocks with CSS have them too.
 func FuzzDocument(f *testing.F) {
 	for _, p := range goldenDocuments {
 		data, err := os.ReadFile(p)
@@ -515,7 +516,7 @@ func FuzzDocument(f *testing.F) {
 			return
 		}
 		for _, x := range renderers {
-			lists, warnings, err := x.r.Document(bs, bs)
+			lists, _, warnings, err := x.r.Document(bs, bs)
 			if err != nil || len(lists) != 2 {
 				t.Fatalf("Document() of %s twice with the %s theme in %s = %d lists, %v",
 					data, x.theme, x.r.language, len(lists), err)
@@ -526,13 +527,16 @@ func FuzzDocument(f *testing.F) {
 						data, x.theme, x.r.language, i, s, err)
 				}
 			}
-			first := warnings[:len(warnings)/2]
-			second := slices.Clone(first)
-			for i := range second {
-				second[i].List = 1
+			var byList [2][]Warning // without List and the warnings about duplicate block IDs
+			ok := slices.IsSortedFunc(warnings, func(a, b Warning) int { return cmp.Compare(a.List, b.List) })
+			for _, w := range warnings {
+				if w.List < 0 || w.List > 1 || !strings.HasPrefix(w.Path, "/") || w.Msg == "" {
+					ok = false
+				} else if !strings.HasPrefix(w.Msg, "duplicate block ID ") {
+					byList[w.List] = append(byList[w.List], Warning{Path: w.Path, Msg: w.Msg})
+				}
 			}
-			bad := func(w Warning) bool { return w.List != 0 || !strings.HasPrefix(w.Path, "/") || w.Msg == "" }
-			if !slices.Equal(warnings[len(first):], second) || slices.ContainsFunc(first, bad) {
+			if !ok || !slices.Equal(byList[0], byList[1]) {
 				t.Errorf("Document() of %s twice with the %s theme in %s: warnings %q, want those of the first list twice",
 					data, x.theme, x.r.language, warnings)
 			}

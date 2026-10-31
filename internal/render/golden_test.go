@@ -108,7 +108,7 @@ func TestGolden(t *testing.T) {
 			var names []string
 			for _, p := range goldenDocuments {
 				doc := strings.TrimSuffix(filepath.Base(p), ".json")
-				html, warnings, err := r.Document(goldenBlocks(t, p))
+				html, _, warnings, err := r.Document(goldenBlocks(t, p))
 				if err != nil {
 					t.Fatalf("Document(%s) in %s with the %s theme error: %v", doc, site.language, gt.name, err)
 				}

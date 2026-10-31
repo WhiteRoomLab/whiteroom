@@ -44,7 +44,7 @@ func (w *walker) embed(b *content.Block, path string) (Embed, bool) {
 		w.warnf(path+"/attrs/url", "invalid embed URL %q: %v; not rendered", a.URL, err)
 		return Embed{}, false
 	}
-	d.Common = w.common(b, path)
+	s := w.begin(b, path)
 	d.Provider = a.Provider
 	d.URL = template.URL(encodeURL(a.URL))
 	switch a.Provider {
@@ -61,8 +61,9 @@ func (w *walker) embed(b *content.Block, path string) (Embed, bool) {
 		d.Src = d.URL
 	}
 	d.Caption = template.HTML(w.richText(a.Caption, path+"/attrs/caption"))
-	if s := strings.TrimSpace(plainText(a.Caption)); s != "" {
-		d.Title = s
+	if title := strings.TrimSpace(plainText(a.Caption)); title != "" {
+		d.Title = title
 	}
+	d.Common = w.finish(s)
 	return d, true
 }

@@ -16,10 +16,10 @@ func headingJSON(id, s string) string {
 	return `{"type": "heading", "id": "` + id + `", "attrs": {"level": 2}, "content": [{"type": "text", "text": "` + s + `"}]}`
 }
 
-// checkDocument checks the result of Document for lists against want, the HTML of each list, and the warnings.
-func checkDocument(t *testing.T, r *Renderer, lists []content.Blocks, want []string, warnings []Warning) {
+// checkDocument checks the result of Document for lists against want, the HTML of each list, css and the warnings.
+func checkDocument(t *testing.T, r *Renderer, lists []content.Blocks, want []string, css string, warnings []Warning) {
 	t.Helper()
-	html, got, err := r.Document(lists...)
+	html, gotCSS, got, err := r.Document(lists...)
 	if err != nil {
 		t.Fatalf("Document() error: %v", err)
 	}
@@ -30,6 +30,9 @@ func checkDocument(t *testing.T, r *Renderer, lists []content.Blocks, want []str
 		if string(html[i]) != want[i] {
 			t.Errorf("list %d:\n%s\nwant:\n%s", i, html[i], want[i])
 		}
+	}
+	if gotCSS.String() != css {
+		t.Errorf("CSS:\n%s\nwant:\n%s", gotCSS, css)
 	}
 	if !slices.Equal(got, warnings) {
 		t.Errorf("warnings:\n%q\nwant:\n%q", got, warnings)
@@ -83,15 +86,16 @@ func TestDocumentAnchors(t *testing.T) {
 		{List: 0, Path: "/9/variant", Msg: `the theme has no heading variant "x"; rendered without its class`},
 		{List: 1, Path: "/3", Msg: "html blocks are not rendered yet"},
 	}
-	checkDocument(t, r, []content.Blocks{body, field}, want, warnings)
+	checkDocument(t, r, []content.Blocks{body, field}, want, "", warnings)
 	// Rendered alone, the field has the anchors that the body took.
 	checkDocument(t, r, []content.Blocks{field}, []string{strings.ReplaceAll(want[1], "b_00head01-2", "b_00head01")},
-		[]Warning{{List: 0, Path: "/3", Msg: "html blocks are not rendered yet"}})
+		"", []Warning{{List: 0, Path: "/3", Msg: "html blocks are not rendered yet"}})
 }
 
 // themeBlocks are block templates of a theme that write the values of their data.
 var themeBlocks = map[string]string{
-	"theme.yaml":            "schemaVersion: 1\nblocks:\n  paragraph:\n    variants:\n      lead: リード\n",
+	"theme.yaml": "schemaVersion: 1\npresets:\n  color:\n    primary: \"#1e73be\"\n" +
+		"blocks:\n  paragraph:\n    variants:\n      lead: リード\n",
 	"blocks/paragraph.html": "{{.ID}}|{{.Anchor}}|{{.Class}}|{{.TextAlign}}|{{.Content}}\n\n",
 	"blocks/heading.html":   `<h{{.Level}} id="{{.Anchor}}" data-align="{{.TextAlign}}">{{.Content}}</h{{.Level}}>` + "\n",
 	"blocks/list.html":      `<ol data-ordered="{{.Ordered}}" data-start="{{.Start}}">{{.Children}}</ol>` + "\n",
@@ -212,12 +216,16 @@ b_0quotep1||||q
 </blockquote>
 <pre><code>x
 </code></pre>`
-	checkDocument(t, r, []content.Blocks{bs}, []string{want}, nil)
+	const css = ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n"
+	checkDocument(t, r, []content.Blocks{bs}, []string{want}, css, nil)
 }
 
-// TestThemeBlocksError checks that the error of a block template ends the rendering of the document.
+// TestThemeBlocksError checks that the error of a block template ends the rendering of the document, without the CSS
+// and the warnings of what was rendered before it.
 func TestThemeBlocksError(t *testing.T) {
-	variant := decodeBlocks(t, `[{"type": "paragraph", "id": "b_0paragr1", "variant": "x"}]`)
+	variant := decodeBlocks(t, `[{
+		"type": "paragraph", "id": "b_0paragr1", "variant": "x", "style": {"textColor": {"value": "#111"}}
+	}]`)
 	tests := []struct {
 		name, file, text string
 		lists            []content.Blocks
@@ -242,9 +250,9 @@ func TestThemeBlocksError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newRenderer(t, testTheme(t, map[string]string{tt.file: tt.text}), "ja", "", nil)
-			html, warnings, err := r.Document(tt.lists...)
-			if err == nil || err.Error() != tt.msg || html != nil || warnings != nil {
-				t.Errorf("Document() = %q, %q, %v, want the error %s", html, warnings, err, tt.msg)
+			html, css, warnings, err := r.Document(tt.lists...)
+			if err == nil || err.Error() != tt.msg || html != nil || css.rules != nil || warnings != nil {
+				t.Errorf("Document() = %q, %q, %q, %v, want the error %s", html, css, warnings, err, tt.msg)
 			}
 		})
 	}
@@ -253,19 +261,27 @@ func TestThemeBlocksError(t *testing.T) {
 func TestDocumentEmpty(t *testing.T) {
 	r := newRenderer(t, testTheme(t, nil), "ja", "", nil)
 	for _, lists := range [][]content.Blocks{nil, {nil}, {{}, nil, {}}} {
-		html, warnings, err := r.Document(lists...)
+		html, css, warnings, err := r.Document(lists...)
 		empty := !slices.ContainsFunc(html, func(h template.HTML) bool { return h != "" })
-		if err != nil || warnings != nil || len(html) != len(lists) || !empty {
-			t.Errorf("Document() of %d empty lists = %q, %q, %v, want as many empty HTML", len(lists), html, warnings, err)
+		if err != nil || css.rules != nil || warnings != nil || len(html) != len(lists) || !empty {
+			t.Errorf("Document() of %d empty lists = %q, %q, %q, %v, want as many empty HTML",
+				len(lists), html, css, warnings, err)
 		}
 	}
-	// A zero Theme has no block templates and no variants.
+	// A zero Theme has no block templates, no variants and no presets, and allows every style item and value.
 	r = newRenderer(t, &theme.Theme{}, "ja", "", nil)
-	checkDocument(t, r, []content.Blocks{decodeBlocks(t, `[{"type": "paragraph", "id": "b_0paragr1", "variant": "lead"}]`)},
-		[]string{"<p></p>"}, []Warning{{Path: "/0/variant", Msg: `the theme has no paragraph variant "lead"; rendered without its class`}})
+	checkDocument(t, r, []content.Blocks{decodeBlocks(t, `[{
+			"type": "paragraph", "id": "b_0paragr1", "variant": "lead",
+			"style": {"textColor": {"preset": "primary"}, "letterSpacing": {"value": "1px"}}
+		}]`)},
+		[]string{`<p class="b-0paragr1"></p>`}, ".b-0paragr1 {\n  letter-spacing: 1px !important;\n}\n", []Warning{
+			{Path: "/0/variant", Msg: `the theme has no paragraph variant "lead"; rendered without its class`},
+			{Path: "/0/style/textColor/preset", Msg: `the theme has no color preset "primary"; ignored`},
+		})
 }
 
-// TestDocumentParallel checks that a Renderer renders documents in parallel, each with its own anchors and warnings.
+// TestDocumentParallel checks that a Renderer renders documents in parallel, each with its own anchors, CSS, block IDs
+// with CSS and warnings.
 func TestDocumentParallel(t *testing.T) {
 	th := testTheme(t, map[string]string{
 		"theme.yaml":            blocksTheme,
@@ -277,6 +293,7 @@ func TestDocumentParallel(t *testing.T) {
 			`+headingJSON("b_00head01", "一")+`,
 			{
 				"type": "paragraph", "id": "b_0paragr1", "variant": "lead",
+				"style": {"textColor": {"preset": "primary"}},
 				"content": [{"type": "text", "text": "会社概要", "marks": [{"type": "link", "attrs": {"entry": "`+aboutEntry+`"}}]}]
 			},
 			{"type": "group", "id": "b_000group", "variant": "box", "content": [`+headingJSON("b_00head01", "二")+`]}
@@ -285,32 +302,39 @@ func TestDocumentParallel(t *testing.T) {
 			`+headingJSON("b_00head01", "三")+`,
 			{
 				"type": "paragraph", "id": "b_0paragr2",
-				"content": [{"type": "text", "text": "下書き", "marks": [{"type": "link", "attrs": {"entry": "`+draftEntry+`"}}]}]
+				"content": [{"type": "text", "text": "下書き", "marks": [
+					{"type": "link", "attrs": {"entry": "`+draftEntry+`"}},
+					{"type": "highlight", "attrs": {"backgroundColor": {"value": "#fff4e5"}}}
+				]}]
 			},
+			{"type": "separator", "id": "b_0paragr1", "style": {"margin": {"top": {"value": "1rem"}}}},
 			{"type": "legacy", "id": "b_00legacy", "attrs": {"html": "<p>x</p>"}}
 		]`),
 	}
 	want := []string{
 		`<h2 id="b_00head01">一</h2>
-<p class="theme is-variant-lead"><a href="/blog/about/">会社概要</a></p>
+<p class="theme b-0paragr1 is-variant-lead"><a href="/blog/about/">会社概要</a></p>
 <div class="is-variant-box">
 <h2 id="b_00head01-2">二</h2>
 </div>`,
-		"<h2 id=\"b_00head01-3\">三</h2>\n<p class=\"theme\">下書き</p>",
+		"<h2 id=\"b_00head01-3\">三</h2>\n<p class=\"theme\"><mark class=\"hl-a70e621a\">下書き</mark></p>\n<hr>",
 	}
+	const css = ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n\n" +
+		".hl-a70e621a {\n  background-color: #fff4e5 !important;\n}\n"
 	warnings := []Warning{
 		{List: 1, Path: "/1/content/0/marks/0", Msg: `entry "` + draftEntry + `" is not published; rendered without the link`},
-		{List: 1, Path: "/2", Msg: "legacy blocks are not rendered yet"},
+		{List: 1, Path: "/2/id", Msg: `duplicate block ID "b_0paragr1"; rendered without its CSS`},
+		{List: 1, Path: "/3", Msg: "legacy blocks are not rendered yet"},
 	}
-	checkDocument(t, r, lists, want, warnings)
+	checkDocument(t, r, lists, want, css, warnings)
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
 			for range 4 {
-				html, got, err := r.Document(lists...)
+				html, gotCSS, got, err := r.Document(lists...)
 				if err != nil || len(html) != 2 || string(html[0]) != want[0] || string(html[1]) != want[1] ||
-					!slices.Equal(got, warnings) {
-					t.Errorf("Document() in parallel = %q, %q, %v", html, got, err)
+					gotCSS.String() != css || !slices.Equal(got, warnings) {
+					t.Errorf("Document() in parallel = %q, %q, %q, %v", html, gotCSS, got, err)
 				}
 			}
 		})
