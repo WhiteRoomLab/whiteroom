@@ -446,8 +446,14 @@ func (x Highlight) check(c *checker, path string) {
 	if x.Variant != "" {
 		c.add(path+"/variant", checkName(x.Variant))
 	}
-	for _, v := range x.Values() {
+	vs := x.Values()
+	for _, v := range vs {
 		v.check(c, path+v.Path())
+	}
+	if c.themed() && !c.keptHighlight(x) {
+		for _, v := range vs {
+			c.themeValue(path+v.Path(), v)
+		}
 	}
 }
 

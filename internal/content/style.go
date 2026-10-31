@@ -467,3 +467,36 @@ func (x Style) Values() []StyleValue {
 	length("border", "radius", "", x.Border.Radius, LengthRule{Percent: true})
 	return vs
 }
+
+// item returns the value of the item name, such as x.Padding for "padding", or nil for an unknown name.
+func (x *Style) item(name string) any {
+	switch name {
+	case "textColor":
+		return x.TextColor
+	case "backgroundColor":
+		return x.BackgroundColor
+	case "linkColor":
+		return x.LinkColor
+	case "gradient":
+		return x.Gradient
+	case "fontSize":
+		return x.FontSize
+	case "letterSpacing":
+		return x.LetterSpacing
+	case "fontFamily":
+		return x.FontFamily
+	case "fontWeight":
+		return x.FontWeight
+	case "lineHeight":
+		return x.LineHeight
+	case "padding":
+		return x.Padding
+	case "margin":
+		return x.Margin
+	case "blockGap":
+		return x.BlockGap
+	case "border":
+		return x.Border
+	}
+	return nil
+}

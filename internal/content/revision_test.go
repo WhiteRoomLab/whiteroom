@@ -958,6 +958,111 @@ func TestRevisionValidatePrevious(t *testing.T) {
 	}
 }
 
+func TestRevisionValidateTheme(t *testing.T) {
+	const (
+		black       = `{"type":"paragraph","id":"b_0paragr1","style":{"textColor":{"value":"#000"}}}`
+		noAccent    = `/marks/0/attrs/color/preset: the theme has no color preset "accent"`
+		onlyPresets = "/style/textColor/value: the theme allows only presets for color"
+	)
+	accent := highlightJSON(`{"color":{"preset":"accent"}}`)
+	marked := `{"type":"paragraph","id":"b_0paragr2","content":` + accent + `}`
+	// faq has a body, and richText fields at the top and in a list of groups, which also have blocks.
+	site := testSite()
+	site.Types = append(site.Types, TypeDef{Name: "faq", Label: "FAQ", Body: true, Fields: []FieldDef{
+		{Name: "notes", Type: FieldRichText},
+		{Name: "items", Type: FieldList, Of: &FieldDef{Type: FieldGroup, Fields: []FieldDef{
+			{Name: "answer", Type: FieldRichText},
+			{Name: "more", Type: FieldBlocks},
+		}}},
+	}})
+	tests := []struct {
+		name     string
+		previous string                   // the previous revision; "" for none
+		in       string                   // a revision of a faq
+		opts     func(o *RevisionOptions) // changes the options; nil for none
+		want     []string                 // the problems as "path: message", in order
+	}{
+		{name: "style in the body", in: rev(`,"body":[` + black + `]`), want: []string{"/body/0" + onlyPresets}},
+		{
+			name: "style in a blocks field in a list",
+			in:   revFields(`"items":[{"more":[` + black + `]}]`),
+			want: []string{"/fields/items/0/more/0" + onlyPresets},
+		},
+		{name: "highlight in the body", in: rev(`,"body":[` + marked + `]`), want: []string{"/body/0/content/0" + noAccent}},
+		{name: "highlight in a richText field", in: revFields(`"notes":` + accent), want: []string{"/fields/notes/0" + noAccent}},
+		{
+			name: "highlight in a richText field in a list",
+			in:   revFields(`"items":[{"answer":` + accent + `}]`),
+			want: []string{"/fields/items/0/answer/0" + noAccent},
+		},
+
+		{
+			name:     "style kept from the body in a field",
+			previous: rev(`,"body":[` + black + `]`),
+			in:       revFields(`"items":[{"more":[` + black + `]}]`),
+		},
+		{
+			name:     "style kept from a field in the body",
+			previous: revFields(`"items":[{"more":[` + black + `]}]`),
+			in:       rev(`,"body":[` + black + `]`),
+		},
+		{name: "highlight kept in a richText field", previous: revFields(`"notes":` + accent), in: revFields(`"notes":` + accent)},
+		{name: "highlight kept from a richText field in the body", previous: revFields(`"notes":` + accent), in: rev(`,"body":[` + marked + `]`)},
+		{name: "highlight kept from the body in a richText field", previous: rev(`,"body":[` + marked + `]`), in: revFields(`"notes":` + accent)},
+		{
+			name:     "highlight kept from a richText field in a list",
+			previous: revFields(`"items":[{"answer":` + accent + `}]`),
+			in:       revFields(`"notes":` + accent),
+		},
+		{
+			name:     "highlight kept from a blocks field in a list",
+			previous: revFields(`"items":[{"more":[` + marked + `]}]`),
+			in:       revFields(`"notes":` + accent),
+		},
+		{
+			name:     "highlight in a field that the type does not have",
+			previous: revFields(`"other":` + accent),
+			in:       revFields(`"notes":` + accent),
+			want:     []string{"/fields/notes/0" + noAccent},
+		},
+		{
+			name:     "highlight with another background color",
+			previous: revFields(`"notes":` + highlightJSON(`{"color":{"preset":"accent"},"backgroundColor":{"preset":"primary"}}`)),
+			in:       revFields(`"notes":` + accent),
+			want:     []string{"/fields/notes/0" + noAccent},
+		},
+
+		{
+			name: "import",
+			in:   rev(`,"body":[` + black + `,` + marked + `],"fields":{"notes":` + accent + `}`),
+			opts: func(o *RevisionOptions) { o.Import = true },
+		},
+		{
+			name: "no theme",
+			in:   rev(`,"body":[` + black + `,` + marked + `],"fields":{"notes":` + accent + `}`),
+			opts: func(o *RevisionOptions) { o.Theme = nil },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RevisionOptions{Site: site, Entry: testEntry("faq"), Theme: testTheme(), Lookup: testLookup}
+			if tt.previous != "" {
+				prev := mustRevision(t, tt.previous)
+				opts.Previous = &prev
+			}
+			if tt.opts != nil {
+				tt.opts(&opts)
+			}
+			var paths []string
+			for _, w := range tt.want {
+				p, _, _ := strings.Cut(w, ": ")
+				paths = append(paths, p)
+			}
+			assertRevisionValidate(t, mustRevision(t, tt.in), opts, paths, strings.Join(tt.want, "\n"))
+		})
+	}
+}
+
 func TestFieldDefBlocks(t *testing.T) {
 	f := FieldDef{Type: FieldList, Of: &FieldDef{Type: FieldGroup, Fields: []FieldDef{
 		{Name: "text", Type: FieldText},
@@ -978,6 +1083,35 @@ func TestFieldDefBlocks(t *testing.T) {
 	for _, v := range []string{`1`, `{"a":1}`, `[1]`} {
 		if got := f.blocks(jsontext.Value(v)); got != nil {
 			t.Errorf("blocks(%s) = %#v, want nil", v, got)
+		}
+	}
+}
+
+func TestFieldDefRichTexts(t *testing.T) {
+	f := FieldDef{Type: FieldList, Of: &FieldDef{Type: FieldGroup, Fields: []FieldDef{
+		{Name: "text", Type: FieldText},
+		{Name: "a", Type: FieldRichText},
+		{Name: "b", Type: FieldRichText},
+		{Name: "c", Type: FieldList, Of: &FieldDef{Type: FieldRichText}},
+		{Name: "d", Type: FieldBlocks},
+	}}}
+	text := func(s string) string { return `[{"type":"text","text":"` + s + `"}]` }
+	in := jsontext.Value(`[{"b":` + text("2") + `,"a":` + text("1") + `,"text":"x"},{"e":` + text("3") + `},` +
+		`{"a":[{"type":"ruby"}]},{"c":[` + text("4") + `,` + text("5") + `]},` +
+		`{"d":[{"type":"paragraph","id":"b_00000001","content":` + text("6") + `}]}]`)
+	got := f.richTexts(in)
+	want := []RichText{
+		{{Type: InlineText, Text: "2"}},
+		{{Type: InlineText, Text: "1"}},
+		{{Type: InlineText, Text: "4"}},
+		{{Type: InlineText, Text: "5"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("richTexts() = %#v, want %#v", got, want)
+	}
+	for _, v := range []string{`1`, `{"a":1}`, `[1]`} {
+		if got := f.richTexts(jsontext.Value(v)); got != nil {
+			t.Errorf("richTexts(%s) = %#v, want nil", v, got)
 		}
 	}
 }

@@ -356,6 +356,9 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		} else {
 			v := a.HeightValue()
 			v.check(c, path+v.Path())
+			if c.themed() && !c.unchangedHeight(x) {
+				c.themeValue(path+v.Path(), v)
+			}
 		}
 	case BlockCode:
 		if a.Language != "" {

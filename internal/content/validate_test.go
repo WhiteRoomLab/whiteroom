@@ -806,6 +806,498 @@ func TestValidateBlockGap(t *testing.T) {
 	}
 }
 
+// testTheme returns a theme with a preset of each kind but shadow. It allows every style item but linkColor, and only
+// fontSize and backgroundColor for code blocks; it allows values written directly for fontSize, but not for color and
+// spacing.
+func testTheme() *ThemeSettings {
+	return &ThemeSettings{
+		Presets: Presets{
+			Color:      []Preset{{Name: "primary", Value: "#1e73be"}},
+			FontSize:   []Preset{{Name: "large", Value: "1.5rem"}},
+			Spacing:    []Preset{{Name: "20", Value: "0.5rem"}},
+			FontFamily: []Preset{{Name: "body", Value: "sans-serif"}},
+			Gradient:   []Preset{{Name: "sunset", Value: "linear-gradient(#f093fb, #f5576c)"}},
+		},
+		Styles: []string{
+			"textColor", "backgroundColor", "gradient", "fontSize", "letterSpacing", "fontFamily", "fontWeight", "lineHeight",
+			"padding", "margin", "blockGap", "border",
+		},
+		PresetsOnly: []string{"color", "spacing"},
+		Blocks:      []ThemeBlock{{Type: BlockCode, Styles: []string{"fontSize", "backgroundColor"}}},
+	}
+}
+
+func TestBlocksValidateTheme(t *testing.T) {
+	const (
+		media       = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+		onlyColor   = "the theme allows only presets for color"
+		onlySpacing = "the theme allows only presets for spacing"
+		noAccent    = `the theme has no color preset "accent"`
+	)
+	theme := testTheme()
+	if err := theme.Validate(); err != nil {
+		t.Fatalf("Validate() of testTheme() = %v", err)
+	}
+	// noPresets is a theme without presets that allows only presets.
+	noPresets := &ThemeSettings{PresetsOnly: []string{"color", "fontSize", "spacing"}}
+	every := mustBlocks(t, readTestdata(t, "every-block.json"))
+
+	para := func(s Style) Block { return Block{Type: BlockParagraph, ID: "b_0paragr1", Style: s} }
+	code := func(s Style) Block { return Block{Type: BlockCode, ID: "b_0000code", Style: s} }
+	group := func(s Style, children ...Block) Block {
+		return Block{Type: BlockGroup, ID: "b_00group1", Style: s, Children: children}
+	}
+	spacer := func(height Length) Block {
+		return Block{Type: BlockSpacer, ID: "b_00spacer", Attrs: Attrs{Height: height}}
+	}
+	// marked is a rich text with a highlight of h.
+	marked := func(h Highlight) RichText {
+		return RichText{{Type: InlineText, Text: "a", Marks: []Mark{{Type: MarkHighlight, Highlight: &h}}}}
+	}
+	// highlighted is a paragraph with the ID id whose text has a highlight of h.
+	highlighted := func(id string, h Highlight) Block { return Block{Type: BlockParagraph, ID: id, Text: marked(h)} }
+	caption := func(h Highlight) Block {
+		return Block{Type: BlockImage, ID: "b_000image", Attrs: Attrs{Media: media, Decorative: true, Caption: marked(h)}}
+	}
+	citation := func(h Highlight) Block {
+		return Block{
+			Type:     BlockQuote,
+			ID:       "b_000quote",
+			Attrs:    Attrs{Citation: marked(h)},
+			Children: Blocks{{Type: BlockParagraph, ID: "b_0quotep1"}},
+		}
+	}
+	accent := Highlight{Color: Color{Preset: "accent"}}
+	themed := ValidateOptions{Theme: theme}
+	previous := func(bs ...Block) ValidateOptions { return ValidateOptions{Theme: theme, Previous: bs} }
+
+	// presets names a preset of the theme in every item that can.
+	spacing := Length{Preset: "20"}
+	presets := Style{
+		TextColor:       Color{Preset: "primary"},
+		BackgroundColor: Color{Preset: "primary"},
+		Gradient:        Gradient{Preset: "sunset"},
+		FontSize:        Length{Preset: "large"},
+		FontFamily:      FontFamily{Preset: "body"},
+		Padding:         Sides{Top: spacing, Right: spacing, Bottom: spacing, Left: spacing},
+		Margin:          Sides{Top: spacing, Bottom: spacing},
+		BlockGap:        spacing,
+		Border:          Border{Color: Color{Preset: "primary"}},
+	}
+	// missing names a preset that the theme lacks in every item that can, some of them presets of other kinds.
+	missing := Style{
+		TextColor:       Color{Preset: "accent"},
+		BackgroundColor: Color{Preset: "muted"},
+		Gradient:        Gradient{Preset: "dawn"},
+		FontSize:        Length{Preset: "huge"},
+		FontFamily:      FontFamily{Preset: "serif"},
+		Padding:         Sides{Right: Length{Preset: "30"}},
+		Margin:          Sides{Bottom: Length{Preset: "large"}},
+		BlockGap:        Length{Preset: "primary"},
+		Border:          Border{Color: Color{Preset: "sunset"}},
+	}
+	// direct writes a value directly in every item that can, but linkColor.
+	direct := Style{
+		TextColor:       Color{Value: "#000"},
+		BackgroundColor: Color{Value: "rgb(0, 0, 0)"},
+		FontSize:        Length{Value: "1.25rem"},
+		LetterSpacing:   Length{Value: "0.05em"},
+		FontWeight:      FontWeight{Value: 700},
+		LineHeight:      LineHeight{Value: 1.5},
+		Padding:         Sides{Top: Length{Value: "1rem"}, Left: Length{Value: "0"}},
+		Margin:          Sides{Top: Length{Value: "-1rem"}},
+		BlockGap:        Length{Value: "1rem"},
+		Border: Border{
+			Width:  Length{Value: "1px"},
+			Style:  BorderStyle{Value: "solid"},
+			Color:  Color{Value: "#ccc"},
+			Radius: Length{Value: "4px"},
+		},
+	}
+	// valuesOnly has the items and the parts of border that have no presets.
+	valuesOnly := Style{
+		LetterSpacing: direct.LetterSpacing,
+		FontWeight:    direct.FontWeight,
+		LineHeight:    direct.LineHeight,
+		Border:        Border{Width: direct.Border.Width, Style: direct.Border.Style, Radius: direct.Border.Radius},
+	}
+	black := Style{TextColor: Color{Value: "#000"}, Padding: Sides{Top: Length{Value: "1rem"}}}
+	withStyle := func(b Block, s Style) Block {
+		b.Style = s
+		return b
+	}
+	// mixed has styles, a spacer height and a highlight that the theme does not allow.
+	mixed := Blocks{
+		group(missing),
+		code(Style{TextColor: Color{Preset: "primary"}}),
+		spacer(Length{Value: "40px"}),
+		highlighted("b_0paragr1", accent),
+	}
+
+	tests := []struct {
+		name string
+		in   Blocks
+		opts ValidateOptions
+		want []string // the problems as "path: message", in order
+	}{
+		{name: "no theme", in: mixed},
+		{name: "import", in: mixed, opts: ValidateOptions{Theme: theme, Import: true}},
+
+		{name: "presets of the theme", in: Blocks{group(presets)}, opts: themed},
+		{
+			name: "presets that the theme lacks",
+			in:   Blocks{group(missing)},
+			opts: themed,
+			want: []string{
+				"/0/style/textColor/preset: " + noAccent,
+				`/0/style/backgroundColor/preset: the theme has no color preset "muted"`,
+				`/0/style/gradient/preset: the theme has no gradient preset "dawn"`,
+				`/0/style/fontSize/preset: the theme has no fontSize preset "huge"`,
+				`/0/style/fontFamily/preset: the theme has no fontFamily preset "serif"`,
+				`/0/style/padding/right/preset: the theme has no spacing preset "30"`,
+				`/0/style/margin/bottom/preset: the theme has no spacing preset "large"`,
+				`/0/style/blockGap/preset: the theme has no spacing preset "primary"`,
+				`/0/style/border/color/preset: the theme has no color preset "sunset"`,
+			},
+		},
+		{
+			name: "values written directly",
+			in:   Blocks{group(direct)},
+			opts: themed,
+			want: []string{
+				"/0/style/textColor/value: " + onlyColor,
+				"/0/style/backgroundColor/value: " + onlyColor,
+				"/0/style/padding/top/value: " + onlySpacing,
+				"/0/style/padding/left/value: " + onlySpacing,
+				"/0/style/margin/top/value: " + onlySpacing,
+				"/0/style/blockGap/value: " + onlySpacing,
+				"/0/style/border/color/value: " + onlyColor,
+			},
+		},
+		{name: "values written directly to a theme that allows them", in: Blocks{group(direct)}, opts: ValidateOptions{Theme: &ThemeSettings{}}},
+		{name: "items without presets", in: Blocks{para(valuesOnly)}, opts: ValidateOptions{Theme: noPresets}},
+		{
+			name: "preset of a theme without presets",
+			in:   Blocks{para(Style{TextColor: Color{Preset: "primary"}})},
+			opts: ValidateOptions{Theme: &ThemeSettings{}},
+			want: []string{`/0/style/textColor/preset: the theme has no color preset "primary"`},
+		},
+
+		{
+			name: "item that the block type does not allow",
+			in:   Blocks{code(Style{TextColor: Color{Preset: "primary"}})},
+			opts: themed,
+			want: []string{"/0/style/textColor: the theme does not allow textColor for code blocks"},
+		},
+		{
+			name: "values of an item that the block type does not allow",
+			in:   Blocks{code(Style{Padding: Sides{Top: Length{Preset: "30"}, Left: Length{Value: "1rem"}}})},
+			opts: themed,
+			want: []string{"/0/style/padding: the theme does not allow padding for code blocks"},
+		},
+		{
+			name: "items that the block type allows and does not",
+			in: Blocks{code(Style{
+				TextColor:       Color{Preset: "primary"},
+				BackgroundColor: Color{Value: "#000"},
+				FontSize:        Length{Preset: "huge"},
+				Border:          Border{Width: Length{Value: "1px"}},
+			})},
+			opts: themed,
+			want: []string{
+				"/0/style/textColor: the theme does not allow textColor for code blocks",
+				"/0/style/backgroundColor/value: " + onlyColor,
+				`/0/style/fontSize/preset: the theme has no fontSize preset "huge"`,
+				"/0/style/border: the theme does not allow border for code blocks",
+			},
+		},
+		{
+			name: "item that the theme does not allow",
+			in:   Blocks{para(Style{LinkColor: Color{Preset: "primary"}})},
+			opts: themed,
+			want: []string{"/0/style/linkColor: the theme does not allow linkColor for paragraph blocks"},
+		},
+
+		{
+			name: "invalid values",
+			in: Blocks{para(Style{
+				TextColor:     Color{Value: "red"},
+				FontSize:      Length{Value: "1"},
+				LetterSpacing: Length{Preset: "wide"},
+				Padding:       Sides{Top: Length{Preset: "20", Value: "1rem"}},
+				Margin:        Sides{Top: Length{Value: "1rem"}},
+			})},
+			opts: themed,
+			want: []string{
+				`/0/style/textColor/value: invalid color "red"`,
+				`/0/style/fontSize/value: invalid length "1"`,
+				"/0/style/letterSpacing/preset: presets are not allowed here",
+				"/0/style/padding/top: set either preset or value, not both",
+				"/0/style/margin/top/value: " + onlySpacing,
+			},
+		},
+		{
+			name: "invalid value of an item that the block type does not allow",
+			in:   Blocks{code(Style{TextColor: Color{Value: "red"}})},
+			opts: themed,
+			want: []string{
+				`/0/style/textColor/value: invalid color "red"`,
+				"/0/style/textColor: the theme does not allow textColor for code blocks",
+			},
+		},
+		{
+			name: "blockGap of a type that cannot have it",
+			in:   Blocks{para(Style{BlockGap: Length{Preset: "30"}})},
+			opts: themed,
+			want: []string{"/0/style/blockGap: blockGap is not allowed for paragraph blocks"},
+		},
+		{
+			name: "blockGap that the block type does not allow and cannot have",
+			in:   Blocks{code(Style{BlockGap: Length{Value: "1rem"}})},
+			opts: themed,
+			want: []string{"/0/style/blockGap: blockGap is not allowed for code blocks"},
+		},
+		{
+			name: "style of a part",
+			in:   inTable(Block{Type: BlockTableCell, Style: missing}),
+			opts: themed,
+			want: []string{"/0/content/0/content/0/style: not allowed for tableCell"},
+		},
+
+		{name: "items unchanged", in: Blocks{para(black)}, opts: previous(para(black))},
+		{
+			name: "item changed",
+			in:   Blocks{para(Style{TextColor: Color{Value: "#111"}, Padding: black.Padding})},
+			opts: previous(para(black)),
+			want: []string{"/0/style/textColor/value: " + onlyColor},
+		},
+		{
+			name: "side added",
+			in:   Blocks{para(Style{TextColor: black.TextColor, Padding: Sides{Top: Length{Value: "1rem"}, Left: Length{Value: "1rem"}}})},
+			opts: previous(para(black)),
+			want: []string{"/0/style/padding/top/value: " + onlySpacing, "/0/style/padding/left/value: " + onlySpacing},
+		},
+		{
+			name: "side removed",
+			in:   Blocks{para(black)},
+			opts: previous(para(Style{TextColor: black.TextColor, Padding: Sides{Top: Length{Value: "1rem"}, Left: Length{Value: "1rem"}}})),
+			want: []string{"/0/style/padding/top/value: " + onlySpacing},
+		},
+		{
+			name: "items of a block of another type",
+			in:   Blocks{para(black)},
+			opts: previous(Block{Type: BlockHeading, ID: "b_0paragr1", Style: black, Attrs: Attrs{Level: 2}}),
+			want: []string{"/0/style/textColor/value: " + onlyColor, "/0/style/padding/top/value: " + onlySpacing},
+		},
+		{
+			name: "items of a block with another ID",
+			in:   Blocks{para(black)},
+			opts: previous(Block{Type: BlockParagraph, ID: "b_4n8c1w2e", Style: black}),
+			want: []string{"/0/style/textColor/value: " + onlyColor, "/0/style/padding/top/value: " + onlySpacing},
+		},
+		{name: "items of a block that was in a group", in: Blocks{para(black)}, opts: previous(group(Style{}, para(black)))},
+		{
+			name: "items compared with the first block of the ID",
+			in:   Blocks{para(black)},
+			opts: previous(group(Style{}, para(Style{})), para(black)),
+			want: []string{"/0/style/textColor/value: " + onlyColor, "/0/style/padding/top/value: " + onlySpacing},
+		},
+		{
+			name: "item that the block type does not allow unchanged",
+			in:   Blocks{code(Style{TextColor: Color{Preset: "accent"}})},
+			opts: previous(code(Style{TextColor: Color{Preset: "accent"}})),
+		},
+		{
+			name: "item that the block type does not allow changed",
+			in:   Blocks{code(Style{TextColor: Color{Preset: "accent"}})},
+			opts: previous(code(Style{TextColor: Color{Preset: "primary"}})),
+			want: []string{"/0/style/textColor: the theme does not allow textColor for code blocks"},
+		},
+
+		{name: "spacer height preset", in: Blocks{spacer(Length{Preset: "20"})}, opts: themed},
+		{
+			name: "spacer height preset that the theme lacks",
+			in:   Blocks{spacer(Length{Preset: "30"})},
+			opts: themed,
+			want: []string{`/0/attrs/height/preset: the theme has no spacing preset "30"`},
+		},
+		{
+			name: "spacer height value",
+			in:   Blocks{spacer(Length{Value: "40px"})},
+			opts: themed,
+			want: []string{"/0/attrs/height/value: " + onlySpacing},
+		},
+		{name: "spacer height value to a theme that allows it", in: Blocks{spacer(Length{Value: "40px"})}, opts: ValidateOptions{Theme: &ThemeSettings{}}},
+		{
+			name: "invalid spacer height",
+			in:   Blocks{spacer(Length{Value: "50%"})},
+			opts: themed,
+			want: []string{`/0/attrs/height/value: percentage "50%" is not allowed here`},
+		},
+		{
+			name: "spacer height with a preset and a value",
+			in:   Blocks{spacer(Length{Preset: "30", Value: "40px"})},
+			opts: themed,
+			want: []string{"/0/attrs/height: set either preset or value, not both"},
+		},
+		{name: "spacer height unchanged", in: Blocks{spacer(Length{Value: "40px"})}, opts: previous(spacer(Length{Value: "40px"}))},
+		{
+			name: "spacer height changed",
+			in:   Blocks{spacer(Length{Value: "40px"})},
+			opts: previous(spacer(Length{Value: "20px"})),
+			want: []string{"/0/attrs/height/value: " + onlySpacing},
+		},
+		{
+			name: "height of a block of another type",
+			in:   Blocks{spacer(Length{Value: "40px"})},
+			opts: previous(Block{Type: BlockSeparator, ID: "b_00spacer", Attrs: Attrs{Height: Length{Value: "40px"}}}),
+			want: []string{"/0/attrs/height/value: " + onlySpacing},
+		},
+		{
+			name: "spacer height and style unchanged",
+			in:   Blocks{withStyle(spacer(Length{Value: "40px"}), black)},
+			opts: previous(withStyle(spacer(Length{Value: "40px"}), black)),
+		},
+
+		{
+			name: "highlight with presets",
+			in:   Blocks{highlighted("b_0paragr1", Highlight{Color: Color{Preset: "primary"}, BackgroundColor: Color{Preset: "primary"}})},
+			opts: themed,
+		},
+		{
+			name: "highlight with a preset that the theme lacks and a value",
+			in:   Blocks{highlighted("b_0paragr1", Highlight{Color: Color{Preset: "accent"}, BackgroundColor: Color{Value: "#fff4e5"}})},
+			opts: themed,
+			want: []string{
+				"/0/content/0/marks/0/attrs/color/preset: " + noAccent,
+				"/0/content/0/marks/0/attrs/backgroundColor/value: " + onlyColor,
+			},
+		},
+		{
+			name: "highlight with an invalid color",
+			in:   Blocks{highlighted("b_0paragr1", Highlight{Color: Color{Value: "red"}, BackgroundColor: Color{Preset: "accent"}})},
+			opts: themed,
+			want: []string{
+				`/0/content/0/marks/0/attrs/color/value: invalid color "red"`,
+				"/0/content/0/marks/0/attrs/backgroundColor/preset: " + noAccent,
+			},
+		},
+		{
+			name: "highlight with a variant and colors",
+			in:   Blocks{highlighted("b_0paragr1", Highlight{Variant: "marker", Color: accent.Color})},
+			opts: themed,
+			want: []string{
+				"/0/content/0/marks/0/attrs: variant cannot be combined with color or backgroundColor",
+				"/0/content/0/marks/0/attrs/color/preset: " + noAccent,
+			},
+		},
+		{
+			name: "other names of the theme",
+			in: Blocks{
+				{Type: BlockParagraph, ID: "b_0paragr1", Variant: "unknown", Text: marked(Highlight{Variant: "unknown"})},
+				{Type: BlockImage, ID: "b_000image", Attrs: Attrs{Media: media, Decorative: true, Size: "unknown"}},
+			},
+			opts: themed,
+		},
+		{
+			name: "highlights in a caption, a citation and a table cell",
+			in:   append(Blocks{caption(accent), citation(accent)}, inTable(Block{Type: BlockTableCell, Text: marked(accent)})...),
+			opts: themed,
+			want: []string{
+				"/0/attrs/caption/0/marks/0/attrs/color/preset: " + noAccent,
+				"/1/attrs/citation/0/marks/0/attrs/color/preset: " + noAccent,
+				"/2/content/0/content/0/content/0/marks/0/attrs/color/preset: " + noAccent,
+			},
+		},
+		{name: "highlight kept", in: Blocks{highlighted("b_0paragr1", accent)}, opts: previous(highlighted("b_0paragr1", accent))},
+		{name: "highlight kept from another block", in: Blocks{highlighted("b_0paragr1", accent)}, opts: previous(highlighted("b_4n8c1w2e", accent))},
+		{name: "highlight kept from a caption in a group", in: Blocks{highlighted("b_0paragr1", accent)}, opts: previous(group(Style{}, caption(accent)))},
+		{name: "highlight kept from a citation", in: Blocks{highlighted("b_0paragr1", accent)}, opts: previous(citation(accent))},
+		{
+			name: "highlight kept from a table cell",
+			in:   Blocks{highlighted("b_0paragr1", accent)},
+			opts: previous(inTable(Block{Type: BlockTableCell, Text: marked(accent)})...),
+		},
+		{
+			name: "highlight kept in a caption",
+			in:   Blocks{caption(accent)},
+			opts: previous(highlighted("b_4n8c1w2e", accent)),
+		},
+		{
+			name: "highlight with another background color",
+			in:   Blocks{highlighted("b_0paragr1", accent)},
+			opts: previous(highlighted("b_4n8c1w2e", Highlight{Color: accent.Color, BackgroundColor: Color{Preset: "primary"}})),
+			want: []string{"/0/content/0/marks/0/attrs/color/preset: " + noAccent},
+		},
+		{
+			name: "colors of a style",
+			in:   Blocks{highlighted("b_0paragr1", accent)},
+			opts: previous(para(Style{TextColor: accent.Color})),
+			want: []string{"/0/content/0/marks/0/attrs/color/preset: " + noAccent},
+		},
+		{
+			name: "highlight attributes of a link",
+			in:   Blocks{highlighted("b_0paragr1", accent)},
+			opts: previous(Block{Type: BlockParagraph, ID: "b_4n8c1w2e", Text: RichText{{
+				Type: InlineText, Text: "a", Marks: []Mark{{Type: MarkLink, Link: &Link{Anchor: "top"}, Highlight: &accent}},
+			}}}),
+			want: []string{"/0/content/0/marks/0/attrs/color/preset: " + noAccent},
+		},
+
+		{
+			name: "after the problems of the style and before those of the attrs and the content",
+			in: Blocks{{
+				Type:  BlockParagraph,
+				ID:    "b_0paragr1",
+				Style: Style{TextColor: Color{Value: "red"}, FontSize: Length{Preset: "huge"}, BlockGap: Length{Preset: "20"}},
+				Attrs: Attrs{TextAlign: "middle"},
+				Text:  marked(Highlight{Color: Color{Value: "#000"}}),
+			}},
+			opts: themed,
+			want: []string{
+				`/0/style/textColor/value: invalid color "red"`,
+				"/0/style/blockGap: blockGap is not allowed for paragraph blocks",
+				`/0/style/fontSize/preset: the theme has no fontSize preset "huge"`,
+				`/0/attrs/textAlign: unknown textAlign "middle" (use left, center, right)`,
+				"/0/content/0/marks/0/attrs/color/value: " + onlyColor,
+			},
+		},
+		{
+			name: "style of a spacer before its height",
+			in:   Blocks{withStyle(spacer(Length{Value: "40px"}), Style{TextColor: Color{Value: "#000"}})},
+			opts: themed,
+			want: []string{"/0/style/textColor/value: " + onlyColor, "/0/attrs/height/value: " + onlySpacing},
+		},
+
+		{
+			name: "every block",
+			in:   every,
+			opts: ValidateOptions{AllowHTML: true, Theme: noPresets},
+			want: []string{
+				`/0/style/textColor/preset: the theme has no color preset "primary"`,
+				"/0/style/padding/top/value: " + onlySpacing,
+				"/8/content/0/style/backgroundColor/value: " + onlyColor,
+				`/10/attrs/height/preset: the theme has no spacing preset "large"`,
+				"/11/attrs/height/value: " + onlySpacing,
+				`/15/content/0/style/backgroundColor/preset: the theme has no color preset "muted"`,
+				"/22: legacy blocks can only be created by import",
+			},
+		},
+		{name: "every block kept", in: every, opts: ValidateOptions{AllowHTML: true, Theme: noPresets, Previous: every}},
+		{name: "every block imported", in: every, opts: ValidateOptions{AllowHTML: true, Import: true, Theme: noPresets}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var paths []string
+			for _, w := range tt.want {
+				p, _, _ := strings.Cut(w, ": ")
+				paths = append(paths, p)
+			}
+			assertBlocksValidate(t, tt.in, tt.opts, paths, strings.Join(tt.want, "\n"))
+		})
+	}
+}
+
 func TestBlocksValidateLimits(t *testing.T) {
 	const (
 		tooDeep = "blocks are nested too deeply (max 32)"

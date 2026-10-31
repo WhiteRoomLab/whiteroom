@@ -638,6 +638,40 @@ func (f *FieldDef) blocks(v jsontext.Value) []Blocks {
 	return nil
 }
 
+// richTexts returns the rich texts in v, a value of f, in the order they are written.
+func (f *FieldDef) richTexts(v jsontext.Value) []RichText {
+	switch {
+	case f.Type == FieldRichText:
+		var rt RichText
+		if unmarshal(v, "", rt.decode) == nil {
+			return []RichText{rt}
+		}
+	case f.Type == FieldGroup:
+		ms, err := members(v, "")
+		if err != nil {
+			return nil
+		}
+		var out []RichText
+		for _, m := range ms {
+			if g := field(f.Fields, m.name); g != nil {
+				out = append(out, g.richTexts(m.value)...)
+			}
+		}
+		return out
+	case f.Type == FieldList && f.Of != nil:
+		ms, err := items(v, "")
+		if err != nil {
+			return nil
+		}
+		var out []RichText
+		for _, m := range ms {
+			out = append(out, f.Of.richTexts(m.value)...)
+		}
+		return out
+	}
+	return nil
+}
+
 // formatNumber writes v without an exponent, such as 1000000 rather than 1e+06.
 func formatNumber(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -599,6 +600,20 @@ func TestStyleValues(t *testing.T) {
 				t.Errorf("Path() of Values() = %q, want %q", paths, tt.paths)
 			}
 		})
+	}
+}
+
+// TestStyleItem checks item against the fields of Style, with fullStyle, whose items of the same type differ.
+func TestStyleItem(t *testing.T) {
+	v := reflect.ValueOf(fullStyle)
+	for i := range v.NumField() {
+		name, _, _ := strings.Cut(v.Type().Field(i).Tag.Get("json"), ",")
+		if got, want := fullStyle.item(name), v.Field(i).Interface(); got != want {
+			t.Errorf("item(%q) = %#v, want %#v", name, got, want)
+		}
+	}
+	if got := fullStyle.item("shadow"); got != nil {
+		t.Errorf(`item("shadow") = %#v, want nil`, got)
 	}
 }
 
