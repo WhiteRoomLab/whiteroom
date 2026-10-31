@@ -23,7 +23,7 @@ type ThemeSettings struct {
 	MobileWidth       string // the widest screen on which columns stack, such as "781px"; "": DefaultMobileWidth
 }
 
-// DefaultMobileWidth is the MobileWidth of a theme that omits it, as in WordPress.
+// DefaultMobileWidth is the MobileWidth of a theme that omits it.
 const DefaultMobileWidth = "781px"
 
 // Presets are the values that styles refer to by name, of each kind in the written order.
