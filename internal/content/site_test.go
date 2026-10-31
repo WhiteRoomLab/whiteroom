@@ -43,8 +43,8 @@ var postFields = []FieldDef{
 	{Name: "sidebar", Type: FieldBlocks},
 }
 
-// testSite returns a site with the type and the taxonomy of the example in CONCEPT.md 6.4.4,
-// a type with productFields, and post with postFields.
+// testSite returns a site with the type and the taxonomy of the example in 6.4.4 of the concept
+// (docs/06.04-entries.md), a type with productFields, and post with postFields.
 func testSite() *Site {
 	return &Site{
 		Name:            Localized{"ja": "株式会社〇〇", "en": "Example Inc."},
@@ -85,8 +85,8 @@ func minimalSite() *Site {
 	}
 }
 
-// exampleSite returns the site settings of the example in CONCEPT.md 6.11.9: a site in Japanese and English whose posts
-// have the URL rule of "Day and name" in the permalink settings of WordPress.
+// exampleSite returns the site settings of the example in 6.11.9 of the concept (docs/06.11-examples.md): a site in
+// Japanese and English whose posts have the URL rule of "Day and name" in the permalink settings of WordPress.
 func exampleSite() *Site {
 	s := testSite()
 	works := *s.Type("works")

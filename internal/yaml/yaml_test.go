@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// worksSchema is the example of site/schema.yaml in 6.4.4 of CONCEPT.md.
+// worksSchema is the example of site/schema.yaml in 6.4.4 of the concept (docs/06.04-entries.md).
 const worksSchema = `# 例：site/schema.yaml（スキーマのファイル。6.6.8）
 schemaVersion: 1
 types:

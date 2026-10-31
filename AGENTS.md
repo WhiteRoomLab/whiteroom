@@ -1,6 +1,6 @@
 # AGENTS.md
 
-WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が正なので、作業に関わる節を先に読む。
+WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想書が正なので、作業に関わる節を先に読む。構想書は、章と大きい節ごとのファイルに分けてあり（6.5 は `docs/06.05-blocks.md` など）、`docs/README.md` に、節とファイルの対応の表がある。節番号（`6.5.2` など）で参照し、ファイルを分けても節番号は変えない。
 
 ## 開発シェル
 
@@ -23,8 +23,8 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 ## パッケージの置き場所
 
 - パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`、開発者が書くファイル（`site/schema.yaml`、テーマの `theme.yaml` と翻訳ファイル）の YAML を読む処理は `internal/yaml`。
-- テーマ（`CONCEPT.md` の 5.4）の設定ファイルと翻訳ファイルの型・読み込み・検証は、コンテンツの検証からも使うので `internal/content` に置く。テーマのディレクトリ（設定・ページとブロックのテンプレート（`blocks/`）・部品・翻訳・assets）を読み、テンプレートを実行する処理は `internal/theme`。
-- 文中装飾とブロックの HTML と、`style` などの見た目の CSS（ページの CSS とサイトの CSS。`CONCEPT.md` の 6.5.3）は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（`CONCEPT.md` の 6.8）は `internal/render/blocks/` に、本体が付けるクラスの CSS（`CONCEPT.md` の 6.5.4。サイトの CSS に入る）は `internal/render/classes.css` に置く。
+- テーマ（構想書の 5.4）の設定ファイルと翻訳ファイルの型・読み込み・検証は、コンテンツの検証からも使うので `internal/content` に置く。テーマのディレクトリ（設定・ページとブロックのテンプレート（`blocks/`）・部品・翻訳・assets）を読み、テンプレートを実行する処理は `internal/theme`。
+- 文中装飾とブロックの HTML と、`style` などの見た目の CSS（ページの CSS とサイトの CSS。構想書の 6.5.3）は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（構想書の 6.8）は `internal/render/blocks/` に、本体が付けるクラスの CSS（構想書の 6.5.4。サイトの CSS に入る）は `internal/render/classes.css` に置く。
 - ほかの描画とビルドのパッケージは、作るときに置く：`html`・`legacy` のサニタイズは `internal/sanitize`、公開する画像は `internal/imaging`、静的ビルドは `internal/build`。依存の向きは `build` → `render`・`sanitize`・`imaging` → `theme` → `content`。
 - コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
 
@@ -40,5 +40,5 @@ WordPress の代替となる CMS を Go で作る。設計は `CONCEPT.md` が�
 
 - コードと設定ファイルのコメントは英語で、最小限にする。消すと誤った「修正」を招く箇所にだけ、短い1行で書く。
 - doc コメントは、名前だけで分からないときだけ書く。公開する識別子のすべてには付けない。
-- ドキュメントは日本語で書く。ただし `README.md` は英語で、バッジを除いて150字以内を目安にする。
+- ドキュメントは日本語で書く。ただしリポジトリの直下の `README.md` は英語で、バッジを除いて150字以内を目安にする。
 - コミットは Conventional Commits。type は `feat`・`fix`・`docs`・`refactor`・`test`・`build`・`ci`・`chore` など（`update`・`add` は使わない）。説明と本文は日本語（例：`build: 開発環境の Nix flake を追加`）。

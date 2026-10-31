@@ -38,7 +38,7 @@ func assertRoundTrip[T any](t *testing.T, in, want string) {
 	}
 }
 
-// conceptStyleJSON is the style of the block example in CONCEPT.md 6.5.1.
+// conceptStyleJSON is the style of the block example in 6.5.1 of the concept (docs/06.05-blocks.md).
 const conceptStyleJSON = `{
   "textColor": { "preset": "primary" },
   "backgroundColor": { "value": "#fff4e5" },

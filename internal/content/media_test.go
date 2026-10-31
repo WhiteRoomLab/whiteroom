@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The media in testdata: the image of the example in CONCEPT.md 6.11.1, and a PDF file.
+// The media in testdata: the image of the example in 6.11.1 of the concept (docs/06.11-examples.md), and a PDF file.
 var (
 	officeImage = Media{ // office-image.json
 		ID:         testImage,

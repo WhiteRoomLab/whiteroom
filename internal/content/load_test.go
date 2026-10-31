@@ -50,7 +50,8 @@ func TestLoadExampleSite(t *testing.T) {
 		t.Errorf("MarshalSettings() = %s, want %s", out, want)
 	}
 
-	// The schema file of CONCEPT.md 6.11.9 adds post, with the default URL rule, to that of 6.4.4.
+	// The schema file of 6.11.9 of the concept (docs/06.11-examples.md) adds post, with the default URL rule, to that
+	// of 6.4.4.
 	var works Site
 	if err := works.UnmarshalSchema([]byte(readTestdata(t, "works-schema.yaml"))); err != nil {
 		t.Fatalf("UnmarshalSchema() = %v", err)
