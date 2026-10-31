@@ -13,8 +13,21 @@ import (
 
 var wptList = flag.Bool("wpt.list", false, "report each failing run of a WPT tree construction test as an error")
 
-// wptFailures is the number of failing runs of the WPT document tests; phases 4 and 5 bring it to 0.
-const wptFailures = 844
+// wptFailures is the number of failing runs of the WPT document tests; phase 5 brings it to 0.
+const wptFailures = 424
+
+// wptSkips are the WPT tests that are not run, by file and line, with the reason; they have wptSkippedRuns runs.
+var wptSkips = map[string]string{
+	"webkit02.dat:692": noSelectedcontent,
+	"webkit02.dat:706": noSelectedcontent,
+	"webkit02.dat:732": noSelectedcontent,
+	"webkit02.dat:748": noSelectedcontent,
+}
+
+const (
+	wptSkippedRuns    = 8
+	noSelectedcontent = "selectedcontent cloning is DOM behavior of option elements, outside tree construction"
+)
 
 // treeTest is a test of a .dat file of the WPT tree construction tests (see testdata_test.go and
 // html/syntax/parsing/resources/README.md of web-platform-tests).
@@ -177,9 +190,11 @@ func parseDump(t *testing.T, s string, scripting bool) (dump string, err error) 
 
 // TestWPTTreeConstruction runs the document tests of the WPT tree construction tests, each in the scripting modes it
 // asks for, and checks the number of failing runs; -wpt.list reports them. Parse errors are not checked. The tests of
-// scripted_*.dat need scripts and are not run, nor are the fragment tests yet.
+// scripted_*.dat need scripts and are not run; neither are those of wptSkips nor, until fragment parsing exists, the
+// fragment tests.
 func TestWPTTreeConstruction(t *testing.T) {
-	failed := 0
+	failed, skipped := 0, 0
+	skips := make(map[string]bool)
 	for _, f := range readTestFiles(t, "wpt-tree-construction.json.gz") {
 		if strings.HasPrefix(f.Name, "scripted_") {
 			t.Logf("%s: not run; its tests need scripts", f.Name)
@@ -190,6 +205,13 @@ func TestWPTTreeConstruction(t *testing.T) {
 		for _, tt := range tests {
 			if tt.context != "" {
 				fragments++
+				continue
+			}
+			name := fmt.Sprintf("%s:%d", f.Name, tt.line)
+			if reason, ok := wptSkips[name]; ok {
+				t.Logf("%s: not run; %s", name, reason)
+				skips[name] = true
+				skipped += len(tt.scripting)
 				continue
 			}
 			for _, scripting := range tt.scripting {
@@ -213,6 +235,58 @@ func TestWPTTreeConstruction(t *testing.T) {
 	}
 	if failed != wptFailures {
 		t.Errorf("%d runs failed, want %d", failed, wptFailures)
+	}
+	if skipped != wptSkippedRuns || len(skips) != len(wptSkips) {
+		t.Errorf("%d runs of %d tests skipped, want %d runs of %d tests", skipped, len(skips), wptSkippedRuns,
+			len(wptSkips))
+	}
+}
+
+// TestParseTableModes parses markup that reaches rules of the table modes that no WPT document test reaches.
+func TestParseTableModes(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{
+			// "in column group" with the template as the current node: other characters than whitespace are ignored.
+			"<template><col>a b</template>",
+			`| <html>
+|   <head>
+|     <template>
+|       content
+|         <col>
+|         " "
+|   <body>`,
+		},
+		{
+			// "in table" in a template: no table in table scope, so the table start tag is ignored.
+			"<template><tbody></tbody><table>x</template>",
+			`| <html>
+|   <head>
+|     <template>
+|       content
+|         <tbody>
+|         "x"
+|   <body>`,
+		},
+		{
+			"<table><colgroup> <col> <?pi x></colgroup></table>",
+			`| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <colgroup>
+|         " "
+|         <col>
+|         " "
+|         <?pi x?>`,
+		},
+	}
+	for _, tt := range tests {
+		got, err := parseDump(t, tt.in, true)
+		if err != nil {
+			t.Errorf("%q: %v", tt.in, err)
+		} else if got != tt.want {
+			t.Errorf("%q:\ngot:\n%s\nwant:\n%s", tt.in, got, tt.want)
+		}
 	}
 }
 

@@ -82,6 +82,8 @@ type parser struct {
 
 	skipLF bool // the next token is ignored if it is a line feed (after pre, listing and textarea start tags)
 
+	pendingTable []byte // the pending table character tokens of "in table text"
+
 	texts map[*Node][]byte // the data of the Text nodes that characters were appended to
 	hosts map[*Node]*Node  // the template element of each template contents
 }
@@ -235,21 +237,4 @@ func (p *parser) process(m insertionMode, tok *token) bool {
 // insertion mode applies.
 func (p *parser) inForeignContent(tok *token) bool {
 	return p.process(p.mode, tok)
-}
-
-// The table modes and "in template" (13.2.6.4.9-16) are not implemented yet: they use the rules of "in body".
-
-func (p *parser) inTable(tok *token) bool       { return p.inBody(tok) }
-func (p *parser) inTableText(tok *token) bool   { return p.inBody(tok) }
-func (p *parser) inCaption(tok *token) bool     { return p.inBody(tok) }
-func (p *parser) inColumnGroup(tok *token) bool { return p.inBody(tok) }
-func (p *parser) inTableBody(tok *token) bool   { return p.inBody(tok) }
-func (p *parser) inRow(tok *token) bool         { return p.inBody(tok) }
-func (p *parser) inCell(tok *token) bool        { return p.inBody(tok) }
-
-func (p *parser) inTemplate(tok *token) bool {
-	if tok.typ == eofToken {
-		return false
-	}
-	return p.inBody(tok)
 }

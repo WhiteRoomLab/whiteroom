@@ -166,8 +166,7 @@ func (p *parser) inBodyStartTag(tok *token) bool {
 		p.reconstructActive()
 		p.insertHTMLElement(tok)
 		p.pop()
-		if i := slices.IndexFunc(tok.attrs, func(a Attr) bool { return a.Name == "type" }); i < 0 ||
-			!equalFold(tok.attrs[i].Value, "hidden") {
+		if !hiddenInput(tok) {
 			p.framesetOK = false
 		}
 	case "param", "source", "track":
@@ -345,9 +344,7 @@ func (p *parser) inBodyEndTag(tok *token) bool {
 			p.popUntilHeading()
 		}
 	case "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u":
-		if p.adoptionAgency(tok) {
-			p.anyOtherEndTag(tok.name)
-		}
+		p.adoptionAgency(tok)
 	case "br":
 		p.reconstructActive()
 		p.insertHTMLElement(&token{typ: startTagToken, name: "br"})
@@ -374,15 +371,14 @@ func (p *parser) anyOtherEndTag(name string) {
 	}
 }
 
-// adoptionAgency runs the adoption agency algorithm for tok (13.2.6.4.7) and reports whether tok is then to be handled
-// as "any other end tag". With no sanitizer configuration, the steps for elements that the sanitizer removes or
-// replaces with their children do nothing, and the insertion target redirection map has no entry for the elements
-// that the algorithm moves.
-func (p *parser) adoptionAgency(tok *token) bool {
+// adoptionAgency runs the adoption agency algorithm for tok (13.2.6.4.7). With no sanitizer configuration, the steps
+// for elements that the sanitizer removes or replaces with their children do nothing, and the insertion target
+// redirection map has no entry for the elements that the algorithm moves.
+func (p *parser) adoptionAgency(tok *token) {
 	subject := tok.name
 	if n := p.currentNode(); n.isHTML(subject) && p.activeIndex(n) < 0 {
 		p.pop()
-		return false
+		return
 	}
 	for range 8 {
 		fi := -1
@@ -393,16 +389,17 @@ func (p *parser) adoptionAgency(tok *token) bool {
 			}
 		}
 		if fi < 0 {
-			return true
+			p.anyOtherEndTag(subject)
+			return
 		}
 		formatting := p.active[fi]
 		si := p.stackIndex(formatting)
 		if si < 0 {
 			p.removeActive(fi)
-			return false
+			return
 		}
 		if !p.nodeInScope(formatting, defaultScope) {
-			return false
+			return
 		}
 		fbi := -1
 		for i := si + 1; i < len(p.stack); i++ {
@@ -414,7 +411,7 @@ func (p *parser) adoptionAgency(tok *token) bool {
 		if fbi < 0 {
 			p.popTo(si)
 			p.removeActive(fi)
-			return false
+			return
 		}
 		furthest := p.stack[fbi]
 		common := p.stack[si-1]
@@ -479,5 +476,4 @@ func (p *parser) adoptionAgency(tok *token) bool {
 		parent, ref = p.adjusted(furthest, nil)
 		parent.InsertBefore(n, ref)
 	}
-	return false
 }

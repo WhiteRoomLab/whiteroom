@@ -347,31 +347,6 @@ func (p *parser) inHead(tok *token) bool {
 	return true
 }
 
-// templateStart handles a template start tag in the "in head" insertion mode. Declarative shadow roots are not
-// allowed, and content patching (the for attribute) is not supported, so the template element is always inserted.
-func (p *parser) templateStart(tok *token) {
-	p.insertMarker()
-	p.framesetOK = false
-	p.mode = inTemplateMode
-	p.templateModes = append(p.templateModes, inTemplateMode)
-	t := p.createElement(tok, HTML)
-	parent, ref := p.appropriatePlace(nil)
-	p.push(t)
-	p.insertElement(t, parent, ref)
-}
-
-// templateEnd handles a template end tag in the "in head" insertion mode.
-func (p *parser) templateEnd() {
-	if !p.templateOnStack() {
-		return
-	}
-	p.generateAllImpliedEndTagsThoroughly()
-	p.popUntil("template")
-	p.clearActiveToMarker()
-	p.templateModes = p.templateModes[:len(p.templateModes)-1]
-	p.resetInsertionMode()
-}
-
 // 13.2.6.4.5
 func (p *parser) inHeadNoscript(tok *token) bool {
 	switch tok.typ {
