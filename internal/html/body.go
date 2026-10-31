@@ -243,10 +243,19 @@ func (p *parser) inBodyStartTag(tok *token) bool {
 			p.generateImpliedEndTags("rtc")
 		}
 		p.insertHTMLElement(tok)
-	case "math", "svg":
-		// HTML elements until foreign content is implemented.
+	case "math":
 		p.reconstructActive()
-		p.insertHTMLElement(tok)
+		adjustMathMLAttrs(tok)
+		adjustForeignAttrs(tok)
+		p.insertForeignElement(tok, MathML)
+		if tok.selfClosing {
+			p.pop()
+		}
+	case "svg":
+		p.reconstructActive()
+		adjustSVGAttrs(tok)
+		adjustForeignAttrs(tok)
+		p.insertForeignElement(tok, SVG)
 		if tok.selfClosing {
 			p.pop()
 		}

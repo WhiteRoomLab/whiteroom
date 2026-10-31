@@ -1,6 +1,7 @@
 package html
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"runtime/debug"
@@ -11,10 +12,10 @@ import (
 	"unicode/utf16"
 )
 
-var wptList = flag.Bool("wpt.list", false, "report each failing run of a WPT tree construction test as an error")
+var wptList = flag.Bool("wpt.list", false, "report all failing runs of the WPT tree construction tests")
 
-// wptFailures is the number of failing runs of the WPT document tests; phase 5 brings it to 0.
-const wptFailures = 424
+// wptReported is the number of failing runs of the WPT tree construction tests that are reported without -wpt.list.
+const wptReported = 10
 
 // wptSkips are the WPT tests that are not run, by file and line, with the reason; they have wptSkippedRuns runs.
 var wptSkips = map[string]string{
@@ -173,14 +174,17 @@ func dumpTree(t *testing.T, n *Node) string {
 	return strings.Join(lines, "\n")
 }
 
+// recovered, when deferred, returns a panic as an error in *err.
+func recovered(err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+	}
+}
+
 // parseDump parses s as a document and dumps the tree; a panic is returned as an error.
 func parseDump(t *testing.T, s string, scripting bool) (dump string, err error) {
 	t.Helper()
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-		}
-	}()
+	defer recovered(&err)
 	doc, err := Parse(s, Options{Scripting: scripting})
 	if err != nil {
 		return "", err
@@ -188,11 +192,43 @@ func parseDump(t *testing.T, s string, scripting bool) (dump string, err error) 
 	return dumpTree(t, doc), nil
 }
 
-// TestWPTTreeConstruction runs the document tests of the WPT tree construction tests, each in the scripting modes it
-// asks for, and checks the number of failing runs; -wpt.list reports them. Parse errors are not checked. The tests of
-// scripted_*.dat need scripts and are not run; neither are those of wptSkips nor, until fragment parsing exists, the
-// fragment tests.
+// fragmentDump parses s as a fragment for context and dumps the nodes, which must have no parent and no siblings; a
+// panic is returned as an error.
+func fragmentDump(t *testing.T, s string, context *Node, scripting bool) (dump string, err error) {
+	t.Helper()
+	defer recovered(&err)
+	nodes, err := ParseFragment(s, context, Options{Scripting: scripting})
+	if err != nil {
+		return "", err
+	}
+	f := &Node{Type: DocumentFragmentNode}
+	for _, n := range nodes {
+		if n.Parent != nil || n.PrevSibling != nil || n.NextSibling != nil {
+			return "", errors.New("a node of the fragment has a parent or siblings")
+		}
+		f.AppendChild(n)
+	}
+	return dumpTree(t, f), nil
+}
+
+// wptContext returns the context element that the #document-fragment line s of a WPT test describes.
+func wptContext(s string) *Node {
+	n := &Node{Type: ElementNode, Namespace: HTML, Name: s}
+	if name, ok := strings.CutPrefix(s, "svg "); ok {
+		n.Namespace, n.Name = SVG, name
+	} else if name, ok := strings.CutPrefix(s, "math "); ok {
+		n.Namespace, n.Name = MathML, name
+	}
+	return n
+}
+
+// TestWPTTreeConstruction runs the WPT tree construction tests, each in the scripting modes it asks for: the document
+// tests with Parse, the fragment tests with ParseFragment for their context. Parse errors are not checked. The tests of
+// scripted_*.dat need scripts and are not run; neither are those of wptSkips. Every failing run is an error, but only
+// the first wptReported are reported unless -wpt.list is set.
 func TestWPTTreeConstruction(t *testing.T) {
+	type kind struct{ fragment, scripting bool }
+	runs := make(map[kind]int)
 	failed, skipped := 0, 0
 	skips := make(map[string]bool)
 	for _, f := range readTestFiles(t, "wpt-tree-construction.json.gz") {
@@ -201,12 +237,8 @@ func TestWPTTreeConstruction(t *testing.T) {
 			continue
 		}
 		tests := readTreeTests(t, f.Name, f.Text)
-		runs, fails, fragments := 0, 0, 0
+		fileRuns, fileFails := 0, 0
 		for _, tt := range tests {
-			if tt.context != "" {
-				fragments++
-				continue
-			}
 			name := fmt.Sprintf("%s:%d", f.Name, tt.line)
 			if reason, ok := wptSkips[name]; ok {
 				t.Logf("%s: not run; %s", name, reason)
@@ -215,26 +247,38 @@ func TestWPTTreeConstruction(t *testing.T) {
 				continue
 			}
 			for _, scripting := range tt.scripting {
-				runs++
-				got, err := parseDump(t, tt.data, scripting)
-				if err != nil {
-					t.Errorf("%s:%d, scripting %t: input %+q: %v", f.Name, tt.line, scripting, tt.data, err)
-				} else if got == tt.document {
+				fileRuns++
+				runs[kind{tt.context != "", scripting}]++
+				var got, in string
+				var err error
+				if tt.context == "" {
+					got, err = parseDump(t, tt.data, scripting)
+					in = fmt.Sprintf("input %+q", tt.data)
+				} else {
+					got, err = fragmentDump(t, tt.data, wptContext(tt.context), scripting)
+					in = fmt.Sprintf("context %s, input %+q", tt.context, tt.data)
+				}
+				if err == nil && got == tt.document {
 					continue
 				}
-				fails++
-				if *wptList {
-					t.Errorf("%s:%d, scripting %t: input %+q\nwant:\n%s\ngot:\n%s", f.Name, tt.line, scripting, tt.data,
-						tt.document, got)
+				fileFails++
+				if failed+fileFails > wptReported && !*wptList {
+					continue
+				}
+				if err != nil {
+					t.Errorf("%s, scripting %t: %s: %v", name, scripting, in, err)
+				} else {
+					t.Errorf("%s, scripting %t: %s\nwant:\n%s\ngot:\n%s", name, scripting, in, tt.document, got)
 				}
 			}
 		}
-		t.Logf("%s: %d tests; %d runs of the document tests, %d failed; %d fragment tests not run", f.Name,
-			len(tests), runs, fails, fragments)
-		failed += fails
+		t.Logf("%s: %d tests, %d runs, %d failed", f.Name, len(tests), fileRuns, fileFails)
+		failed += fileFails
 	}
-	if failed != wptFailures {
-		t.Errorf("%d runs failed, want %d", failed, wptFailures)
+	t.Logf("runs with scripting enabled and disabled: documents %d and %d, fragments %d and %d; %d skipped",
+		runs[kind{false, true}], runs[kind{false, false}], runs[kind{true, true}], runs[kind{true, false}], skipped)
+	if failed > wptReported && !*wptList {
+		t.Errorf("%d runs failed; -wpt.list reports each", failed)
 	}
 	if skipped != wptSkippedRuns || len(skips) != len(wptSkips) {
 		t.Errorf("%d runs of %d tests skipped, want %d runs of %d tests", skipped, len(skips), wptSkippedRuns,
@@ -278,6 +322,57 @@ func TestParseTableModes(t *testing.T) {
 |         <col>
 |         " "
 |         <?pi x?>`,
+		},
+	}
+	for _, tt := range tests {
+		got, err := parseDump(t, tt.in, true)
+		if err != nil {
+			t.Errorf("%q: %v", tt.in, err)
+		} else if got != tt.want {
+			t.Errorf("%q:\ngot:\n%s\nwant:\n%s", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestParseForeignContent parses markup that reaches rules of foreign content that no WPT test reaches.
+func TestParseForeignContent(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{
+			// The entries of the adjust foreign attributes and SVG tag name tables that the tests do not have, and
+			// attributes like them that are not adjusted.
+			`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` +
+				`<a xlink:actuate=a xlink:arcrole=b xlink:role=c xlink:type=d xlink:other=e xml:base=f xmlns:other=g>` +
+				`<fedropshadow/></a></svg><math xmlns="http://www.w3.org/1998/Math/MathML"><mi xlink:role=h></mi></math>`,
+			`| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       xmlns xlink="http://www.w3.org/1999/xlink"
+|       xmlns xmlns="http://www.w3.org/2000/svg"
+|       <svg a>
+|         xlink actuate="a"
+|         xlink arcrole="b"
+|         xlink role="c"
+|         xlink type="d"
+|         xlink:other="e"
+|         xml:base="f"
+|         xmlns:other="g"
+|         <svg feDropShadow>
+|     <math math>
+|       xmlns xmlns="http://www.w3.org/1998/Math/MathML"
+|       <math mi>
+|         xlink role="h"`,
+		},
+		{
+			// A p end tag pops the foreign elements up to a MathML text integration point.
+			"<math><mi><mglyph></p></mi></math>",
+			`| <html>
+|   <head>
+|   <body>
+|     <math math>
+|       <math mi>
+|         <math mglyph>
+|         <p>`,
 		},
 	}
 	for _, tt := range tests {
@@ -353,5 +448,43 @@ func TestParseTextLinear(t *testing.T) {
 	if body.Name != "body" || body.FirstChild == nil || body.FirstChild != body.LastChild ||
 		body.FirstChild.Data != strings.Repeat("a", n) {
 		t.Errorf("the body is not one Text node of %d characters", n)
+	}
+}
+
+// TestParseAnnotationLinear parses 2^16 tags in an annotation-xml element with 2^16 attributes: looking for its
+// encoding attribute again at each tag, to know whether it is an HTML integration point, would take seconds.
+func TestParseAnnotationLinear(t *testing.T) {
+	const n = 1 << 16
+	var b strings.Builder
+	b.WriteString("<math><annotation-xml")
+	for i := range n {
+		fmt.Fprintf(&b, " a%d", i)
+	}
+	attrs := b.String()
+	tests := []struct {
+		in, tag string
+	}{
+		{attrs + ">" + strings.Repeat("<x/>", n), "x"},
+		{attrs + ` encoding="text/html">` + strings.Repeat("</p>", n), "p"},
+	}
+	for _, tt := range tests {
+		start := time.Now()
+		doc, err := Parse(tt.in, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("%v for %d %s elements", d, n, tt.tag)
+		}
+		annotation := doc.LastChild.LastChild.FirstChild.FirstChild
+		count := 0
+		for c := annotation.FirstChild; c != nil; c = c.NextSibling {
+			if c.Name == tt.tag {
+				count++
+			}
+		}
+		if count != n {
+			t.Errorf("%d %s elements in the annotation-xml element, want %d", count, tt.tag, n)
+		}
 	}
 }

@@ -1,6 +1,6 @@
 package html
 
-// Options are the options of Parse.
+// Options are the options of Parse and ParseFragment.
 type Options struct {
 	// Scripting is the scripting flag. Browsers parse with it set, so that the content of a noscript element is
 	// text; without it, noscript elements hold markup.
@@ -12,16 +12,23 @@ type Options struct {
 // always go to its Content: declarative shadow roots and content patching (the for attribute of template) are not
 // supported.
 func Parse(s string, opts Options) (*Node, error) {
-	p := &parser{
-		z:          newTokenizer(s),
-		doc:        &Node{Type: DocumentNode},
-		mode:       initialMode,
-		scripting:  opts.Scripting,
-		framesetOK: true,
-		texts:      make(map[*Node][]byte),
-	}
+	p := newParser(s, opts)
 	p.run()
 	return p.doc, nil
+}
+
+func newParser(s string, opts Options) *parser {
+	p := &parser{
+		z:               newTokenizer(s),
+		doc:             &Node{Type: DocumentNode},
+		mode:            initialMode,
+		scripting:       opts.Scripting,
+		framesetOK:      true,
+		texts:           make(map[*Node][]byte),
+		htmlAnnotations: make(map[*Node]bool),
+	}
+	p.z.cdataAllowed = func() bool { return len(p.stack) > 0 && p.adjustedCurrentNode().Namespace != HTML }
+	return p
 }
 
 // insertionMode is an insertion mode of the tree construction stage (13.2.4.1).
@@ -86,6 +93,10 @@ type parser struct {
 
 	texts map[*Node][]byte // the data of the Text nodes that characters were appended to
 	hosts map[*Node]*Node  // the template element of each template contents
+
+	// The MathML annotation-xml elements that are HTML integration points, the context element among them: found once,
+	// since their attributes can be many.
+	htmlAnnotations map[*Node]bool
 }
 
 // run runs the tree construction stage over the tokens up to the end of the input, then the steps of 13.2.7 that
@@ -140,46 +151,12 @@ func (p *parser) htmlContent(tok *token) bool {
 		if n.Namespace == MathML && n.Name == "annotation-xml" && tok.name == "svg" {
 			return true
 		}
-		return isHTMLIntegrationPoint(n)
+		return p.isHTMLIntegrationPoint(n)
 	case characterToken:
-		return isMathMLTextIntegrationPoint(n) || isHTMLIntegrationPoint(n)
+		return isMathMLTextIntegrationPoint(n) || p.isHTMLIntegrationPoint(n)
 	case eofToken:
 		return true
 	case doctypeToken, endTagToken, commentToken, processingInstructionToken:
-	}
-	return false
-}
-
-func isMathMLTextIntegrationPoint(n *Node) bool {
-	if n.Namespace != MathML {
-		return false
-	}
-	switch n.Name {
-	case "mi", "mo", "mn", "ms", "mtext":
-		return true
-	}
-	return false
-}
-
-// isHTMLIntegrationPoint reports whether n is an HTML integration point. The attributes of an annotation-xml element
-// are those of its start tag token, since adjusting the attributes of a token does not rename encoding.
-func isHTMLIntegrationPoint(n *Node) bool {
-	switch n.Namespace {
-	case MathML:
-		if n.Name != "annotation-xml" {
-			return false
-		}
-		for _, a := range n.Attrs {
-			if a.Namespace == "" && a.Name == "encoding" {
-				return equalFold(a.Value, "text/html") || equalFold(a.Value, "application/xhtml+xml")
-			}
-		}
-	case SVG:
-		switch n.Name {
-		case "foreignObject", "desc", "title":
-			return true
-		}
-	case HTML:
 	}
 	return false
 }
@@ -231,10 +208,4 @@ func (p *parser) process(m insertionMode, tok *token) bool {
 		return p.afterAfterFrameset(tok)
 	}
 	panic("html: no insertion mode")
-}
-
-// inForeignContent applies the rules for parsing tokens in foreign content (13.2.6.5). Until they exist, the current
-// insertion mode applies.
-func (p *parser) inForeignContent(tok *token) bool {
-	return p.process(p.mode, tok)
 }
