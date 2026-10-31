@@ -17,7 +17,15 @@ const maxDepth = 256
 type cleaner struct {
 	kind    Kind
 	changes changes
-	deep    bool // elements deeper than maxDepth were unwrapped
+	edits   int             // the changes made, counting each element unwrapped for its depth
+	deep    bool            // elements deeper than maxDepth were unwrapped
+	ids     map[string]bool // the ids kept in the tree being cleaned
+}
+
+// addf records a change.
+func (c *cleaner) addf(format string, args ...any) {
+	c.edits++
+	c.changes.addf(format, args...)
 }
 
 // action is what becomes of a node.
@@ -31,6 +39,7 @@ const (
 
 // clean cleans the descendants of root in document order, without recursion: the input can nest elements deeply.
 func (c *cleaner) clean(root *html.Node) {
+	c.ids = make(map[string]bool)
 	parent, n, depth := root, root.FirstChild, 0 // depth: of parent, in kept elements below root
 	for {
 		if n == nil {
@@ -71,14 +80,14 @@ func (c *cleaner) node(n *html.Node, depth int) action {
 		return remove // comments, processing instructions and doctypes, silently
 	}
 	if n.Namespace != html.HTML {
-		c.changes.addf("removed <%s> element and its content", name(n.Name))
+		c.addf("removed <%s> element and its content", name(n.Name))
 		return remove
 	}
 	if dropped[n.Name] || htmlElements[n.Name] && c.kind != HTML {
 		if void[n.Name] {
-			c.changes.addf("removed <%s> element", n.Name)
+			c.addf("removed <%s> element", n.Name)
 		} else {
-			c.changes.addf("removed <%s> element and its content", n.Name)
+			c.addf("removed <%s> element and its content", n.Name)
 		}
 		return remove
 	}
@@ -88,26 +97,28 @@ func (c *cleaner) node(n *html.Node, depth int) action {
 	}
 	if !elements[el] && (!htmlElements[el] || c.kind != HTML) {
 		if void[el] {
-			c.changes.addf("removed <%s> element", el)
+			c.addf("removed <%s> element", el)
 		} else {
-			c.changes.addf("removed <%s> element, keeping its content", name(el))
+			c.addf("removed <%s> element, keeping its content", name(el))
 		}
 		return unwrap
 	}
 	if depth >= maxDepth {
-		if !c.deep {
+		if c.deep {
+			c.edits++
+		} else {
 			c.deep = true
-			c.changes.addf("removed elements nested more than %d deep, keeping their content", maxDepth)
+			c.addf("removed elements nested more than %d deep, keeping their content", maxDepth)
 		}
 		return unwrap
 	}
 	if el != n.Name {
-		c.changes.addf("changed <%s> to <%s>", n.Name, el)
+		c.addf("changed <%s> to <%s>", n.Name, el)
 		n.Name = el
 	}
 	if needSrc[el] {
 		if reason := srcProblem(n); reason != "" {
-			c.changes.addf("removed <%s> element: %s", el, reason)
+			c.addf("removed <%s> element: %s", el, reason)
 			return remove
 		}
 	}
@@ -141,7 +152,7 @@ func (c *cleaner) attrs(n *html.Node) {
 	relAt, newTab := -1, false
 	for _, a := range n.Attrs {
 		if a.Namespace != "" || !globalAttrs[a.Name] && !slices.Contains(elementAttrs[n.Name], a.Name) {
-			c.changes.addf("removed %s attribute of <%s>", name(qualifiedName(a)), n.Name)
+			c.addf("removed %s attribute of <%s>", name(qualifiedName(a)), n.Name)
 			continue
 		}
 		if slices.ContainsFunc(kept, func(b html.Attr) bool { return b.Name == a.Name }) {
@@ -150,7 +161,7 @@ func (c *cleaner) attrs(n *html.Node) {
 		if kind := urlAttrs[[2]string{n.Name, a.Name}]; kind != noURL {
 			v := content.NormalizeHref(a.Value)
 			if reason := checkURL(v, kind); reason != "" {
-				c.changes.addf("removed %s attribute of <%s>: invalid URL %q: %s", a.Name, n.Name, cut(a.Value), reason)
+				c.addf("removed %s attribute of <%s>: invalid URL %q: %s", a.Name, n.Name, cut(a.Value), reason)
 				continue
 			}
 			a.Value = v
@@ -162,12 +173,17 @@ func (c *cleaner) attrs(n *html.Node) {
 			}
 		case "id":
 			if reason := idProblem(a.Value); reason != "" {
-				c.changes.addf("removed id attribute of <%s>: %s", n.Name, reason)
+				c.addf("removed id attribute of <%s>: %s", n.Name, reason)
 				continue
 			}
+			if c.ids[a.Value] {
+				c.addf("removed id attribute of <%s>: duplicate id %q", n.Name, cut(a.Value))
+				continue
+			}
+			c.ids[a.Value] = true
 		case "target":
 			if asciiLower(a.Value) != "_blank" {
-				c.changes.addf("removed target attribute of <%s>: only _blank is allowed", n.Name)
+				c.addf("removed target attribute of <%s>: only _blank is allowed", n.Name)
 				continue
 			}
 			a.Value, newTab = "_blank", true
@@ -215,8 +231,9 @@ func checkURL(v string, kind urlKind) string {
 func (c *cleaner) class(v, el string) string {
 	var kept []string
 	for _, t := range strings.FieldsFunc(v, isASCIISpace) {
-		if content.ReservedClass(t) {
-			c.changes.addf("removed class %q of <%s>: reserved for the core", cut(t), el)
+		// Pages in quirks mode match classes ASCII case-insensitively.
+		if content.ReservedClass(asciiLower(t)) {
+			c.addf("removed class %q of <%s>: reserved for the core", cut(t), el)
 			continue
 		}
 		kept = append(kept, t)
@@ -232,7 +249,7 @@ func (c *cleaner) rel(v, el string) []string {
 		t = asciiLower(t)
 		switch {
 		case !slices.Contains(relValues, t):
-			c.changes.addf("removed rel value %q of <%s>", cut(t), el)
+			c.addf("removed rel value %q of <%s>", cut(t), el)
 		case !slices.Contains(kept, t):
 			kept = append(kept, t)
 		}
@@ -262,7 +279,7 @@ func (c *cleaner) emptyFrame(n *html.Node) {
 		n.RemoveChild(ch)
 	}
 	if report {
-		c.changes.addf("removed the content of <iframe>")
+		c.addf("removed the content of <iframe>")
 	}
 }
 

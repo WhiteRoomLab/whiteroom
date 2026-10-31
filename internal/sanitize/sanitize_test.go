@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -37,7 +38,8 @@ func formatChanges(changes []Change) string {
 	return b.String()
 }
 
-// runTests sanitizes the input of each test as kind, and checks the output, the changes and checkPolicy.
+// runTests sanitizes the input of each test as kind, and checks the output, the changes, checkPolicy and that
+// sanitizing the output again gives it with no changes.
 func runTests(t *testing.T, kind Kind, tests []sanitizeTest) {
 	t.Helper()
 	for _, tt := range tests {
@@ -53,19 +55,28 @@ func runTests(t *testing.T, kind Kind, tests []sanitizeTest) {
 			t.Errorf("%s (kind %d): changes\n got %q\nwant %q", tt.name, kind, got, tt.changes)
 		}
 		checkPolicy(t, tt.name, kind, got)
+		if again, changes, err := Sanitize(got, Options{Kind: kind}); again != got || changes != nil || err != nil {
+			t.Errorf("%s (kind %d): Sanitize(%q) = %q, %q, %v", tt.name, kind, got, again, formatChanges(changes), err)
+		}
 	}
 }
 
-// checkPolicy parses out as Sanitize parses its input and checks that it has only what kind keeps: text and the
-// HTML elements and attributes of the policy, with valid URLs, classes, targets, rels and ids, no content in iframe
-// elements, and no element nested more than maxDepth deep.
-func checkPolicy(t *testing.T, name string, kind Kind, out string) {
+// checkPolicy parses out as Sanitize parses its input, without limits, and checks that it has only what kind keeps:
+// text and the HTML elements and attributes of the policy, with valid URLs, classes, targets, rels and ids, ids that
+// are unique, rel starting with noopener with a target, no content in iframe elements, and no element nested more
+// than maxDepth deep; that the tree gives out again; and that out passes markupProblem.
+func checkPolicy(t testing.TB, name string, kind Kind, out string) {
 	t.Helper()
-	opts, _ := limits(len(out))
-	nodes, err := html.ParseFragment(out, &html.Node{Type: html.ElementNode, Name: "div"}, opts)
+	nodes, err := html.ParseFragment(out, &html.Node{Type: html.ElementNode, Name: "div"}, html.Options{Scripting: true})
 	if err != nil {
-		t.Errorf("%s (kind %d): parsing the output: %v", name, kind, err)
+		t.Errorf("%s (kind %d): parsing the output %q: %v", name, kind, out, err)
 		return
+	}
+	if again := html.Render(nodes...); again != out {
+		t.Errorf("%s (kind %d): the output %q parses into a tree that gives %q", name, kind, out, again)
+	}
+	if problem := markupProblem(out); problem != "" {
+		t.Errorf("%s (kind %d): the output %q: %s", name, kind, out, problem)
 	}
 	type item struct {
 		n     *html.Node
@@ -75,6 +86,7 @@ func checkPolicy(t *testing.T, name string, kind Kind, out string) {
 	for _, n := range slices.Backward(nodes) {
 		stack = append(stack, item{n, 1})
 	}
+	ids := make(map[string]bool)
 	for len(stack) > 0 {
 		it := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -96,10 +108,26 @@ func checkPolicy(t *testing.T, name string, kind Kind, out string) {
 		if n.Name == "iframe" && n.FirstChild != nil {
 			t.Errorf("%s (kind %d): the output %q has an iframe element with content", name, kind, out)
 		}
+		var target, rel bool
 		for _, a := range n.Attrs {
 			if problem := attrProblem(n.Name, a); problem != "" {
 				t.Errorf("%s (kind %d): the output %q has %s attribute %+v of <%s>", name, kind, out, problem, a, n.Name)
 			}
+			switch a.Name {
+			case "id":
+				if ids[a.Value] {
+					t.Errorf("%s (kind %d): the output %q has the id %q twice", name, kind, out, a.Value)
+				}
+				ids[a.Value] = true
+			case "target":
+				target = true
+			case "rel":
+				rel = strings.HasPrefix(a.Value+" ", "noopener ")
+			}
+		}
+		if target && !rel {
+			t.Errorf("%s (kind %d): the output %q has <%s> with a target and no rel starting with noopener", name, kind,
+				out, n.Name)
 		}
 	}
 }
@@ -114,8 +142,8 @@ func attrProblem(el string, a html.Attr) string {
 			return "an invalid URL in the"
 		}
 	case a.Name == "class":
-		for _, c := range strings.Fields(a.Value) {
-			if content.ReservedClass(c) {
+		for _, c := range strings.FieldsFunc(a.Value, isASCIISpace) {
+			if content.ReservedClass(asciiLower(c)) {
 				return "a reserved class in the"
 			}
 		}
@@ -128,13 +156,51 @@ func attrProblem(el string, a html.Attr) string {
 			return "an invalid"
 		}
 	case a.Name == "rel":
-		for _, v := range strings.Fields(a.Value) {
+		for _, v := range strings.FieldsFunc(a.Value, isASCIISpace) {
 			if !slices.Contains(relValues, v) {
 				return "an invalid value in the"
 			}
 		}
 	}
 	return ""
+}
+
+// tagPattern matches a start or end tag as Render writes those of the elements and attributes of the policy.
+var tagPattern = regexp.MustCompile(`^</?[a-z][a-z0-9]*(?: [a-z]+="[^"'<>]*")*>`)
+
+// markupProblem returns what is wrong with out, HTML that Render wrote, or "": each "<" must start a tag that
+// tagPattern matches, and texts and attribute values must have "&" only in the escapes of Render, and no ">".
+func markupProblem(out string) string {
+	for s := out; s != ""; {
+		i := strings.IndexByte(s, '<')
+		if i < 0 {
+			i = len(s)
+		}
+		if text := s[:i]; strings.Contains(text, ">") || !escaped(text, "&amp;", "&lt;", "&gt;") {
+			return fmt.Sprintf("the text %q is not escaped", text)
+		}
+		if s = s[i:]; s == "" {
+			break
+		}
+		tag := tagPattern.FindString(s)
+		if tag == "" {
+			return fmt.Sprintf("%q starts no tag", cut(s))
+		}
+		if !escaped(tag, "&amp;", "&lt;", "&gt;", "&#34;", "&#39;") {
+			return fmt.Sprintf("the tag %q is not escaped", tag)
+		}
+		s = s[len(tag):]
+	}
+	return ""
+}
+
+// escaped reports whether each "&" of s starts one of escapes.
+func escaped(s string, escapes ...string) bool {
+	n := 0
+	for _, e := range escapes {
+		n += strings.Count(s, e)
+	}
+	return n == strings.Count(s, "&")
 }
 
 // allowedLegacy has every element and attribute that both kinds keep, as Render writes them.
@@ -698,10 +764,26 @@ func TestSanitizeAttributes(t *testing.T) {
 			name: "class",
 			in: "<p class=\" a  b&#9;c\nd b-0paragr1 hl-1a2b3c4d B-0PARAGR1 b-0paragr1 b-0para hl-1a2b3c4g\">x</p>" +
 				`<div class="b-00000000">y</div><div class="">z</div><span class=" ">w</span>`,
-			want: `<p class="a b c d B-0PARAGR1 b-0para hl-1a2b3c4g">x</p><div>y</div><div>z</div><span>w</span>`,
+			want: `<p class="a b c d b-0para hl-1a2b3c4g">x</p><div>y</div><div>z</div><span>w</span>`,
 			changes: `removed class "b-0paragr1" of <p>: reserved for the core (2 times)` + "\n" +
 				`removed class "hl-1a2b3c4d" of <p>: reserved for the core` + "\n" +
+				`removed class "B-0PARAGR1" of <p>: reserved for the core` + "\n" +
 				`removed class "b-00000000" of <div>: reserved for the core`,
+		},
+		{
+			// Pages in quirks mode match classes ASCII case-insensitively; the Kelvin sign is not K there.
+			name: "reserved classes in any case",
+			in:   `<p class="Hl-1A2B3C4D b-0PaRaGr1 B-0PARAGR1 b-0parag` + string(rune(0x212A)) + `">x</p>`,
+			want: `<p class="b-0parag` + string(rune(0x212A)) + `">x</p>`,
+			changes: `removed class "Hl-1A2B3C4D" of <p>: reserved for the core` + "\n" +
+				`removed class "b-0PaRaGr1" of <p>: reserved for the core` + "\n" +
+				`removed class "B-0PARAGR1" of <p>: reserved for the core`,
+		},
+		{
+			// Browsers split classes at ASCII whitespace only: this is one class.
+			name: "class with a no-break space",
+			in:   `<p class="x` + string(rune(0xA0)) + `b-0paragr1">x</p>`,
+			want: `<p class="x` + string(rune(0xA0)) + `b-0paragr1">x</p>`,
 		},
 		{
 			name: "id",
