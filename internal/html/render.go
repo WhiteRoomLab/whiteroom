@@ -13,7 +13,8 @@ import "strings"
 //   - A pre, textarea or listing element whose first child is a Text node starting with a line feed gets one more
 //     line feed after its start tag, which the parser drops.
 //   - Nothing is written after the children of a plaintext element, not even end tags: the parser takes the rest of
-//     the input as its text.
+//     the input as its text. The same holds after the text of a script element that ends in a double escape of script
+//     data ("<!--<script "), where the parser takes an end tag as text; only the end of the input ends such a script.
 func Render(nodes ...*Node) string {
 	var r renderer
 	for _, n := range nodes {
@@ -35,8 +36,8 @@ type frame struct {
 	next *Node // the next child to write
 }
 
-// node writes n and its descendants, and reports whether it wrote the children of a plaintext element, after which
-// nothing is written.
+// node writes n and its descendants, and reports whether it wrote the children of a plaintext element, or of a script
+// element that the parser would not end, after which nothing is written.
 func (r *renderer) node(n *Node) bool {
 	r.start(n)
 	for len(r.stack) > 0 {
@@ -51,7 +52,7 @@ func (r *renderer) node(n *Node) bool {
 		if end == nil {
 			continue
 		}
-		if end.isHTML("plaintext") {
+		if end.isHTML("plaintext") || end.isHTML("script") && !scriptCloses(end) {
 			return true
 		}
 		r.b.WriteString("</")
@@ -162,6 +163,30 @@ func (r *renderer) escape(s string, attr bool) {
 		last = i + 1
 	}
 	r.b.WriteString(s[last:])
+}
+
+// scriptCloses reports whether an end tag after the text of n, a script element, ends it when it is parsed: script data
+// has no other end tags, and a double escape turns the first one into text.
+func scriptCloses(n *Node) bool {
+	var b strings.Builder
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == TextNode {
+			b.WriteString(c.Data)
+		}
+	}
+	b.WriteString("</script>")
+	z := newTokenizer(b.String())
+	z.setState(scriptDataState)
+	z.lastStartTag = "script"
+	for {
+		switch z.next().typ {
+		case endTagToken:
+			return true
+		case eofToken:
+			return false
+		case doctypeToken, startTagToken, commentToken, characterToken, processingInstructionToken:
+		}
+	}
 }
 
 // rawText reports whether the Text children of n are written as they are.

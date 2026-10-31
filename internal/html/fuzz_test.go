@@ -185,6 +185,7 @@ func FuzzRoundTrip(f *testing.F) {
 	for _, s := range []string{
 		"<p>a<plaintext>b</p><table>c",
 		"<script><!--<script></script>x",
+		"<A<sCript ><sCript><!--<sCript 0",
 		"<pre>\n\na</pre><textarea>\n\nb</textarea><listing>\nc</listing>",
 		"<?a b\x00c?>\x00<svg>\x00</svg>",
 		`<form id="outer"><div></form><form id="inner"><input>`,

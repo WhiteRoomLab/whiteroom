@@ -21,6 +21,8 @@ func TestRender(t *testing.T) {
 			"<noembed>a&b<c></noembed><noframes>a&b<c></noframes><noscript>a&b<c></noscript>",
 			"<style>a&b<c></style><script>a&b<c></script><xmp>a&b<c></xmp><iframe>a&b<c></iframe>" +
 				"<noembed>a&b<c></noembed><noframes>a&b<c></noframes><noscript>a&b<c></noscript>"},
+		{"script ended in a double escape", "<p><script><!--<script a", "<p><script><!--<script a"},
+		{"script ended in an escape", "<p><script><!--<script></script>a", "<p><script><!--<script></script>a</script></p>"},
 		{"RCDATA", "<textarea>a&amp;b&lt;c</textarea><title>a&amp;b&lt;c</title>",
 			"<textarea>a&amp;b&lt;c</textarea><title>a&amp;b&lt;c</title>"},
 		{"text of SVG style", "<svg><style>a&amp;b&lt;c</style><script>d&gt;</script></svg>",
@@ -136,6 +138,8 @@ func TestRenderTrees(t *testing.T) {
 		})}, `<a xmlns="1" xmlns:x="2" xml:space="3" xlink:href="4" other:y="5"></a>`},
 		{"text in raw text with a parent", []*Node{html("xmp", text("<&>")).FirstChild}, "<&>"},
 		{"after plaintext", []*Node{html("div", plaintext, html("p")), text("b")}, "<div><plaintext>a"},
+		{"after a script ended in a double escape", []*Node{html("div", html("script", text("<!--<script a")), html("p")),
+			text("b")}, "<div><script><!--<script a"},
 		{"in plaintext", []*Node{html("plaintext", html("b", text("<")), text("&"))}, "<plaintext><b>&lt;</b>&"},
 		{"doctype", []*Node{{Type: DoctypeNode, Name: "html", PublicID: "a", SystemID: "b"}}, "<!DOCTYPE html>"},
 	}
