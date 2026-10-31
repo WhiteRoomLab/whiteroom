@@ -133,7 +133,9 @@ func TestNilResolver(t *testing.T) {
 // TestNew checks what New takes from the theme.Renderer and the Resolver.
 func TestNew(t *testing.T) {
 	th := testTheme(t, map[string]string{
-		"theme.yaml": "schemaVersion: 1\nmarks:\n  highlight:\n    variants:\n      marker: マーカー\n      wave: 波線\n",
+		"theme.yaml": "schemaVersion: 1\nblocks:\n  paragraph:\n    variants:\n      lead: リード\n      note: 注記\n" +
+			"  code:\n    styles: [fontSize]\n  group:\n    variants:\n      box: ボックス\n" +
+			"marks:\n  highlight:\n    variants:\n      marker: マーカー\n      wave: 波線\n",
 	})
 	tr, err := th.Renderer("en-US", "/blog")
 	if err != nil {
@@ -149,8 +151,14 @@ func TestNew(t *testing.T) {
 	if want := map[string]bool{"marker": true, "wave": true}; !maps.Equal(r.highlights, want) {
 		t.Errorf("highlights = %v, want %v", r.highlights, want)
 	}
+	want := map[content.BlockType]map[string]bool{
+		content.BlockParagraph: {"lead": true, "note": true}, content.BlockGroup: {"box": true},
+	}
+	if !maps.EqualFunc(r.variants, want, maps.Equal) {
+		t.Errorf("variants = %v, want %v", r.variants, want)
+	}
 	// A zero Theme has no settings.
-	if r := newRenderer(t, &theme.Theme{}, "ja", "", nil); len(r.highlights) != 0 {
-		t.Errorf("highlights of a zero Theme = %v, want none", r.highlights)
+	if r := newRenderer(t, &theme.Theme{}, "ja", "", nil); len(r.highlights) != 0 || len(r.variants) != 0 {
+		t.Errorf("highlights and variants of a zero Theme = %v, %v, want none", r.highlights, r.variants)
 	}
 }

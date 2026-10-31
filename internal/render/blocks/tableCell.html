@@ -1,0 +1,5 @@
+{{if .Header -}}
+<th{{with .Colspan}} colspan="{{.}}"{{end}}{{with .Rowspan}} rowspan="{{.}}"{{end}}>{{.Content}}</th>
+{{- else -}}
+<td{{with .Colspan}} colspan="{{.}}"{{end}}{{with .Rowspan}} rowspan="{{.}}"{{end}}>{{.Content}}</td>
+{{- end}}

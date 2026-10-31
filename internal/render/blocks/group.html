@@ -1,0 +1,16 @@
+{{if eq .TagName "section"}}<section
+{{- else if eq .TagName "article"}}<article
+{{- else if eq .TagName "aside"}}<aside
+{{- else}}<div
+{{- end}}{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}>
+{{- with .Label -}}
+<header>{{.}}</header>
+{{- end}}
+{{- with .Children}}
+{{.}}
+{{end -}}
+{{if eq .TagName "section"}}</section>
+{{- else if eq .TagName "article"}}</article>
+{{- else if eq .TagName "aside"}}</aside>
+{{- else}}</div>
+{{- end}}
