@@ -77,6 +77,18 @@ var blockSpecs = map[BlockType]blockSpec{
 	BlockLegacy:    {attrs: []string{"html", "reason"}},
 }
 
+// AllowsBlockGap reports whether blocks of type t can have blockGap in their style: list, quote, buttons, columns,
+// column and group.
+func (t BlockType) AllowsBlockGap() bool {
+	switch t {
+	case BlockList, BlockQuote, BlockButtons, BlockColumns, BlockColumn, BlockGroup:
+		return true
+	case BlockParagraph, BlockHeading, BlockListItem, BlockImage, BlockTable, BlockTableRow, BlockTableCell, BlockButton,
+		BlockSeparator, BlockSpacer, BlockCode, BlockEmbed, BlockFile, BlockForm, BlockHTML, BlockLegacy:
+	}
+	return false
+}
+
 type Block struct {
 	Type      BlockType
 	ID        string

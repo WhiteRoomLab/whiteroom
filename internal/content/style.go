@@ -1,6 +1,10 @@
 package content
 
-import "strconv"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+)
 
 type Color struct {
 	Preset string `json:"preset,omitempty"`
@@ -316,91 +320,150 @@ func (x Style) Validate() error {
 }
 
 func (x Style) check(c *checker, path string) {
-	x.TextColor.check(c, path+"/textColor")
-	x.BackgroundColor.check(c, path+"/backgroundColor")
-	x.LinkColor.check(c, path+"/linkColor")
-	x.Gradient.check(c, path+"/gradient")
-	x.FontSize.check(c, path+"/fontSize", LengthRule{Preset: true, Percent: true})
-	x.LetterSpacing.check(c, path+"/letterSpacing", LengthRule{Negative: true})
-	x.FontFamily.check(c, path+"/fontFamily")
-	x.FontWeight.check(c, path+"/fontWeight")
-	x.LineHeight.check(c, path+"/lineHeight")
-	x.Padding.check(c, path+"/padding", LengthRule{Preset: true, Percent: true})
-	x.Margin.check(c, path+"/margin", LengthRule{Preset: true, Negative: true, Percent: true})
-	x.BlockGap.check(c, path+"/blockGap", LengthRule{Preset: true, Percent: true})
-	x.Border.check(c, path+"/border")
-}
-
-func (x Color) check(c *checker, path string) {
-	if x.Preset != "" && x.Value != "" {
-		c.addf(path, "set either preset or value, not both")
-	}
-	if x.Preset != "" {
-		c.add(path+"/preset", checkName(x.Preset))
-	}
-	if x.Value != "" {
-		c.add(path+"/value", checkColor(x.Value))
+	for _, v := range x.Values() {
+		v.check(c, path+v.Path())
 	}
 }
 
-func (x Length) check(c *checker, path string, r LengthRule) {
-	if x.Preset != "" && x.Value != "" {
+// StyleValue is a value of a style, a color of a highlight or the height of a spacer.
+type StyleValue struct {
+	Item   string // the key in style, such as "padding"; "color" or "backgroundColor" of a highlight; "height" of a spacer
+	Key    string // the side of padding and margin, such as "top", or the part of border, such as "width"; else ""
+	Kind   string // the kind of presets it can name, as in theme.yaml, such as "color" or "spacing"; "" if none
+	Preset string
+	Value  string // written directly, as in CSS, such as "#1e73be", "-1rem", "700", "1.5" or "solid"
+	format valueFormat
+	length LengthRule // for formatLength
+}
+
+// valueFormat is how a StyleValue checks its Value.
+type valueFormat int
+
+const (
+	formatNone valueFormat = iota // no Value: gradient and fontFamily have only presets
+	formatColor
+	formatLength
+	formatFontWeight
+	formatLineHeight
+	formatBorderStyle
+)
+
+// Path returns the JSON Pointer of v from the style, or from the attrs of the highlight or of the spacer, such as
+// "/padding/top".
+func (v StyleValue) Path() string {
+	if v.Key == "" {
+		return "/" + v.Item
+	}
+	return "/" + v.Item + "/" + v.Key
+}
+
+// Check checks the format of v as validation does, but not against a theme, and returns the first problem: an *Error
+// whose Path is relative to v, "" for both preset and value, "/preset" or "/value".
+func (v StyleValue) Check() error {
+	var c checker
+	v.check(&c, "")
+	if len(c.errs) == 0 {
+		return nil
+	}
+	return c.errs[0]
+}
+
+func (v StyleValue) check(c *checker, path string) {
+	if v.Preset != "" && v.Value != "" {
 		c.addf(path, "set either preset or value, not both")
 	}
-	if x.Preset != "" {
-		if r.Preset {
-			c.add(path+"/preset", checkName(x.Preset))
-		} else {
+	if v.Preset != "" {
+		if v.Kind == "" {
 			c.addf(path+"/preset", "presets are not allowed here")
+		} else {
+			c.add(path+"/preset", checkName(v.Preset))
 		}
 	}
-	if x.Value != "" {
-		c.add(path+"/value", checkLength(x.Value, r))
+	if v.Value != "" {
+		c.add(path+"/value", v.checkValue())
 	}
 }
 
-func (x Gradient) check(c *checker, path string) {
-	if x.Preset != "" {
-		c.add(path+"/preset", checkName(x.Preset))
+func (v StyleValue) checkValue() error {
+	switch v.format {
+	case formatColor:
+		return checkColor(v.Value)
+	case formatLength:
+		return checkLength(v.Value, v.length)
+	case formatFontWeight:
+		n, err := strconv.Atoi(v.Value)
+		if err != nil {
+			return errors.New("must be an integer")
+		}
+		return checkFontWeight(n)
+	case formatLineHeight:
+		n, err := strconv.ParseFloat(v.Value, 64)
+		if err != nil {
+			return errors.New("invalid number")
+		}
+		return checkLineHeight(n)
+	case formatBorderStyle:
+		switch v.Value {
+		case "solid", "dashed", "dotted":
+			return nil
+		}
+		return fmt.Errorf("unknown border style %q", v.Value)
+	case formatNone:
 	}
+	return errors.New("values are not allowed here")
 }
 
-func (x FontFamily) check(c *checker, path string) {
-	if x.Preset != "" {
-		c.add(path+"/preset", checkName(x.Preset))
+func (x Color) value(item, key string) StyleValue {
+	return StyleValue{Item: item, Key: key, Kind: "color", Preset: x.Preset, Value: x.Value, format: formatColor}
+}
+
+func (x Length) value(item, key, kind string, r LengthRule) StyleValue {
+	return StyleValue{Item: item, Key: key, Kind: kind, Preset: x.Preset, Value: x.Value, format: formatLength, length: r}
+}
+
+// Values returns the values that x sets, in the order of the items and, within padding, margin and border, of their
+// keys.
+func (x Style) Values() []StyleValue {
+	var vs []StyleValue
+	add := func(set bool, v StyleValue) {
+		if set {
+			vs = append(vs, v)
+		}
 	}
-}
-
-func (x FontWeight) check(c *checker, path string) {
-	if x.Value != 0 {
-		c.add(path+"/value", checkFontWeight(x.Value))
+	color := func(item, key string, c Color) {
+		add(c != (Color{}), c.value(item, key))
 	}
-}
-
-func (x LineHeight) check(c *checker, path string) {
-	if x.Value != 0 {
-		c.add(path+"/value", checkLineHeight(x.Value))
+	length := func(item, key, kind string, l Length, r LengthRule) {
+		add(l != (Length{}), l.value(item, key, kind, r))
 	}
-}
-
-func (x BorderStyle) check(c *checker, path string) {
-	switch x.Value {
-	case "", "solid", "dashed", "dotted":
-	default:
-		c.addf(path+"/value", "unknown border style %q", x.Value)
+	sides := func(item string, s Sides, r LengthRule) {
+		length(item, "top", "spacing", s.Top, r)
+		length(item, "right", "spacing", s.Right, r)
+		length(item, "bottom", "spacing", s.Bottom, r)
+		length(item, "left", "spacing", s.Left, r)
 	}
-}
-
-func (x Sides) check(c *checker, path string, r LengthRule) {
-	x.Top.check(c, path+"/top", r)
-	x.Right.check(c, path+"/right", r)
-	x.Bottom.check(c, path+"/bottom", r)
-	x.Left.check(c, path+"/left", r)
-}
-
-func (x Border) check(c *checker, path string) {
-	x.Width.check(c, path+"/width", LengthRule{})
-	x.Style.check(c, path+"/style")
-	x.Color.check(c, path+"/color")
-	x.Radius.check(c, path+"/radius", LengthRule{Percent: true})
+	color("textColor", "", x.TextColor)
+	color("backgroundColor", "", x.BackgroundColor)
+	color("linkColor", "", x.LinkColor)
+	add(x.Gradient.Preset != "", StyleValue{Item: "gradient", Kind: "gradient", Preset: x.Gradient.Preset})
+	length("fontSize", "", "fontSize", x.FontSize, LengthRule{Preset: true, Percent: true})
+	length("letterSpacing", "", "", x.LetterSpacing, LengthRule{Negative: true})
+	add(x.FontFamily.Preset != "", StyleValue{Item: "fontFamily", Kind: "fontFamily", Preset: x.FontFamily.Preset})
+	// Check reads the numbers back from Value, so they are written exactly.
+	add(x.FontWeight.Value != 0, StyleValue{
+		Item: "fontWeight", Value: strconv.Itoa(x.FontWeight.Value), format: formatFontWeight,
+	})
+	add(x.LineHeight.Value != 0, StyleValue{
+		Item: "lineHeight", Value: strconv.FormatFloat(x.LineHeight.Value, 'f', -1, 64), format: formatLineHeight,
+	})
+	sides("padding", x.Padding, LengthRule{Preset: true, Percent: true})
+	sides("margin", x.Margin, LengthRule{Preset: true, Negative: true, Percent: true})
+	length("blockGap", "", "spacing", x.BlockGap, LengthRule{Preset: true, Percent: true})
+	length("border", "width", "", x.Border.Width, LengthRule{})
+	add(x.Border.Style.Value != "", StyleValue{
+		Item: "border", Key: "style", Value: x.Border.Style.Value, format: formatBorderStyle,
+	})
+	color("border", "color", x.Border.Color)
+	length("border", "radius", "", x.Border.Radius, LengthRule{Percent: true})
+	return vs
 }

@@ -258,6 +258,14 @@ func (x *Attrs) normalize() {
 	}
 }
 
+// HeightValue returns the height of a spacer, or the zero StyleValue if it is not set.
+func (x Attrs) HeightValue() StyleValue {
+	if x.Height == (Length{}) {
+		return StyleValue{}
+	}
+	return x.Height.value("height", "", "spacing", LengthRule{Preset: true})
+}
+
 var textAligns = []string{"left", "center", "right"}
 
 // embedProviderNames are the keys of embedProviders, in the order that messages list them.
@@ -346,7 +354,8 @@ func (x *Block) checkAttrs(c *checker, path string) {
 		if a.Height == (Length{}) {
 			c.addf(path+"/height", "missing height")
 		} else {
-			a.Height.check(c, path+"/height", LengthRule{Preset: true})
+			v := a.HeightValue()
+			v.check(c, path+v.Path())
 		}
 	case BlockCode:
 		if a.Language != "" {

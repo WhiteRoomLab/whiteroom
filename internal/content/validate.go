@@ -125,12 +125,15 @@ func (x *Block) check(c *checker, path string, spec blockSpec, depth int, inColu
 			c.add(path+"/variant", checkName(x.Variant))
 		}
 		if x.ClassName != "" {
-			c.add(path+"/className", checkName(x.ClassName))
+			c.add(path+"/className", checkClassName(x.ClassName))
 		}
 		if x.Anchor != "" {
 			c.anchor(path+"/anchor", x.Anchor)
 		}
 		x.Style.check(c, path+"/style")
+		if x.Style.BlockGap != (Length{}) && !x.Type.AllowsBlockGap() {
+			c.addf(path+"/style/blockGap", "blockGap is not allowed for %s blocks", x.Type)
+		}
 	}
 	for _, k := range x.Attrs.keys() {
 		if !slices.Contains(spec.attrs, k) {

@@ -400,6 +400,19 @@ func TestBlocksValidate(t *testing.T) {
 			msg:   `/0/className: invalid name "a.b"`,
 		},
 		{
+			name: "reserved className of a button",
+			in: `[{"type":"buttons","id":"b_0buttons","content":[` +
+				`{"type":"button","id":"b_0button1","className":"b-0button1","attrs":{"label":"Go"}}]}]`,
+			paths: []string{"/0/content/0/className"},
+			msg:   `/0/content/0/className: reserved className "b-0button1"`,
+		},
+		{
+			name:  "blockGap of a paragraph",
+			in:    `[{"type":"paragraph","id":"b_9x3v7k5m","style":{"blockGap":{"value":"1rem"}}}]`,
+			paths: []string{"/0/style/blockGap"},
+			msg:   "/0/style/blockGap: blockGap is not allowed for paragraph blocks",
+		},
+		{
 			name:  "invalid style",
 			in:    `[{"type":"paragraph","id":"b_9x3v7k5m","style":{"textColor":{"value":"red"},"padding":{"top":{"value":"1"}}}}]`,
 			paths: []string{"/0/style/textColor/value", "/0/style/padding/top/value"},
@@ -635,6 +648,160 @@ func TestBlocksValidateGoValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertBlocksValidate(t, tt.in, ValidateOptions{}, tt.paths, tt.msg)
+		})
+	}
+}
+
+func TestValidateClassName(t *testing.T) {
+	const reserved = ": the core gives classes of the forms b-xxxxxxxx and hl-xxxxxxxx"
+	tests := []struct {
+		in   string
+		want string // the text of the error, "" for none
+	}{
+		{in: "intro"},
+		{in: "alignwide"},
+		{in: "is-layout-row"},
+		{in: "b-abc"},
+		{in: "b-0paragr"},
+		{in: "b-0paragr12"},
+		{in: "B-0paragr1"},
+		{in: "b-0PARAGR1"},
+		{in: "b-0parag-1"},
+		{in: "b-0parag_1"},
+		{in: "b_0paragr1"},
+		{in: "xb-0paragr1"},
+		{in: "hl-0123456g"},
+		{in: "hl-0123ABCD"},
+		{in: "hl-0123456"},
+		{in: "hl-012345678"},
+		{in: "HL-0123abcd"},
+		{in: "hl_0123abcd"},
+
+		{in: "b-0paragr1", want: `/0/className: reserved className "b-0paragr1"` + reserved},
+		{in: "b-00000000", want: `/0/className: reserved className "b-00000000"` + reserved},
+		{in: "b-zzzzzzzz", want: `/0/className: reserved className "b-zzzzzzzz"` + reserved},
+		{in: "hl-0123abcd", want: `/0/className: reserved className "hl-0123abcd"` + reserved},
+		{in: "hl-ffffffff", want: `/0/className: reserved className "hl-ffffffff"` + reserved},
+		{in: "b-0paragr1 x", want: `/0/className: invalid name "b-0paragr1 x": use ASCII letters, digits, "-" and "_"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			bs := Blocks{{Type: BlockParagraph, ID: "b_0paragr1", ClassName: tt.in}}
+			if got := errorMsg(bs.Validate(ValidateOptions{})); got != tt.want {
+				t.Errorf("Validate() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowsBlockGap(t *testing.T) {
+	allowed := []BlockType{BlockList, BlockQuote, BlockButtons, BlockColumns, BlockColumn, BlockGroup}
+	for typ := range blockSpecs {
+		if got, want := typ.AllowsBlockGap(), slices.Contains(allowed, typ); got != want {
+			t.Errorf("AllowsBlockGap() of %s = %t, want %t", typ, got, want)
+		}
+	}
+	if BlockType("bogus").AllowsBlockGap() {
+		t.Error(`AllowsBlockGap() of "bogus" = true, want false`)
+	}
+}
+
+func TestValidateBlockGap(t *testing.T) {
+	const media = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
+	text := RichText{{Type: InlineText, Text: "a"}}
+	para := Block{Type: BlockParagraph, ID: "b_0paragr1"}
+	// withGap is b with a blockGap as its style.
+	withGap := func(b Block) Block {
+		b.Style = Style{BlockGap: Length{Preset: "small"}}
+		return b
+	}
+	// AllowHTML and Import accept the html and legacy blocks.
+	opts := ValidateOptions{AllowHTML: true, Import: true}
+
+	// others are blocks of the types that cannot have blockGap, apart from button and the parts.
+	others := Blocks{
+		para,
+		{Type: BlockHeading, ID: "b_0heading", Attrs: Attrs{Level: 2}, Text: text},
+		{Type: BlockImage, ID: "b_000image", Attrs: Attrs{Media: media, Decorative: true}},
+		{Type: BlockTable, ID: "b_000table", Children: Blocks{{Type: BlockTableRow, Children: Blocks{{Type: BlockTableCell}}}}},
+		{Type: BlockSeparator, ID: "b_separat1"},
+		{Type: BlockSpacer, ID: "b_00spacer", Attrs: Attrs{Height: Length{Preset: "large"}}},
+		{Type: BlockCode, ID: "b_0000code"},
+		{Type: BlockEmbed, ID: "b_000embed", Attrs: Attrs{Provider: "youtube", URL: "https://youtu.be/dQw4w9WgXcQ"}},
+		{Type: BlockFile, ID: "b_0000file", Attrs: Attrs{Media: media}},
+		{Type: BlockForm, ID: "b_0000form", Attrs: Attrs{Form: "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"}},
+		{Type: BlockHTML, ID: "b_0000html", Attrs: Attrs{HTML: "<p>a</p>"}},
+		{Type: BlockLegacy, ID: "b_00legacy", Attrs: Attrs{HTML: "[gallery]"}},
+	}
+	for _, b := range others {
+		t.Run(string(b.Type), func(t *testing.T) {
+			assertBlocksValidate(t, Blocks{b}, opts, nil, "")
+			want := "/0/style/blockGap: blockGap is not allowed for " + string(b.Type) + " blocks"
+			assertBlocksValidate(t, Blocks{withGap(b)}, opts, []string{"/0/style/blockGap"}, want)
+		})
+	}
+
+	tests := []struct {
+		name  string
+		in    Blocks
+		paths []string
+		msg   string // part of the error text, a "path: message" line for each problem; not checked if ""
+	}{
+		{
+			name: "list",
+			in:   Blocks{withGap(Block{Type: BlockList, ID: "b_00list01", Children: Blocks{{Type: BlockListItem, Children: Blocks{para}}}})},
+		},
+		{name: "quote", in: Blocks{withGap(Block{Type: BlockQuote, ID: "b_000quote", Children: Blocks{para}})}},
+		{
+			name: "buttons",
+			in: Blocks{withGap(Block{
+				Type: BlockButtons, ID: "b_0buttons", Children: Blocks{{Type: BlockButton, ID: "b_0button1", Attrs: Attrs{Label: "Go"}}},
+			})},
+		},
+		{
+			name: "columns and column",
+			in:   Blocks{withGap(Block{Type: BlockColumns, ID: "b_0columns", Children: Blocks{withGap(Block{Type: BlockColumn, ID: "b_0column1"})}})},
+		},
+		{name: "group", in: Blocks{withGap(Block{Type: BlockGroup, ID: "b_00group1"})}},
+		{
+			name: "group with a layout",
+			in: Blocks{{
+				Type: BlockGroup, ID: "b_00group1", Style: Style{BlockGap: Length{Value: "2rem"}}, Attrs: Attrs{Layout: Layout{Type: "grid"}},
+			}},
+		},
+
+		{
+			name: "button",
+			in: Blocks{{
+				Type: BlockButtons, ID: "b_0buttons", Children: Blocks{withGap(Block{Type: BlockButton, ID: "b_0button1", Attrs: Attrs{Label: "Go"}})},
+			}},
+			paths: []string{"/0/content/0/style/blockGap"},
+			msg:   "/0/content/0/style/blockGap: blockGap is not allowed for button blocks",
+		},
+		{
+			name: "after the other problems of the style and before those of the attrs",
+			in: Blocks{{
+				Type:  BlockParagraph,
+				ID:    "b_0paragr1",
+				Style: Style{BlockGap: Length{Value: "1"}, Border: Border{Width: Length{Value: "10%"}}},
+				Attrs: Attrs{TextAlign: "middle"},
+			}},
+			paths: []string{"/0/style/blockGap/value", "/0/style/border/width/value", "/0/style/blockGap", "/0/attrs/textAlign"},
+			msg: `/0/style/blockGap/value: invalid length "1"` + "\n" +
+				`/0/style/border/width/value: percentage "10%" is not allowed here` + "\n" +
+				"/0/style/blockGap: blockGap is not allowed for paragraph blocks\n" +
+				`/0/attrs/textAlign: unknown textAlign "middle"`,
+		},
+		{
+			name:  "style of a part",
+			in:    inList(withGap(Block{Type: BlockListItem, Children: Blocks{para}})),
+			paths: []string{"/0/content/0/style"},
+			msg:   "/0/content/0/style: not allowed for listItem",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertBlocksValidate(t, tt.in, opts, tt.paths, tt.msg)
 		})
 	}
 }

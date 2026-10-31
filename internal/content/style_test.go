@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"math"
 	"reflect"
 	"testing"
@@ -479,6 +480,492 @@ func TestStyleValidateGoValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertStyleValidate(t, tt.in, tt.paths, tt.msg)
+		})
+	}
+}
+
+func TestStyleValues(t *testing.T) {
+	every := fullStyle
+	every.Margin.Right = Length{Value: "0"}
+	every.Margin.Left = Length{Value: "5%"}
+	padding := LengthRule{Preset: true, Percent: true}
+	margin := LengthRule{Preset: true, Negative: true, Percent: true}
+	tests := []struct {
+		name  string
+		in    Style
+		want  []StyleValue
+		paths []string
+	}{
+		{name: "zero", in: Style{}},
+		{
+			name: "every item, side and part",
+			in:   every,
+			want: []StyleValue{
+				{Item: "textColor", Kind: "color", Preset: "primary", format: formatColor},
+				{Item: "backgroundColor", Kind: "color", Value: "#fff4e5", format: formatColor},
+				{Item: "linkColor", Kind: "color", Value: "rgb(30, 115, 190)", format: formatColor},
+				{Item: "gradient", Kind: "gradient", Preset: "sunset"},
+				{Item: "fontSize", Kind: "fontSize", Value: "1.25rem", format: formatLength, length: LengthRule{Preset: true, Percent: true}},
+				{Item: "letterSpacing", Value: "0.05em", format: formatLength, length: LengthRule{Negative: true}},
+				{Item: "fontFamily", Kind: "fontFamily", Preset: "serif"},
+				{Item: "fontWeight", Value: "700", format: formatFontWeight},
+				{Item: "lineHeight", Value: "1.5", format: formatLineHeight},
+				{Item: "padding", Key: "top", Kind: "spacing", Value: "1rem", format: formatLength, length: padding},
+				{Item: "padding", Key: "right", Kind: "spacing", Preset: "medium", format: formatLength, length: padding},
+				{Item: "padding", Key: "bottom", Kind: "spacing", Value: "2rem", format: formatLength, length: padding},
+				{Item: "padding", Key: "left", Kind: "spacing", Value: "5%", format: formatLength, length: padding},
+				{Item: "margin", Key: "top", Kind: "spacing", Value: "-1rem", format: formatLength, length: margin},
+				{Item: "margin", Key: "right", Kind: "spacing", Value: "0", format: formatLength, length: margin},
+				{Item: "margin", Key: "bottom", Kind: "spacing", Preset: "large", format: formatLength, length: margin},
+				{Item: "margin", Key: "left", Kind: "spacing", Value: "5%", format: formatLength, length: margin},
+				{Item: "blockGap", Kind: "spacing", Preset: "small", format: formatLength, length: LengthRule{Preset: true, Percent: true}},
+				{Item: "border", Key: "width", Value: "1px", format: formatLength},
+				{Item: "border", Key: "style", Value: "solid", format: formatBorderStyle},
+				{Item: "border", Key: "color", Kind: "color", Preset: "accent", format: formatColor},
+				{Item: "border", Key: "radius", Value: "4px", format: formatLength, length: LengthRule{Percent: true}},
+			},
+			paths: []string{
+				"/textColor", "/backgroundColor", "/linkColor", "/gradient", "/fontSize", "/letterSpacing", "/fontFamily",
+				"/fontWeight", "/lineHeight", "/padding/top", "/padding/right", "/padding/bottom", "/padding/left",
+				"/margin/top", "/margin/right", "/margin/bottom", "/margin/left", "/blockGap",
+				"/border/width", "/border/style", "/border/color", "/border/radius",
+			},
+		},
+		{
+			name: "only the sides and parts that are set",
+			in: Style{
+				Padding: Sides{Left: Length{Preset: "small"}},
+				Margin:  Sides{Bottom: Length{Value: "auto"}},
+				Border:  Border{Color: Color{Value: "#000"}},
+			},
+			want: []StyleValue{
+				{Item: "padding", Key: "left", Kind: "spacing", Preset: "small", format: formatLength, length: padding},
+				{Item: "margin", Key: "bottom", Kind: "spacing", Value: "auto", format: formatLength, length: margin},
+				{Item: "border", Key: "color", Kind: "color", Value: "#000", format: formatColor},
+			},
+			paths: []string{"/padding/left", "/margin/bottom", "/border/color"},
+		},
+		{
+			name: "values as written, without checks",
+			in: Style{
+				TextColor:     Color{Preset: "a b", Value: "red"},
+				LetterSpacing: Length{Preset: "wide"},
+				Border:        Border{Style: BorderStyle{Value: "double"}},
+			},
+			want: []StyleValue{
+				{Item: "textColor", Kind: "color", Preset: "a b", Value: "red", format: formatColor},
+				{Item: "letterSpacing", Preset: "wide", format: formatLength, length: LengthRule{Negative: true}},
+				{Item: "border", Key: "style", Value: "double", format: formatBorderStyle},
+			},
+			paths: []string{"/textColor", "/letterSpacing", "/border/style"},
+		},
+		{
+			name: "numbers",
+			in:   Style{FontWeight: FontWeight{Value: 100}, LineHeight: LineHeight{Value: 1e-7}},
+			want: []StyleValue{
+				{Item: "fontWeight", Value: "100", format: formatFontWeight},
+				{Item: "lineHeight", Value: "0.0000001", format: formatLineHeight},
+			},
+			paths: []string{"/fontWeight", "/lineHeight"},
+		},
+		{
+			name: "numbers out of range",
+			in:   Style{FontWeight: FontWeight{Value: -5}, LineHeight: LineHeight{Value: 1e21}},
+			want: []StyleValue{
+				{Item: "fontWeight", Value: "-5", format: formatFontWeight},
+				{Item: "lineHeight", Value: "1000000000000000000000", format: formatLineHeight},
+			},
+			paths: []string{"/fontWeight", "/lineHeight"},
+		},
+		{
+			name:  "NaN line height",
+			in:    Style{LineHeight: LineHeight{Value: math.NaN()}},
+			want:  []StyleValue{{Item: "lineHeight", Value: "NaN", format: formatLineHeight}},
+			paths: []string{"/lineHeight"},
+		},
+		{name: "negative zero line height as unset", in: Style{LineHeight: LineHeight{Value: math.Copysign(0, -1)}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in.Values()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Values() = %#v, want %#v", got, tt.want)
+			}
+			var paths []string
+			for _, v := range got {
+				paths = append(paths, v.Path())
+			}
+			if !reflect.DeepEqual(paths, tt.paths) {
+				t.Errorf("Path() of Values() = %q, want %q", paths, tt.paths)
+			}
+		})
+	}
+}
+
+func TestStyleValueCheck(t *testing.T) {
+	const invalidName = `: use ASCII letters, digits, "-" and "_"`
+	tests := []struct {
+		name string
+		in   Style  // with one value
+		want string // the text of the error, "" for none
+	}{
+		{name: "color preset", in: Style{TextColor: Color{Preset: "primary"}}},
+		{name: "color value", in: Style{BackgroundColor: Color{Value: "rgb(30 115 190 / 50%)"}}},
+		{name: "invalid color", in: Style{LinkColor: Color{Value: "red"}}, want: `/value: invalid color "red"`},
+		{name: "invalid color preset", in: Style{TextColor: Color{Preset: "a b"}}, want: `/preset: invalid name "a b"` + invalidName},
+		{
+			name: "color preset and value",
+			in:   Style{TextColor: Color{Preset: "primary", Value: "#fff"}},
+			want: "set either preset or value, not both",
+		},
+		{
+			name: "first of several problems",
+			in:   Style{FontSize: Length{Preset: "a b", Value: "1"}},
+			want: "set either preset or value, not both",
+		},
+		{name: "gradient", in: Style{Gradient: Gradient{Preset: "sunset"}}},
+		{name: "invalid gradient", in: Style{Gradient: Gradient{Preset: "a/b"}}, want: `/preset: invalid name "a/b"` + invalidName},
+		{name: "font size preset", in: Style{FontSize: Length{Preset: "large"}}},
+		{name: "font size percentage", in: Style{FontSize: Length{Value: "120%"}}},
+		{
+			name: "negative font size",
+			in:   Style{FontSize: Length{Value: "-1rem"}},
+			want: `/value: negative length "-1rem" is not allowed here`,
+		},
+		{name: "negative letter spacing", in: Style{LetterSpacing: Length{Value: "-0.05em"}}},
+		{name: "letter spacing preset", in: Style{LetterSpacing: Length{Preset: "wide"}}, want: "/preset: presets are not allowed here"},
+		{
+			name: "letter spacing percentage",
+			in:   Style{LetterSpacing: Length{Value: "5%"}},
+			want: `/value: percentage "5%" is not allowed here`,
+		},
+		{name: "font family", in: Style{FontFamily: FontFamily{Preset: "serif"}}},
+		{
+			name: "invalid font family",
+			in:   Style{FontFamily: FontFamily{Preset: "Noto Sans"}},
+			want: `/preset: invalid name "Noto Sans"` + invalidName,
+		},
+		{name: "font weight", in: Style{FontWeight: FontWeight{Value: 100}}},
+		{
+			name: "heavy font weight",
+			in:   Style{FontWeight: FontWeight{Value: 950}},
+			want: "/value: font weight 950 is out of range (100-900)",
+		},
+		{
+			name: "negative font weight",
+			in:   Style{FontWeight: FontWeight{Value: -5}},
+			want: "/value: font weight -5 is out of range (100-900)",
+		},
+		{name: "line height", in: Style{LineHeight: LineHeight{Value: 10}}},
+		{name: "small line height", in: Style{LineHeight: LineHeight{Value: 1e-7}}},
+		{
+			name: "large line height",
+			in:   Style{LineHeight: LineHeight{Value: 10.5}},
+			want: "/value: line height 10.5 is out of range (0 < x <= 10)",
+		},
+		{
+			name: "huge line height",
+			in:   Style{LineHeight: LineHeight{Value: 1e21}},
+			want: "/value: line height 1e+21 is out of range (0 < x <= 10)",
+		},
+		{
+			name: "negative line height",
+			in:   Style{LineHeight: LineHeight{Value: -1}},
+			want: "/value: line height -1 is out of range (0 < x <= 10)",
+		},
+		{
+			name: "NaN line height",
+			in:   Style{LineHeight: LineHeight{Value: math.NaN()}},
+			want: "/value: line height NaN is out of range (0 < x <= 10)",
+		},
+		{
+			name: "infinite line height",
+			in:   Style{LineHeight: LineHeight{Value: math.Inf(1)}},
+			want: "/value: line height +Inf is out of range (0 < x <= 10)",
+		},
+		{name: "padding", in: Style{Padding: Sides{Top: Length{Value: "1rem"}}}},
+		{name: "padding preset", in: Style{Padding: Sides{Right: Length{Preset: "medium"}}}},
+		{
+			name: "negative padding",
+			in:   Style{Padding: Sides{Bottom: Length{Value: "-1rem"}}},
+			want: `/value: negative length "-1rem" is not allowed here`,
+		},
+		{name: "unitless padding", in: Style{Padding: Sides{Left: Length{Value: "1"}}}, want: `/value: invalid length "1"`},
+		{name: "negative margin", in: Style{Margin: Sides{Left: Length{Value: "-1rem"}}}},
+		{name: "margin percentage", in: Style{Margin: Sides{Top: Length{Value: "5%"}}}},
+		{name: "margin preset", in: Style{Margin: Sides{Bottom: Length{Preset: "large"}}}},
+		{name: "margin in points", in: Style{Margin: Sides{Right: Length{Value: "1pt"}}}, want: `/value: invalid length "1pt"`},
+		{name: "block gap preset", in: Style{BlockGap: Length{Preset: "small"}}},
+		{name: "block gap percentage", in: Style{BlockGap: Length{Value: "10%"}}},
+		{
+			name: "negative block gap",
+			in:   Style{BlockGap: Length{Value: "-1rem"}},
+			want: `/value: negative length "-1rem" is not allowed here`,
+		},
+		{name: "border width", in: Style{Border: Border{Width: Length{Value: "1px"}}}},
+		{
+			name: "border width percentage",
+			in:   Style{Border: Border{Width: Length{Value: "10%"}}},
+			want: `/value: percentage "10%" is not allowed here`,
+		},
+		{
+			name: "border width preset",
+			in:   Style{Border: Border{Width: Length{Preset: "thin"}}},
+			want: "/preset: presets are not allowed here",
+		},
+		{name: "border style", in: Style{Border: Border{Style: BorderStyle{Value: "dashed"}}}},
+		{
+			name: "unknown border style",
+			in:   Style{Border: Border{Style: BorderStyle{Value: "double"}}},
+			want: `/value: unknown border style "double"`,
+		},
+		{
+			name: "border style in upper case",
+			in:   Style{Border: Border{Style: BorderStyle{Value: "SOLID"}}},
+			want: `/value: unknown border style "SOLID"`,
+		},
+		{name: "border color", in: Style{Border: Border{Color: Color{Preset: "accent"}}}},
+		{
+			name: "invalid border color",
+			in:   Style{Border: Border{Color: Color{Value: "#ggg"}}},
+			want: `/value: invalid color "#ggg"`,
+		},
+		{name: "border radius", in: Style{Border: Border{Radius: Length{Value: "50%"}}}},
+		{
+			name: "border radius preset",
+			in:   Style{Border: Border{Radius: Length{Preset: "round"}}},
+			want: "/preset: presets are not allowed here",
+		},
+		{
+			name: "negative border radius",
+			in:   Style{Border: Border{Radius: Length{Value: "-4px"}}},
+			want: `/value: negative length "-4px" is not allowed here`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vs := tt.in.Values()
+			if len(vs) != 1 {
+				t.Fatalf("Values() = %#v, want one value", vs)
+			}
+			v := vs[0]
+			err := v.Check()
+			if got := errorMsg(err); got != tt.want {
+				t.Errorf("Check() = %q, want %q", got, tt.want)
+			}
+			// Check returns the first problem that Validate finds, relative to the path of the value.
+			verr := tt.in.Validate()
+			if err == nil {
+				if verr != nil {
+					t.Errorf("Validate() = %v, want nil", verr)
+				}
+				return
+			}
+			var e *Error
+			var es Errors
+			if !errors.As(err, &e) || !errors.As(verr, &es) {
+				t.Fatalf("Check() = %v (%T) and Validate() = %v (%T), want *Error and Errors", err, err, verr, verr)
+			}
+			if es[0].Path != v.Path()+e.Path || es[0].Msg != e.Msg {
+				t.Errorf("first problem of Validate() = %q at %q, want %q at %q", es[0].Msg, es[0].Path, e.Msg, v.Path()+e.Path)
+			}
+		})
+	}
+}
+
+// TestStyleValueCheckGoValues checks values built in Go, some of which Values does not make.
+func TestStyleValueCheckGoValues(t *testing.T) {
+	// changed is the value of s, which has one, with value instead of its own.
+	changed := func(s Style, value string) StyleValue {
+		v := s.Values()[0]
+		v.Value = value
+		return v
+	}
+	tests := []struct {
+		name string
+		in   StyleValue
+		want string // the text of the error, "" for none
+	}{
+		{name: "zero", in: StyleValue{}},
+		{name: "preset without a format", in: StyleValue{Item: "textColor", Kind: "color", Preset: "primary"}},
+		{
+			name: "value without a format",
+			in:   StyleValue{Item: "textColor", Kind: "color", Value: "#fff"},
+			want: "/value: values are not allowed here",
+		},
+		{
+			name: "gradient value",
+			in:   StyleValue{Item: "gradient", Kind: "gradient", Value: "linear-gradient(#fff, #000)"},
+			want: "/value: values are not allowed here",
+		},
+		{
+			name: "font weight preset",
+			in:   StyleValue{Item: "fontWeight", Preset: "bold", format: formatFontWeight},
+			want: "/preset: presets are not allowed here",
+		},
+		{
+			name: "font weight that is not a number",
+			in:   StyleValue{Item: "fontWeight", Value: "bold", format: formatFontWeight},
+			want: "/value: must be an integer",
+		},
+		{
+			name: "line height that is not a number",
+			in:   StyleValue{Item: "lineHeight", Value: "normal", format: formatLineHeight},
+			want: "/value: invalid number",
+		},
+		{
+			name: "line height overflow",
+			in:   StyleValue{Item: "lineHeight", Value: "1e400", format: formatLineHeight},
+			want: "/value: invalid number",
+		},
+		{name: "changed color", in: changed(Style{TextColor: Color{Value: "#fff"}}, "red"), want: `/value: invalid color "red"`},
+		{
+			name: "changed length",
+			in:   changed(Style{Padding: Sides{Top: Length{Value: "1rem"}}}, "-1rem"),
+			want: `/value: negative length "-1rem" is not allowed here`,
+		},
+		{
+			name: "changed font weight",
+			in:   changed(Style{FontWeight: FontWeight{Value: 700}}, "950"),
+			want: "/value: font weight 950 is out of range (100-900)",
+		},
+		{
+			name: "changed line height",
+			in:   changed(Style{LineHeight: LineHeight{Value: 1.5}}, "12"),
+			want: "/value: line height 12 is out of range (0 < x <= 10)",
+		},
+		{
+			name: "changed border style",
+			in:   changed(Style{Border: Border{Style: BorderStyle{Value: "solid"}}}, "none"),
+			want: `/value: unknown border style "none"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.in.Check()
+			if got := errorMsg(err); got != tt.want {
+				t.Errorf("Check() = %q, want %q", got, tt.want)
+			}
+			var e *Error
+			if err != nil && !errors.As(err, &e) {
+				t.Errorf("Check() = %v (%T), want *Error", err, err)
+			}
+		})
+	}
+}
+
+func TestHighlightValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     Highlight
+		want   []StyleValue
+		paths  []string
+		checks []string // the texts of the errors of Check of the values, "" for none
+	}{
+		{name: "variant", in: Highlight{Variant: "marker"}},
+		{
+			name: "both colors",
+			in:   Highlight{Color: Color{Preset: "accent"}, BackgroundColor: Color{Value: "#fff4e5"}},
+			want: []StyleValue{
+				{Item: "color", Kind: "color", Preset: "accent", format: formatColor},
+				{Item: "backgroundColor", Kind: "color", Value: "#fff4e5", format: formatColor},
+			},
+			paths:  []string{"/color", "/backgroundColor"},
+			checks: []string{"", ""},
+		},
+		{
+			name:   "background color",
+			in:     Highlight{BackgroundColor: Color{Preset: "muted"}},
+			want:   []StyleValue{{Item: "backgroundColor", Kind: "color", Preset: "muted", format: formatColor}},
+			paths:  []string{"/backgroundColor"},
+			checks: []string{""},
+		},
+		{
+			name: "invalid colors with a variant",
+			in:   Highlight{Variant: "marker", Color: Color{Value: "red"}, BackgroundColor: Color{Preset: "a", Value: "#fff"}},
+			want: []StyleValue{
+				{Item: "color", Kind: "color", Value: "red", format: formatColor},
+				{Item: "backgroundColor", Kind: "color", Preset: "a", Value: "#fff", format: formatColor},
+			},
+			paths:  []string{"/color", "/backgroundColor"},
+			checks: []string{`/value: invalid color "red"`, "set either preset or value, not both"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in.Values()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Values() = %#v, want %#v", got, tt.want)
+			}
+			var paths, checks []string
+			for _, v := range got {
+				paths = append(paths, v.Path())
+				checks = append(checks, errorMsg(v.Check()))
+			}
+			if !reflect.DeepEqual(paths, tt.paths) {
+				t.Errorf("Path() of Values() = %q, want %q", paths, tt.paths)
+			}
+			if !reflect.DeepEqual(checks, tt.checks) {
+				t.Errorf("Check() of Values() = %q, want %q", checks, tt.checks)
+			}
+		})
+	}
+}
+
+func TestAttrsHeightValue(t *testing.T) {
+	// height is the value of the height of a spacer with preset and value.
+	height := func(preset, value string) StyleValue {
+		return StyleValue{
+			Item: "height", Kind: "spacing", Preset: preset, Value: value, format: formatLength, length: LengthRule{Preset: true},
+		}
+	}
+	tests := []struct {
+		name  string
+		in    Attrs
+		want  StyleValue
+		check string // the text of the error of Check, "" for none
+	}{
+		{name: "unset", in: Attrs{Label: "a", Width: "50%"}},
+		{name: "preset", in: Attrs{Height: Length{Preset: "large"}}, want: height("large", "")},
+		{name: "value", in: Attrs{Height: Length{Value: "40px"}}, want: height("", "40px")},
+		{name: "zero", in: Attrs{Height: Length{Value: "0"}}, want: height("", "0")},
+		{
+			name:  "percentage",
+			in:    Attrs{Height: Length{Value: "50%"}},
+			want:  height("", "50%"),
+			check: `/value: percentage "50%" is not allowed here`,
+		},
+		{
+			name:  "negative",
+			in:    Attrs{Height: Length{Value: "-1px"}},
+			want:  height("", "-1px"),
+			check: `/value: negative length "-1px" is not allowed here`,
+		},
+		{
+			name:  "invalid preset",
+			in:    Attrs{Height: Length{Preset: "a b"}},
+			want:  height("a b", ""),
+			check: `/preset: invalid name "a b": use ASCII letters, digits, "-" and "_"`,
+		},
+		{
+			name:  "preset and value",
+			in:    Attrs{Height: Length{Preset: "large", Value: "40px"}},
+			want:  height("large", "40px"),
+			check: "set either preset or value, not both",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in.HeightValue()
+			if got != tt.want {
+				t.Fatalf("HeightValue() = %#v, want %#v", got, tt.want)
+			}
+			if got != (StyleValue{}) && got.Path() != "/height" {
+				t.Errorf("Path() = %q, want %q", got.Path(), "/height")
+			}
+			if c := errorMsg(got.Check()); c != tt.check {
+				t.Errorf("Check() = %q, want %q", c, tt.check)
+			}
 		})
 	}
 }

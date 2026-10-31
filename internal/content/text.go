@@ -118,6 +118,22 @@ func isNameByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
+// checkClassName checks s, the className of a block: a name that does not have the form of the classes that the core
+// gives blocks by their IDs and highlights by their colors.
+func checkClassName(s string) error {
+	if err := checkName(s); err != nil {
+		return err
+	}
+	reserved := func(prefix, chars string) bool {
+		rest, ok := strings.CutPrefix(s, prefix)
+		return ok && len(rest) == 8 && strings.TrimLeft(rest, chars) == ""
+	}
+	if reserved("b-", "0123456789abcdefghijklmnopqrstuvwxyz") || reserved("hl-", "0123456789abcdef") {
+		return fmt.Errorf("reserved className %q: the core gives classes of the forms b-xxxxxxxx and hl-xxxxxxxx", s)
+	}
+	return nil
+}
+
 // CheckBlockID checks s by the rule for block IDs: "b_" and 8 lower case ASCII letters or digits.
 func CheckBlockID(s string) error {
 	return checkBlockID(s)
