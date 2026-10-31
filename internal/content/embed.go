@@ -16,28 +16,36 @@ var (
 	xUserPattern     = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
 )
 
-var embedProviders = map[string]func(host string, path []string, query url.Values) bool{
-	"youtube":    isYouTubeURL,
-	"vimeo":      isVimeoURL,
-	"x":          isXURL,
-	"googleMaps": isGoogleMapsURL,
+// EmbedTarget is what an embed URL refers to.
+type EmbedTarget struct {
+	ID   string // youtube: the video ID; vimeo: the video number; x: the number of the post
+	Hash string // vimeo: the hash of an unlisted video, from the path or from the query h; "" if none
+	User string // x: the user name
 }
 
-// checkEmbedURL checks that provider can embed s, a URL that passed checkHref.
-func checkEmbedURL(provider, s string) error {
-	match, ok := embedProviders[provider]
+var embedProviders = map[string]func(host string, path []string, query url.Values) (EmbedTarget, bool){
+	"youtube":    parseYouTubeURL,
+	"vimeo":      parseVimeoURL,
+	"x":          parseXURL,
+	"googleMaps": parseGoogleMapsURL,
+}
+
+// ParseEmbedURL returns what s, an embed URL of provider that passed CheckHref, refers to; the error is that of
+// validation.
+func ParseEmbedURL(provider, s string) (EmbedTarget, error) {
+	parse, ok := embedProviders[provider]
 	if !ok {
-		return fmt.Errorf("unknown provider %q", provider)
+		return EmbedTarget{}, fmt.Errorf("unknown provider %q", provider)
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return errors.New("invalid URL")
+		return EmbedTarget{}, errors.New("invalid URL")
 	}
 	if u.Scheme != "https" {
-		return errors.New("must be an https URL")
+		return EmbedTarget{}, errors.New("must be an https URL")
 	}
 	if u.Port() != "" {
-		return errors.New("ports are not allowed")
+		return EmbedTarget{}, errors.New("ports are not allowed")
 	}
 	// Not strings.ToLower: it maps U+0130 to "i", but browsers map it to "i" and U+0307, another domain.
 	host := strings.Map(func(r rune) rune {
@@ -47,47 +55,78 @@ func checkEmbedURL(provider, s string) error {
 		return r
 	}, u.Hostname())
 	path := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if !match(host, path, u.Query()) {
-		return fmt.Errorf("not a URL that %s can embed", provider)
+	t, ok := parse(host, path, u.Query())
+	if !ok {
+		return EmbedTarget{}, fmt.Errorf("not a URL that %s can embed", provider)
 	}
-	return nil
+	return t, nil
 }
 
-func isYouTubeURL(host string, path []string, query url.Values) bool {
+// checkEmbedURL checks that provider can embed s, a URL that passed checkHref.
+func checkEmbedURL(provider, s string) error {
+	_, err := ParseEmbedURL(provider, s)
+	return err
+}
+
+func parseYouTubeURL(host string, path []string, query url.Values) (EmbedTarget, bool) {
+	id := ""
 	switch host {
 	case "youtu.be":
-		return len(path) == 1 && youTubeIDPattern.MatchString(path[0])
+		if len(path) == 1 {
+			id = path[0]
+		}
 	case "youtube.com", "www.youtube.com", "m.youtube.com", "www.youtube-nocookie.com":
 		switch {
 		case len(path) == 1 && path[0] == "watch":
-			return youTubeIDPattern.MatchString(query.Get("v"))
+			id = query.Get("v")
 		case len(path) == 2 && slices.Contains([]string{"embed", "shorts", "live"}, path[0]):
 			// "/embed/videoseries?list=" embeds a playlist, not a video with that ID.
-			return path[1] != "videoseries" && youTubeIDPattern.MatchString(path[1])
+			if path[1] != "videoseries" {
+				id = path[1]
+			}
 		}
 	}
-	return false
+	if !youTubeIDPattern.MatchString(id) {
+		return EmbedTarget{}, false
+	}
+	return EmbedTarget{ID: id}, true
 }
 
-func isVimeoURL(host string, path []string, _ url.Values) bool {
+func parseVimeoURL(host string, path []string, query url.Values) (EmbedTarget, bool) {
 	switch host {
 	case "vimeo.com", "www.vimeo.com":
 		// An unlisted video has a hash after its ID.
-		return digitsPattern.MatchString(path[0]) && (len(path) == 1 || len(path) == 2 && lowerHexPattern.MatchString(path[1]))
+		if digitsPattern.MatchString(path[0]) && (len(path) == 1 || len(path) == 2 && lowerHexPattern.MatchString(path[1])) {
+			t := EmbedTarget{ID: path[0]}
+			if len(path) == 2 {
+				t.Hash = path[1]
+			}
+			return t, true
+		}
 	case "player.vimeo.com":
-		return len(path) == 2 && path[0] == "video" && digitsPattern.MatchString(path[1])
+		if len(path) == 2 && path[0] == "video" && digitsPattern.MatchString(path[1]) {
+			t := EmbedTarget{ID: path[1]}
+			// Not an error: validation ignores queries other than v and pb.
+			if h := query.Get("h"); lowerHexPattern.MatchString(h) {
+				t.Hash = h
+			}
+			return t, true
+		}
 	}
-	return false
+	return EmbedTarget{}, false
 }
 
-func isXURL(host string, path []string, _ url.Values) bool {
+func parseXURL(host string, path []string, _ url.Values) (EmbedTarget, bool) {
 	switch host {
 	case "x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com":
-		return len(path) == 3 && xUserPattern.MatchString(path[0]) && path[1] == "status" && digitsPattern.MatchString(path[2])
+		if len(path) == 3 && xUserPattern.MatchString(path[0]) && path[1] == "status" && digitsPattern.MatchString(path[2]) {
+			return EmbedTarget{ID: path[2], User: path[0]}, true
+		}
 	}
-	return false
+	return EmbedTarget{}, false
 }
 
-func isGoogleMapsURL(host string, path []string, query url.Values) bool {
-	return host == "www.google.com" && slices.Equal(path, []string{"maps", "embed"}) && query.Get("pb") != ""
+// parseGoogleMapsURL gives the zero target: the URL itself is the src of the iframe.
+func parseGoogleMapsURL(host string, path []string, query url.Values) (EmbedTarget, bool) {
+	return EmbedTarget{}, host == "www.google.com" && slices.Equal(path, []string{"maps", "embed"}) && query.Get("pb") != ""
 }

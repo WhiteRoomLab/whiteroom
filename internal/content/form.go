@@ -9,12 +9,13 @@ import (
 
 // Form is the definition of a contact form, which is not split by language.
 type Form struct {
-	ID         string
-	Title      string // the name in the admin screens
-	Fields     []FormField
-	Message    Localized // shown after sending, with line breaks, in the languages without ThanksPage
-	ThanksPage Localized // ID of the entry to show after sending, in each language without Message
-	Notify     []string  // email addresses to notify of submissions
+	ID          string
+	Title       string // the name in the admin screens
+	Fields      []FormField
+	SubmitLabel Localized // the text of the submit button, one line in each language
+	Message     Localized // shown after sending, with line breaks, in the languages without ThanksPage
+	ThanksPage  Localized // ID of the entry to show after sending, in each language without Message
+	Notify      []string  // email addresses to notify of submissions
 }
 
 // FormFieldType is the type of a form field. Select and radio fields take one of their options,
@@ -80,6 +81,8 @@ func (x *Form) decode(d *decoder) error {
 				v.Fields = append(v.Fields, f)
 				return nil
 			})
+		case "submitLabel":
+			err = v.SubmitLabel.decode(d)
 		case "message":
 			err = v.Message.decode(d)
 		case "thanksPage":
@@ -175,6 +178,7 @@ func (x Form) MarshalJSON() ([]byte, error) {
 		ID            string      `json:"id,omitempty"`
 		Title         string      `json:"title,omitempty"`
 		Fields        []FormField `json:"fields,omitempty"`
+		SubmitLabel   Localized   `json:"submitLabel,omitempty"`
 		Message       Localized   `json:"message,omitempty"`
 		ThanksPage    Localized   `json:"thanksPage,omitempty"`
 		Notify        []string    `json:"notify,omitempty"`
@@ -183,6 +187,7 @@ func (x Form) MarshalJSON() ([]byte, error) {
 		ID:            x.ID,
 		Title:         x.Title,
 		Fields:        x.Fields,
+		SubmitLabel:   x.SubmitLabel,
 		Message:       x.Message,
 		ThanksPage:    x.ThanksPage,
 		Notify:        x.Notify,
@@ -196,6 +201,7 @@ func (x *Form) Normalize() {
 	for i := range x.Fields {
 		x.Fields[i].normalize()
 	}
+	x.SubmitLabel.normalize(false)
 	x.Message.normalize(true)
 	for i, a := range x.Notify {
 		x.Notify[i] = normalizeEmail(a)
@@ -216,8 +222,8 @@ func (x *FormField) normalize() {
 	}
 }
 
-// Validate checks x in site. ID, Title and Fields are required, and so are the labels of the fields and the options
-// in every language of site, and exactly one of Message and ThanksPage in each language.
+// Validate checks x in site. ID, Title and Fields are required, and so are SubmitLabel and the labels of the fields and
+// the options in every language of site, and exactly one of Message and ThanksPage in each language.
 // lookup tells about the entries of ThanksPage and the policies as ValidateOptions.Lookup does;
 // nil skips checking that they exist and are in the languages of their keys.
 func (x Form) Validate(site *Site, lookup func(kind RefKind, id string) (Ref, bool)) error {
@@ -249,6 +255,7 @@ func (x Form) check(c *checker, site *Site) {
 		names[f.Name] = true
 		f.check(c, p, site)
 	}
+	x.SubmitLabel.checkRequired(c, "/submitLabel", "submitLabel", site, false)
 	x.checkThanks(c, site)
 	if n := len(x.Notify); n > MaxNotifyAddresses {
 		c.addf("/notify", "too many addresses (%d; max %d)", n, MaxNotifyAddresses)
