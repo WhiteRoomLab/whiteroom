@@ -320,14 +320,14 @@ func (x Style) check(c *checker, path string) {
 	x.BackgroundColor.check(c, path+"/backgroundColor")
 	x.LinkColor.check(c, path+"/linkColor")
 	x.Gradient.check(c, path+"/gradient")
-	x.FontSize.check(c, path+"/fontSize", lengthRule{preset: true, percent: true})
-	x.LetterSpacing.check(c, path+"/letterSpacing", lengthRule{negative: true})
+	x.FontSize.check(c, path+"/fontSize", LengthRule{Preset: true, Percent: true})
+	x.LetterSpacing.check(c, path+"/letterSpacing", LengthRule{Negative: true})
 	x.FontFamily.check(c, path+"/fontFamily")
 	x.FontWeight.check(c, path+"/fontWeight")
 	x.LineHeight.check(c, path+"/lineHeight")
-	x.Padding.check(c, path+"/padding", lengthRule{preset: true, percent: true})
-	x.Margin.check(c, path+"/margin", lengthRule{preset: true, negative: true, percent: true})
-	x.BlockGap.check(c, path+"/blockGap", lengthRule{preset: true, percent: true})
+	x.Padding.check(c, path+"/padding", LengthRule{Preset: true, Percent: true})
+	x.Margin.check(c, path+"/margin", LengthRule{Preset: true, Negative: true, Percent: true})
+	x.BlockGap.check(c, path+"/blockGap", LengthRule{Preset: true, Percent: true})
 	x.Border.check(c, path+"/border")
 }
 
@@ -343,12 +343,12 @@ func (x Color) check(c *checker, path string) {
 	}
 }
 
-func (x Length) check(c *checker, path string, r lengthRule) {
+func (x Length) check(c *checker, path string, r LengthRule) {
 	if x.Preset != "" && x.Value != "" {
 		c.addf(path, "set either preset or value, not both")
 	}
 	if x.Preset != "" {
-		if r.preset {
+		if r.Preset {
 			c.add(path+"/preset", checkName(x.Preset))
 		} else {
 			c.addf(path+"/preset", "presets are not allowed here")
@@ -391,7 +391,7 @@ func (x BorderStyle) check(c *checker, path string) {
 	}
 }
 
-func (x Sides) check(c *checker, path string, r lengthRule) {
+func (x Sides) check(c *checker, path string, r LengthRule) {
 	x.Top.check(c, path+"/top", r)
 	x.Right.check(c, path+"/right", r)
 	x.Bottom.check(c, path+"/bottom", r)
@@ -399,8 +399,8 @@ func (x Sides) check(c *checker, path string, r lengthRule) {
 }
 
 func (x Border) check(c *checker, path string) {
-	x.Width.check(c, path+"/width", lengthRule{})
+	x.Width.check(c, path+"/width", LengthRule{})
 	x.Style.check(c, path+"/style")
 	x.Color.check(c, path+"/color")
-	x.Radius.check(c, path+"/radius", lengthRule{percent: true})
+	x.Radius.check(c, path+"/radius", LengthRule{Percent: true})
 }

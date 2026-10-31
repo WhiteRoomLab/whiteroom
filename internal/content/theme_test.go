@@ -59,6 +59,7 @@ imageSizes:
   thumbnail: { label: サムネイル, width: 150, height: 150, crop: true }
   medium: { label: 中, width: 300 }
   tall: { label: 縦長, height: 800 }
+mobileWidth: 48rem
 `
 
 // everyTheme returns the settings of everyThemeYAML.
@@ -92,6 +93,7 @@ func everyTheme() *ThemeSettings {
 			{Name: "medium", Label: "中", Width: 300},
 			{Name: "tall", Label: "縦長", Height: 800},
 		},
+		MobileWidth: "48rem",
 	}
 }
 
@@ -357,6 +359,7 @@ var unmarshalThemeErrorTests = []struct {
 		in:   "schemaVersion: 1\nimageSizes:\n  large:\n    crop: yes\n",
 		path: "/imageSizes/large/crop", msg: "expected boolean, got string", line: 4, column: 5,
 	},
+	{name: "mobileWidth as a number", in: "schemaVersion: 1\nmobileWidth: 781\n", path: "/mobileWidth", msg: "expected string, got number", line: 2, column: 1},
 	{name: "sequence", in: "- schemaVersion: 1\n", msg: "expected object, got array", line: 1, column: 1},
 
 	// Integers are checked when reading: 0 would read as omitted.
@@ -429,7 +432,12 @@ var unmarshalThemeErrorTests = []struct {
 	},
 	{
 		name: "error after the other items",
-		in:   strings.TrimSuffix(everyThemeYAML, " }\n") + ", crop: false, size: 1 }\n",
+		in:   strings.TrimSuffix(everyThemeYAML, "48rem\n") + "[48rem]\n",
+		path: "/mobileWidth", msg: "expected string, got array", line: 48, column: 1,
+	},
+	{
+		name: "error in the last image size",
+		in:   strings.Replace(everyThemeYAML, "height: 800 }", "height: 800, crop: false, size: 1 }", 1),
 		path: "/imageSizes/tall/size", msg: "unknown key", line: 47, column: 48,
 	},
 }
@@ -460,6 +468,7 @@ func TestThemeKeys(t *testing.T) {
 	}
 	topLevel := []string{
 		"defaultLanguage", "presets", "styles", "custom", "blocks", "marks", "locations", "pageTemplates", "imageSizes",
+		"mobileWidth",
 	}
 	if got, want := topKeys(t, out), append([]string{"schemaVersion"}, topLevel...); !slices.Equal(got, want) {
 		t.Errorf("keys of everyThemeYAML = %q, want %q", got, want)
@@ -811,10 +820,35 @@ var validateThemeTests = []struct {
 	},
 	{name: "largest size", modify: func(s *ThemeSettings) { s.ImageSizes[0].Width, s.ImageSizes[0].Height = MaxImageSide, MaxImageSide }},
 
+	{name: "mobileWidth in px", modify: func(s *ThemeSettings) { s.MobileWidth = "781px" }},
+	{name: "mobileWidth in em", modify: func(s *ThemeSettings) { s.MobileWidth = "37.5em" }},
+	{name: "no mobileWidth", modify: func(s *ThemeSettings) { s.MobileWidth = "" }},
+	{
+		name:   "mobileWidth without a unit",
+		modify: func(s *ThemeSettings) { s.MobileWidth = "781" },
+		want:   []Error{{Path: "/mobileWidth", Msg: `invalid mobileWidth "781"` + mobileWidthHint}},
+	},
+	{
+		name:   "mobileWidth of 0",
+		modify: func(s *ThemeSettings) { s.MobileWidth = "0px" },
+		want:   []Error{{Path: "/mobileWidth", Msg: `invalid mobileWidth "0px"` + mobileWidthHint}},
+	},
+	{
+		name:   "negative mobileWidth",
+		modify: func(s *ThemeSettings) { s.MobileWidth = "-1px" },
+		want:   []Error{{Path: "/mobileWidth", Msg: `invalid mobileWidth "-1px"` + mobileWidthHint}},
+	},
+	{
+		name:   "mobileWidth in percent",
+		modify: func(s *ThemeSettings) { s.MobileWidth = "10%" },
+		want:   []Error{{Path: "/mobileWidth", Msg: `invalid mobileWidth "10%"` + mobileWidthHint}},
+	},
+
 	{
 		// In the order of ThemeSettings, not of the file.
 		name: "errors in order",
 		modify: func(s *ThemeSettings) {
+			s.MobileWidth = "0"
 			s.ImageSizes[0].Label = ""
 			s.PageTemplates[0].Name = "a b"
 			s.Locations[0].Label = ""
@@ -837,6 +871,7 @@ var validateThemeTests = []struct {
 			{Path: "/locations/header", Msg: "missing label"},
 			{Path: "/pageTemplates/a b", Msg: `invalid name "a b": use ASCII letters, digits, "-" and "_"`},
 			{Path: "/imageSizes/thumbnail/label", Msg: "missing label"},
+			{Path: "/mobileWidth", Msg: `invalid mobileWidth "0"` + mobileWidthHint},
 		},
 	},
 }
@@ -953,6 +988,11 @@ var loadThemeSettingsErrorTests = []struct {
 		want: `theme.yaml:3:3: /pageTemplates/a~1b: invalid name "a/b": use ASCII letters, digits, "-" and "_"`,
 	},
 	{
+		name: "mobileWidth in percent",
+		in:   "schemaVersion: 1\nlocations:\n  header: ヘッダー\nmobileWidth: 50%\n",
+		want: `theme.yaml:4:1: /mobileWidth: invalid mobileWidth "50%"` + mobileWidthHint,
+	},
+	{
 		name: "errors in the order of Validate",
 		in:   "schemaVersion: 1\nimageSizes:\n  medium: { label: 中 }\nlocations:\n  a b: x\ndefaultLanguage: JA\n",
 		want: `theme.yaml:6:1: /defaultLanguage: invalid language code "JA": use a language tag such as "ja", "en-US" or "zh-Hant"` + "\n" +
@@ -971,6 +1011,123 @@ func TestLoadThemeSettingsErrors(t *testing.T) {
 			}
 			if got != nil {
 				t.Errorf("LoadThemeSettings() = %#v with an error", got)
+			}
+		})
+	}
+}
+
+func TestCheckStyleItem(t *testing.T) {
+	// everyTheme allows textColor, backgroundColor, fontSize, padding and margin; for code blocks, only fontSize and
+	// backgroundColor, and for group blocks, backgroundColor, padding and border.
+	every := everyTheme()
+	blockOnly := &ThemeSettings{Blocks: []ThemeBlock{{Type: BlockCode, Styles: []string{"fontSize"}}}}
+	tests := []struct {
+		name string
+		s    *ThemeSettings
+		typ  BlockType
+		item string
+		msg  string // "" if allowed
+	}{
+		{name: "no theme", typ: BlockCode, item: "border"},
+		{name: "no theme and an unknown item", typ: BlockCode, item: "shadow"},
+		{name: "theme without styles", s: &ThemeSettings{}, typ: BlockCode, item: "border"},
+		{
+			name: "unknown item without styles", s: &ThemeSettings{}, typ: BlockCode, item: "shadow",
+			msg: "the theme does not allow shadow for code blocks",
+		},
+		{name: "styles of the theme", s: every, typ: BlockHeading, item: "margin"},
+		{
+			name: "item outside the styles of the theme", s: every, typ: BlockHeading, item: "border",
+			msg: "the theme does not allow border for heading blocks",
+		},
+		{name: "block without styles", s: every, typ: BlockParagraph, item: "padding"},
+		{
+			name: "block without styles and an item outside those of the theme", s: every, typ: BlockParagraph, item: "border",
+			msg: "the theme does not allow border for paragraph blocks",
+		},
+		{name: "styles of the block", s: every, typ: BlockCode, item: "backgroundColor"},
+		{
+			name: "item of the theme outside the styles of the block", s: every, typ: BlockCode, item: "textColor",
+			msg: "the theme does not allow textColor for code blocks",
+		},
+		{name: "item of the block outside the styles of the theme", s: every, typ: BlockGroup, item: "border"},
+		{name: "styles of the block in a theme without styles", s: blockOnly, typ: BlockCode, item: "fontSize"},
+		{
+			name: "item outside the styles of the block in a theme without styles", s: blockOnly, typ: BlockCode, item: "padding",
+			msg: "the theme does not allow padding for code blocks",
+		},
+		{name: "other block in a theme without styles", s: blockOnly, typ: BlockParagraph, item: "padding"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errorMsg(tt.s.CheckStyleItem(tt.typ, tt.item)); got != tt.msg {
+				t.Errorf("CheckStyleItem(%s, %s) = %q, want %q", tt.typ, tt.item, got, tt.msg)
+			}
+		})
+	}
+	for _, item := range styleItems {
+		for _, s := range []*ThemeSettings{nil, {}} {
+			if err := s.CheckStyleItem(BlockGroup, item); err != nil {
+				t.Errorf("CheckStyleItem(group, %s) of %#v = %v, want nil", item, s, err)
+			}
+		}
+	}
+}
+
+func TestCheckPreset(t *testing.T) {
+	every := everyTheme()
+	for _, kind := range presetKinds {
+		for _, p := range *every.Presets.kind(kind) {
+			if err := every.CheckPreset(kind, p.Name); err != nil {
+				t.Errorf("CheckPreset(%q, %q) = %v, want nil", kind, p.Name, err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name         string
+		s            *ThemeSettings
+		kind, preset string
+		msg          string
+	}{
+		{name: "missing preset", s: every, kind: "color", preset: "accent", msg: `the theme has no color preset "accent"`},
+		{name: "name in another case", s: every, kind: "color", preset: "Primary", msg: `the theme has no color preset "Primary"`},
+		{name: "preset of another kind", s: every, kind: "fontSize", preset: "primary", msg: `the theme has no fontSize preset "primary"`},
+		{name: "unknown kind", s: every, kind: "border", preset: "primary", msg: `the theme has no border preset "primary"`},
+		{name: "kind in another case", s: every, kind: "Color", preset: "primary", msg: `the theme has no Color preset "primary"`},
+		{name: "theme without presets", s: &ThemeSettings{}, kind: "color", preset: "primary", msg: `the theme has no color preset "primary"`},
+		{name: "no theme", kind: "color", preset: "primary", msg: `the theme has no color preset "primary"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errorMsg(tt.s.CheckPreset(tt.kind, tt.preset)); got != tt.msg {
+				t.Errorf("CheckPreset(%q, %q) = %q, want %q", tt.kind, tt.preset, got, tt.msg)
+			}
+		})
+	}
+}
+
+func TestCheckCustom(t *testing.T) {
+	colorOnly := &ThemeSettings{PresetsOnly: []string{"color"}}
+	tests := []struct {
+		name string
+		s    *ThemeSettings
+		kind string
+		msg  string // "" if allowed
+	}{
+		{name: "presets only", s: colorOnly, kind: "color", msg: "the theme allows only presets for color"},
+		{name: "kind with custom", s: colorOnly, kind: "fontSize"},
+		{name: "other kind with custom", s: colorOnly, kind: "spacing"},
+		{name: "every kind presets only", s: everyTheme(), kind: "spacing", msg: "the theme allows only presets for spacing"},
+		{name: "theme without custom", s: &ThemeSettings{}, kind: "color"},
+		{name: "kind that has only presets", s: everyTheme(), kind: "gradient"},
+		{name: "no kind", s: everyTheme(), kind: ""},
+		{name: "no theme", kind: "color"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errorMsg(tt.s.CheckCustom(tt.kind)); got != tt.msg {
+				t.Errorf("CheckCustom(%q) = %q, want %q", tt.kind, got, tt.msg)
 			}
 		})
 	}
