@@ -1,7 +1,9 @@
 package render
 
 import (
+	"cmp"
 	"html/template"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -33,11 +35,15 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 	ok := true
 	switch b.Type {
 	case content.BlockParagraph:
-		d := Paragraph{Common: w.common(b, path), TextAlign: a.TextAlign}
+		s := w.begin(b, path)
+		s.addClass(w.choice(path+"/attrs", "textAlign", a.TextAlign, textAlignClasses))
+		d := Paragraph{Common: w.finish(s), TextAlign: a.TextAlign}
 		d.Content = w.text(b, path)
 		data = d
 	case content.BlockHeading:
-		d := Heading{Common: w.common(b, path), Level: min(max(a.Level, 2), 6), TextAlign: a.TextAlign}
+		s := w.begin(b, path)
+		s.addClass(w.choice(path+"/attrs", "textAlign", a.TextAlign, textAlignClasses))
+		d := Heading{Common: w.finish(s), Level: min(max(a.Level, 2), 6), TextAlign: a.TextAlign}
 		d.Content = w.text(b, path)
 		data = d
 	case content.BlockList:
@@ -72,40 +78,66 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		data = d
 	case content.BlockTableCell:
 		d := TableCell{Header: a.Header, Colspan: a.Colspan, Rowspan: a.Rowspan, TextAlign: a.TextAlign}
+		d.Class = w.choice(path+"/attrs", "textAlign", a.TextAlign, textAlignClasses)
 		d.Content = w.text(b, path)
 		data = d
 	case content.BlockButtons:
-		d := Buttons{Common: w.common(b, path), Justify: a.Justify}
+		s := w.begin(b, path)
+		s.addClass("is-layout-row")
+		s.addClass(w.choice(path+"/attrs", "justify", a.Justify, justifyClasses["row"]))
+		d := Buttons{Common: w.finish(s), Justify: a.Justify}
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockButton:
 		s := w.begin(b, path)
 		d := Button{Label: a.Label, Width: a.Width}
 		d.Link = w.link(a.Link, path+"/attrs/link")
+		s.addClass(w.choice(path+"/attrs", "width", a.Width, buttonWidthClasses))
 		d.Common = w.finish(s)
 		data = d
 	case content.BlockSeparator:
 		data = Separator{Common: w.common(b, path)}
 	case content.BlockSpacer:
-		data = Spacer{Common: w.common(b, path), Height: a.Height}
+		s := w.begin(b, path)
+		if v := a.HeightValue(); v != (content.StyleValue{}) {
+			if height, kept := w.cssValue(v, path+"/attrs"); kept {
+				s.main = append(s.main, important("height", height))
+			}
+		}
+		data = Spacer{Common: w.finish(s), Height: a.Height}
 	case content.BlockCode:
 		data = Code{Common: w.common(b, path), Language: a.Language, Code: b.Code}
 	case content.BlockEmbed:
 		data, ok = w.embed(b, path)
 	case content.BlockColumns:
-		d := Columns{Common: w.common(b, path), VerticalAlign: a.VerticalAlign, StackOnMobile: true}
+		s := w.begin(b, path)
+		s.addClass("is-layout-columns")
+		s.addClass(w.choice(path+"/attrs", "verticalAlign", a.VerticalAlign, columnsAlignClasses))
+		d := Columns{VerticalAlign: a.VerticalAlign, StackOnMobile: true}
 		if a.StackOnMobile != nil {
 			d.StackOnMobile = *a.StackOnMobile
 		}
+		if !d.StackOnMobile {
+			s.addClass("is-not-stacked-on-mobile")
+		}
+		d.Common = w.finish(s)
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockColumn:
-		d := Column{Common: w.common(b, path), Width: a.Width, VerticalAlign: a.VerticalAlign}
+		s := w.begin(b, path)
+		if width := w.length(path+"/attrs/width", a.Width, content.LengthRule{Percent: true}); width != "" {
+			s.main = append(s.main, important("flex-basis", width), important("flex-grow", "0"))
+		}
+		s.addClass(w.choice(path+"/attrs", "verticalAlign", a.VerticalAlign, columnAlignClasses))
+		d := Column{Common: w.finish(s), Width: a.Width, VerticalAlign: a.VerticalAlign}
 		d.Children, err = w.children(b, path)
 		data = d
 	case content.BlockGroup:
+		s := w.begin(b, path)
+		w.layout(&s, path+"/attrs/layout")
+		s.addClass(w.choice(path+"/attrs", "align", a.Align, groupAlignClasses))
 		d := Group{
-			Common: w.common(b, path), TagName: groupTag(a.TagName), Label: a.Label, Layout: a.Layout, Align: a.Align,
+			Common: w.finish(s), TagName: groupTag(a.TagName), Label: a.Label, Layout: a.Layout, Align: a.Align,
 		}
 		d.Children, err = w.children(b, path)
 		data = d
@@ -186,17 +218,19 @@ func groupTag(s string) string {
 	return "div"
 }
 
-// styling holds what begin reads of a block that is not a part, before its attrs, for finish, which turns it into the
-// Common and the rules of the block after its attrs.
+// styling holds what begin reads of a block that is not a part, and then what its attrs add, for finish, which turns it
+// into the Common and the rules of the block.
 type styling struct {
 	block   *content.Block
 	path    string
 	common  Common   // without Class
+	classes []string // the classes of its attrs, such as "has-text-align-center"
 	variant string   // the class of its variant, if the theme has it
 	at      int      // the number of warnings of the walker before those of the block
-	main    []string // the declarations of its rule .b-<ID>
+	main    []string // the declarations of its rule .b-<ID>: those of its style, then those of its attrs
 	solid   bool     // the border has a width or a color but no style, which the rule :where(.b-<ID>) gives it
 	link    string   // the color of its links, in the rule .b-<ID> :where(a); "" if none
+	img     []string // the declarations of the size of the image of an image block, in the rule .b-<ID> img
 	gap     string   // the CSS of its blockGap; "" if none
 	inside  string   // the element of the default template between that of the block and its children, if any
 }
@@ -226,7 +260,7 @@ func (w *walker) finish(s styling) Common {
 	b := s.block
 	c := s.common
 	var class []string
-	if len(s.main) > 0 || s.link != "" || s.gap != "" {
+	if len(s.main) > 0 || s.link != "" || len(s.img) > 0 || s.gap != "" {
 		name := "b-" + strings.TrimPrefix(b.ID, "b_")
 		switch {
 		case content.CheckBlockID(b.ID) != nil:
@@ -237,6 +271,7 @@ func (w *walker) finish(s styling) Common {
 			class = append(class, name)
 		}
 	}
+	class = append(class, s.classes...)
 	if s.variant != "" {
 		class = append(class, s.variant)
 	}
@@ -254,7 +289,8 @@ func (w *walker) common(b *content.Block, path string) Common {
 }
 
 // rules returns the rules of the block of s, whose selector is sel, such as ".b-0paragr1": the main rule, the default
-// border style, the color of links, and the margins between the children of a flow container, in this order.
+// border style, the color of links, the size of an image, and the margins between the children of a flow container, in
+// this order.
 func (s *styling) rules(sel string) []string {
 	var rules []string
 	add := func(selector string, decls ...string) {
@@ -269,6 +305,7 @@ func (s *styling) rules(sel string) []string {
 	if s.link != "" {
 		add(sel+" :where(a)", important("color", s.link))
 	}
+	add(sel+" img", s.img...)
 	if s.gap != "" && !gapContainer(s.block) {
 		children := sel + " > *"
 		if s.inside != "" {
@@ -364,6 +401,136 @@ func gapContainer(b *content.Block) bool {
 		return t == "row" || t == "stack" || t == "grid"
 	}
 	return b.Type == content.BlockButtons || b.Type == content.BlockColumns
+}
+
+// The classes of the attributes with fixed choices, by value; the values are those that validation accepts.
+var (
+	textAlignClasses    = choiceClasses("has-text-align-", "left", "center", "right")
+	imageAlignClasses   = choiceClasses("align", "left", "center", "right", "wide", "full")
+	groupAlignClasses   = choiceClasses("align", "wide", "full")
+	buttonWidthClasses  = choiceClasses("has-width-", "25%", "50%", "75%", "100%")
+	columnsAlignClasses = choiceClasses("are-vertically-aligned-", "top", "center", "bottom")
+	columnAlignClasses  = choiceClasses("is-vertically-aligned-", "top", "center", "bottom", "stretch")
+	layoutClasses       = choiceClasses("is-layout-", "flow", "row", "stack", "grid")
+	// Those of the justify and the verticalAlign of a layout, by its type; the justify of buttons is that of a row.
+	justifyClasses = map[string]map[string]string{
+		"row":   choiceClasses("is-content-justification-", "left", "center", "right", "spaceBetween"),
+		"stack": choiceClasses("is-content-justification-", "left", "center", "right", "stretch"),
+	}
+	verticalAlignClasses = map[string]map[string]string{
+		"row":   choiceClasses("are-vertically-aligned-", "top", "center", "bottom", "stretch"),
+		"stack": choiceClasses("are-vertically-aligned-", "top", "center", "bottom", "spaceBetween"),
+	}
+)
+
+// choiceClasses returns the classes of values, the choices of an attribute, by value: prefix and the value in kebab
+// case without "%", such as "is-content-justification-space-between" for spaceBetween and "has-width-25" for 25%.
+func choiceClasses(prefix string, values ...string) map[string]string {
+	classes := make(map[string]string, len(values))
+	for _, v := range values {
+		classes[v] = prefix + kebab(strings.TrimSuffix(v, "%"))
+	}
+	return classes
+}
+
+// addClass adds class, a class of the attrs of the block of s, unless it is "".
+func (s *styling) addClass(class string) {
+	if class != "" {
+		s.classes = append(s.classes, class)
+	}
+}
+
+// choice returns the class of v, the value of the attribute key at path+"/"+key, from classes, those of its choices;
+// "" if v is "" or is not one of them, which it warns about.
+func (w *walker) choice(path, key, v string, classes map[string]string) string {
+	if v == "" {
+		return ""
+	}
+	class, ok := classes[v]
+	if !ok {
+		w.warnf(path+"/"+key, "unknown %s %q; ignored", key, v)
+	}
+	return class
+}
+
+// length returns v, the value of the attribute at path, if it is a length by r; "" if v is "" or is not one, which it
+// warns about.
+func (w *walker) length(path, v string, r content.LengthRule) string {
+	if v == "" {
+		return ""
+	}
+	if err := content.CheckLength(v, r); err != nil {
+		w.warnf(path, "%v; ignored", err)
+		return ""
+	}
+	return v
+}
+
+// layout reads the layout of the group of s, at path, into s: the classes of its type and its keys, and the columns of
+// a grid. It ignores what validation does not accept, which it warns about: a layout without a valid type, which leaves
+// the children of the group in flow as no layout does, and the keys and the values that its type cannot have.
+func (w *walker) layout(s *styling, path string) {
+	l := s.block.Attrs.Layout
+	if l == (content.Layout{}) {
+		return
+	}
+	class, ok := layoutClasses[l.Type]
+	switch {
+	case l.Type == "":
+		w.warnf(path+"/type", "missing layout type; ignored")
+		return
+	case !ok:
+		w.warnf(path+"/type", "unknown layout type %q; ignored", l.Type)
+		return
+	}
+	s.addClass(class)
+	// allowed reports whether the type can have key, and warns if not.
+	allowed := func(key string, types ...string) bool {
+		if slices.Contains(types, l.Type) {
+			return true
+		}
+		w.warnf(path+"/"+key, "not allowed for %s layout; ignored", l.Type)
+		return false
+	}
+	if l.Justify != "" && allowed("justify", "row", "stack") {
+		s.addClass(w.choice(path, "justify", l.Justify, justifyClasses[l.Type]))
+	}
+	if l.VerticalAlign != "" && allowed("verticalAlign", "row", "stack") {
+		s.addClass(w.choice(path, "verticalAlign", l.VerticalAlign, verticalAlignClasses[l.Type]))
+	}
+	if l.NoWrap && allowed("nowrap", "row") {
+		s.addClass("is-nowrap")
+	}
+	columns, width := 0, ""
+	if l.Columns != 0 && allowed("columns", "grid") {
+		if l.Columns < 1 || l.Columns > 16 {
+			w.warnf(path+"/columns", "columns %d is out of range (1-16); ignored", l.Columns)
+		} else {
+			columns = l.Columns
+		}
+	}
+	if l.MinColumnWidth != "" && allowed("minColumnWidth", "grid") {
+		width = w.length(path+"/minColumnWidth", l.MinColumnWidth, content.LengthRule{})
+	}
+	if t := gridColumns(columns, width, s.gap); t != "" {
+		s.main = append(s.main, important("grid-template-columns", t))
+	}
+}
+
+// gridColumns returns the grid-template-columns of a grid of n columns, or of columns at least width wide, or both,
+// with gap between them ("" for the default gap of grids, 0.5em); "" if n is 0 and width is "". With both, the columns
+// are at least width wide, but no more than n fit in a row.
+func gridColumns(n int, width, gap string) string {
+	switch {
+	case width == "" && n == 0:
+		return ""
+	case width == "":
+		return "repeat(" + strconv.Itoa(n) + ", minmax(0, 1fr))"
+	case n == 0:
+		return "repeat(auto-fill, minmax(min(" + width + ", 100%), 1fr))"
+	}
+	least := "(100% - " + strconv.Itoa(n-1) + " * " + cmp.Or(gap, "0.5em") + ") / " + strconv.Itoa(n)
+	return "repeat(auto-fill, minmax(max(min(" + width + ", 100%), " + least + "), 1fr))"
 }
 
 // autoAnchor returns the automatic anchor of a heading whose ID is id, and takes it: id if it is free, else the first

@@ -27,6 +27,24 @@ func (w *walker) image(b *content.Block, path string) (Image, bool) {
 	}
 	d.Caption = template.HTML(w.richText(a.Caption, path+"/attrs/caption"))
 	d.Link = w.link(a.Link, path+"/attrs/link")
+	width := w.length(path+"/attrs/width", a.Width, content.LengthRule{Percent: true})
+	ratio := a.AspectRatio
+	if ratio != "" {
+		if err := content.CheckAspectRatio(ratio); err != nil {
+			w.warnf(path+"/attrs/aspectRatio", "%v; ignored", err)
+			ratio = ""
+		}
+	}
+	if width != "" {
+		s.img = append(s.img, important("width", width))
+	}
+	if ratio != "" {
+		s.img = append(s.img, important("aspect-ratio", ratio), important("object-fit", "cover"))
+	}
+	if width != "" || ratio != "" {
+		s.img = append(s.img, important("height", "auto"))
+	}
+	s.addClass(w.choice(path+"/attrs", "align", a.Align, imageAlignClasses))
 	d.Common = w.finish(s)
 	return d, true
 }

@@ -66,8 +66,10 @@ func TestImage(t *testing.T) {
 				"link": {"href": "https://example.com/office", "newTab": true},
 				"size": "large", "width": "300px", "aspectRatio": "16/9", "align": "wide"
 			}`),
-			want: `<figure><a href="https://example.com/office" target="_blank" rel="noopener"><img src="` + officePath +
-				`" alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
+			want: `<figure class="b-000image alignwide"><a href="https://example.com/office" target="_blank" rel="noopener">` +
+				`<img src="` + officePath + `" alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
+			css: ".b-000image img {\n  width: 300px !important;\n  aspect-ratio: 16/9 !important;\n" +
+				"  object-fit: cover !important;\n  height: auto !important;\n}\n",
 		},
 		{
 			name: "decorative",
@@ -288,7 +290,7 @@ func TestMediaData(t *testing.T) {
 	w := &walker{r: r}
 	got, ok := w.image(&image, "/0")
 	want := Image{
-		Common:      Common{ID: "b_000image", Anchor: "photo", Class: "is-variant-rounded"},
+		Common:      Common{ID: "b_000image", Anchor: "photo", Class: "b-000image alignwide is-variant-rounded"},
 		Src:         "/blog" + officePath,
 		Alt:         "Our office building",
 		HasAlt:      true,
@@ -301,6 +303,11 @@ func TestMediaData(t *testing.T) {
 	}
 	if !ok || !reflect.DeepEqual(got, want) || w.warnings != nil {
 		t.Errorf("image() = %+v, %v, warnings %q, want %+v", got, ok, w.warnings, want)
+	}
+	const css = ".b-000image img {\n  width: 300px !important;\n  aspect-ratio: 16/9 !important;\n" +
+		"  object-fit: cover !important;\n  height: auto !important;\n}\n"
+	if w.css.String() != css {
+		t.Errorf("image() CSS:\n%s\nwant:\n%s", w.css, css)
 	}
 	noAlt := decodeBlocks(t, `[{"type": "image", "id": "b_00image2", "attrs": {"media": "`+noAltImage+`"}}]`)[0]
 	w = &walker{r: r, list: 1}

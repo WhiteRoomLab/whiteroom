@@ -102,12 +102,12 @@ var themeBlocks = map[string]string{
 	"blocks/listItem.html":  `<li class="item">{{.Children}}</li>` + "\r\n",
 	"blocks/table.html":     "<table>{{.Head}}|{{.Body}}|{{.Foot}}|{{.Caption}}</table>\n",
 	"blocks/tableRow.html":  `<tr data-section="{{.Section}}">{{.Children}}</tr>`,
-	"blocks/tableCell.html": "<td>{{.Header}} {{.Colspan}} {{.Rowspan}} {{.TextAlign}} {{.Content}}</td>\r\n\r\n",
+	"blocks/tableCell.html": "<td class=\"{{.Class}}\">{{.Header}} {{.Colspan}} {{.Rowspan}} {{.TextAlign}} {{.Content}}</td>\r\n\r\n",
 	"blocks/buttons.html":   `<div data-justify="{{.Justify}}">{{.Children}}</div>` + "\n",
 	"blocks/button.html":    `<a data-width="{{.Width}}"{{with .Link}} href="{{.Href}}"{{end}}>{{.Label}}</a>` + "\n",
 	"blocks/columns.html":   `<div data-stack="{{.StackOnMobile}}" data-align="{{.VerticalAlign}}">{{.Children}}</div>` + "\n",
 	"blocks/column.html":    `<div data-width="{{.Width}}" data-align="{{.VerticalAlign}}">{{.Children}}</div>` + "\n",
-	"blocks/group.html":     "{{.TagName}}|{{.Label}}|{{.Layout.Type}}|{{.Layout.Columns}}|{{.Align}}|{{.Children}}\n",
+	"blocks/group.html":     "{{.TagName}}|{{.Label}}|{{.Layout.Type}}|{{.Layout.Columns}}|{{.Align}}|{{.Class}}|{{.Children}}\n",
 	"blocks/spacer.html":    `<div data-height="{{.Height.Preset}}{{.Height.Value}}"></div>` + "\t\n",
 }
 
@@ -193,31 +193,37 @@ func TestThemeBlocks(t *testing.T) {
 		{"type": "code", "id": "b_0000code", "content": "x\n"}
 	]`)
 	r := newRenderer(t, testTheme(t, themeBlocks), "ja", "", nil)
-	want := `b_0paragr1|top|b-0paragr1 is-variant-lead intro|center|<strong>a</strong>
+	want := `b_0paragr1|top|b-0paragr1 has-text-align-center is-variant-lead intro|center|<strong>a</strong>
 b_0paragr2||||
 <h3 id="b_0heading" data-align="right">見出し</h3>
 <ol data-ordered="true" data-start="3"><li class="item">b_0litem01||||x</li>
 <li class="item">b_0litem02||||y</li></ol>
 <ol data-ordered="false" data-start="0"><li class="item">b_0litem03||||z</li></ol>
-<table><tr data-section="head"><td>true 2 3 left h</td></tr>|<tr data-section="body"><td>false 0 0  b1</td>
-<td>false 0 0  b2</td></tr>
-<tr data-section="body"><td>false 0 0  b3</td></tr>
-<tr data-section="body"><td>false 0 0  b4</td></tr>|<tr data-section="foot"><td>false 0 0  f</td></tr>|c</table>
+<table><tr data-section="head"><td class="has-text-align-left">true 2 3 left h</td></tr>|` +
+		`<tr data-section="body"><td class="">false 0 0  b1</td>
+<td class="">false 0 0  b2</td></tr>
+<tr data-section="body"><td class="">false 0 0  b3</td></tr>
+<tr data-section="body"><td class="">false 0 0  b4</td></tr>|<tr data-section="foot"><td class="">false 0 0  f</td></tr>|c</table>
 <div data-justify="spaceBetween"><a data-width="50%" href="#top">x</a>
 <a data-width="">y</a></div>
 <div data-stack="true" data-align="center"><div data-width="25%" data-align="stretch">b_0colpar1||||p</div></div>
 <div data-stack="false" data-align=""><div data-width="" data-align=""></div></div>
 <div data-stack="true" data-align=""><div data-width="" data-align=""></div></div>
-aside|注|grid|3|wide|b_0grppar1||||g
-div|||0||
+aside|注|grid|3|wide|b-000group is-layout-grid alignwide|b_0grppar1||||g
+div|||0|||
 <div data-height="large"></div>` + "\t\n" + `<div data-height="40px"></div>` + "\t\n" + `<hr class="thin">
 <blockquote>
 b_0quotep1||||q
 </blockquote>
 <pre><code>x
 </code></pre>`
-	const css = ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n"
-	checkDocument(t, r, []content.Blocks{bs}, []string{want}, css, nil)
+	const css = ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n\n" +
+		".b-0column1 {\n  flex-basis: 25% !important;\n  flex-grow: 0 !important;\n}\n\n" +
+		".b-000group {\n  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;\n}\n\n" +
+		".b-0spacer2 {\n  height: 40px !important;\n}\n"
+	checkDocument(t, r, []content.Blocks{bs}, []string{want}, css, []Warning{
+		{Path: "/12/attrs/height/preset", Msg: `the theme has no spacing preset "large"; ignored`},
+	})
 }
 
 // TestThemeBlocksError checks that the error of a block template ends the rendering of the document, without the CSS
@@ -238,13 +244,13 @@ func TestThemeBlocksError(t *testing.T) {
 				"can't evaluate field Missing in type render.Separator",
 		},
 		{
-			name: "cell in a table in a group", file: "blocks/tableCell.html", text: "<td>{{.Content}}{{.Class}}</td>",
+			name: "cell in a table in a group", file: "blocks/tableCell.html", text: "<td>{{.Content}}{{.Missing}}</td>",
 			lists: []content.Blocks{variant, decodeBlocks(t, `[{
 				"type": "group", "id": "b_000group",
 				"content": [{"type": "table", "id": "b_000table", "content": [{"type": "tableRow", "content": [{"type": "tableCell"}]}]}]
 			}]`)},
-			msg: `template: blocks/tableCell.html:1:18: executing "tableCell.html" at <.Class>: ` +
-				"can't evaluate field Class in type render.TableCell",
+			msg: `template: blocks/tableCell.html:1:18: executing "tableCell.html" at <.Missing>: ` +
+				"can't evaluate field Missing in type render.TableCell",
 		},
 	}
 	for _, tt := range tests {

@@ -59,16 +59,19 @@ func important(property, value string) string {
 // presetVar returns the custom property of the preset name of kind, a key of the presets in theme.yaml: "--", kind in
 // kebab case, "-" and name, such as "--font-size-large" for fontSize and large.
 func presetVar(kind, name string) string {
+	return "--" + kebab(kind) + "-" + name
+}
+
+// kebab returns s, a name in camel case such as "fontSize", in kebab case: "font-size".
+func kebab(s string) string {
 	var b strings.Builder
-	b.WriteString("--")
-	for _, r := range kind {
+	for _, r := range s {
 		if 'A' <= r && r <= 'Z' {
 			b.WriteByte('-')
 			r += 'a' - 'A'
 		}
 		b.WriteRune(r)
 	}
-	b.WriteString("-" + name)
 	return b.String()
 }
 
