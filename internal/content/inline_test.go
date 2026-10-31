@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// conceptRichTextJSON is the example in CONCEPT.md 6.5.2.
+// conceptRichTextJSON is the example in 6.5.2 of the concept (docs/06.05-blocks.md).
 const conceptRichTextJSON = `[
   { "type": "text", "text": "当社の" },
   { "type": "text", "text": "事業内容", "marks": [{ "type": "bold" }] },

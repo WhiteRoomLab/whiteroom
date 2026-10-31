@@ -661,7 +661,8 @@ func unmarshalTestdata[T any](t *testing.T, name string) T {
 	return v
 }
 
-// TestNewsPost checks the post of the example in CONCEPT.md 6.11.9, which is a published entry and its revision.
+// TestNewsPost checks the post of the example in 6.11.9 of the concept (docs/06.11-examples.md), which is a published
+// entry and its revision.
 func TestNewsPost(t *testing.T) {
 	site := exampleSite()
 	entryJSON := readTestdata(t, "news-post-entry.json")
@@ -682,8 +683,8 @@ func TestNewsPost(t *testing.T) {
 	assertRevisionValidate(t, r, opts, nil, "")
 }
 
-// TestExamplePaths checks the paths of the example in CONCEPT.md 6.11.9 and the files to write them to. The lookup
-// tells the slugs and the parents of the pages and the terms in testdata.
+// TestExamplePaths checks the paths of the example in 6.11.9 of the concept (docs/06.11-examples.md) and the files to
+// write them to. The lookup tells the slugs and the parents of the pages and the terms in testdata.
 func TestExamplePaths(t *testing.T) {
 	s := exampleSite()
 	assertValidSite(t, s)

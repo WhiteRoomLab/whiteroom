@@ -260,7 +260,8 @@ func assertRevisionValidate(t *testing.T, r Revision, opts RevisionOptions, path
 	}
 }
 
-// TestAboutPage checks the example in CONCEPT.md 6.11.1, which is a published entry and its revision.
+// TestAboutPage checks the example in 6.11.1 of the concept (docs/06.11-examples.md), which is a published entry and
+// its revision.
 func TestAboutPage(t *testing.T) {
 	site := testSite()
 	var e Entry
