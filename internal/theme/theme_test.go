@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"reflect"
 	"slices"
@@ -103,17 +104,26 @@ func mustLoad(t *testing.T, fsys fs.FS) *Theme {
 	return th
 }
 
-// namespaceTexts returns the templates of each namespace of th, as their text by name.
+// namespaceTexts returns the templates of each namespace of th, as their text by name: the namespaces of the page
+// templates by file name, and those of the block templates by path, such as "blocks/image.html".
 func namespaceTexts(th *Theme) map[string]map[string]string {
 	texts := make(map[string]map[string]string)
 	for page, ns := range th.namespaces {
-		m := make(map[string]string)
-		for _, x := range ns.Templates() {
-			m[x.Name()] = x.Tree.Root.String()
-		}
-		texts[page] = m
+		texts[page] = templateTexts(ns)
+	}
+	for t, ns := range th.blockNamespaces {
+		texts["blocks/"+string(t)+".html"] = templateTexts(ns)
 	}
 	return texts
+}
+
+// templateTexts returns the text of each template of ns by name.
+func templateTexts(ns *template.Template) map[string]string {
+	m := make(map[string]string)
+	for _, x := range ns.Templates() {
+		m[x.Name()] = x.Tree.Root.String()
+	}
+	return m
 }
 
 // withoutNamespaces returns a copy of th without its namespaces, which reflect.DeepEqual cannot compare since they
@@ -121,6 +131,7 @@ func namespaceTexts(th *Theme) map[string]map[string]string {
 func withoutNamespaces(th *Theme) (*Theme, map[string]map[string]string) {
 	c := *th
 	c.namespaces = nil
+	c.blockNamespaces = nil
 	return &c, namespaceTexts(th)
 }
 
@@ -141,6 +152,7 @@ func fullTheme() fstest.MapFS {
 		"templates/entry-works.html":  file("works"),
 		"templates/page-landing.html": file("landing"),
 		"templates/404.html":          file("not found"),
+		"blocks/image.html":           file("<figure></figure>"),
 		"components/header.html":      file("<header></header>"),
 		"components/entry/card.html":  file("<article></article>"),
 		"translations/ja.yaml":        file("readMore: 続きを読む\npageOf: \"{page} / {total} ページ\"\n"),
@@ -170,6 +182,9 @@ func TestLoad(t *testing.T) {
 	if !reflect.DeepEqual(th.templates, templates) {
 		t.Errorf("templates = %q, want %q", th.templates, templates)
 	}
+	if want := map[content.BlockType]string{content.BlockImage: "<figure></figure>"}; !reflect.DeepEqual(th.blocks, want) {
+		t.Errorf("blocks = %q, want %q", th.blocks, want)
+	}
 	components := map[string]string{"header": "<header></header>", "entry/card": "<article></article>"}
 	if !reflect.DeepEqual(th.components, components) {
 		t.Errorf("components = %q, want %q", th.components, components)
@@ -177,6 +192,9 @@ func TestLoad(t *testing.T) {
 	namespaces := make(map[string]map[string]string)
 	for name, text := range templates {
 		namespaces[name] = map[string]string{name: text, "header": "<header></header>", "entry/card": "<article></article>"}
+	}
+	namespaces["blocks/image.html"] = map[string]string{
+		"image.html": "<figure></figure>", "header": "<header></header>", "entry/card": "<article></article>",
 	}
 	if got := namespaceTexts(th); !reflect.DeepEqual(got, namespaces) {
 		t.Errorf("namespaces = %q, want %q", got, namespaces)
@@ -209,8 +227,9 @@ func TestLoadMinimal(t *testing.T) {
 	if want := map[string]string{"entry.html": "<p>entry</p>\n", "list.html": "<p>list</p>\n"}; !reflect.DeepEqual(th.templates, want) {
 		t.Errorf("templates = %q, want %q", th.templates, want)
 	}
-	if len(th.components) != 0 || len(th.translations) != 0 || th.keys != nil || len(th.assets) != 0 {
-		t.Errorf("Load() = %+v, want no components, translations or assets", th)
+	if len(th.blocks) != 0 || len(th.blockNamespaces) != 0 || len(th.components) != 0 || len(th.translations) != 0 ||
+		th.keys != nil || len(th.assets) != 0 {
+		t.Errorf("Load() = %+v, want no block templates, components, translations or assets", th)
 	}
 }
 
@@ -221,6 +240,7 @@ func TestLoadErrorOrder(t *testing.T) {
 		"assets/a b.png":         file("png"),
 		"assets/logo.png":        file("png"),
 		"templates/single.html":  file("single"),
+		"blocks/html.html":       file("html"),
 		"components/b c.html":    file("b"),
 		"components/a b.html":    file("a"),
 		"translations/en.yaml":   file("next: Next\nread more: Read more\n"),
@@ -238,6 +258,7 @@ func TestLoadErrorOrder(t *testing.T) {
 		`templates/single.html: unknown template name "single.html" (use entry.html, entry-{type}.html, ` +
 			`page-{template}.html, list.html, posts.html, term.html, term-{taxonomy}.html, archive-{type}.html, ` +
 			`author.html, 404.html)`,
+		`blocks/html.html: unknown block template name "html.html"` + unknownBlock,
 		`assets/a b.png: invalid name "a b.png": use ASCII letters, digits, "-", "_", ".", "~", "@" and "+"`,
 	})
 }
@@ -280,14 +301,15 @@ func TestCompareErrors(t *testing.T) {
 		{File: "templates", Msg: "j"},
 		{File: "templates/entry.html", Msg: "k"},
 		{File: "templates/entry.html", Line: 3, Msg: "l"},
-		{File: "assets/z.css", Msg: "m"},
-		{Msg: "n"},
-		{File: "README.md", Msg: "o"},
+		{File: "blocks/image.html", Msg: "m"},
+		{File: "assets/z.css", Msg: "n"},
+		{Msg: "o"},
+		{File: "README.md", Msg: "p"},
 	}
 	// b stays before c, which is at the same place.
 	errs := content.Errors{
-		want[14], want[12], want[13], want[11], want[10], want[9], want[8], want[7], want[6], want[5], want[4], want[3],
-		want[1], want[2], want[0],
+		want[15], want[13], want[14], want[12], want[11], want[10], want[9], want[8], want[7], want[6], want[5], want[4],
+		want[3], want[1], want[2], want[0],
 	}
 	slices.SortStableFunc(errs, compareErrors)
 	if !slices.Equal(errs, want) {

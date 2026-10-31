@@ -238,6 +238,7 @@ func TestCheckBlockID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkBlockID(tt.in), tt.msg)
+			assertErrorMsg(t, CheckBlockID(tt.in), tt.msg)
 		})
 	}
 }
@@ -329,6 +330,7 @@ func TestCheckHref(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkHref(tt.in), tt.msg)
+			assertErrorMsg(t, CheckHref(tt.in), tt.msg)
 		})
 	}
 }

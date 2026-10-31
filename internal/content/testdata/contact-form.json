@@ -37,6 +37,7 @@
       "policy": { "en": "ent_01JBD1M2N3P4Q5R6S7T8V9W0X1", "ja": "ent_01JBD1A2B3C4D5E6F7G8H9J0K1" }
     }
   ],
+  "submitLabel": { "en": "Send", "ja": "送信" },
   "message": {
     "en": "Thank you for contacting us.\nWe will reply within two business days.",
     "ja": "お問い合わせありがとうございます。\n2営業日以内にご返信します。"

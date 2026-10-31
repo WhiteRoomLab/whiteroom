@@ -1,5 +1,5 @@
 // Package theme reads themes, the directories in which developers write how a site looks: the settings
-// (theme.yaml), the page templates, the components, the translations and the assets.
+// (theme.yaml), the page templates, the block templates, the components, the translations and the assets.
 package theme
 
 import (
@@ -23,31 +23,37 @@ type Theme struct {
 	translations map[string]map[string]string // texts by key, by language
 	keys         []string                     // keys of the default translation, in its order
 	templates    map[string]string            // sources of the page templates by file name, such as "entry.html"
+	blocks       map[content.BlockType]string // sources of the block templates by type, such as "image"
 	components   map[string]string            // sources of the components by name, such as "entry/card"
 	assets       map[string]asset             // files in assets/ by their paths relative to it, such as "css/style.css"
 
 	// namespaces has, for each page template by file name, the template of that name with the components and the
-	// defines it can call, parsed with stubs for the functions. They are never executed, so that they can be cloned.
-	namespaces map[string]*template.Template
+	// defines it can call, parsed with stubs for the functions, and blockNamespaces the same for each block template by
+	// type. They are never executed, so that they can be cloned.
+	namespaces      map[string]*template.Template
+	blockNamespaces map[content.BlockType]*template.Template
 }
 
-// Load reads the theme in fsys: theme.yaml, templates/ and, if there are any, components/, assets/ and
+// Load reads the theme in fsys: theme.yaml, templates/ and, if there are any, components/, blocks/, assets/ and
 // translations/. It ignores hidden entries, whose names start with ".", everywhere, and the other entries at the root,
 // such as README.md. Symbolic links and the other entries that are neither regular files nor directories are errors.
-// It parses the page templates and the components, and checks the templates that each page template can reach: their
-// template calls, their calls of the functions, and the escaping of html/template.
+// It parses the page templates, the block templates and the components, and checks the templates that each page
+// template and each block template can reach: their template calls, their calls of the functions, and the escaping of
+// html/template.
 // The error is content.Errors, each with File set to the path of its file from the root, such as
-// "templates/entry.html", sorted by file, with theme.yaml first, then translations/, components/, templates/ and
-// assets/, and by position. The theme is nil with an error.
+// "templates/entry.html", sorted by file, with theme.yaml first, then translations/, components/, templates/, blocks/
+// and assets/, and by position. The theme is nil with an error.
 func Load(fsys fs.FS) (*Theme, error) {
 	l := &loader{
 		fsys: fsys,
 		t: &Theme{
-			translations: make(map[string]map[string]string),
-			templates:    make(map[string]string),
-			components:   make(map[string]string),
-			assets:       make(map[string]asset),
-			namespaces:   make(map[string]*template.Template),
+			translations:    make(map[string]map[string]string),
+			templates:       make(map[string]string),
+			blocks:          make(map[content.BlockType]string),
+			components:      make(map[string]string),
+			assets:          make(map[string]asset),
+			namespaces:      make(map[string]*template.Template),
+			blockNamespaces: make(map[content.BlockType]*template.Template),
 		},
 		translations: make(map[string]*translationFile),
 	}
@@ -114,7 +120,7 @@ func pathless(err error) error {
 }
 
 // fileGroups are the first segments of the paths of files, in the order of their errors.
-var fileGroups = []string{"theme.yaml", "translations", "components", "templates", "assets"}
+var fileGroups = []string{"theme.yaml", "translations", "components", "templates", "blocks", "assets"}
 
 func compareErrors(a, b *content.Error) int {
 	return cmp.Or(

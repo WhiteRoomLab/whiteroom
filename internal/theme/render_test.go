@@ -11,6 +11,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"unsafe"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
 const (
@@ -19,9 +21,9 @@ const (
 	logoVersion  = "4c4b6a3b" // and of logoPNG
 )
 
-// renderFiles returns the changes to themeFS for the tests of Renderer: a layout, a card and page templates that use
-// the functions, and translations in which ja is the default language, en lacks postedBy, fr has every key, and zh,
-// zh-Hant and zh-Hant-TW have fewer and fewer keys.
+// renderFiles returns the changes to themeFS for the tests of Renderer: a layout, a card, and page templates and a
+// block template that use the functions, and translations in which ja is the default language, en lacks postedBy, fr
+// has every key, and zh, zh-Hant and zh-Hant-TW have fewer and fewer keys.
 func renderFiles() map[string]*fstest.MapFile {
 	return map[string]*fstest.MapFile{
 		"theme.yaml":                   file("schemaVersion: 1\ndefaultLanguage: ja\n"),
@@ -41,6 +43,9 @@ func renderFiles() map[string]*fstest.MapFile {
 		"templates/list.html": file(`{{t "readMore"}}|{{t "pageOf" "page" 1 "total" 2}}|{{t "postedBy" "name" "A"}}|{{t "next"}}`),
 		// Clones share the nodes in parentheses before a field.
 		"templates/author.html": file(`{{with (dict "name" .Author).name}}<p>{{t "postedBy" "name" .}}</p>{{end}}`),
+		"blocks/file.html": file(`<p><a href="{{.Href}}">{{.Label}}</a> ({{t "pageOf" "page" 1 "total" .Pages}})` +
+			`<link rel="stylesheet" href="{{asset "css/style.css"}}"></p>` +
+			`{{template "entry/card" dict "title" .Label "url" .Href "author" .Author}}` + "\n"),
 	}
 }
 
@@ -58,6 +63,15 @@ func entryData(language string) map[string]any {
 	}
 }
 
+// fileData is the data of blocks/file.html of renderFiles, for a site whose URLs start with base.
+func fileData(language, base string) map[string]any {
+	label := "Company guide"
+	if language == "ja" {
+		label = "会社案内"
+	}
+	return map[string]any{"Href": base + "/files/guide.pdf", "Label": label, "Pages": 3, "Author": "A&B"}
+}
+
 func mustRenderer(t *testing.T, th *Theme, language, base string) *Renderer {
 	t.Helper()
 	r, err := th.Renderer(language, base)
@@ -72,6 +86,15 @@ func execute(t *testing.T, r *Renderer, name string, data any) string {
 	var b strings.Builder
 	if err := r.Execute(&b, name, data); err != nil {
 		t.Fatalf("Execute(%s) error: %v", name, err)
+	}
+	return b.String()
+}
+
+func executeBlock(t *testing.T, r *Renderer, bt content.BlockType, data any) string {
+	t.Helper()
+	var b strings.Builder
+	if err := r.ExecuteBlock(&b, bt, data); err != nil {
+		t.Fatalf("ExecuteBlock(%s) error: %v", bt, err)
 	}
 	return b.String()
 }
@@ -315,7 +338,10 @@ func TestRendererEscaping(t *testing.T) {
 func TestRendererErrors(t *testing.T) {
 	th := mustLoad(t, themeFS(renderFiles()))
 	r := mustRenderer(t, th, "en", "")
-	for _, name := range []string{"posts.html", "nope.html", "templates/entry.html", "entry", "layout", "entry/card", "main", ""} {
+	for _, name := range []string{
+		"posts.html", "nope.html", "templates/entry.html", "entry", "layout", "entry/card", "main", "file.html",
+		"blocks/file.html", "",
+	} {
 		err := r.Execute(&strings.Builder{}, name, entryData("en"))
 		if want := fmt.Sprintf("unknown page template %q", name); err == nil || err.Error() != want {
 			t.Errorf("Execute(%q) = %v, want %q", name, err, want)
@@ -361,6 +387,65 @@ func TestRendererErrors(t *testing.T) {
 	// The error of the writer comes as it is.
 	if err := r.Execute(stopWriter{}, "list.html", nil); !errors.Is(err, errStopped) || err.Error() != errStopped.Error() {
 		t.Errorf("Execute(stopWriter) = %v, want %v", err, errStopped)
+	}
+}
+
+func TestRendererBlocks(t *testing.T) {
+	th := mustLoad(t, themeFS(renderFiles()))
+	const (
+		ja = `<p><a href="/files/guide.pdf">会社案内</a> (1 / 3 ページ)` +
+			`<link rel="stylesheet" href="/assets/css/style.css?v=` + styleVersion + `"></p>` +
+			`<article><a href="/files/guide.pdf">会社案内</a> A&amp;B が投稿</article>` + "\n"
+		// postedBy of the card falls back to ja.
+		en = `<p><a href="/blog/files/guide.pdf">Company guide</a> (Page 1 of 3)` +
+			`<link rel="stylesheet" href="/blog/assets/css/style.css?v=` + styleVersion + `"></p>` +
+			`<article><a href="/blog/files/guide.pdf">Company guide</a> A&amp;B が投稿</article>` + "\n"
+	)
+	tests := []struct{ language, base, want string }{{"ja", "", ja}, {"en", "/blog", en}}
+	for _, tt := range tests {
+		r := mustRenderer(t, th, tt.language, tt.base)
+		if got := executeBlock(t, r, content.BlockFile, fileData(tt.language, tt.base)); got != tt.want {
+			t.Errorf("ExecuteBlock(file) in %s =\n%s\nwant\n%s", tt.language, got, tt.want)
+		}
+		if got := r.Language(); got != tt.language {
+			t.Errorf("Language() = %q, want %q", got, tt.language)
+		}
+		if got := r.Base(); got != tt.base {
+			t.Errorf("Base() = %q, want %q", got, tt.base)
+		}
+		if got := r.Settings(); got != th.Settings || got == nil {
+			t.Errorf("Settings() = %p, want those of the theme, %p", got, th.Settings)
+		}
+	}
+
+	r := mustRenderer(t, th, "en", "")
+	for bt, want := range map[content.BlockType]bool{
+		content.BlockFile: true, content.BlockImage: false, content.BlockHTML: false, content.BlockLegacy: false,
+		"entry": false, "file.html": false, "": false,
+	} {
+		if got := r.HasBlock(bt); got != want {
+			t.Errorf("HasBlock(%q) = %v, want %v", bt, got, want)
+		}
+		if want {
+			continue
+		}
+		var b strings.Builder
+		err := r.ExecuteBlock(&b, bt, fileData("en", ""))
+		if msg := fmt.Sprintf("no block template for %s blocks", bt); err == nil || err.Error() != msg || b.Len() != 0 {
+			t.Errorf("ExecuteBlock(%q) = %v, wrote %q, want error %q", bt, err, b.String(), msg)
+		}
+	}
+
+	noLabel := fileData("en", "")
+	delete(noLabel, "Label")
+	const missing = `template: blocks/file.html:1:25: executing "file.html" at <.Label>: map has no entry for key "Label"`
+	if err := r.ExecuteBlock(&strings.Builder{}, content.BlockFile, noLabel); err == nil || err.Error() != missing {
+		t.Errorf("ExecuteBlock(file) without Label = %v, want %q", err, missing)
+	}
+	// The error of the writer comes as it is.
+	err := r.ExecuteBlock(stopWriter{}, content.BlockFile, fileData("en", ""))
+	if !errors.Is(err, errStopped) || err.Error() != errStopped.Error() {
+		t.Errorf("ExecuteBlock(stopWriter) = %v, want %v", err, errStopped)
 	}
 }
 
@@ -535,7 +620,7 @@ func TestMissingTranslations(t *testing.T) {
 	}
 }
 
-// TestZeroTheme checks that a Theme that Load has not made has neither templates nor translations.
+// TestZeroTheme checks that a Theme that Load has not made has neither templates nor translations nor settings.
 func TestZeroTheme(t *testing.T) {
 	var th Theme
 	if got := th.Template(Page{Kind: KindEntry}); got != "" {
@@ -551,6 +636,19 @@ func TestZeroTheme(t *testing.T) {
 	if got := th.MissingTranslations("en"); got != nil {
 		t.Errorf("MissingTranslations(en) = %q, want nil", got)
 	}
+	if r.HasBlock(content.BlockParagraph) {
+		t.Error("HasBlock(paragraph) = true, want false")
+	}
+	const msg = "no block template for paragraph blocks"
+	if err := r.ExecuteBlock(&strings.Builder{}, content.BlockParagraph, nil); err == nil || err.Error() != msg {
+		t.Errorf("ExecuteBlock(paragraph) = %v, want %q", err, msg)
+	}
+	if got := r.Settings(); got != nil {
+		t.Errorf("Settings() = %+v, want nil", got)
+	}
+	if r.Language() != "ja" || r.Base() != "" {
+		t.Errorf("Language(), Base() = %q, %q, want ja and none", r.Language(), r.Base())
+	}
 }
 
 // TestRendererParallel checks that Renderers can be made and executed in parallel, and that they leave the namespaces
@@ -565,9 +663,13 @@ func TestRendererParallel(t *testing.T) {
 		for _, name := range names {
 			want[lang+" "+name] = execute(t, r, name, entryData(lang))
 		}
+		want[lang+" file"] = executeBlock(t, r, content.BlockFile, fileData(lang, "/blog"))
 	}
 	if got := want["zh-Hant-TW author.html"]; got != "<p>A&amp;B zh</p>" {
 		t.Errorf("Execute(author.html) in zh-Hant-TW = %q", got)
+	}
+	if got := want["zh-Hant-TW file"]; !strings.Contains(got, "(1/3 zh-Hant)") {
+		t.Errorf("ExecuteBlock(file) in zh-Hant-TW = %q", got)
 	}
 	var wg sync.WaitGroup
 	for _, lang := range languages {
@@ -589,6 +691,14 @@ func TestRendererParallel(t *testing.T) {
 						}
 					})
 				}
+				pages.Go(func() {
+					var b strings.Builder
+					if err := r.ExecuteBlock(&b, content.BlockFile, fileData(lang, "/blog")); err != nil {
+						t.Error(err)
+					} else if got := b.String(); got != want[lang+" file"] {
+						t.Errorf("ExecuteBlock(file) in %s = %q, want %q", lang, got, want[lang+" file"])
+					}
+				})
 			}
 			pages.Wait()
 		})
@@ -597,6 +707,11 @@ func TestRendererParallel(t *testing.T) {
 	for name, ns := range th.namespaces {
 		if _, err := ns.Clone(); err != nil {
 			t.Errorf("namespaces[%s].Clone() = %v", name, err)
+		}
+	}
+	for bt, ns := range th.blockNamespaces {
+		if _, err := ns.Clone(); err != nil {
+			t.Errorf("blockNamespaces[%s].Clone() = %v", bt, err)
 		}
 	}
 }

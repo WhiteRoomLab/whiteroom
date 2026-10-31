@@ -1,0 +1,5 @@
+<div{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}>
+{{- with .Children}}
+{{.}}
+{{end -}}
+</div>

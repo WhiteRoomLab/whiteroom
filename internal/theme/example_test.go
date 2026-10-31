@@ -255,6 +255,18 @@ func TestExampleLoad(t *testing.T) {
 	if got := th.MissingTranslations("ja"); got != nil {
 		t.Errorf("MissingTranslations(ja) = %q, want nil", got)
 	}
+	blocks := []content.BlockType{content.BlockFile, content.BlockTable}
+	if got := slices.Sorted(maps.Keys(th.blocks)); !slices.Equal(got, blocks) {
+		t.Errorf("block templates = %q, want %q", got, blocks)
+	}
+	r := mustRenderer(t, th, "ja", "")
+	for bt, want := range map[content.BlockType]bool{
+		content.BlockTable: true, content.BlockFile: true, content.BlockParagraph: false,
+	} {
+		if got := r.HasBlock(bt); got != want {
+			t.Errorf("HasBlock(%q) = %v, want %v", bt, got, want)
+		}
+	}
 	if logo, err := png.Decode(bytes.NewReader(th.assets["images/logo.png"].data)); err != nil {
 		t.Errorf("images/logo.png: %v", err)
 	} else if size := logo.Bounds().Size(); size.X != 32 || size.Y != 32 {

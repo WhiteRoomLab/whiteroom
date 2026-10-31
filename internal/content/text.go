@@ -118,6 +118,11 @@ func isNameByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
+// CheckBlockID checks s by the rule for block IDs: "b_" and 8 lower case ASCII letters or digits.
+func CheckBlockID(s string) error {
+	return checkBlockID(s)
+}
+
 func checkBlockID(s string) error {
 	rest, ok := strings.CutPrefix(s, "b_")
 	if !ok || len(rest) != 8 || strings.TrimLeft(rest, "0123456789abcdefghijklmnopqrstuvwxyz") != "" {
@@ -135,6 +140,12 @@ func normalizeHref(s string) string {
 		return r
 	}, s)
 	return strings.TrimFunc(s, unicode.IsSpace)
+}
+
+// CheckHref checks s by the rule for the href of links: http, https, mailto and tel URLs and paths starting with "/",
+// without control characters or surrounding spaces.
+func CheckHref(s string) error {
+	return checkHref(s)
 }
 
 func checkHref(s string) error {

@@ -1,0 +1,13 @@
+{{if .Ordered -}}
+<ol{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}{{with .Start}} start="{{.}}"{{end}}>
+{{- with .Children}}
+{{.}}
+{{end -}}
+</ol>
+{{- else -}}
+<ul{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}>
+{{- with .Children}}
+{{.}}
+{{end -}}
+</ul>
+{{- end}}

@@ -37,6 +37,7 @@ var contactForm = Form{
 			Policy: Localized{"en": testEnglishPrivacyPage, "ja": testPrivacyPage},
 		},
 	},
+	SubmitLabel: Localized{"en": "Send", "ja": "送信"},
 	Message: Localized{
 		"en": "Thank you for contacting us.\nWe will reply within two business days.",
 		"ja": "お問い合わせありがとうございます。\n2営業日以内にご返信します。",
@@ -54,7 +55,8 @@ func cloneForm(x Form) Form {
 			f.Options[j].Label = maps.Clone(f.Options[j].Label)
 		}
 	}
-	x.Message, x.ThanksPage, x.Notify = maps.Clone(x.Message), maps.Clone(x.ThanksPage), slices.Clone(x.Notify)
+	x.SubmitLabel, x.Message, x.ThanksPage = maps.Clone(x.SubmitLabel), maps.Clone(x.Message), maps.Clone(x.ThanksPage)
+	x.Notify = slices.Clone(x.Notify)
 	return x
 }
 
@@ -91,7 +93,8 @@ func TestFormRoundTrip(t *testing.T) {
 		{
 			name: "reversed key order",
 			in: `{"notify":["sales@example.com","info@example.com"],"thanksPage":{"en":"` + testEnglishPage + `"},` +
-				`"message":{"ja":"送信しました。"},"fields":[{"policy":{"ja":"` + testPrivacyPage + `","en":"` + testEnglishPrivacyPage + `"},` +
+				`"message":{"ja":"送信しました。"},"submitLabel":{"ja":"送信","en":"Send"},` +
+				`"fields":[{"policy":{"ja":"` + testPrivacyPage + `","en":"` + testEnglishPrivacyPage + `"},` +
 				`"options":[{"label":{"ja":"はい","en":"Yes"},"value":"yes"}],"maxLength":20,"minLength":2,"required":true,` +
 				`"label":{"ja":"確認","en":"Check"},"type":"checkbox","name":"check"}],"title":"お問い合わせ","id":"` + testForm + `",` +
 				`"schemaVersion":1}`,
@@ -99,7 +102,7 @@ func TestFormRoundTrip(t *testing.T) {
 				`"label":{"en":"Check","ja":"確認"},"required":true,"minLength":2,"maxLength":20,` +
 				`"options":[{"value":"yes","label":{"en":"Yes","ja":"はい"}}],` +
 				`"policy":{"en":"` + testEnglishPrivacyPage + `","ja":"` + testPrivacyPage + `"}}],` +
-				`"message":{"ja":"送信しました。"},"thanksPage":{"en":"` + testEnglishPage + `"},` +
+				`"submitLabel":{"en":"Send","ja":"送信"},"message":{"ja":"送信しました。"},"thanksPage":{"en":"` + testEnglishPage + `"},` +
 				`"notify":["sales@example.com","info@example.com"]}`,
 		},
 		{
@@ -134,7 +137,7 @@ func TestFormMarshalJSON(t *testing.T) {
 		{name: "empty", in: Form{}, want: `{"schemaVersion":1}`},
 		{
 			name: "empty fields, texts and addresses",
-			in:   Form{Fields: []FormField{}, Message: Localized{}, ThanksPage: Localized{}, Notify: []string{}},
+			in:   Form{Fields: []FormField{}, SubmitLabel: Localized{}, Message: Localized{}, ThanksPage: Localized{}, Notify: []string{}},
 			want: `{"schemaVersion":1}`,
 		},
 		{name: "field with a name only", in: FormField{Name: "a"}, want: `{"name":"a"}`},
@@ -195,8 +198,8 @@ func TestFormUnmarshalJSONError(t *testing.T) {
 		{name: "empty", in: `{}`, path: "", msg: "empty object is not allowed"},
 		{
 			name: "missing schemaVersion",
-			in: `{"id":"x","title":"x","fields":[{"name":"x","type":"x","label":{"ja":"x"}}],"message":{"ja":"x"},` +
-				`"thanksPage":{"ja":"x"},"notify":["x"]}`,
+			in: `{"id":"x","title":"x","fields":[{"name":"x","type":"x","label":{"ja":"x"}}],"submitLabel":{"ja":"x"},` +
+				`"message":{"ja":"x"},"thanksPage":{"ja":"x"},"notify":["x"]}`,
 			path: "",
 			msg:  `missing key "schemaVersion"`,
 		},
@@ -265,6 +268,15 @@ func TestFormUnmarshalJSONError(t *testing.T) {
 			path: "/fields/0/policy",
 			msg:  "expected object, got string",
 		},
+		{name: "empty submitLabel", in: `{"schemaVersion":1,"submitLabel":{}}`, path: "/submitLabel", msg: "empty object is not allowed"},
+		{name: "string for the submitLabel", in: `{"schemaVersion":1,"submitLabel":"送信"}`, path: "/submitLabel", msg: "expected object, got string"},
+		{name: "null submitLabel", in: `{"schemaVersion":1,"submitLabel":null}`, path: "/submitLabel", msg: "expected object, got null"},
+		{
+			name: "empty text in the submitLabel",
+			in:   `{"schemaVersion":1,"submitLabel":{"en":"Send","ja":""}}`,
+			path: "/submitLabel/ja",
+			msg:  "empty string is not allowed",
+		},
 		{name: "empty message", in: `{"schemaVersion":1,"message":{}}`, path: "/message", msg: "empty object is not allowed"},
 		{name: "string for the message", in: `{"schemaVersion":1,"message":"Thank you."}`, path: "/message", msg: "expected object, got string"},
 		{name: "empty text in the message", in: `{"schemaVersion":1,"message":{"ja":""}}`, path: "/message/ja", msg: "empty string is not allowed"},
@@ -288,15 +300,22 @@ func TestFormUnmarshalJSONError(t *testing.T) {
 			path: "/fields/0/label/ja",
 			msg:  "duplicate key",
 		},
+		{
+			name: "duplicate language in the submitLabel",
+			in:   `{"schemaVersion":1,"submitLabel":{"ja":"送信","ja":"送る"}}`,
+			path: "/submitLabel/ja",
+			msg:  "duplicate key",
+		},
 		{name: "trailing data", in: `{"schemaVersion":1} {}`, path: "", msg: "unexpected data after value"},
 	}
 	// old makes a new form on each call, so that changes to its fields, texts or addresses in place show.
 	old := func() Form {
 		return Form{
-			ID:      "old",
-			Fields:  []FormField{{Name: "old", Label: Localized{"ja": "old"}, Options: []FormOption{{Value: "old"}}}},
-			Message: Localized{"ja": "old"},
-			Notify:  []string{"old"},
+			ID:          "old",
+			Fields:      []FormField{{Name: "old", Label: Localized{"ja": "old"}, Options: []FormOption{{Value: "old"}}}},
+			SubmitLabel: Localized{"ja": "old"},
+			Message:     Localized{"ja": "old"},
+			Notify:      []string{"old"},
 		}
 	}
 	for _, tt := range tests {
@@ -325,7 +344,8 @@ func TestFormNormalize(t *testing.T) {
 					{Label: Localized{"ja": "c" + ctrl + "d"}},
 					{Options: []FormOption{{Value: "e"}, {Value: "f" + ctrl + "g", Label: Localized{"en": "h" + ctrl + "i"}}}},
 				},
-				Message: Localized{"ja": "j" + ctrl + "k"},
+				SubmitLabel: Localized{"ja": "j" + ctrl + "k"},
+				Message:     Localized{"ja": "l" + ctrl + "m"},
 			},
 			want: Form{
 				Title: "ab",
@@ -333,26 +353,37 @@ func TestFormNormalize(t *testing.T) {
 					{Label: Localized{"ja": "cd"}},
 					{Options: []FormOption{{Value: "e"}, {Value: "fg", Label: Localized{"en": "hi"}}}},
 				},
-				Message: Localized{"ja": "jk"},
+				SubmitLabel: Localized{"ja": "jk"},
+				Message:     Localized{"ja": "lm"},
 			},
 		},
 		{
 			name: "NFC",
 			in: Form{
-				Title:   "cafe" + acute,
-				Fields:  []FormField{{Label: Localized{"en": "cafe" + acute}, Options: []FormOption{{Value: "cafe" + acute, Label: Localized{"en": "cafe" + acute}}}}},
-				Message: Localized{"en": "cafe" + acute},
+				Title:       "cafe" + acute,
+				Fields:      []FormField{{Label: Localized{"en": "cafe" + acute}, Options: []FormOption{{Value: "cafe" + acute, Label: Localized{"en": "cafe" + acute}}}}},
+				SubmitLabel: Localized{"en": "cafe" + acute},
+				Message:     Localized{"en": "cafe" + acute},
 			},
 			want: Form{
-				Title:   "caf" + eAcute,
-				Fields:  []FormField{{Label: Localized{"en": "caf" + eAcute}, Options: []FormOption{{Value: "caf" + eAcute, Label: Localized{"en": "caf" + eAcute}}}}},
-				Message: Localized{"en": "caf" + eAcute},
+				Title:       "caf" + eAcute,
+				Fields:      []FormField{{Label: Localized{"en": "caf" + eAcute}, Options: []FormOption{{Value: "caf" + eAcute, Label: Localized{"en": "caf" + eAcute}}}}},
+				SubmitLabel: Localized{"en": "caf" + eAcute},
+				Message:     Localized{"en": "caf" + eAcute},
 			},
 		},
 		{
 			name: "line breaks and tabs left in the title, the labels and the values",
-			in:   Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}}},
-			want: Form{Title: "a\r\nb\tc", Fields: []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}}},
+			in: Form{
+				Title:       "a\r\nb\tc",
+				Fields:      []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}},
+				SubmitLabel: Localized{"ja": "j\r\nk\tl"},
+			},
+			want: Form{
+				Title:       "a\r\nb\tc",
+				Fields:      []FormField{{Label: Localized{"ja": "d\r\ne"}, Options: []FormOption{{Value: "f\r\ng", Label: Localized{"ja": "h\r\ni"}}}}},
+				SubmitLabel: Localized{"ja": "j\r\nk\tl"},
+			},
 		},
 		{
 			name: "line breaks in the message",
@@ -362,10 +393,15 @@ func TestFormNormalize(t *testing.T) {
 		{
 			name: "languages of which nothing is left",
 			in: Form{
-				Fields:  []FormField{{Label: Localized{"ja": "a", "en": ctrl}, Options: []FormOption{{Value: "b", Label: Localized{"ja": ctrl}}}}},
-				Message: Localized{"ja": ctrl + "\v", "en": "c"},
+				Fields:      []FormField{{Label: Localized{"ja": "a", "en": ctrl}, Options: []FormOption{{Value: "b", Label: Localized{"ja": ctrl}}}}},
+				SubmitLabel: Localized{"ja": "c", "en": ctrl},
+				Message:     Localized{"ja": ctrl + "\v", "en": "d"},
 			},
-			want: Form{Fields: []FormField{{Label: Localized{"ja": "a"}, Options: []FormOption{{Value: "b"}}}}, Message: Localized{"en": "c"}},
+			want: Form{
+				Fields:      []FormField{{Label: Localized{"ja": "a"}, Options: []FormOption{{Value: "b"}}}},
+				SubmitLabel: Localized{"ja": "c"},
+				Message:     Localized{"en": "d"},
+			},
 		},
 		{
 			// Validation reports them.
@@ -395,7 +431,7 @@ func TestFormNormalize(t *testing.T) {
 			want: Form{Notify: []string{"info@example.com"}},
 		},
 		{name: "nothing left in the addresses", in: Form{Notify: []string{" ", "\t" + ctrl}}, want: Form{}},
-		{name: "empty texts and addresses", in: Form{Message: Localized{}, Notify: []string{}}, want: Form{}},
+		{name: "empty texts and addresses", in: Form{SubmitLabel: Localized{}, Message: Localized{}, Notify: []string{}}, want: Form{}},
 		{
 			name: "other items left as they are",
 			in: Form{
@@ -485,17 +521,19 @@ func TestFormValidate(t *testing.T) {
 		{
 			name: "required items only",
 			in: Form{
-				ID:      testForm,
-				Title:   "お問い合わせ",
-				Fields:  []FormField{{Name: "your-email", Type: FormEmail, Label: Localized{"en": "Email", "ja": "メールアドレス"}}},
-				Message: Localized{"en": "Thank you.", "ja": "ありがとうございます。"},
+				ID:          testForm,
+				Title:       "お問い合わせ",
+				Fields:      []FormField{{Name: "your-email", Type: FormEmail, Label: Localized{"en": "Email", "ja": "メールアドレス"}}},
+				SubmitLabel: Localized{"en": "Send", "ja": "送信"},
+				Message:     Localized{"en": "Thank you.", "ja": "ありがとうございます。"},
 			},
 		},
 		{
 			name:  "missing items",
 			in:    Form{},
-			paths: []string{"/id", "/title", "/fields", "/message"},
-			msg:   "/id: missing id\n/title: missing title\n/fields: missing fields\n/message: missing message or thanksPage",
+			paths: []string{"/id", "/title", "/fields", "/submitLabel", "/message"},
+			msg: "/id: missing id\n/title: missing title\n/fields: missing fields\n/submitLabel: missing submitLabel\n" +
+				"/message: missing message or thanksPage",
 		},
 		{
 			// The errors are in document order.
@@ -515,14 +553,15 @@ func TestFormValidate(t *testing.T) {
 						Policy:    Localized{"ja": testEnglishPrivacyPage},
 					},
 				},
-				Message:    Localized{"ja": "g" + ctrl},
-				ThanksPage: Localized{"ja": testAboutPage},
-				Notify:     []string{"info@localhost"},
+				SubmitLabel: Localized{"ja": "g\nh"},
+				Message:     Localized{"ja": "i" + ctrl},
+				ThanksPage:  Localized{"ja": testAboutPage},
+				Notify:      []string{"info@localhost"},
 			},
 			paths: []string{
 				"/id", "/title", "/fields/0/name", "/fields/0/type", "/fields/0/label/en", "/fields/1/label/en",
 				"/fields/1/required", "/fields/1/minLength", "/fields/1/options", "/fields/1/policy/ja",
-				"/message/ja", "/message/en", "/thanksPage/ja", "/notify/0",
+				"/submitLabel/ja", "/submitLabel/en", "/message/ja", "/message/en", "/thanksPage/ja", "/notify/0",
 			},
 			msg: `/id: invalid form ID "` + testAboutPage + `": use "frm_" and a ULID (26 characters in upper case)` + "\n" +
 				"/title: contains a line break or tab\n" +
@@ -534,6 +573,8 @@ func TestFormValidate(t *testing.T) {
 				"/fields/1/minLength: not allowed for consent fields\n" +
 				"/fields/1/options: not allowed for consent fields\n" +
 				`/fields/1/policy/ja: entry "` + testEnglishPrivacyPage + `" is in the language "en", not "ja"` + "\n" +
+				"/submitLabel/ja: contains a line break or tab\n" +
+				"/submitLabel/en: " + missing + "\n" +
 				"/message/ja: contains control characters; normalize it first\n" +
 				"/message/en: missing message or thanksPage in en\n" +
 				"/thanksPage/ja: cannot be combined with message in ja\n" +
@@ -860,6 +901,43 @@ func TestFormValidate(t *testing.T) {
 			in:    form(contactForm, func(x *Form) { x.Fields[1].Policy = Localized{"ja": testPrivacyPage} }),
 			paths: []string{"/fields/1/policy"},
 			msg:   "/fields/1/policy: not allowed for email fields",
+		},
+
+		{
+			name:  "missing submitLabel",
+			in:    form(contactForm, func(x *Form) { x.SubmitLabel = nil }),
+			paths: []string{"/submitLabel"},
+			msg:   "/submitLabel: missing submitLabel",
+		},
+		{
+			name:  "submitLabel without en",
+			in:    form(contactForm, func(x *Form) { delete(x.SubmitLabel, "en") }),
+			paths: []string{"/submitLabel/en"},
+			msg:   "/submitLabel/en: " + missing,
+		},
+		{
+			name:  "empty text in the submitLabel",
+			in:    form(contactForm, func(x *Form) { x.SubmitLabel["ja"] = "" }),
+			paths: []string{"/submitLabel/ja"},
+			msg:   "/submitLabel/ja: " + missing,
+		},
+		{
+			name:  "submitLabel in a language not in the site settings",
+			in:    form(contactForm, func(x *Form) { x.SubmitLabel["fr"] = "Envoyer" }),
+			paths: []string{"/submitLabel/fr"},
+			msg:   `/submitLabel/fr: language "fr" is not in the site settings (use ja, en)`,
+		},
+		{
+			name:  "submitLabel not in NFC",
+			in:    form(contactForm, func(x *Form) { x.SubmitLabel["en"] = "cafe" + acute }),
+			paths: []string{"/submitLabel/en"},
+			msg:   "/submitLabel/en: not in Unicode NFC; normalize it first",
+		},
+		{
+			name:  "tab in the submitLabel",
+			in:    form(contactForm, func(x *Form) { x.SubmitLabel["en"] = "Send\tnow" }),
+			paths: []string{"/submitLabel/en"},
+			msg:   "/submitLabel/en: contains a line break or tab",
 		},
 
 		{

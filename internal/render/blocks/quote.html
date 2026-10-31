@@ -1,0 +1,13 @@
+{{if .Citation -}}
+<figure{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}><blockquote>
+{{- with .Children}}
+{{.}}
+{{end -}}
+</blockquote><figcaption>{{.Citation}}</figcaption></figure>
+{{- else -}}
+<blockquote{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}>
+{{- with .Children}}
+{{.}}
+{{end -}}
+</blockquote>
+{{- end}}

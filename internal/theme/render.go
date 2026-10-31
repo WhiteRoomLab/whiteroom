@@ -76,13 +76,16 @@ func (t *Theme) Template(p Page) string {
 	return ""
 }
 
-// Renderer executes the page templates of a theme for the pages in one language, with the functions t and asset bound
-// to that language and to the base of the URLs of the site. It is safe for concurrent use.
+// Renderer executes the page templates and the block templates of a theme for the pages in one language, with the
+// functions t and asset bound to that language and to the base of the URLs of the site. It is safe for concurrent use.
 type Renderer struct {
+	language  string
 	texts     []map[string]string // the translations in which t looks up texts, in order
 	base      string
+	settings  *content.ThemeSettings
 	assets    map[string]asset
-	templates map[string]*template.Template // clones of the namespaces of the theme, by name
+	templates map[string]*template.Template            // clones of the namespaces of the page templates, by name
+	blocks    map[content.BlockType]*template.Template // and of those of the block templates, by type
 }
 
 // Renderer returns a Renderer for the pages in language, a language code such as "ja" or "en-US". The function t
@@ -98,21 +101,30 @@ func (t *Theme) Renderer(language, base string) (*Renderer, error) {
 		return nil, fmt.Errorf(`invalid base %q: must not end with "/"; use "" for a site at the root`, base)
 	}
 	r := &Renderer{
-		texts:     t.lookup(language),
-		base:      base,
-		assets:    t.assets,
-		templates: make(map[string]*template.Template, len(t.namespaces)),
+		language: language,
+		texts:    t.lookup(language),
+		base:     base,
+		settings: t.Settings,
+		assets:   t.assets,
 	}
 	funcs := template.FuncMap{"t": r.t, "asset": r.asset, "dict": dict}
-	for name, ns := range t.namespaces {
+	r.templates = cloneNamespaces(t.namespaces, funcs)
+	r.blocks = cloneNamespaces(t.blockNamespaces, funcs)
+	return r, nil
+}
+
+// cloneNamespaces returns clones of namespaces with funcs bound.
+func cloneNamespaces[K comparable](namespaces map[K]*template.Template, funcs template.FuncMap) map[K]*template.Template {
+	clones := make(map[K]*template.Template, len(namespaces))
+	for k, ns := range namespaces {
 		c, err := ns.Clone()
 		if err != nil {
 			// Only an executed template cannot be cloned, and the namespaces are never executed.
 			panic(err)
 		}
-		r.templates[name] = c.Funcs(funcs)
+		clones[k] = c.Funcs(funcs)
 	}
-	return r, nil
+	return clones
 }
 
 // Execute executes the page template name, as Template returns it, with data, and writes the page to w. A name that is
@@ -124,4 +136,34 @@ func (r *Renderer) Execute(w io.Writer, name string, data any) error {
 		return fmt.Errorf("unknown page template %q", name)
 	}
 	return tmpl.Execute(w, data)
+}
+
+// HasBlock reports whether the theme has a block template for blocks of type t: blocks/<t>.html.
+func (r *Renderer) HasBlock(t content.BlockType) bool {
+	return r.blocks[t] != nil
+}
+
+// ExecuteBlock executes the block template of t with data, and writes the HTML to w. A type without a block template
+// in the theme is an error.
+func (r *Renderer) ExecuteBlock(w io.Writer, t content.BlockType, data any) error {
+	tmpl := r.blocks[t]
+	if tmpl == nil {
+		return fmt.Errorf("no block template for %s blocks", t)
+	}
+	return tmpl.Execute(w, data)
+}
+
+// Language returns the language that r was made for.
+func (r *Renderer) Language() string {
+	return r.language
+}
+
+// Base returns the base of the URLs that r was made for.
+func (r *Renderer) Base() string {
+	return r.base
+}
+
+// Settings returns the settings of the theme; nil for a zero Theme.
+func (r *Renderer) Settings() *content.ThemeSettings {
+	return r.settings
 }
