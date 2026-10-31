@@ -216,7 +216,7 @@ SQLiteとContent Storeは異なる永続化領域になり得るため、以下�
 | `locations` | メニューの表示場所（6.6.4） | |
 | `pageTemplates` | 固定ページのテンプレート（6.4.3の `template`）。テンプレートのファイルは `templates/page-<名前>.html`（5.4.4） | |
 | `imageSizes` | 画像のサイズ（6.5.4の `size`）。サイズの名前から、`label`・`width`・`height`・`crop`（下記）のマッピングへ | |
-| `mobileWidth` | カラム（6.5.4の `columns`）を縦に積む、画面の最大の幅。`px`・`em`・`rem` の、0より大きい長さ（例：`600px`）。省けば `781px`（WordPressと同じ） | |
+| `mobileWidth` | カラム（6.5.4の `columns`）を縦に積む、画面の最大の幅。`px`・`em`・`rem` の、0より大きい長さ（例：`600px`）。省けば `781px` | |
 
 `variants`・`locations`・`pageTemplates` は、名前から表示名（管理画面で示す名前）へのマッピングで書く（例：`box: ボックス`）。プリセットは、表示名を持たない（6.12の73）。全体の例は5.4.9。
 
@@ -1000,7 +1000,7 @@ blocks:
   - ページのCSS：ページごとの、ブロックと `highlight` の規則（下記）。ファイルの名前は、中身のハッシュから作る（同じ中身のページは、同じファイルを使える）。
   - サイトのCSS：サイトで1つの、テーマのプリセットの変数（5.4.3）と、本体が付けるクラスのCSS（6.5.4）。
 - 読み込む順：サイトのCSS、テーマのCSS（`assets/`。5.4.7）、ページのCSSの順にする。テーマのCSSは、本体のクラスのCSSを上書きできる（6.5.4）。
-- `!important`：ページのCSSの宣言には、`border` の線種の既定（下記）を除いて、すべて `!important` を付ける。編集者の選んだ値が、テーマのCSSの詳細度によらずに効くように（WordPressのインラインの `style` 属性と、`!important` の付いたプリセットのクラス（`has-primary-color` など）に当たる）。テーマのCSSは、編集者の値を上書きできないので、画面の幅で変えたい値は、プリセットで書く（テーマが、プリセットの値に `clamp()` などを書くか、テーマのCSSのメディアクエリーの中で、変数の値を変える。6.12の93）。
+- `!important`：ページのCSSの宣言には、`border` の線種の既定（下記）を除いて、すべて `!important` を付ける。編集者の選んだ値が、テーマのCSSの詳細度によらずに効くように。テーマのCSSは、編集者の値を上書きできないので、画面の幅で変えたい値は、プリセットで書く（テーマが、プリセットの値に `clamp()` などを書くか、テーマのCSSのメディアクエリーの中で、変数の値を変える。6.12の93）。
 - ブロックの規則：規則のあるブロック（`style` か、長さと数の見た目の属性（6.5.4）の値が残ったもの）には、IDの `b_` を `b-` にしたクラスを付け（6.5.4。IDの正しくないものと重なったものは6.8）、そのクラスで次の規則を、この順に作る（宣言の無い規則は作らない）。
   1. `.b-<ID>`：`style` の宣言（`linkColor` と、通常の並びの `blockGap` を除く。項目の順で、`padding`・`margin` の中は `top`・`right`・`bottom`・`left`、`border` の中は `width`・`style`・`color`・`radius` の順）と、その後ろに、属性の宣言（6.5.4）。
   2. `:where(.b-<ID>)`：`border` の `width` か `color` が残り、`style` が残らないときの `border-style: solid`（線を表示するための既定。`!important` を付けず、詳細度を0にして、テーマのCSSが書いた線種を優先する）。
@@ -1253,24 +1253,24 @@ blocks:
 
 見た目の属性（案）：
 
-- クラス：選択肢の決まった属性は、決まったクラス（下の表）にして、`class` に並べる（データの `.Class`。5.4.4）。値ごとのクラスの名前は、属性ごとの前置き（`has-text-align-` など）に、値をケバブケースにしたもの（`spaceBetween` は `space-between`、ボタンの `25%` は `%` を除いた `25`）を続けたもので、WordPressに同じものがあれば、その名前にする（本体の接頭辞は付けない）。属性の値を、そのままクラスに入れることはしない。1つのブロックのクラスは、表の順に並べる。
+- クラス：選択肢の決まった属性は、決まったクラス（下の表）にして、`class` に並べる（データの `.Class`。5.4.4）。値ごとのクラスの名前は、属性ごとの前置き（`has-text-align-` など）に、値をケバブケースにしたもの（`spaceBetween` は `space-between`、ボタンの `25%` は `%` を除いた `25`）を続けたもので、本体の接頭辞は付けない。属性の値を、そのままクラスに入れることはしない。1つのブロックのクラスは、表の順に並べる。
 
-| ブロック | 属性 | クラス | WordPressと同じ名前 |
-| --- | --- | --- | --- |
-| `paragraph`、`heading`、`tableCell` | `textAlign` | `has-text-align-left`・`has-text-align-center`・`has-text-align-right` | ○ |
-| `image` | `align` | `alignleft`・`aligncenter`・`alignright`・`alignwide`・`alignfull` | ○ |
-| `buttons` | （いつも付ける） | `is-layout-row` | |
-| `buttons` | `justify` | `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between` | ○ |
-| `button` | `width` | `has-width-25`・`has-width-50`・`has-width-75`・`has-width-100` | |
-| `columns` | （いつも付ける） | `is-layout-columns` | |
-| `columns` | `verticalAlign` | `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom` | ○ |
-| `columns` | `stackOnMobile` | `false` なら `is-not-stacked-on-mobile` | ○ |
-| `column` | `verticalAlign` | `is-vertically-aligned-top`・`is-vertically-aligned-center`・`is-vertically-aligned-bottom`・`is-vertically-aligned-stretch` | ○ |
-| `group` | `layout` の `type` | `is-layout-flow`・`is-layout-row`・`is-layout-stack`・`is-layout-grid` | `flow`・`grid` だけ |
-| `group` | `layout` の `justify` | `row` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between`、`stack` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-stretch` | ○ |
-| `group` | `layout` の `verticalAlign` | `row` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-stretch`、`stack` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-space-between` | |
-| `group` | `layout` の `nowrap` | `is-nowrap` | ○ |
-| `group` | `align` | `alignwide`・`alignfull` | ○ |
+| ブロック | 属性 | クラス |
+| --- | --- | --- |
+| `paragraph`、`heading`、`tableCell` | `textAlign` | `has-text-align-left`・`has-text-align-center`・`has-text-align-right` |
+| `image` | `align` | `alignleft`・`aligncenter`・`alignright`・`alignwide`・`alignfull` |
+| `buttons` | （いつも付ける） | `is-layout-row` |
+| `buttons` | `justify` | `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between` |
+| `button` | `width` | `has-width-25`・`has-width-50`・`has-width-75`・`has-width-100` |
+| `columns` | （いつも付ける） | `is-layout-columns` |
+| `columns` | `verticalAlign` | `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom` |
+| `columns` | `stackOnMobile` | `false` なら `is-not-stacked-on-mobile` |
+| `column` | `verticalAlign` | `is-vertically-aligned-top`・`is-vertically-aligned-center`・`is-vertically-aligned-bottom`・`is-vertically-aligned-stretch` |
+| `group` | `layout` の `type` | `is-layout-flow`・`is-layout-row`・`is-layout-stack`・`is-layout-grid` |
+| `group` | `layout` の `justify` | `row` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-space-between`、`stack` では `is-content-justification-left`・`is-content-justification-center`・`is-content-justification-right`・`is-content-justification-stretch` |
+| `group` | `layout` の `verticalAlign` | `row` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-stretch`、`stack` では `are-vertically-aligned-top`・`are-vertically-aligned-center`・`are-vertically-aligned-bottom`・`are-vertically-aligned-space-between` |
+| `group` | `layout` の `nowrap` | `is-nowrap` |
+| `group` | `align` | `alignwide`・`alignfull` |
 
 - 属性の規則：長さと数の属性は、ページのCSSのブロックの規則にし（6.5.3の出力）、`!important` を付ける。`.b-<ID>` の規則では、`style` の宣言の後ろに置く。
   - 画像の `width`・`aspectRatio`：`.b-<ID> img` の規則に、`width`、`aspect-ratio` と `object-fit: cover`（縦横比を変えた画像は、切り抜いて表示する）、`height: auto`（どちらかがあるとき）を、この順に書く。
@@ -2345,7 +2345,7 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 69. **本体の既定のテーマ**：テーマを用意していないサイトでも描画できるよう、本体に既定のテーマを入れるか。いまは入れず、サイトにはテーマが要る（5.4。ブロックの既定のテンプレートだけは、本体にある。6.8）。すべての項目を使う見本のテーマは、テストのデータ（`internal/theme/testdata/example/`。5.4.9）に置いている。テンプレートに渡すデータの形（77）を決めてから、`cms init`（9.2）で作るものとあわせて決める。
 70. **テーマの情報と選び方**：テーマの名前・版・作者・説明・ライセンス（WordPressのテーマの `style.css` の見出しに当たるもの）を、設定ファイル（5.4.2）に持つか。いまは持たない。設定ファイルの `schemaVersion` は、語彙全体の版（6.9）と同じ番号で、テーマの版ではない（テーマの形式の版を、語彙の版と分けるかも決める）。管理画面でテーマを選ぶとき（5.3のテーマ編集の段階的強化）や、第三者製のテーマを配布するとき（5.3）に要る。サイトが使うテーマを、どこに置き、どう選ぶか（決まったディレクトリに置くか、サイト設定に書くか）も、ビルドと合わせて決める（いまの読み込みは、テーマのディレクトリを渡して読む）。
 71. **親テーマと子テーマ**：WordPressの子テーマ（親テーマのテンプレートやファイルを、一部だけ置き換えるテーマ）に当たるものを持つか。いまは、1つのディレクトリに、テーマのすべてを書く（5.4.1）。
-72. **プリセットのCSS**：決めた（案）。プリセットは、サイトで1つのCSSのファイル（サイトのCSS。6.5.3の出力）の `:root` に、CSSのカスタムプロパティとして書き、プロパティの名前は、種類をケバブケースにして名前を続けたもの（`--color-primary`・`--font-size-large`・`--spacing-30`）にする（5.4.3）。WordPressの `--wp--preset--color--primary` の `wp` のような、本体の接頭辞は付けない。サイトのCSSのファイルのパスと名前は88。
+72. **プリセットのCSS**：決めた（案）。プリセットは、サイトで1つのCSSのファイル（サイトのCSS。6.5.3の出力）の `:root` に、CSSのカスタムプロパティとして書き、プロパティの名前は、種類をケバブケースにして名前を続けたもの（`--color-primary`・`--font-size-large`・`--spacing-30`）にする（5.4.3）。本体の接頭辞は付けない。サイトのCSSのファイルのパスと名前は88。
 73. **プリセットの表示名**：プリセットは名前だけを持ち、管理画面で示す表示名を持たない（バリエーション・表示場所・ページのテンプレート・画像のサイズは、表示名を持つ。5.4.2）。プリセットにも表示名を持たせるか。表示名を言語ごとにするか（いまの表示名は1つの値で、管理画面の言語では分けない）。
 74. **プリセットの値の数**：YAMLでは、引用符で囲まない `0`・`1.5` は数になるので、プリセットの値に書くと、読み込みのエラーになる（`"0"` と書く。5.4.3）。名前の `"10"` と同じく、引用符が要るままにするか、値に書いた数を、書いたままの文字列として読むか。
 75. **見た目の項目を使わないブロック**：`styles` と `blocks` の `styles` は、空の列にできない（空の値は読み込みのエラー。5.4.2）ので、ある種類のブロックに見た目の項目を1つも使わせないことを、書く方法が無い（省くと、最上位の `styles` か、それも無ければ段階1のすべての項目を使える）。空の列を「使える項目が無い」として受け付けるか。
@@ -2363,13 +2363,13 @@ WordPressで共通設定を「日付と投稿名」にしたときの、この�
 87. **グループの見出しとレイアウト**：`group` の `label` は、開始タグの直後の `<header>` にする（6.5.4。`main` や `section` などの中では、ページのヘッダーのランドマークにならない）。`layout` が `row`・`grid` のグループでは、見出しも子ブロックと同じく並べられてしまうので、本体のクラスのCSSで、見出しを並びの外に置くことにした（案。`row` では1行を占め、`grid` ではすべての列にまたがる。HTMLは変えない。6.5.4）。残るのは、`nowrap` の `row` で、見出しが子ブロックと同じ行に並ぶこと（折り返さないので、1行を占められない）。子ブロックを別の要素で囲むか。
 88. **ページとサイトのCSSのファイル**：ページのCSSとサイトのCSS（6.5.3の出力）を、どのパスに、どんな名前で出力するか（ページのCSSは、中身のハッシュから名前を作ることだけを決めた）と、そのURLを、ページのテンプレートにどう渡すか（ページのデータの形（77）と合わせて）を、ビルドで決める。規則の無いページで、ページのCSSを読まないようにするか。パスは、テーマの `assets/` のURL（80）と同じく、サイトのページと重ならないようにする必要がある。サイトのCSSには、プリセットの値のASCII以外の文字（フォントの名前など。5.4.3）がそのまま入るので、UTF-8として読まれるようにする方法（配信の `Content-Type` に `charset=utf-8` を付けるか、先頭に `@charset "UTF-8";` を書くか）も、あわせて決める（ページのCSSは、ASCIIの文字だけになる）。
 89. **1つのページの複数の文書**：ブロックのIDは、1つの文書（6.5.1）の中だけで一意なので、複数のエントリーの本文を1つのページに描画すると（一覧のページに本文を出すなど）、ほかのエントリーのブロックと同じクラス（`b-<ID>`）になり、規則が混ざることがある（描画が重なりを避けるのは、1つの文書の中だけ。6.8）。そのようなページのために、クラスにエントリーごとの印を入れるか、ブロックのIDをサイトで一意にするか。一覧のページの形（39）と合わせて決める。`highlight` のクラスは、色から決まるので、重なっても同じ規則になる。
-90. **リンクの色とボタン**：`linkColor` の規則（`.b-<ID> :where(a)`。6.5.3の出力）は、ブロックの中のすべての `<a>` にかかるので、子のボタン（`button` の `<a>`）の文字の色も変える。WordPressは、ボタンを除く（`a:where(:not(.wp-element-button))`）。ボタンを除くか（ボタンに決まったクラスを付けて、`:not()` で除くなど）。
+90. **リンクの色とボタン**：`linkColor` の規則（`.b-<ID> :where(a)`。6.5.3の出力）は、ブロックの中のすべての `<a>` にかかるので、子のボタン（`button` の `<a>`）の文字の色も変える。ボタンを除くか（ボタンに決まったクラスを付けて、`:not()` で除くなど）。
 91. **テーマの名前の照合**：保存の検証では、`style` のプリセットなどをテーマと照合する（6.5.3）が、バリエーション（ブロックと `highlight`）、固定ページの `template`、メニューの `location`、画像の `size` は、名前の書式だけを確かめ、テーマにあるかは確かめない（5.4.2）。テーマに無い名前は、ビルドで警告する（バリエーションには、クラスを付けない。6.5.4）。これらも、保存でテーマと照合するか（照合するなら、`style` と同じく、取り込みと、前のリビジョンから変えていない値を受け付けるか）。
 92. **本体のクラスの既定の値**：本体のクラスのCSSの既定の値（`row`・`stack`・`grid` の間隔の `0.5em`、カラム群の間隔の `2em`、グリッドの列の最小の幅の `12rem`。6.5.4）を、テーマの設定ファイル（5.4.2）で決められるようにするか。いまは、テーマのCSSで上書きする（間隔は `:where()` の中にあり、詳細度が0。例は5.4.9）。ただし、`columns` と `minColumnWidth` の両方を書いたグリッドの式（6.5.4）は、`blockGap` の無いグループでは、間隔を既定の `0.5em` として計算するので、テーマがグリッドの間隔を `0.5em` より広げると、1行に並ぶ列が `columns` より少なくなることがある。
 93. **画面の幅で変える値**：ページのCSSの宣言は `!important` なので（6.5.3の出力）、テーマのCSSは、編集者の値を画面の幅で変えられない（広い画面のための大きな `padding` を、狭い画面で小さくするなど）。いまは、画面の幅で変えたい値をプリセットで書く（テーマが、プリセットの値に `clamp()` などを書くか、テーマのCSSのメディアクエリーの中で、変数の値を変える）。編集者が、画面の幅ごとに値を指定できるようにするか。
-94. **ボタンの幅**：ボタンの `width`（6.5.4）は、`flex: 1 1 0` と `max-width`（`25%` など）で表すので、最大の幅として働き、同じ行の、ほかの幅のあるボタンと、残りの幅を分け合う（`50%` と `75%` のボタンは、同じ行に、ほぼ半分ずつ並ぶ）。WordPressは、`width` を、間隔を引いた割合の幅にし、合わせて100%を超えるボタンを、次の行に送る。WordPressと同じにするか。
+94. **ボタンの幅**：ボタンの `width`（6.5.4）は、`flex: 1 1 0` と `max-width`（`25%` など）で表すので、最大の幅として働き、同じ行の、ほかの幅のあるボタンと、残りの幅を分け合う（`50%` と `75%` のボタンは、同じ行に、ほぼ半分ずつ並ぶ）。合わせて100%を超えるボタンを、次の行に送るようにするか（`width` を、間隔を引いた割合の幅にするなど）。
 95. **カラムの幅と余白**：カラムの `width`（6.5.4）は `flex-basis` にするが、カラムの `box-sizing` は変えない（`content-box`）ので、`padding` や `border` のあるカラムは、`width` よりその分だけ広くなる（`width` が `40%` で、左右の `padding` が `1rem` のカラムは、`40%` と `2rem` の幅）。本体のクラスのCSSで、カラムを `border-box` にするか（ボタンの幅（94）は `border-box`。テーマのCSSでも変えられる）。
-96. **見た目の規則を付ける要素**：ページのCSSの規則は、ブロックの最初の要素（`class` を付けた要素）にかかる（6.5.3の出力）ので、画像と表の `border`・`padding` などは、`<img>`・`<table>` ではなく、それを囲む `<figure>` にかかる（WordPressは、画像と表の枠線を `<img>`・`<table>` に付ける）。また、画像の大きさの規則（`.b-<ID> img`）と、`citation` のある `quote` の `blockGap` の規則（`.b-<ID> > blockquote > *`）は、既定のテンプレートの形を前提にするので、テーマのブロックのテンプレート（5.4.4）で形を変えると、規則が合わなくなる。ブロックの種類ごとに、規則を付ける要素を決めて、テンプレートのデータで、要素ごとのクラスを渡すか。
+96. **見た目の規則を付ける要素**：ページのCSSの規則は、ブロックの最初の要素（`class` を付けた要素）にかかる（6.5.3の出力）ので、画像と表の `border`・`padding` などは、`<img>`・`<table>` ではなく、それを囲む `<figure>` にかかる。また、画像の大きさの規則（`.b-<ID> img`）と、`citation` のある `quote` の `blockGap` の規則（`.b-<ID> > blockquote > *`）は、既定のテンプレートの形を前提にするので、テーマのブロックのテンプレート（5.4.4）で形を変えると、規則が合わなくなる。ブロックの種類ごとに、規則を付ける要素を決めて、テンプレートのデータで、要素ごとのクラスを渡すか。
 
 ---
 
