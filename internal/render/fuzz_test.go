@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/sanitize"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -59,7 +60,7 @@ var (
 )
 
 // urlAttrs are the attributes whose values are URLs.
-var urlAttrs = []string{"action", "href", "src"}
+var urlAttrs = []string{"action", "cite", "href", "poster", "src"}
 
 // voidElements are the elements of HTML that have no end tag.
 var voidElements = []string{
@@ -760,6 +761,15 @@ func htmlSpace(r rune) bool {
 	return strings.ContainsRune(" \t\n\f\r", r)
 }
 
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
+}
+
 // htmlClasses returns the classes of the class attributes of the start tags of s, HTML that checkHTML accepts.
 func htmlClasses(s string) []string {
 	tokens, _ := htmlTokens(s)
@@ -779,12 +789,22 @@ func htmlClasses(s string) []string {
 }
 
 // writtenClasses adds to classes those that the blocks of bs and their children write as they are, which the renderer
-// does not check: those of their classNames and, for code blocks, of "language-" and the language.
+// does not check: those of their classNames; for code blocks, of "language-" and the language; and for html and legacy
+// blocks, those that sanitizing keeps in their HTML, but none of the forms of the classes that the core gives, also in
+// upper case, which it must remove.
 func writtenClasses(classes map[string]bool, bs content.Blocks) {
 	for _, b := range bs {
 		s := b.ClassName
 		if b.Type == content.BlockCode {
 			s += " language-" + b.Attrs.Language
+		}
+		if b.Type == content.BlockHTML || b.Type == content.BlockLegacy {
+			out, _, _ := sanitize.Sanitize(b.Attrs.HTML, sanitize.Options{Kind: sanitizeKind(b.Type)})
+			for _, c := range htmlClasses(out) {
+				if !content.ReservedClass(asciiLower(c)) {
+					classes[c] = true
+				}
+			}
 		}
 		// html/template writes NUL as U+FFFD.
 		for _, c := range strings.FieldsFunc(strings.ReplaceAll(s, "\x00", string(utf8.RuneError)), htmlSpace) {
@@ -837,6 +857,53 @@ func checkClasses(lists []string, rules []cssRule, s *content.ThemeSettings, wri
 	}
 	return nil
 }
+
+// checkIDs returns an error if an id of out, the HTML of lists, the lists of blocks of a document, is written more
+// times than the blocks of lists have it as their anchor, or more than once if none has it: the automatic anchors of
+// headings and the ids of HTML avoid the anchors of the blocks, each other and themselves.
+func checkIDs(out []string, lists []content.Blocks) error {
+	anchors := make(map[string]int) // the blocks with each anchor
+	var add func(bs content.Blocks)
+	add = func(bs content.Blocks) {
+		for _, b := range bs {
+			if b.Anchor != "" {
+				// html/template writes NUL as U+FFFD.
+				anchors[strings.ReplaceAll(b.Anchor, "\x00", string(utf8.RuneError))]++
+			}
+			add(b.Children)
+		}
+	}
+	for _, bs := range lists {
+		add(bs)
+	}
+	ids := make(map[string]int)
+	for _, s := range out {
+		tokens, _ := htmlTokens(s)
+		for _, tok := range tokens {
+			if m := htmlStartTag.FindStringSubmatch(tok); m != nil {
+				for _, a := range htmlAttr.FindAllStringSubmatch(m[2], -1) {
+					if a[1] == "id" {
+						ids[html.UnescapeString(a[2])]++
+					}
+				}
+			}
+		}
+	}
+	for id, n := range ids {
+		if n > max(anchors[id], 1) {
+			return fmt.Errorf("the id %q is written %d times, but is the anchor of %d blocks", id, n, anchors[id])
+		}
+	}
+	return nil
+}
+
+var (
+	// usedAnchor matches the warnings about ids of HTML that are anchors already, and moreChanges the last warning of
+	// HTML with more changes than sanitizing describes.
+	usedAnchor = regexp.MustCompile(
+		`^removed id attribute of <[a-z0-9]+>: anchor "[0-9A-Za-z_-]+(?:\.\.\.)?" is already used(?: \([0-9]+ times\))?$`)
+	moreChanges = regexp.MustCompile(`^and [0-9]+ more changes?$`)
+)
 
 // fuzzRenderer is a Renderer of the golden theme with the name.
 type fuzzRenderer struct {
@@ -922,10 +989,12 @@ func FuzzRichText(f *testing.F) {
 }
 
 // FuzzDocument checks that Document renders any list of blocks that decodes, as both lists of a document, in each
-// golden theme and site: without an error, as HTML that checkHTML accepts, and with the warnings of the first list
-// again for the second, apart from those about duplicate block IDs: the blocks of the second list have the IDs of
-// those of the first, so that each of its blocks with CSS has such a warning instead of its class. The CSS is the same
-// in each site, and checkCSS and checkClasses accept it.
+// golden theme and site: without an error, as HTML that checkHTML and checkIDs accept, and with the warnings of the
+// first list again for the second, apart from those about duplicate block IDs: the blocks of the second list have the
+// IDs of those of the first, so that each of its blocks with CSS has such a warning instead of its class. The warnings
+// about ids of HTML that are anchors already are left out too, with the last warning of HTML with more changes than
+// sanitizing describes, which counts them: the ids that the HTML of the first list keeps are anchors when the second
+// list repeats it. The CSS is the same in each site, and checkCSS and checkClasses accept it.
 func FuzzDocument(f *testing.F) {
 	for _, p := range goldenDocuments {
 		data, err := os.ReadFile(p)
@@ -951,6 +1020,24 @@ func FuzzDocument(f *testing.F) {
 		`[
 			{"type": "html", "id": "b_0000html", "attrs": {"html": "<p>x</p>"}},
 			{"type": "legacy", "id": "b_00legacy", "attrs": {"html": "[gallery]", "reason": "shortcode gallery"}}
+		]`,
+		// HTML with ids that are anchors already or not, links and media with paths of the site and non-ASCII
+		// characters, and what sanitizing removes or changes.
+		`[
+			` + headingJSON("b_00head01", "a") + `,
+			{
+				"type": "html", "id": "b_0000html", "anchor": "top", "variant": "box", "className": "raw",
+				"style": {"textColor": {"value": "#111"}},
+				"attrs": {"html": "<h1 id=\"top\">t</h1><p id=\"b_00head01\" class=\"note b-0000html B-0PARAGR1\">p</p><p id=\"b_00head02\"><a href=\"/about/\" target=\"_BLANK\" rel=\"external nofollow\">a</a> <a href=\" https://例え.jp/パス?q=a b&amp;r=1#c\" onclick=\"x()\">b</a> <a href=\"#top\">c</a></p><script>alert(1)</script><svg><a href=\"javascript:x\"><text>s</text></a></svg><iframe src=\"https://www.youtube.com/embed/x\" sandbox=\"\" srcdoc=\"<script>y()</script>\">c</iframe><img src=\"/media/日本.png\" alt=\"a\" onerror=\"x()\"><video src=\"/v.mp4\" poster=\"/p.jpg\" controls><source src=\"/v.webm\"><track src=\"/v.vtt\"></video><blockquote cite=\"/q\">q</blockquote>"}
+			},
+			` + headingJSON("b_00head02", "b") + `,
+			{
+				"type": "legacy", "id": "b_00legacy",
+				"attrs": {"html": "[gallery ids=\"1,2\"]<p id=\"b_00head02\">x</p><p id=\"own\" style=\"color: red\">y</p><iframe src=\"https://www.youtube.com/embed/x\"></iframe><a href=\"java&#115;cript:x\">z</a><img src=\"data:image/png;base64,AAAA\">"}
+			},
+			{"type": "group", "id": "b_000group", "content": [
+				{"type": "html", "id": "b_000html2", "attrs": {"html": "<table><tr><td id=\"cell\">c</td></tr></table><p><b id=\"own\">a</p>b<noscript><p>n</p></noscript><pre>\n\nx</pre>"}}
+			]}
 		]`,
 		// Columns in columns, and headings with one ID.
 		`[{"type": "columns", "id": "b_columns1", "content": [{"type": "column", "id": "b_0column1", "content": [
@@ -1032,6 +1119,20 @@ func FuzzDocument(f *testing.F) {
 	} {
 		f.Add([]byte(s))
 	}
+	// HTML with more changes than sanitizing describes, and an id.
+	var many strings.Builder
+	many.WriteString(`<p id="many"`)
+	for i := range 120 {
+		fmt.Fprintf(&many, ` on%d="x()"`, i)
+	}
+	many.WriteString(">x</p>")
+	manyJSON, err := content.Blocks{
+		{Type: content.BlockHTML, ID: "b_0000html", Attrs: content.Attrs{HTML: many.String()}},
+	}.MarshalJSON()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(manyJSON)
 	// Every type of block, without anything else.
 	var empty []string
 	for _, bt := range append(slices.Sorted(maps.Keys(defaultTemplates)), content.BlockHTML, content.BlockLegacy) {
@@ -1068,7 +1169,11 @@ func FuzzDocument(f *testing.F) {
 						data, x.theme, x.r.language, i, s, err)
 				}
 			}
-			var byList [2][]Warning // without List and the warnings about duplicate block IDs
+			if err := checkIDs([]string{string(lists[0]), string(lists[1])}, []content.Blocks{bs, bs}); err != nil {
+				t.Errorf("Document() of %s twice with the %s theme in %s:\n%s\n%s\n%v",
+					data, x.theme, x.r.language, lists[0], lists[1], err)
+			}
+			var byList [2][]Warning // without List and the warnings that are left out
 			var duplicates [2]int   // the warnings about duplicate block IDs
 			ok := slices.IsSortedFunc(warnings, func(a, b Warning) int { return cmp.Compare(a.List, b.List) })
 			for _, w := range warnings {
@@ -1077,6 +1182,8 @@ func FuzzDocument(f *testing.F) {
 					ok = false
 				case strings.HasPrefix(w.Msg, "duplicate block ID "):
 					duplicates[w.List]++
+				case strings.HasSuffix(w.Path, "/attrs/html") &&
+					(usedAnchor.MatchString(w.Msg) || moreChanges.MatchString(w.Msg)):
 				default:
 					byList[w.List] = append(byList[w.List], Warning{Path: w.Path, Msg: w.Msg})
 				}

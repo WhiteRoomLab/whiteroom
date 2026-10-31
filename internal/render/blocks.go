@@ -146,8 +146,7 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 	case content.BlockForm:
 		data, ok = w.form(b, path)
 	case content.BlockHTML, content.BlockLegacy:
-		w.warnf(path, "%s blocks are not rendered yet", b.Type)
-		return "", nil
+		return w.html(b, path), nil
 	default:
 		w.warnf(path, "unknown block type %q; not rendered", b.Type)
 		return "", nil

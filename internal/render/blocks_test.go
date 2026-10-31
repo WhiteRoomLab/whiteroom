@@ -329,7 +329,6 @@ func TestBlocks(t *testing.T) {
 <td>f2</td>
 </tr>
 </tfoot></table></figure>`,
-			warnings: []string{"/0/content/6: html blocks are not rendered yet"},
 		},
 		{
 			name: "a block in a table that is not a row, with a section",
@@ -500,8 +499,8 @@ func TestBlocks(t *testing.T) {
 				{"type": "legacy", "id": "b_00legacy", "variant": "old", "attrs": {"html": "[gallery ids=\"1,2\"]", "reason": "shortcode"}},
 				` + paragraphJSON("b_0paragr6", "b") + `
 			]`,
-			want:     "<p>a</p>\n<p>b</p>",
-			warnings: []string{"/1: html blocks are not rendered yet", "/2: legacy blocks are not rendered yet"},
+			want:     "<p>a</p>\n<div class=\"note\">\n  <p>Custom</p>\n</div>\n[gallery ids=\"1,2\"]\n<p>b</p>",
+			warnings: []string{`/2/variant: the theme has no legacy variant "old"; rendered without its class`},
 		},
 		{
 			name: "image, file, embed and form",
@@ -562,7 +561,7 @@ func TestBlocks(t *testing.T) {
 						"content": [{"type": "tableCell", "content": [{"type": "text", "text": "x", "marks": [` + draftLink + `]}]}]
 					}]
 				},
-				{"type": "html", "id": "b_000html2", "attrs": {"html": "<p>x</p>"}},
+				{"type": "html", "id": "b_000html2", "variant": "raw", "attrs": {"html": "<p onclick=\"f()\">x</p><script>g()</script>"}},
 				{
 					"type": "buttons", "id": "b_buttons2", "variant": "row",
 					"content": [{
@@ -596,6 +595,7 @@ func TestBlocks(t *testing.T) {
 <td>x</td>
 </tr>
 </tbody></table><figcaption>t</figcaption></figure>
+<p>x</p>
 <div class="is-layout-row">
 <a>x</a>
 </div>
@@ -614,7 +614,9 @@ func TestBlocks(t *testing.T) {
 				`/1/attrs/caption/0/marks/0: invalid href "javascript:alert(1)": scheme "javascript" is not allowed; ` +
 					"rendered without the link",
 				"/1/content/0/content/0/content/0/marks/0: " + unpublished,
-				"/2: html blocks are not rendered yet",
+				`/2/variant: the theme has no html variant "raw"; rendered without its class`,
+				"/2/attrs/html: removed onclick attribute of <p>",
+				"/2/attrs/html: removed <script> element and its content",
 				`/3/variant: the theme has no buttons variant "row"; rendered without its class`,
 				`/3/content/0/variant: the theme has no button variant "big"; rendered without its class`,
 				"/3/content/0/attrs/link: " + unpublished,

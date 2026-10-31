@@ -59,7 +59,9 @@ func TestDocumentAnchors(t *testing.T) {
 		{"type": "group", "id": "b_000group", "content": [{"type": "paragraph", "id": "b_0paragr3", "anchor": "b_00head03"}]},
 		`+headingJSON("b_00head01", "一")+`,
 		{"type": "html", "id": "b_0000html", "anchor": "b_00head09", "attrs": {"html": "<p>x</p>"}},
-		{"type": "group", "id": "b_00group2", "content": [`+headingJSON("b_00head09", "九")+`]}
+		{"type": "group", "id": "b_00group2", "content": [`+headingJSON("b_00head09", "九")+`]},
+		{"type": "image", "id": "b_000image", "anchor": "b_00head10"},
+		`+headingJSON("b_00head10", "十")+`
 	]`)
 	r := newRenderer(t, testTheme(t, nil), "ja", "", nil)
 	want := []string{
@@ -78,18 +80,23 @@ func TestDocumentAnchors(t *testing.T) {
 <p id="b_00head03"></p>
 </div>
 <h2 id="b_00head01-2">一</h2>
+<div id="b_00head09">
+<p>x</p>
+</div>
 <div>
 <h2 id="b_00head09-2">九</h2>
-</div>`,
+</div>
+<h2 id="b_00head10-2">十</h2>`,
 	}
+	const noMedia = `media "" does not exist; not rendered`
 	warnings := []Warning{
 		{List: 0, Path: "/9/variant", Msg: `the theme has no heading variant "x"; rendered without its class`},
-		{List: 1, Path: "/3", Msg: "html blocks are not rendered yet"},
+		{List: 1, Path: "/5/attrs/media", Msg: noMedia},
 	}
 	checkDocument(t, r, []content.Blocks{body, field}, want, "", warnings)
 	// Rendered alone, the field has the anchors that the body took.
 	checkDocument(t, r, []content.Blocks{field}, []string{strings.ReplaceAll(want[1], "b_00head01-2", "b_00head01")},
-		"", []Warning{{List: 0, Path: "/3", Msg: "html blocks are not rendered yet"}})
+		"", []Warning{{List: 0, Path: "/5/attrs/media", Msg: noMedia}})
 }
 
 // themeBlocks are block templates of a theme that write the values of their data.
@@ -314,7 +321,7 @@ func TestDocumentParallel(t *testing.T) {
 				]}]
 			},
 			{"type": "separator", "id": "b_0paragr1", "style": {"margin": {"top": {"value": "1rem"}}}},
-			{"type": "legacy", "id": "b_00legacy", "attrs": {"html": "<p>x</p>"}}
+			{"type": "legacy", "id": "b_00legacy", "attrs": {"html": "<p id=\"x\">x</p><p id=\"b_00head01-2\">y</p>"}}
 		]`),
 	}
 	want := []string{
@@ -323,14 +330,15 @@ func TestDocumentParallel(t *testing.T) {
 <div class="is-variant-box">
 <h2 id="b_00head01-2">二</h2>
 </div>`,
-		"<h2 id=\"b_00head01-3\">三</h2>\n<p class=\"theme\"><mark class=\"hl-a70e621a\">下書き</mark></p>\n<hr>",
+		"<h2 id=\"b_00head01-3\">三</h2>\n<p class=\"theme\"><mark class=\"hl-a70e621a\">下書き</mark></p>\n<hr>\n" +
+			`<p id="x">x</p><p>y</p>`,
 	}
 	const css = ".b-0paragr1 {\n  color: var(--color-primary) !important;\n}\n\n" +
 		".hl-a70e621a {\n  background-color: #fff4e5 !important;\n}\n"
 	warnings := []Warning{
 		{List: 1, Path: "/1/content/0/marks/0", Msg: `entry "` + draftEntry + `" is not published; rendered without the link`},
 		{List: 1, Path: "/2/id", Msg: `duplicate block ID "b_0paragr1"; rendered without its CSS`},
-		{List: 1, Path: "/3", Msg: "legacy blocks are not rendered yet"},
+		{List: 1, Path: "/3/attrs/html", Msg: `removed id attribute of <p>: anchor "b_00head01-2" is already used`},
 	}
 	checkDocument(t, r, lists, want, css, warnings)
 	var wg sync.WaitGroup
