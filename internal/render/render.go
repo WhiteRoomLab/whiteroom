@@ -122,7 +122,7 @@ func (r *Renderer) RichText(rt content.RichText) (template.HTML, CSS, []Warning)
 type walker struct {
 	r        *Renderer
 	list     int             // the index of the list of blocks that is being rendered
-	anchors  map[string]bool // the anchors of the blocks of the document and the automatic anchors given so far
+	anchors  map[string]bool // the anchors of the blocks, and the automatic anchors and the ids of HTML given so far
 	classes  map[string]bool // the classes whose rules are in css, such as "b-0paragr1" and "hl-1a2b3c4d"
 	css      CSS
 	warnings []Warning

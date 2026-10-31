@@ -214,6 +214,39 @@ func TestCheckName(t *testing.T) {
 	}
 }
 
+func TestReservedClass(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"b-0paragr1", true},
+		{"b-00000000", true},
+		{"b-zzzzzzzz", true},
+		{"hl-1a2b3c4d", true},
+		{"hl-00000000", true},
+		{"b-0paragr", false},
+		{"b-0paragr12", false},
+		{"b-0Paragr1", false},
+		{"b_0paragr1", false},
+		{"b-0para-r1", false},
+		{"hl-1a2b3c4g", false},
+		{"hl-1A2B3C4D", false},
+		{"hl-1a2b3c4", false},
+		{"hl-1a2b3c4d5", false},
+		{"xb-0paragr1", false},
+		{"intro", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := ReservedClass(tt.in); got != tt.want {
+			t.Errorf("ReservedClass(%q) = %t, want %t", tt.in, got, tt.want)
+		}
+		if err := checkClassName(tt.in); tt.want && (err == nil || !strings.Contains(err.Error(), "reserved className")) {
+			t.Errorf("checkClassName(%q) = %v, want a reserved className error", tt.in, err)
+		}
+	}
+}
+
 func TestCheckBlockID(t *testing.T) {
 	tests := []struct {
 		name string
@@ -265,6 +298,9 @@ func TestNormalizeHref(t *testing.T) {
 			}
 			if again := normalizeHref(got); again != got {
 				t.Errorf("normalizeHref(%q) = %q, want it unchanged", got, again)
+			}
+			if exported := NormalizeHref(tt.in); exported != got {
+				t.Errorf("NormalizeHref(%q) = %q, want %q", tt.in, exported, got)
 			}
 		})
 	}

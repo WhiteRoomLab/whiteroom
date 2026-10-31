@@ -118,20 +118,25 @@ func isNameByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
 }
 
-// checkClassName checks s, the className of a block: a name that does not have the form of the classes that the core
-// gives blocks by their IDs and highlights by their colors.
+// checkClassName checks s, the className of a block: a name that is not a ReservedClass.
 func checkClassName(s string) error {
 	if err := checkName(s); err != nil {
 		return err
 	}
+	if ReservedClass(s) {
+		return fmt.Errorf("reserved className %q: the core gives classes of the forms b-xxxxxxxx and hl-xxxxxxxx", s)
+	}
+	return nil
+}
+
+// ReservedClass reports whether s has the form of the classes that the core gives blocks by their IDs ("b-" and 8 of
+// [0-9a-z]) and highlights by their colors ("hl-" and 8 of [0-9a-f]).
+func ReservedClass(s string) bool {
 	reserved := func(prefix, chars string) bool {
 		rest, ok := strings.CutPrefix(s, prefix)
 		return ok && len(rest) == 8 && strings.TrimLeft(rest, chars) == ""
 	}
-	if reserved("b-", "0123456789abcdefghijklmnopqrstuvwxyz") || reserved("hl-", "0123456789abcdef") {
-		return fmt.Errorf("reserved className %q: the core gives classes of the forms b-xxxxxxxx and hl-xxxxxxxx", s)
-	}
-	return nil
+	return reserved("b-", "0123456789abcdefghijklmnopqrstuvwxyz") || reserved("hl-", "0123456789abcdef")
 }
 
 // CheckBlockID checks s by the rule for block IDs: "b_" and 8 lower case ASCII letters or digits.
@@ -145,6 +150,11 @@ func checkBlockID(s string) error {
 		return fmt.Errorf(`invalid block ID %q: use "b_" and 8 lowercase ASCII letters or digits`, s)
 	}
 	return nil
+}
+
+// NormalizeHref removes the control characters of s and its surrounding spaces, as CheckHref requires.
+func NormalizeHref(s string) string {
+	return normalizeHref(s)
 }
 
 func normalizeHref(s string) string {

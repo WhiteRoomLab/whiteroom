@@ -6,5 +6,3 @@
 /10/attrs/height/preset: the theme has no spacing preset "large"; ignored
 /15/content/0/style/backgroundColor/preset: the theme has no color preset "muted"; ignored
 /16/variant: the theme has no group variant "box"; rendered without its class
-/21: html blocks are not rendered yet
-/22: legacy blocks are not rendered yet
