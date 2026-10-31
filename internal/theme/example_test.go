@@ -71,6 +71,7 @@ func exampleSettings() *content.ThemeSettings {
 			{Name: "medium", Label: "中", Width: 300},
 			{Name: "large", Label: "大", Width: 1024},
 		},
+		MobileWidth: "600px",
 	}
 }
 
