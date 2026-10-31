@@ -31,6 +31,10 @@ func (l *loader) readRoot() {
 			if l.checkType(name, d, true) {
 				l.readTemplates()
 			}
+		case "blocks":
+			if l.checkType(name, d, true) {
+				l.readBlocks()
+			}
 		case "components":
 			if !l.checkType(name, d, true) || !l.readComponents() {
 				l.componentsMissing = true
@@ -248,6 +252,55 @@ func (l *loader) checkTemplates() {
 			l.addAt(l.settings, "/pageTemplates/"+pt.Name, "missing templates/page-%s.html", pt.Name)
 		}
 	}
+}
+
+func (l *loader) readBlocks() {
+	entries, ok := l.readDir("blocks")
+	if !ok {
+		return
+	}
+	for _, d := range entries {
+		name := d.Name()
+		p := "blocks/" + name
+		if d.IsDir() {
+			l.addf(p, "subdirectories are not allowed")
+			continue
+		}
+		if !l.checkType(p, d, false) {
+			continue
+		}
+		t, err := blockTemplateType(name)
+		if err != nil {
+			l.add(p, err)
+			continue
+		}
+		if data, ok := l.readFile(p, d, content.MaxTextBytes); ok {
+			l.t.blocks[t] = string(data)
+		}
+	}
+}
+
+// blockTypes are the types of blocks that themes may have block templates for, blocks/<type>.html: every type but
+// html and legacy.
+var blockTypes = []content.BlockType{
+	content.BlockParagraph, content.BlockHeading, content.BlockList, content.BlockListItem, content.BlockQuote,
+	content.BlockImage, content.BlockTable, content.BlockTableRow, content.BlockTableCell, content.BlockButtons,
+	content.BlockButton, content.BlockSeparator, content.BlockSpacer, content.BlockCode, content.BlockEmbed,
+	content.BlockColumns, content.BlockColumn, content.BlockGroup, content.BlockFile, content.BlockForm,
+}
+
+// blockTemplateType returns the type of blocks of the block template whose file is name, such as image.html.
+func blockTemplateType(name string) (content.BlockType, error) {
+	if base, ok := strings.CutSuffix(name, ".html"); ok {
+		if t := content.BlockType(base); slices.Contains(blockTypes, t) {
+			return t, nil
+		}
+	}
+	names := make([]string, len(blockTypes))
+	for i, t := range blockTypes {
+		names[i] = string(t) + ".html"
+	}
+	return "", fmt.Errorf("unknown block template name %q (use %s)", name, strings.Join(names, ", "))
 }
 
 // readComponents reads the components, named by their paths from components/ without ".html", such as "entry/card",

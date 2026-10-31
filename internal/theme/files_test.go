@@ -19,6 +19,10 @@ import (
 const unknownTemplate = ` (use entry.html, entry-{type}.html, page-{template}.html, list.html, posts.html, term.html, ` +
 	`term-{taxonomy}.html, archive-{type}.html, author.html, 404.html)`
 
+const unknownBlock = ` (use paragraph.html, heading.html, list.html, listItem.html, quote.html, image.html, table.html, ` +
+	`tableRow.html, tableCell.html, buttons.html, button.html, separator.html, spacer.html, code.html, embed.html, ` +
+	`columns.html, column.html, group.html, file.html, form.html)`
+
 // TestLoadIgnored checks that Load reads nothing of hidden entries and of the other entries at the root.
 func TestLoadIgnored(t *testing.T) {
 	tests := []struct {
@@ -36,6 +40,7 @@ func TestLoadIgnored(t *testing.T) {
 				"src":                  symlink("/"),
 				"fifo":                 special(fs.ModeNamedPipe),
 				"Templates/single.htm": file("x"),
+				"Blocks/image.html":    file("{{"),
 				"theme.json":           file("{}"),
 			},
 		},
@@ -49,6 +54,8 @@ func TestLoadIgnored(t *testing.T) {
 				"templates/.entry.html.swp":       file("\x00"),
 				"templates/.#entry.html":          symlink("user@host.1234"),
 				"templates/.drafts/single.html":   file("x"),
+				"blocks/.image.html.swp":          file("\x00"),
+				"blocks/.old/x.html":              file("x"),
 				"components/.header.html":         file("x"),
 				"components/.cache/x.bin":         symlink("/dev/zero"),
 				"components/entry/.card.html.swp": special(fs.ModeNamedPipe),
@@ -77,8 +84,10 @@ func TestLoadIgnored(t *testing.T) {
 func TestLoadEntries(t *testing.T) {
 	runLoadTests(t, []loadTest{
 		{
-			name:    "empty directories",
-			changes: map[string]*fstest.MapFile{"components": dir(), "assets/fonts": dir(), "translations": dir()},
+			name: "empty directories",
+			changes: map[string]*fstest.MapFile{
+				"components": dir(), "blocks": dir(), "assets/fonts": dir(), "translations": dir(),
+			},
 		},
 		{name: "missing theme.yaml", changes: map[string]*fstest.MapFile{"theme.yaml": nil}, want: []string{"theme.yaml: missing file"}},
 		{
@@ -126,15 +135,27 @@ func TestLoadEntries(t *testing.T) {
 			want: []string{"templates: symbolic links are not allowed"},
 		},
 		{
+			name:    "blocks is a file",
+			changes: map[string]*fstest.MapFile{"blocks": file("image.html\n")},
+			want:    []string{"blocks: must be a directory"},
+		},
+		{
+			name:    "blocks is a symbolic link",
+			changes: map[string]*fstest.MapFile{"blocks": symlink("src"), "src/image.html": file("<figure></figure>")},
+			want:    []string{"blocks: symbolic links are not allowed"},
+		},
+		{
 			name: "directories of the wrong kinds",
 			changes: map[string]*fstest.MapFile{
 				"components":   file("header.html\n"),
+				"blocks":       special(fs.ModeNamedPipe),
 				"assets":       symlink("/var/www"),
 				"translations": special(fs.ModeSocket),
 			},
 			want: []string{
 				"translations: must be a directory",
 				"components: must be a directory",
+				"blocks: must be a directory",
 				"assets: symbolic links are not allowed",
 			},
 		},
@@ -145,11 +166,15 @@ func TestLoadEntries(t *testing.T) {
 				"templates/entry.html":        nil,
 				"templates/entry.html/x":      file("x"),
 				"translations/old/ja.yaml":    file("next: 次へ\n"),
+				"blocks/parts/x.html":         file("x"),
+				"blocks/image.html/x":         file("x"),
 			},
 			want: []string{
 				"translations/old: subdirectories are not allowed",
 				"templates/entry.html: subdirectories are not allowed; put components in components/",
 				"templates/parts: subdirectories are not allowed; put components in components/",
+				"blocks/image.html: subdirectories are not allowed",
+				"blocks/parts: subdirectories are not allowed",
 			},
 		},
 		{
@@ -157,6 +182,8 @@ func TestLoadEntries(t *testing.T) {
 			changes: map[string]*fstest.MapFile{
 				"theme.yaml":             file("schemaVersion: 1\ndefaultLanguage: ja\n"),
 				"templates/posts.html":   symlink("list.html"),
+				"blocks/image.html":      symlink("../templates/entry.html"),
+				"blocks/parts":           symlink("../templates"),
 				"components/header.html": symlink("../templates/entry.html"),
 				"components/parts":       symlink("../templates"),
 				"components/a/b.html":    symlink("/etc/passwd"),
@@ -173,6 +200,8 @@ func TestLoadEntries(t *testing.T) {
 				"components/header.html: symbolic links are not allowed",
 				"components/parts: symbolic links are not allowed",
 				"templates/posts.html: symbolic links are not allowed",
+				"blocks/image.html: symbolic links are not allowed",
+				"blocks/parts: symbolic links are not allowed",
 				"assets/css: symbolic links are not allowed",
 				"assets/passwd: symbolic links are not allowed",
 			},
@@ -181,6 +210,8 @@ func TestLoadEntries(t *testing.T) {
 			name: "other irregular entries",
 			changes: map[string]*fstest.MapFile{
 				"templates/posts.html":   special(fs.ModeNamedPipe),
+				"blocks/image.html":      special(fs.ModeNamedPipe),
+				"blocks/x":               special(fs.ModeSocket),
 				"components/header.html": special(fs.ModeSocket),
 				"assets/null":            special(fs.ModeDevice | fs.ModeCharDevice),
 				"assets/disk":            special(fs.ModeDevice),
@@ -192,6 +223,8 @@ func TestLoadEntries(t *testing.T) {
 				"translations/en.yaml: must be a regular file",
 				"components/header.html: must be a regular file or a directory",
 				"templates/posts.html: must be a regular file",
+				"blocks/image.html: must be a regular file",
+				"blocks/x: must be a regular file",
 				"assets/disk: must be a regular file or a directory",
 				"assets/null: must be a regular file or a directory",
 				"assets/x: must be a regular file or a directory",
@@ -214,6 +247,7 @@ func TestLoadSizes(t *testing.T) {
 			changes: map[string]*fstest.MapFile{
 				"theme.yaml":             settings(limit),
 				"templates/entry.html":   text(limit),
+				"blocks/image.html":      text(limit),
 				"components/header.html": text(limit),
 			},
 		},
@@ -222,6 +256,7 @@ func TestLoadSizes(t *testing.T) {
 			changes: map[string]*fstest.MapFile{
 				"theme.yaml":             settings(limit + 1),
 				"templates/entry.html":   text(limit + 1),
+				"blocks/image.html":      text(limit + 1),
 				"components/header.html": text(limit + 1),
 				"translations/ja.yaml":   file("next: " + strings.Repeat("x", limit-5)),
 			},
@@ -230,6 +265,7 @@ func TestLoadSizes(t *testing.T) {
 				"translations/ja.yaml: too large: 1048577 bytes (max 1048576)",
 				"components/header.html: too large: 1048577 bytes (max 1048576)",
 				"templates/entry.html: too large: 1048577 bytes (max 1048576)",
+				"blocks/image.html: too large: 1048577 bytes (max 1048576)",
 			},
 		},
 	})
@@ -328,15 +364,19 @@ func TestLoadFaults(t *testing.T) {
 					"theme.yaml":              file("schemaVersion: 1\ndefaultLanguage: ja\n"),
 					"components/parts/a.html": file("a"),
 					"components/header.html":  file("header"),
+					"blocks/image.html":       file("<figure></figure>"),
 					"assets/css/style.css":    file("body {}"),
 					"translations/ja.yaml":    file("next: 次へ\n"),
 				}),
-				open: map[string]error{"templates": denied, "components/parts": denied, "assets": broken, "translations": denied},
+				open: map[string]error{
+					"templates": denied, "components/parts": denied, "blocks": denied, "assets": broken, "translations": denied,
+				},
 			},
 			want: []string{
 				"translations: cannot read: permission denied",
 				"components/parts: cannot read: permission denied",
 				"templates: cannot read: permission denied",
+				"blocks: cannot read: permission denied",
 				"assets: cannot read: input/output error",
 			},
 		},
@@ -345,17 +385,23 @@ func TestLoadFaults(t *testing.T) {
 			fsys: faultyFS{
 				MapFS: themeFS(map[string]*fstest.MapFile{
 					"theme.yaml":           file("schemaVersion: 1\ndefaultLanguage: ja\n"),
+					"blocks/image.html":    file("<figure></figure>"),
+					"blocks/file.html":     file("<div></div>"),
+					"blocks/form.html":     file("<form></form>"),
 					"assets/css/style.css": file("body {}"),
 					"translations/ja.yaml": file("next: 次へ\n"),
 				}),
-				open: map[string]error{"templates/entry.html": denied},
-				read: map[string]error{"assets/css/style.css": broken, "translations/ja.yaml": broken},
-				info: map[string]error{"templates/list.html": fs.ErrNotExist},
+				open: map[string]error{"templates/entry.html": denied, "blocks/image.html": denied},
+				read: map[string]error{"assets/css/style.css": broken, "translations/ja.yaml": broken, "blocks/file.html": broken},
+				info: map[string]error{"templates/list.html": fs.ErrNotExist, "blocks/form.html": fs.ErrNotExist},
 			},
 			want: []string{
 				"translations/ja.yaml: cannot read: input/output error",
 				"templates/entry.html: cannot read: permission denied",
 				"templates/list.html: cannot read: file does not exist",
+				"blocks/file.html: cannot read: input/output error",
+				"blocks/form.html: cannot read: file does not exist",
+				"blocks/image.html: cannot read: permission denied",
 				"assets/css/style.css: cannot read: input/output error",
 			},
 		},
@@ -452,6 +498,28 @@ func errorMsg(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func TestBlockTemplateType(t *testing.T) {
+	types := []content.BlockType{
+		"paragraph", "heading", "list", "listItem", "quote", "image", "table", "tableRow", "tableCell", "buttons",
+		"button", "separator", "spacer", "code", "embed", "columns", "column", "group", "file", "form",
+	}
+	for _, want := range types {
+		name := string(want) + ".html"
+		if got, err := blockTemplateType(name); got != want || err != nil {
+			t.Errorf("blockTemplateType(%q) = %q, %v, want %q", name, got, err, want)
+		}
+	}
+	for _, name := range []string{
+		"html.html", "legacy.html", "listitem.html", "Paragraph.html", "paragraph.htm", "paragraph", "image.html~",
+		"README.md", ".html", "entry.html", "image.html.html",
+	} {
+		got, err := blockTemplateType(name)
+		if want := `unknown block template name "` + name + `"` + unknownBlock; got != "" || errorMsg(err) != want {
+			t.Errorf("blockTemplateType(%q) = %q, %q, want error %q", name, got, errorMsg(err), want)
+		}
+	}
 }
 
 func TestLoadTemplates(t *testing.T) {
@@ -577,6 +645,39 @@ func TestLoadTemplateErrors(t *testing.T) {
 			want: []string{"templates: missing directory"},
 		},
 	})
+}
+
+func TestLoadBlocks(t *testing.T) {
+	th := mustLoad(t, themeFS(map[string]*fstest.MapFile{
+		"blocks/paragraph.html": file("<p>{{.Content}}</p>\n"),
+		"blocks/list.html":      file("<ul>{{.Children}}</ul>"),
+		"blocks/listItem.html":  file("<li>{{.Children}}</li>"),
+		"blocks/tableRow.html":  file("<tr>{{.Children}}</tr>"),
+		"blocks/tableCell.html": file("<td>{{.Content}}</td>"),
+		"blocks/separator.html": file(""),
+		"blocks/.form.html":     file("hidden"),
+	}))
+	want := map[content.BlockType]string{
+		content.BlockParagraph: "<p>{{.Content}}</p>\n",
+		content.BlockList:      "<ul>{{.Children}}</ul>",
+		content.BlockListItem:  "<li>{{.Children}}</li>",
+		content.BlockTableRow:  "<tr>{{.Children}}</tr>",
+		content.BlockTableCell: "<td>{{.Content}}</td>",
+		content.BlockSeparator: "",
+	}
+	if !reflect.DeepEqual(th.blocks, want) {
+		t.Errorf("blocks = %q, want %q", th.blocks, want)
+	}
+	if got := slices.Sorted(maps.Keys(th.blockNamespaces)); !slices.Equal(got, slices.Sorted(maps.Keys(want))) {
+		t.Errorf("block namespaces = %q, want those of %q", got, slices.Sorted(maps.Keys(want)))
+	}
+	// Block templates are not page templates, also where they have the same file names.
+	if got, want := slices.Sorted(maps.Keys(th.namespaces)), []string{"entry.html", "list.html"}; !slices.Equal(got, want) {
+		t.Errorf("namespaces = %q, want %q", got, want)
+	}
+	if got := th.namespaces["list.html"].Tree.Root.String(); got != "<p>list</p>\n" {
+		t.Errorf("namespaces[list.html] = %q, want the page template", got)
+	}
 }
 
 func TestLoadComponents(t *testing.T) {

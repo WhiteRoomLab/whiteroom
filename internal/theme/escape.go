@@ -31,7 +31,7 @@ func (c *templateChecker) escape(ns *namespace) {
 
 // escapeError returns e, an escaping error in ns, at its file and position. html/template gives the node of some
 // errors; it gives the others only the name of the executed template, so locate finds them. An error at the end of
-// the page template, that it ends in a non-text context, is in its file without a position.
+// the template of ns, that it ends in a non-text context, is in its file without a position.
 func (c *templateChecker) escapeError(ns *namespace, e *template.Error) *content.Error {
 	var f *templateFile
 	var pos int
@@ -42,7 +42,7 @@ func (c *templateChecker) escapeError(ns *namespace, e *template.Error) *content
 		f, pos = c.locate(ns, e)
 	}
 	if f == nil {
-		return &content.Error{File: "templates/" + ns.name, Msg: e.Description}
+		return &content.Error{File: ns.path, Msg: e.Description}
 	}
 	line, column := f.position(pos)
 	return &content.Error{File: f.path, Line: line, Column: column, Msg: e.Description}

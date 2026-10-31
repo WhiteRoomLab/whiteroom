@@ -46,19 +46,22 @@ func (l *loader) addPos(s *source, pos int, format string, args ...any) {
 	l.errs = append(l.errs, &content.Error{File: s.path, Line: line, Column: column, Msg: fmt.Sprintf(format, args...)})
 }
 
-// templateFile is a page template or a component that has parsed. Its templates have its path as the ParseName of
-// their trees, and the root also as its Name.
+// templateFile is a page template, a block template or a component that has parsed. Its templates have its path as
+// the ParseName of their trees, and the root also as its Name.
 type templateFile struct {
 	*source
 	root    *parse.Tree   // the file without its defines
 	defines []*parse.Tree // the templates of its define and block actions, in the order of the file
 }
 
-// namespace is the namespace of a page template: the page template, its defines and the templates of the components.
+// namespace is the namespace of a page template or a block template: that template, its defines and the templates of
+// the components.
 type namespace struct {
-	name  string                 // the file name of the page template, such as "entry.html"
+	name  string                 // the file name of the template, such as "entry.html" or "image.html"
+	path  string                 // the path of the file, such as "templates/entry.html" or "blocks/image.html"
+	block content.BlockType      // the type of a block template; "" for a page template
 	trees map[string]*parse.Tree // the templates by name
-	tmpl  *template.Template     // the page template, with the same templates; never executed
+	tmpl  *template.Template     // the template, with the same templates; never executed
 }
 
 // add adds tree as the template name, unless ns has a template of that name.
@@ -73,7 +76,7 @@ func (ns *namespace) add(name string, tree *parse.Tree) {
 	}
 }
 
-// templateChecker parses the components and the page templates, and checks them.
+// templateChecker parses the components, the page templates and the block templates, and checks them.
 type templateChecker struct {
 	l          *loader
 	files      map[string]*templateFile // the files that have parsed, by path
@@ -97,14 +100,14 @@ type call struct {
 	file *templateFile
 }
 
-// unknownCall is a template call that does not resolve in the namespaces of pages.
+// unknownCall is a template call that does not resolve in some namespaces.
 type unknownCall struct {
 	call
-	pages []string
+	pages []string // the paths of the page templates and the block templates of those namespaces
 }
 
-// parseTemplates parses the components and the page templates into a namespace for each page template, and checks
-// the templates that each page template reaches.
+// parseTemplates parses the components, the page templates and the block templates into a namespace for each page
+// template and each block template, and checks the templates that each of them reaches.
 func (l *loader) parseTemplates() {
 	c := &templateChecker{
 		l:               l,
@@ -118,20 +121,25 @@ func (l *loader) parseTemplates() {
 	}
 	c.findTexts()
 	c.parseComponents()
-	pages := c.parsePages()
-	for _, ns := range pages {
+	namespaces := append(c.parsePages(), c.parseBlocks()...)
+	for _, ns := range namespaces {
 		c.reach(ns)
 	}
 	for _, u := range c.unknownOrder {
 		msg := fmt.Sprintf("unknown template %q", u.node.Name)
-		if !strings.HasPrefix(u.file.path, "templates/") {
-			msg += " when used by templates/" + strings.Join(u.pages, ", templates/")
+		// A call in a page template or a block template can only fail in the namespace of its file.
+		if strings.HasPrefix(u.file.path, "components/") {
+			msg += " when used by " + strings.Join(u.pages, ", ")
 		}
 		l.addPos(u.file.source, int(u.node.Pos), "%s", msg)
 	}
-	for _, ns := range pages {
+	for _, ns := range namespaces {
 		c.escape(ns)
-		l.t.namespaces[ns.name] = ns.tmpl
+		if ns.block != "" {
+			l.t.blockNamespaces[ns.block] = ns.tmpl
+		} else {
+			l.t.namespaces[ns.name] = ns.tmpl
+		}
 	}
 }
 
@@ -248,33 +256,51 @@ func (c *templateChecker) parseComponents() {
 	}
 }
 
-// parsePages parses the page templates and makes their namespaces. A page template may define the names that
-// components define, to replace them, such as the blocks of a layout.
+// parsePages parses the page templates and makes their namespaces, by file name.
 func (c *templateChecker) parsePages() []*namespace {
 	var pages []*namespace
 	for _, name := range slices.Sorted(maps.Keys(c.l.t.templates)) {
-		f := c.parse("templates/"+name, c.l.t.templates[name])
-		if f == nil {
-			continue
+		if f := c.parse("templates/"+name, c.l.t.templates[name]); f != nil {
+			pages = append(pages, c.newNamespace(f, name))
 		}
-		ns := &namespace{
-			name:  name,
-			trees: make(map[string]*parse.Tree),
-			tmpl:  template.New(name).Funcs(stubs).Option("missingkey=error"),
-		}
-		ns.add(name, f.root)
-		for _, d := range f.defines {
-			if c.checkDefine(f, d) {
-				ns.add(d.Name, d)
-			}
-		}
-		for _, n := range slices.Sorted(maps.Keys(c.components)) {
-			ns.add(n, c.components[n])
-		}
-		ns.tmpl = ns.tmpl.Lookup(name)
-		pages = append(pages, ns)
 	}
 	return pages
+}
+
+// parseBlocks parses the block templates and makes their namespaces, by type.
+func (c *templateChecker) parseBlocks() []*namespace {
+	var blocks []*namespace
+	for _, t := range slices.Sorted(maps.Keys(c.l.t.blocks)) {
+		name := string(t) + ".html"
+		if f := c.parse("blocks/"+name, c.l.t.blocks[t]); f != nil {
+			ns := c.newNamespace(f, name)
+			ns.block = t
+			blocks = append(blocks, ns)
+		}
+	}
+	return blocks
+}
+
+// newNamespace makes the namespace of f, a page template or a block template, with the root of f as the template
+// name. The defines of f may have the names that components define, to replace them, such as the blocks of a layout.
+func (c *templateChecker) newNamespace(f *templateFile, name string) *namespace {
+	ns := &namespace{
+		name:  name,
+		path:  f.path,
+		trees: make(map[string]*parse.Tree),
+		tmpl:  template.New(name).Funcs(stubs).Option("missingkey=error"),
+	}
+	ns.add(name, f.root)
+	for _, d := range f.defines {
+		if c.checkDefine(f, d) {
+			ns.add(d.Name, d)
+		}
+	}
+	for _, n := range slices.Sorted(maps.Keys(c.components)) {
+		ns.add(n, c.components[n])
+	}
+	ns.tmpl = ns.tmpl.Lookup(name)
+	return ns
 }
 
 // checkDefine checks the name of d, a define or a block in f, and reports whether namespaces may have it: not if it
@@ -326,7 +352,7 @@ func definePos(text string, body int) int {
 	return body
 }
 
-// reach checks the templates that the page template of ns reaches, and finds the template calls that do not resolve.
+// reach checks the templates that the template of ns reaches, and finds the template calls that do not resolve.
 func (c *templateChecker) reach(ns *namespace) {
 	root := ns.trees[ns.name]
 	seen := map[*parse.Tree]bool{root: true}
@@ -351,7 +377,7 @@ func (c *templateChecker) reach(ns *namespace) {
 				c.unknown[x.node] = u
 				c.unknownOrder = append(c.unknownOrder, u)
 			}
-			u.pages = append(u.pages, ns.name)
+			u.pages = append(u.pages, ns.path)
 		}
 	}
 }

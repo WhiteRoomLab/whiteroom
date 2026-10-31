@@ -10,6 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
 // testDict is dict for executing namespaces in tests.
@@ -92,6 +94,78 @@ func TestLoadNamespaces(t *testing.T) {
 	}
 	if err := c.Execute(&strings.Builder{}, map[string]any{}); err == nil || !strings.Contains(err.Error(), `map has no entry for key "Title"`) {
 		t.Errorf("Execute(author.html) without Title = %v, want an error for the missing key", err)
+	}
+}
+
+func TestLoadBlockNamespaces(t *testing.T) {
+	th := mustLoad(t, themeFS(map[string]*fstest.MapFile{
+		"components/figure.html":     file(`<figure>{{block "media" .}}{{end}}{{block "caption" .}}{{end}}</figure>`),
+		"components/entry/card.html": file(`<article>{{.title}}</article>`),
+		"blocks/image.html": file(`{{template "figure" .}}{{define "media"}}<img src="{{.src}}">{{end}}` +
+			`{{define "caption"}}{{template "image/credit" dict "by" "A"}}{{end}}` +
+			`{{define "image/credit"}}<figcaption>{{.by}}</figcaption>{{end}}`),
+		"blocks/list.html":     file(`<ul>{{template "entry/card" dict "title" "T"}}</ul>`),
+		"templates/entry.html": file(`{{template "figure" .}}{{define "media"}}<p>entry</p>{{end}}`),
+	}))
+	components := map[string]string{
+		"figure":     `<figure>{{template "media" .}}{{template "caption" .}}</figure>`,
+		"media":      "",
+		"caption":    "",
+		"entry/card": "<article>{{.title}}</article>",
+	}
+	with := func(changes map[string]string) map[string]string {
+		m := maps.Clone(components)
+		maps.Copy(m, changes)
+		return m
+	}
+	// The defines of a block template are in its namespace only, and the page template list.html is not a block
+	// template.
+	want := map[string]map[string]string{
+		"entry.html": with(map[string]string{"entry.html": `{{template "figure" .}}`, "media": "<p>entry</p>"}),
+		"list.html":  with(map[string]string{"list.html": "<p>list</p>\n"}),
+		"blocks/image.html": with(map[string]string{
+			"image.html":   `{{template "figure" .}}`,
+			"media":        `<img src="{{.src}}">`,
+			"caption":      `{{template "image/credit" dict "by" "A"}}`,
+			"image/credit": "<figcaption>{{.by}}</figcaption>",
+		}),
+		"blocks/list.html": with(map[string]string{"list.html": `<ul>{{template "entry/card" dict "title" "T"}}</ul>`}),
+	}
+	if got := namespaceTexts(th); !reflect.DeepEqual(got, want) {
+		t.Errorf("namespaces =\n%q\nwant\n%q", got, want)
+	}
+	for bt, ns := range th.blockNamespaces {
+		if ns.Name() != string(bt)+".html" || ns.Tree == nil {
+			t.Errorf("blockNamespaces[%s] = %q with tree %v, want the block template", bt, ns.Name(), ns.Tree)
+		}
+	}
+
+	// The namespaces execute once cloned with the functions bound, and stay unexecuted.
+	outputs := map[content.BlockType]string{
+		content.BlockImage: `<figure><img src="a.png"><figcaption>A</figcaption></figure>`,
+		content.BlockList:  "<ul><article>T</article></ul>",
+	}
+	for range 2 {
+		for bt, want := range outputs {
+			c, err := th.blockNamespaces[bt].Clone()
+			if err != nil {
+				t.Fatalf("Clone(%s) = %v", bt, err)
+			}
+			var b strings.Builder
+			if err := c.Funcs(template.FuncMap{"dict": testDict}).Execute(&b, map[string]any{"src": "a.png"}); err != nil {
+				t.Fatalf("Execute(%s) = %v", bt, err)
+			}
+			if got := b.String(); got != want {
+				t.Errorf("Execute(%s) = %q, want %q", bt, got, want)
+			}
+		}
+	}
+	c, err := th.blockNamespaces[content.BlockImage].Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Execute(&strings.Builder{}, map[string]any{}); err == nil || !strings.Contains(err.Error(), `map has no entry for key "src"`) {
+		t.Errorf("Execute(image) without src = %v, want an error for the missing key", err)
 	}
 }
 
@@ -614,6 +688,153 @@ func TestLoadEscaping(t *testing.T) {
 				"templates/entry.html": file(`{{template "x"}}<a href=a=b>`),
 			},
 			want: []string{`templates/entry.html:1:12: unknown template "x"`},
+		},
+	})
+}
+
+// TestLoadBlockTemplates checks that block templates are checked as page templates are.
+func TestLoadBlockTemplates(t *testing.T) {
+	const use = `: use ASCII letters, digits, "-" and "_", and "/" between parts`
+	runLoadTests(t, []loadTest{
+		{
+			name: "syntax",
+			changes: map[string]*fstest.MapFile{
+				"blocks/code.html":  file(`<pre>{{nope .}}</pre>`),
+				"blocks/file.html":  file("<a>\xff</a>"),
+				"blocks/image.html": file("<figure>\n{{.Src\n"),
+				"blocks/quote.html": file("{{define \"a\"}}1{{end}}\n{{define \"a\"}}2{{end}}"),
+			},
+			want: []string{
+				`blocks/code.html:1: function "nope" not defined`,
+				"blocks/file.html:1:4: invalid UTF-8",
+				"blocks/image.html:3: unclosed action started at blocks/image.html:2",
+				`blocks/quote.html:2: duplicate define "a"`,
+			},
+		},
+		{
+			name:    "unknown template",
+			changes: map[string]*fstest.MapFile{"blocks/image.html": file(`{{template "x"}}<figure></figure>`)},
+			want:    []string{`blocks/image.html:1:12: unknown template "x"`},
+		},
+		{
+			name: "in a component reached from a page and a block template",
+			changes: map[string]*fstest.MapFile{
+				"components/caption.html": file(`<figcaption>{{template "credit" .}}</figcaption>`),
+				"templates/entry.html":    file(`{{template "caption" .}}`),
+				"blocks/image.html":       file(`{{template "caption" .}}`),
+			},
+			want: []string{
+				`components/caption.html:1:24: unknown template "credit" when used by templates/entry.html, blocks/image.html`,
+			},
+		},
+		{
+			name: "in a component reached from a block template",
+			changes: map[string]*fstest.MapFile{
+				"components/caption.html": file(`<figcaption>{{template "credit" .}}</figcaption>`),
+				"blocks/image.html":       file(`{{template "caption" .}}`),
+				"blocks/table.html":       file(`<table></table>`),
+			},
+			want: []string{`components/caption.html:1:24: unknown template "credit" when used by blocks/image.html`},
+		},
+		{
+			name: "defined by some templates",
+			changes: map[string]*fstest.MapFile{
+				"components/figure.html": file("<figure>\n{{template \"media\" .}}\n{{template \"caption\" .}}\n</figure>"),
+				"templates/entry.html":   file(`{{template "figure" .}}{{define "media"}}{{end}}{{define "caption"}}{{end}}`),
+				"templates/list.html":    file(`{{template "figure" .}}{{define "media"}}{{end}}`),
+				"blocks/embed.html":      file(`{{template "figure" .}}`),
+				"blocks/image.html":      file(`{{template "figure" .}}{{define "media"}}<img>{{end}}`),
+				"blocks/table.html":      file(`{{template "figure" .}}{{define "media"}}{{end}}{{define "caption"}}{{end}}`),
+			},
+			want: []string{
+				`components/figure.html:2:12: unknown template "media" when used by blocks/embed.html`,
+				`components/figure.html:3:12: unknown template "caption" when used by templates/list.html, ` +
+					`blocks/embed.html, blocks/image.html`,
+			},
+		},
+		{
+			name: "page templates and block templates",
+			changes: map[string]*fstest.MapFile{
+				"templates/entry.html": file(`{{template "image.html"}}{{template "image/caption"}}`),
+				"blocks/image.html":    file(`{{template "entry.html"}}{{template "list.html"}}{{define "image/caption"}}{{end}}`),
+				"blocks/list.html":     file(`{{if .}}{{template "list.html" .Children}}{{end}}`),
+			},
+			want: []string{
+				`templates/entry.html:1:12: unknown template "image.html"`,
+				`templates/entry.html:1:37: unknown template "image/caption"`,
+				`blocks/image.html:1:12: unknown template "entry.html"`,
+				`blocks/image.html:1:37: unknown template "list.html"`,
+			},
+		},
+		{
+			name: "defines",
+			changes: map[string]*fstest.MapFile{
+				"components/layout.html": file(`<div>{{block "main" .}}{{end}}</div>`),
+				"components/card.html":   file(`<article></article>`),
+				"blocks/group.html":      file(`{{template "layout" .}}{{define "main"}}{{.Children}}{{end}}`),
+				"blocks/quote.html":      file(`{{template "layout" .}}{{define "main"}}<blockquote></blockquote>{{end}}`),
+				"blocks/image.html":      file("{{define \"card\"}}c{{end}}\n{{define \"a b\"}}{{end}}\n{{block \"x.y\" .}}{{end}}"),
+			},
+			want: []string{
+				`blocks/image.html:1:10: define "card" has the name of components/card.html`,
+				`blocks/image.html:2:10: invalid define name "a b"` + use,
+				`blocks/image.html:3:9: invalid define name "x.y"` + use,
+			},
+		},
+		{
+			name: "functions",
+			changes: map[string]*fstest.MapFile{
+				"theme.yaml":           file(funcsSettings),
+				"translations/ja.yaml": file(funcsTranslation),
+				"assets/css/style.css": file("body {}"),
+				"components/card.html": file("<article>{{.title}}</article>"),
+				"components/icon.html": file(`<i>{{asset .Icon}}</i>`),
+				"blocks/file.html": file(`{{call .F}}
+{{t "readMoar"}}
+{{asset "css/missing.css"}}
+{{dict "a"}}
+{{t "readMore"}} {{t "pageOf" "page" 1 "total" .N}} {{asset "css/style.css"}}
+{{template "card" dict "title" .Label}}{{template "icon" .}}
+`),
+			},
+			want: []string{
+				`components/icon.html:1:12: the path of asset must be a string constant, such as "css/style.css"`,
+				"blocks/file.html:1:3: call is not allowed; template data holds no functions",
+				`blocks/file.html:2:5: unknown key "readMoar"; keys must be in the default translation, translations/ja.yaml`,
+				`blocks/file.html:3:9: unknown asset "css/missing.css"; paths are relative to assets/`,
+				`blocks/file.html:4:8: missing value for key "a"`,
+			},
+		},
+		{
+			name:    "t without translations",
+			changes: map[string]*fstest.MapFile{"blocks/file.html": file(`<a>{{t "download"}}</a>`)},
+			want: []string{
+				`blocks/file.html:1:8: unknown key "download"; the theme has no translation files, translations/<language>.yaml`,
+			},
+		},
+		{
+			name: "escaping",
+			changes: map[string]*fstest.MapFile{
+				"components/caption.html": file("<figcaption class=a\"b>x</figcaption>"),
+				"blocks/embed.html":       file("<figure>\n<iframe src=a=b></iframe>\n</figure>"),
+				"blocks/image.html":       file("<figure>\n<a href=\"{{.URL}}\n</figure>\n"),
+				"blocks/table.html":       file(`<figure><table></table>{{template "caption" .}}</figure>`),
+			},
+			want: []string{
+				`components/caption.html:1:20: "\"" in unquoted attr: "a\"b"`,
+				`blocks/embed.html:2:14: "=" in unquoted attr: "a=b"`,
+				"blocks/image.html: ends in a non-text context: " +
+					"{stateURL delimDoubleQuote urlPartPreQuery jsCtxRegexp [] attrURL elementNone <nil>}",
+			},
+		},
+		{
+			name: "escaping in a component of a page and a block template",
+			changes: map[string]*fstest.MapFile{
+				"components/caption.html": file("<figcaption>\n<b class=a=b>x</b>\n</figcaption>"),
+				"templates/entry.html":    file(`<figure>{{template "caption" .}}</figure>`),
+				"blocks/image.html":       file(`<figure>{{template "caption" .}}</figure>`),
+			},
+			want: []string{`components/caption.html:2:11: "=" in unquoted attr: "a=b"`},
 		},
 	})
 }
