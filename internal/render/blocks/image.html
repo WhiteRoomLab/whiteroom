@@ -1,0 +1,9 @@
+<figure{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}}>
+{{- with .Link -}}
+<a href="{{.Href}}"{{with .Target}} target="{{.}}"{{end}}{{with .Rel}} rel="{{.}}"{{end}}>
+{{- end -}}
+<img src="{{.Src}}"{{if .HasAlt}} alt="{{.Alt}}"{{end}}>
+{{- if .Link -}}
+</a>
+{{- end -}}
+{{with .Caption}}<figcaption>{{.}}</figcaption>{{end}}</figure>

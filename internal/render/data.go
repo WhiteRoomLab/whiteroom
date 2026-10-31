@@ -50,6 +50,19 @@ type Quote struct {
 	Children template.HTML
 }
 
+type Image struct {
+	Common
+	Src         template.URL // the URL of the published file of its medium
+	Alt         string       // its alt, else the alt of its medium in the language of the page; "" if decorative
+	HasAlt      bool         // false if neither it nor its medium has an alt; then templates leave the attribute out
+	Caption     template.HTML
+	Link        *Link  // nil if it has none or its target cannot be linked
+	Size        string // the name of an image size of the theme, such as "large"
+	Width       string // a length, such as "300px" or "50%"
+	AspectRatio string // a ratio, such as "16/9", or a number, such as "1.5"
+	Align       string // left, center, right, wide or full
+}
+
 type Table struct {
 	Common
 	Caption          template.HTML
@@ -98,6 +111,18 @@ type Code struct {
 	Code     string // the text
 }
 
+type Embed struct {
+	Common
+	Provider       string       // youtube, vimeo, x or googleMaps
+	URL            template.URL // its url, encoded
+	Src            template.URL // of the iframe; "" for x, which is rendered as a link to URL
+	Title          string       // of the iframe: the text of its caption, else the name of the provider
+	Width, Height  int          // of the iframe, in pixels; 0 for x
+	Allow          string       // the allow attribute of the iframe; "" if none
+	ReferrerPolicy string       // the referrerpolicy attribute of the iframe; "" if none
+	Caption        template.HTML
+}
+
 type Columns struct {
 	Common
 	VerticalAlign string        // top, center or bottom
@@ -119,4 +144,44 @@ type Group struct {
 	Layout   content.Layout // how the children are placed; zero if not set
 	Align    string         // wide or full
 	Children template.HTML
+}
+
+type File struct {
+	Common
+	Href     template.URL // the URL of the published file of its medium
+	Label    string       // its label, else the file name of its medium
+	FileName string       // of its medium, such as "guide.pdf"
+	MIMEType string       // of its medium, such as "application/pdf"
+	Size     int          // of its medium, in bytes
+}
+
+type Form struct {
+	Common
+	Action      template.URL // the URL that it is posted to: <base>/_forms/<form ID>
+	Language    string       // of the page, for the hidden field _language
+	Fields      []FormField  // in their order, without those of unknown types
+	SubmitLabel string       // the text of the submit button
+}
+
+type FormField struct {
+	Name                 string
+	Type                 string       // text, email, tel, textarea, select, radio, checkbox or consent
+	Label                string       // in the language of the page; for consent, the text of the consent
+	Required             bool         // as defined; true for consent, which is always required
+	MinLength, MaxLength int          // in characters; 0 if not set
+	Options              []FormOption // of select, radio and checkbox
+	// Of consent: the privacy policy page in the language of the page; nil if it has none there, or if the page does
+	// not exist or is not published.
+	Policy *Policy
+}
+
+type FormOption struct {
+	Value string
+	Label string // in the language of the page
+}
+
+// Policy is the privacy policy page that a consent field links to.
+type Policy struct {
+	Href  template.URL
+	Title string // of the page
 }

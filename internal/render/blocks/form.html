@@ -1,0 +1,23 @@
+<form{{with .Anchor}} id="{{.}}"{{end}}{{with .Class}} class="{{.}}"{{end}} action="{{.Action}}" method="post">
+<input type="hidden" name="_language" value="{{.Language}}">
+{{- range .Fields}}
+{{- if eq .Type "textarea"}}
+<p><label>{{.Label}}<br><textarea name="{{.Name}}"{{if .Required}} required{{end}}{{with .MinLength}} minlength="{{.}}"{{end}}{{with .MaxLength}} maxlength="{{.}}"{{end}}></textarea></label></p>
+{{- else if eq .Type "select"}}
+<p><label>{{.Label}}<br><select name="{{.Name}}"{{if .Required}} required{{end}}>{{range .Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select></label></p>
+{{- else if or (eq .Type "radio") (eq .Type "checkbox")}}
+{{- $f := .}}
+<fieldset>
+<legend>{{.Label}}</legend>
+{{- range .Options}}
+<label><input type="{{$f.Type}}" name="{{$f.Name}}" value="{{.Value}}"{{if and $f.Required (or (eq $f.Type "radio") (eq (len $f.Options) 1))}} required{{end}}>{{.Label}}</label>
+{{- end}}
+</fieldset>
+{{- else if eq .Type "consent"}}
+<p><label><input type="checkbox" name="{{.Name}}" required>{{.Label}}</label>{{with .Policy}} <a href="{{.Href}}">{{.Title}}</a>{{end}}</p>
+{{- else}}
+<p><label>{{.Label}}<br><input type="{{.Type}}" name="{{.Name}}"{{if .Required}} required{{end}}{{with .MinLength}} minlength="{{.}}"{{end}}{{with .MaxLength}} maxlength="{{.}}"{{end}}></label></p>
+{{- end}}
+{{- end}}
+<p><button type="submit">{{.SubmitLabel}}</button></p>
+</form>

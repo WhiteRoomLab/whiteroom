@@ -31,9 +31,9 @@ func defaultBlockFiles(t *testing.T) map[string]string {
 func TestDefaultBlocks(t *testing.T) {
 	types := []content.BlockType{
 		content.BlockParagraph, content.BlockHeading, content.BlockList, content.BlockListItem, content.BlockQuote,
-		content.BlockTable, content.BlockTableRow, content.BlockTableCell, content.BlockButtons, content.BlockButton,
-		content.BlockSeparator, content.BlockSpacer, content.BlockCode, content.BlockColumns, content.BlockColumn,
-		content.BlockGroup,
+		content.BlockImage, content.BlockTable, content.BlockTableRow, content.BlockTableCell, content.BlockButtons,
+		content.BlockButton, content.BlockSeparator, content.BlockSpacer, content.BlockCode, content.BlockEmbed,
+		content.BlockColumns, content.BlockColumn, content.BlockGroup, content.BlockFile, content.BlockForm,
 	}
 	var paths []string
 	for _, bt := range types {

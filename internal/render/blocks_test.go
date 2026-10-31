@@ -27,6 +27,55 @@ func paragraphJSON(id, s string) string {
 	return `{"type": "paragraph", "id": "` + id + `", "content": [{"type": "text", "text": "` + s + `"}]}`
 }
 
+// blockTest is a list of blocks and the HTML and the warnings of its Document.
+type blockTest struct {
+	name     string
+	json     string         // the blocks, unless in has them
+	in       content.Blocks // blocks that JSON cannot hold
+	want     string
+	warnings []string
+}
+
+// checkBlocks checks tests with the default templates, both from the core and copied to the blocks/ of a theme, for
+// pages in language with base. Both themes have the settings file settings.
+func checkBlocks(t *testing.T, tests []blockTest, settings, language, base string, res Resolver) {
+	t.Helper()
+	files := defaultBlockFiles(t)
+	files["theme.yaml"] = settings
+	renderers := []struct {
+		name string
+		r    *Renderer
+	}{
+		{"default templates", newRenderer(t, testTheme(t, map[string]string{"theme.yaml": settings}), language, base, res)},
+		{"default templates as the theme's", newRenderer(t, testTheme(t, files), language, base, res)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bs := tt.in
+			if tt.json != "" {
+				bs = decodeBlocks(t, tt.json)
+			}
+			for _, x := range renderers {
+				html, warnings, err := x.r.Document(bs)
+				if err != nil || len(html) != 1 {
+					t.Fatalf("%s: Document() = %q, %v, want one list", x.name, html, err)
+				}
+				if string(html[0]) != tt.want {
+					t.Errorf("%s: Document() =\n%s\nwant\n%s", x.name, html[0], tt.want)
+				}
+				if got := warningStrings(warnings); !slices.Equal(got, tt.warnings) {
+					t.Errorf("%s: warnings:\n%s\nwant:\n%s", x.name, strings.Join(got, "\n"), strings.Join(tt.warnings, "\n"))
+				}
+				for _, w := range warnings {
+					if w.List != 0 {
+						t.Errorf("%s: warning %q has List %d, want 0", x.name, w, w.List)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestBlocks checks the HTML and the warnings of lists of blocks with the default templates, both from the core and
 // copied to the blocks/ of a theme.
 func TestBlocks(t *testing.T) {
@@ -36,13 +85,7 @@ func TestBlocks(t *testing.T) {
 		missingLink = `{"type": "link", "attrs": {"entry": "` + missingEntry + `"}}`
 		mediaLink   = `{"type": "link", "attrs": {"media": "` + missingMedia + `"}}`
 	)
-	tests := []struct {
-		name     string
-		json     string         // the blocks, unless in has them
-		in       content.Blocks // blocks that JSON cannot hold
-		want     string
-		warnings []string
-	}{
+	tests := []blockTest{
 		{
 			name: "paragraph",
 			json: `[{
@@ -447,16 +490,18 @@ func TestBlocks(t *testing.T) {
 			warnings: []string{"/1: html blocks are not rendered yet", "/2: legacy blocks are not rendered yet"},
 		},
 		{
-			name: "blocks not rendered yet",
+			name: "image, file, embed and form",
 			json: `[
 				{"type": "image", "id": "b_000image", "variant": "x", "attrs": {"media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "alt": "a"}},
 				{"type": "file", "id": "b_0000file", "attrs": {"media": "` + guideMedia + `"}},
 				{"type": "embed", "id": "b_000embed", "attrs": {"provider": "youtube", "url": "https://youtu.be/dQw4w9WgXcQ"}},
 				{"type": "form", "id": "b_0000form", "attrs": {"form": "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6"}}
 			]`,
+			want: `<div><a href="/media/%E4%BC%9A%E7%A4%BE%E6%A1%88%E5%86%85.pdf">会社案内.pdf</a></div>` + "\n" +
+				"<figure>" + youTubeFrame + "</figure>",
 			warnings: []string{
-				"/0: image blocks are not rendered yet", "/1: file blocks are not rendered yet",
-				"/2: embed blocks are not rendered yet", "/3: form blocks are not rendered yet",
+				`/0/attrs/media: media "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5" does not exist; not rendered`,
+				`/3/attrs/form: form "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6" does not exist; not rendered`,
 			},
 		},
 		{
@@ -567,38 +612,5 @@ func TestBlocks(t *testing.T) {
 			},
 		},
 	}
-	files := defaultBlockFiles(t)
-	files["theme.yaml"] = blocksTheme
-	renderers := []struct {
-		name string
-		r    *Renderer
-	}{
-		{"default templates", newRenderer(t, testTheme(t, map[string]string{"theme.yaml": blocksTheme}), "ja", "", linkResolver)},
-		{"default templates as the theme's", newRenderer(t, testTheme(t, files), "ja", "", linkResolver)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bs := tt.in
-			if tt.json != "" {
-				bs = decodeBlocks(t, tt.json)
-			}
-			for _, x := range renderers {
-				html, warnings, err := x.r.Document(bs)
-				if err != nil || len(html) != 1 {
-					t.Fatalf("%s: Document() = %q, %v, want one list", x.name, html, err)
-				}
-				if string(html[0]) != tt.want {
-					t.Errorf("%s: Document() =\n%s\nwant\n%s", x.name, html[0], tt.want)
-				}
-				if got := warningStrings(warnings); !slices.Equal(got, tt.warnings) {
-					t.Errorf("%s: warnings:\n%s\nwant:\n%s", x.name, strings.Join(got, "\n"), strings.Join(tt.warnings, "\n"))
-				}
-				for _, w := range warnings {
-					if w.List != 0 {
-						t.Errorf("%s: warning %q has List %d, want 0", x.name, w, w.List)
-					}
-				}
-			}
-		})
-	}
+	checkBlocks(t, tests, blocksTheme, "ja", "", linkResolver)
 }

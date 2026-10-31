@@ -30,6 +30,7 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 	a := &b.Attrs
 	var data any
 	var err error
+	ok := true
 	switch b.Type {
 	case content.BlockParagraph:
 		d := Paragraph{Common: w.common(b, path), TextAlign: a.TextAlign}
@@ -55,6 +56,8 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		d.Citation = template.HTML(w.richText(a.Citation, path+"/attrs/citation"))
 		d.Children, err = w.children(b, path)
 		data = d
+	case content.BlockImage:
+		data, ok = w.image(b, path)
 	case content.BlockTable:
 		data, err = w.table(b, path)
 	case content.BlockTableRow:
@@ -79,6 +82,8 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		data = Spacer{Common: w.common(b, path), Height: a.Height}
 	case content.BlockCode:
 		data = Code{Common: w.common(b, path), Language: a.Language, Code: b.Code}
+	case content.BlockEmbed:
+		data, ok = w.embed(b, path)
 	case content.BlockColumns:
 		d := Columns{Common: w.common(b, path), VerticalAlign: a.VerticalAlign, StackOnMobile: true}
 		if a.StackOnMobile != nil {
@@ -96,15 +101,18 @@ func (w *walker) block(b *content.Block, path string) (string, error) {
 		}
 		d.Children, err = w.children(b, path)
 		data = d
-	case content.BlockImage, content.BlockFile, content.BlockEmbed, content.BlockForm, content.BlockHTML,
-		content.BlockLegacy:
+	case content.BlockFile:
+		data, ok = w.file(b, path)
+	case content.BlockForm:
+		data, ok = w.form(b, path)
+	case content.BlockHTML, content.BlockLegacy:
 		w.warnf(path, "%s blocks are not rendered yet", b.Type)
 		return "", nil
 	default:
 		w.warnf(path, "unknown block type %q; not rendered", b.Type)
 		return "", nil
 	}
-	if err != nil {
+	if err != nil || !ok {
 		return "", err
 	}
 	return w.execute(b.Type, data)

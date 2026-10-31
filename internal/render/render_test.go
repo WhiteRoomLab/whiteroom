@@ -2,6 +2,8 @@ package render
 
 import (
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -55,6 +57,19 @@ func (r testResolver) Media(id string) (*content.Media, string, bool) {
 func (r testResolver) Form(id string) (*content.Form, bool) {
 	f, ok := r.forms[id]
 	return f, ok
+}
+
+// decodeTestdata decodes the file of ../content/testdata with the name with decode, such as the UnmarshalJSON method of
+// a content.Form.
+func decodeTestdata(t *testing.T, name string, decode func([]byte) error) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "content", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := decode(b); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
 }
 
 func newRenderer(t *testing.T, th *theme.Theme, language, base string, res Resolver) *Renderer {
