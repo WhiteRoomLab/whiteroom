@@ -1,10 +1,16 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -32,7 +38,7 @@ func testTheme(t testing.TB, files map[string]string) *theme.Theme {
 }
 
 // testResolver finds what its maps have: the title and the path of each entry ("" for one that is not published),
-// media with the paths of their files, and forms, by ID.
+// media with the paths of their files and the files of their images, and forms, by ID.
 type testResolver struct {
 	entries map[string][2]string
 	media   map[string]testMedium
@@ -52,6 +58,70 @@ func (r testResolver) Entry(id string) (title, path string, ok bool) {
 func (r testResolver) Media(id string) (*content.Media, string, bool) {
 	m, ok := r.media[id]
 	return m.m, m.path, ok
+}
+
+// Image returns the files of the medium with the ID much as the build makes them (6.6.2), but more simply: none for a
+// medium without a width and a height. A GIF is an animation: its published file alone, shown at its size fit into
+// size. At the default size, the published file, with a file 640 pixels wide before it in the srcset if it is wider;
+// at an image size, the file of that size, then that of twice the size if it is wider. The path of a file is that of
+// the medium, with "-<width>x<height>" before the extension unless it is the published file, and "?v=" and the first 8
+// hex digits of the SHA-256 of the path after it.
+func (r testResolver) Image(id string, size *content.ImageSize) (ImageFiles, bool) {
+	x, ok := r.media[id]
+	if !ok || x.m == nil || x.m.Width <= 0 || x.m.Height <= 0 {
+		return ImageFiles{}, false
+	}
+	w, h := x.m.Width, x.m.Height
+	file := func(s [2]int) string {
+		p := x.path
+		if s != [2]int{w, h} {
+			ext := path.Ext(p)
+			p = fmt.Sprintf("%s-%dx%d%s", strings.TrimSuffix(p, ext), s[0], s[1], ext)
+		}
+		sum := sha256.Sum256([]byte(p))
+		return p + "?v=" + hex.EncodeToString(sum[:4])
+	}
+	src := [2]int{w, h}
+	var srcset [][2]int
+	switch {
+	case strings.HasSuffix(x.path, ".gif"):
+		if size != nil {
+			shown := scaleImage(w, h, size.Width, size.Height, false)
+			return ImageFiles{Src: file(src), Width: shown[0], Height: shown[1]}, true
+		}
+	case size == nil:
+		if w > 640 {
+			srcset = [][2]int{scaleImage(w, h, 640, 0, false), src}
+		}
+	default:
+		src = scaleImage(w, h, size.Width, size.Height, size.Crop)
+		if double := scaleImage(w, h, 2*size.Width, 2*size.Height, size.Crop); double[0] > src[0] {
+			srcset = [][2]int{src, double}
+		}
+	}
+	files := ImageFiles{Src: file(src), Width: src[0], Height: src[1]}
+	for _, s := range srcset {
+		files.Srcset = append(files.Srcset, ImageFile{Path: file(s), Width: s[0]})
+	}
+	return files, true
+}
+
+// scaleImage returns the size of an image w x h scaled down, if it is larger, to fit into maxW x maxH (0: no limit),
+// or with crop, to maxW x maxH, or to the largest size with their ratio that the image has.
+func scaleImage(w, h, maxW, maxH int, crop bool) [2]int {
+	switch {
+	case crop && w >= maxW && h >= maxH:
+		return [2]int{maxW, maxH}
+	case crop && w*maxH <= h*maxW:
+		return [2]int{w, max((w*maxH+maxW/2)/maxW, 1)}
+	case crop:
+		return [2]int{max((h*maxW+maxH/2)/maxH, 1), h}
+	case maxW > 0 && maxW < w && (maxH == 0 || maxW*h <= maxH*w):
+		return [2]int{maxW, max((h*maxW+w/2)/w, 1)}
+	case maxH > 0 && maxH < h:
+		return [2]int{max((w*maxH+h/2)/h, 1), maxH}
+	}
+	return [2]int{w, h}
 }
 
 func (r testResolver) Form(id string) (*content.Form, bool) {
@@ -139,6 +209,9 @@ func TestNilResolver(t *testing.T) {
 	}
 	if m, path, ok := r.res.Media("med_01JB8Z3K5TM8A1C5F9V3J6K2N7"); m != nil || path != "" || ok {
 		t.Errorf("Media() = %v, %q, %v, want nothing", m, path, ok)
+	}
+	if files, ok := r.res.Image("med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", nil); !reflect.DeepEqual(files, ImageFiles{}) || ok {
+		t.Errorf("Image() = %+v, %v, want nothing", files, ok)
 	}
 	if f, ok := r.res.Form("frm_01JB8Y6T2SA3F6H9J2K5M8N1P4"); f != nil || ok {
 		t.Errorf("Form() = %v, %v, want nothing", f, ok)

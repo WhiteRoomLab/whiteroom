@@ -1,32 +1,56 @@
 package render
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
 const (
-	officeImage = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5" // office-image.json: alt in en and ja, at /media/会社外観.jpg
-	enAltImage  = "med_01JB9A2C4E6G8J0M2P4R6T8W0Y" // alt only in en
-	noAltImage  = "med_01JB9A2C4E6G8J0M2P4R6T8W1Z" // without alt
-	svgMedia    = "med_01JB9A2C4E6G8J0M2P4R6T8W2A" // of a type that media cannot have
-	nilMedia    = "med_01JB9A2C4E6G8J0M2P4R6T8W3B" // found, but nil
+	officeImage   = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5" // office-image.json: 1600x1067, alt in en and ja, /media/会社外観.jpg
+	enAltImage    = "med_01JB9A2C4E6G8J0M2P4R6T8W0Y" // 600x200, alt only in en
+	noAltImage    = "med_01JB9A2C4E6G8J0M2P4R6T8W1Z" // without alt, and without a width and a height, so without files
+	svgMedia      = "med_01JB9A2C4E6G8J0M2P4R6T8W2A" // of a type that media cannot have
+	nilMedia      = "med_01JB9A2C4E6G8J0M2P4R6T8W3B" // found, but nil
+	animatedImage = "med_01JB9A2C4E6G8J0M2P4R6T8W4C" // an 800x600 GIF, which testResolver takes for an animation
 
 	officePath = "/media/%E4%BC%9A%E7%A4%BE%E5%A4%96%E8%A6%B3.jpg"
 	guidePath  = "/media/%E4%BC%9A%E7%A4%BE%E6%A1%88%E5%86%85.pdf"
+
+	// The files of officeImage: the published file, that of the default size and those of the sizes of mediaTheme.
+	officeSrc  = officePath + "?v=afb0b01b"
+	office640  = "/media/%E4%BC%9A%E7%A4%BE%E5%A4%96%E8%A6%B3-640x427.jpg?v=44854c51"
+	office1024 = "/media/%E4%BC%9A%E7%A4%BE%E5%A4%96%E8%A6%B3-1024x683.jpg?v=37baaab8"
+	office150  = "/media/%E4%BC%9A%E7%A4%BE%E5%A4%96%E8%A6%B3-150x150.jpg?v=27cb3948"
+	office300  = "/media/%E4%BC%9A%E7%A4%BE%E5%A4%96%E8%A6%B3-300x300.jpg?v=32292e5b"
+
+	// The attributes of the img of officeImage at the default size in a site without a base, but alt: src and srcset;
+	// sizes, for an image shown at most 1600 pixels wide; width and height; and all of them.
+	officeSrcset = `src="` + officeSrc + `" srcset="` + office640 + ` 640w, ` + officeSrc + ` 1600w"`
+	officeSizes  = `sizes="(max-width: 1600px) 100vw, 1600px"`
+	officeWH     = `width="1600" height="1067"`
+	officeAttrs  = officeSrcset + " " + officeSizes + " " + officeWH
+	// Those of officeImage at the size large of mediaTheme: src and srcset; and width and height.
+	officeLargeSrcset = `src="` + office1024 + `" srcset="` + office1024 + ` 1024w, ` + officeSrc + ` 1600w"`
+	officeLargeWH     = `width="1024" height="683"`
+
+	animatedSrc = "/media/loading.gif?v=3cc3a587" // the published file of animatedImage
 )
 
 // mediaTheme is the settings file of a theme with the color primary, whose images have the variant rounded and whose
-// files have button.
+// files have button, and with the image sizes thumbnail, cropped to 150x150, and large, 1024 pixels wide.
 const mediaTheme = "schemaVersion: 1\npresets:\n  color:\n    primary: \"#1e73be\"\n" +
-	"blocks:\n  image:\n    variants:\n      rounded: 角丸\n  file:\n    variants:\n      button: ボタン\n"
+	"blocks:\n  image:\n    variants:\n      rounded: 角丸\n  file:\n    variants:\n      button: ボタン\n" +
+	"imageSizes:\n  thumbnail: {label: サムネイル, width: 150, height: 150, crop: true}\n  large: {label: 大, width: 1024}\n"
 
 // mediaResolver returns a Resolver with the entries of linkResolver; the media of office-image.json and of
-// company-guide-pdf.json (guideMedia) at /media/<file name>; enAltImage, noAltImage and svgMedia; and nilMedia.
-func mediaResolver(t *testing.T) testResolver {
+// company-guide-pdf.json (guideMedia) at /media/<file name>; enAltImage, noAltImage, svgMedia and animatedImage; and
+// nilMedia.
+func mediaResolver(t testing.TB) testResolver {
 	t.Helper()
 	var office, guide content.Media
 	decodeTestdata(t, "office-image.json", office.UnmarshalJSON)
@@ -37,7 +61,10 @@ func mediaResolver(t *testing.T) testResolver {
 			officeImage: {&office, "/media/会社外観.jpg"},
 			guideMedia:  {&guide, "/media/会社案内.pdf"},
 			enAltImage: {
-				&content.Media{ID: enAltImage, FileName: "sign.png", MIMEType: "image/png", Alt: content.Localized{"en": "Sign"}},
+				&content.Media{
+					ID: enAltImage, FileName: "sign.png", MIMEType: "image/png", Width: 600, Height: 200,
+					Alt: content.Localized{"en": "Sign"},
+				},
 				"/media/sign.png",
 			},
 			noAltImage: {&content.Media{ID: noAltImage, FileName: "plain.webp", MIMEType: "image/webp"}, "/media/plain.webp"},
@@ -46,6 +73,13 @@ func mediaResolver(t *testing.T) testResolver {
 				"/media/logo.svg",
 			},
 			nilMedia: {nil, "/media/nil.png"},
+			animatedImage: {
+				&content.Media{
+					ID: animatedImage, FileName: "loading.gif", MIMEType: "image/gif", Width: 800, Height: 600,
+					Alt: content.Localized{"ja": "読み込み中"},
+				},
+				"/media/loading.gif",
+			},
 		},
 	}
 }
@@ -56,7 +90,10 @@ func imageJSON(attrs string) string {
 }
 
 func TestImage(t *testing.T) {
-	const noAlt = "no alt in ja: neither the block nor its medium has one; rendered without the alt attribute"
+	const (
+		noAlt   = "no alt in ja: neither the block nor its medium has one; rendered without the alt attribute"
+		noFiles = `media "` + noAltImage + `" has no image files; rendered without srcset, width and height`
+	)
 	tests := []blockTest{
 		{
 			name: "alt, caption, newTab link and the other attributes",
@@ -67,31 +104,83 @@ func TestImage(t *testing.T) {
 				"size": "large", "width": "300px", "aspectRatio": "16/9", "align": "wide"
 			}`),
 			want: `<figure class="b-000image alignwide"><a href="https://example.com/office" target="_blank" rel="noopener">` +
-				`<img src="` + officePath + `" alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
+				`<img ` + officeLargeSrcset + ` sizes="(max-width: 300px) 100vw, 300px" ` + officeLargeWH +
+				` alt="本社の外観"></a><figcaption>本社<em>（2024年）</em></figcaption></figure>`,
 			css: ".b-000image img {\n  width: 300px !important;\n  aspect-ratio: 16/9 !important;\n" +
 				"  object-fit: cover !important;\n  height: auto !important;\n}\n",
 		},
 		{
 			name: "decorative",
 			json: imageJSON(`{"media": "` + officeImage + `", "decorative": true}`),
-			want: `<figure><img src="` + officePath + `" alt=""></figure>`,
+			want: `<figure><img ` + officeAttrs + ` alt=""></figure>`,
 		},
 		{
 			name: "the alt of the medium",
 			json: imageJSON(`{"media": "` + officeImage + `"}`),
-			want: `<figure><img src="` + officePath + `" alt="会社外観"></figure>`,
+			want: `<figure><img ` + officeAttrs + ` alt="会社外観"></figure>`,
 		},
 		{
-			name:     "alt only in another language",
+			name:     "alt only in another language, and no srcset for an image of one file",
 			json:     imageJSON(`{"media": "` + enAltImage + `"}`),
-			want:     `<figure><img src="/media/sign.png"></figure>`,
+			want:     `<figure><img src="/media/sign.png?v=1fb1470a" width="600" height="200"></figure>`,
 			warnings: []string{"/0/attrs/alt: " + noAlt},
 		},
 		{
-			name:     "a medium without alt",
+			name:     "a medium without alt and without files",
 			json:     imageJSON(`{"media": "` + noAltImage + `", "caption": [{"type": "text", "text": "無題"}]}`),
 			want:     `<figure><img src="/media/plain.webp"><figcaption>無題</figcaption></figure>`,
-			warnings: []string{"/0/attrs/alt: " + noAlt},
+			warnings: []string{"/0/attrs/media: " + noFiles, "/0/attrs/alt: " + noAlt},
+		},
+		{
+			name: "an image size of the theme",
+			json: imageJSON(`{"media": "` + officeImage + `", "alt": "a", "size": "large"}`),
+			want: `<figure><img ` + officeLargeSrcset + ` sizes="(max-width: 1024px) 100vw, 1024px" ` + officeLargeWH +
+				` alt="a"></figure>`,
+		},
+		{
+			name: "an image size that crops",
+			json: imageJSON(`{"media": "` + officeImage + `", "alt": "a", "size": "thumbnail"}`),
+			want: `<figure><img src="` + office150 + `" srcset="` + office150 + ` 150w, ` + office300 + ` 300w" ` +
+				`sizes="(max-width: 150px) 100vw, 150px" width="150" height="150" alt="a"></figure>`,
+		},
+		{
+			name:     "an image size that the theme does not have",
+			json:     imageJSON(`{"media": "` + officeImage + `", "alt": "a", "size": "huge"}`),
+			want:     `<figure><img ` + officeAttrs + ` alt="a"></figure>`,
+			warnings: []string{`/0/attrs/size: the theme has no image size "huge"; rendered at the default size`},
+		},
+		{
+			name: "sizes by the width of the block in px, but not in %",
+			json: `[
+				` + decorativeImage("b_00image1", `"width": "240.5px"`) + `,
+				` + decorativeImage("b_00image2", `"width": "2000px"`) + `,
+				` + decorativeImage("b_00image3", `"width": "50%"`) + `,
+				` + decorativeImage("b_00image4", `"size": "large", "width": "20rem"`) + `
+			]`,
+			want: `<figure class="b-00image1"><img ` + officeSrcset + ` sizes="(max-width: 241px) 100vw, 241px" ` +
+				officeWH + ` alt=""></figure>` + "\n" +
+				`<figure class="b-00image2"><img ` + officeSrcset + ` sizes="(max-width: 2000px) 100vw, 2000px" ` +
+				officeWH + ` alt=""></figure>` + "\n" +
+				`<figure class="b-00image3"><img ` + officeAttrs + ` alt=""></figure>` + "\n" +
+				`<figure class="b-00image4"><img ` + officeLargeSrcset + ` sizes="(max-width: 1024px) 100vw, 1024px" ` +
+				officeLargeWH + ` alt=""></figure>`,
+			css: ".b-00image1 img {\n  width: 240.5px !important;\n  height: auto !important;\n}\n\n" +
+				".b-00image2 img {\n  width: 2000px !important;\n  height: auto !important;\n}\n\n" +
+				".b-00image3 img {\n  width: 50% !important;\n  height: auto !important;\n}\n\n" +
+				".b-00image4 img {\n  width: 20rem !important;\n  height: auto !important;\n}\n",
+		},
+		{
+			name: "an animation, at the default size and at image sizes",
+			json: `[
+				{"type": "image", "id": "b_00image1", "attrs": {"media": "` + animatedImage + `"}},
+				{"type": "image", "id": "b_00image2", "attrs": {"media": "` + animatedImage + `", "size": "thumbnail", "width": "100px"}},
+				{"type": "image", "id": "b_00image3", "attrs": {"media": "` + animatedImage + `", "size": "large"}}
+			]`,
+			want: `<figure><img src="` + animatedSrc + `" width="800" height="600" alt="読み込み中"></figure>` + "\n" +
+				`<figure class="b-00image2"><img src="` + animatedSrc + `" width="150" height="113" alt="読み込み中">` +
+				"</figure>\n" +
+				`<figure><img src="` + animatedSrc + `" width="800" height="600" alt="読み込み中"></figure>`,
+			css: ".b-00image2 img {\n  width: 100px !important;\n  height: auto !important;\n}\n",
 		},
 		{
 			name: "missing medium",
@@ -139,13 +228,13 @@ func TestImage(t *testing.T) {
 				{"type": "image", "id": "b_00image2", "attrs": {"media": "` + officeImage + `", "alt": "b", "link": {"media": "` +
 				guideMedia + `", "rel": ["nofollow"]}}}
 			]`,
-			want: `<figure><a href="/about/#access"><img src="` + officePath + `" alt="a"></a></figure>` + "\n" +
-				`<figure><a href="` + guidePath + `" rel="nofollow"><img src="` + officePath + `" alt="b"></a></figure>`,
+			want: `<figure><a href="/about/#access"><img ` + officeAttrs + ` alt="a"></a></figure>` + "\n" +
+				`<figure><a href="` + guidePath + `" rel="nofollow"><img ` + officeAttrs + ` alt="b"></a></figure>`,
 		},
 		{
 			name:     "unpublished link",
 			json:     imageJSON(`{"media": "` + officeImage + `", "alt": "a", "link": {"entry": "` + draftEntry + `"}}`),
-			want:     `<figure><img src="` + officePath + `" alt="a"></figure>`,
+			want:     `<figure><img ` + officeAttrs + ` alt="a"></figure>`,
 			warnings: []string{`/0/attrs/link: entry "` + draftEntry + `" is not published; rendered without the link`},
 		},
 		{
@@ -154,8 +243,9 @@ func TestImage(t *testing.T) {
 				"type": "image", "id": "b_000image", "anchor": "photo", "variant": "rounded", "className": "shadow",
 				"style": {"border": {"radius": {"value": "8px"}}}, "attrs": {"media": "` + officeImage + `", "decorative": true}
 			}]`,
-			want: `<figure id="photo" class="b-000image is-variant-rounded shadow"><img src="` + officePath + `" alt=""></figure>`,
-			css:  ".b-000image {\n  border-radius: 8px !important;\n}\n",
+			want: `<figure id="photo" class="b-000image is-variant-rounded shadow"><img ` + officeAttrs +
+				` alt=""></figure>`,
+			css: ".b-000image {\n  border-radius: 8px !important;\n}\n",
 		},
 		{
 			name: "escaping",
@@ -163,13 +253,13 @@ func TestImage(t *testing.T) {
 				"media": "` + officeImage + `", "alt": "\"<&'>",
 				"caption": [{"type": "text", "text": "<b>\"&'</b>"}]
 			}`),
-			want: `<figure><img src="` + officePath + `" alt="&#34;&lt;&amp;&#39;&gt;"><figcaption>&lt;b&gt;"&amp;'&lt;/b&gt;</figcaption>` +
-				"</figure>",
+			want: `<figure><img ` + officeAttrs + ` alt="&#34;&lt;&amp;&#39;&gt;">` +
+				`<figcaption>&lt;b&gt;"&amp;'&lt;/b&gt;</figcaption></figure>`,
 		},
 		{
 			name: "empty caption",
 			json: imageJSON(`{"media": "` + officeImage + `", "alt": "a", "caption": []}`),
-			want: `<figure><img src="` + officePath + `" alt="a"></figure>`,
+			want: `<figure><img ` + officeAttrs + ` alt="a"></figure>`,
 		},
 		{
 			name: "warnings in document order",
@@ -178,15 +268,18 @@ func TestImage(t *testing.T) {
 				"attrs": {
 					"media": "` + noAltImage + `",
 					"caption": [{"type": "text", "text": "c", "marks": [{"type": "link", "attrs": {"entry": "` + draftEntry + `"}}]}],
-					"link": {"entry": "` + missingEntry + `"}
+					"link": {"entry": "` + missingEntry + `"}, "size": "huge", "width": "1"
 				}
 			}]`,
 			want: `<figure><img src="/media/plain.webp"><figcaption>c</figcaption></figure>`,
 			warnings: []string{
 				`/0/variant: the theme has no image variant "big"; rendered without its class`,
+				"/0/attrs/media: " + noFiles,
 				"/0/attrs/alt: " + noAlt,
 				`/0/attrs/caption/0/marks/0: entry "` + draftEntry + `" is not published; rendered without the link`,
 				`/0/attrs/link: entry "` + missingEntry + `" does not exist; rendered without the link`,
+				`/0/attrs/size: the theme has no image size "huge"; rendered at the default size`,
+				`/0/attrs/width: invalid length "1"; ignored`,
 			},
 		},
 	}
@@ -195,14 +288,54 @@ func TestImage(t *testing.T) {
 		{
 			name: "the base and the alt of the medium in English",
 			json: imageJSON(`{"media": "` + officeImage + `", "link": {"entry": "` + aboutEntry + `"}}`),
-			want: `<figure><a href="/blog/about/"><img src="/blog` + officePath + `" alt="Our office building"></a></figure>`,
+			want: `<figure><a href="/blog/about/"><img ` + strings.ReplaceAll(officeAttrs, "/media/", "/blog/media/") +
+				` alt="Our office building"></a></figure>`,
 		},
 		{
 			name: "the alt of the medium only in English",
 			json: imageJSON(`{"media": "` + enAltImage + `"}`),
-			want: `<figure><img src="/blog/media/sign.png" alt="Sign"></figure>`,
+			want: `<figure><img src="/blog/media/sign.png?v=1fb1470a" width="600" height="200" alt="Sign"></figure>`,
 		},
 	}, mediaTheme, "en", "/blog", mediaResolver(t))
+	// The commas of a base, which would separate the files of the srcset.
+	checkBlocks(t, []blockTest{{
+		name: "a base with a comma",
+		json: imageJSON(`{"media": "` + officeImage + `", "alt": "a"}`),
+		want: `<figure><img src="/a,b` + officeSrc + `" srcset="/a%2Cb` + office640 + ` 640w, /a%2Cb` + officeSrc +
+			` 1600w" ` + officeSizes + " " + officeWH + ` alt="a"></figure>`,
+	}}, mediaTheme, "ja", "/a,b", mediaResolver(t))
+}
+
+func TestImgSizes(t *testing.T) {
+	tests := []struct {
+		n     int
+		width string
+		want  int // the width in sizes
+	}{
+		{1600, "", 1600},
+		{1600, "300px", 300},
+		{1600, "240.5px", 241},
+		{1600, ".1px", 1},
+		{1600, "0px", 1},
+		{1600, "1599.9px", 1600},
+		{1600, "1600px", 1600},
+		{1600, "2000px", 2000},
+		{1600, "20000px", 20000},
+		{1600, "20000.5px", 20000},
+		{1600, "99999999999999999999999999px", 20000},
+		{1600, "50%", 1600},
+		{1600, "20rem", 1600},
+		{1600, "100vw", 1600},
+		{1600, "0", 1600},
+		{150, "100px", 100},
+		{150, "300px", 300},
+	}
+	for _, tt := range tests {
+		want := fmt.Sprintf("(max-width: %dpx) 100vw, %dpx", tt.want, tt.want)
+		if got := imgSizes(tt.n, tt.width); got != want {
+			t.Errorf("imgSizes(%d, %q) = %q, want %q", tt.n, tt.width, got, want)
+		}
+	}
 }
 
 // fileJSON returns the JSON of a list of a file with the ID b_0000file and the attrs, a JSON object.
@@ -291,7 +424,11 @@ func TestMediaData(t *testing.T) {
 	got, ok := w.image(&image, "/0")
 	want := Image{
 		Common:      Common{ID: "b_000image", Anchor: "photo", Class: "b-000image alignwide is-variant-rounded"},
-		Src:         "/blog" + officePath,
+		Src:         "/blog" + office1024,
+		Srcset:      "/blog" + office1024 + " 1024w, /blog" + officeSrc + " 1600w",
+		Sizes:       "(max-width: 300px) 100vw, 300px",
+		SrcWidth:    1024,
+		SrcHeight:   683,
 		Alt:         "Our office building",
 		HasAlt:      true,
 		Caption:     "Head office",
@@ -313,10 +450,41 @@ func TestMediaData(t *testing.T) {
 	w = &walker{r: r, list: 1}
 	got, ok = w.image(&noAlt, "/3")
 	want = Image{Common: Common{ID: "b_00image2"}, Src: "/blog/media/plain.webp"}
-	wantWarnings := []Warning{{
-		List: 1, Path: "/3/attrs/alt",
-		Msg: "no alt in en: neither the block nor its medium has one; rendered without the alt attribute",
-	}}
+	wantWarnings := []Warning{
+		{
+			List: 1, Path: "/3/attrs/media",
+			Msg: `media "` + noAltImage + `" has no image files; rendered without srcset, width and height`,
+		},
+		{
+			List: 1, Path: "/3/attrs/alt",
+			Msg: "no alt in en: neither the block nor its medium has one; rendered without the alt attribute",
+		},
+	}
+	if !ok || !reflect.DeepEqual(got, want) || !slices.Equal(w.warnings, wantWarnings) {
+		t.Errorf("image() = %+v, %v, warnings %q, want %+v and %q", got, ok, w.warnings, want, wantWarnings)
+	}
+	// An animation, without a srcset, at a size that the theme has and at one that it does not have.
+	animated := decodeBlocks(t, `[
+		{"type": "image", "id": "b_00image3", "attrs": {"media": "`+animatedImage+`", "alt": "a", "size": "thumbnail"}},
+		{"type": "image", "id": "b_00image4", "attrs": {"media": "`+animatedImage+`", "alt": "b", "size": "huge"}}
+	]`)
+	w = &walker{r: r}
+	got, ok = w.image(&animated[0], "/0")
+	want = Image{
+		Common: Common{ID: "b_00image3"}, Src: "/blog" + animatedSrc, SrcWidth: 150, SrcHeight: 113,
+		Alt: "a", HasAlt: true, Size: "thumbnail",
+	}
+	if !ok || !reflect.DeepEqual(got, want) || w.warnings != nil {
+		t.Errorf("image() = %+v, %v, warnings %q, want %+v", got, ok, w.warnings, want)
+	}
+	got, ok = w.image(&animated[1], "/1")
+	want = Image{
+		Common: Common{ID: "b_00image4"}, Src: "/blog" + animatedSrc, SrcWidth: 800, SrcHeight: 600,
+		Alt: "b", HasAlt: true, Size: "huge",
+	}
+	wantWarnings = []Warning{
+		{Path: "/1/attrs/size", Msg: `the theme has no image size "huge"; rendered at the default size`},
+	}
 	if !ok || !reflect.DeepEqual(got, want) || !slices.Equal(w.warnings, wantWarnings) {
 		t.Errorf("image() = %+v, %v, warnings %q, want %+v and %q", got, ok, w.warnings, want, wantWarnings)
 	}

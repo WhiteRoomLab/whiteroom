@@ -2,7 +2,7 @@
 {{- with .Link -}}
 <a href="{{.Href}}"{{with .Target}} target="{{.}}"{{end}}{{with .Rel}} rel="{{.}}"{{end}}>
 {{- end -}}
-<img src="{{.Src}}"{{if .HasAlt}} alt="{{.Alt}}"{{end}}>
+<img src="{{.Src}}"{{with .Srcset}} srcset="{{.}}"{{end}}{{with .Sizes}} sizes="{{.}}"{{end}}{{with .SrcWidth}} width="{{.}}"{{end}}{{with .SrcHeight}} height="{{.}}"{{end}}{{if .HasAlt}} alt="{{.Alt}}"{{end}}>
 {{- if .Link -}}
 </a>
 {{- end -}}

@@ -46,8 +46,8 @@ func goldenThemes(t testing.TB) []goldenTheme {
 }
 
 // goldenResolver returns a Resolver with what the golden documents refer to: entries, one of them not published; the
-// media of office-image.json and company-guide-pdf.json and others made up, at /media/<file name>; and the form of
-// contact-form.json.
+// media of office-image.json and company-guide-pdf.json and others made up, at /media/<file name>, and the files of
+// their images; and the form of contact-form.json.
 func goldenResolver(t testing.TB) testResolver {
 	t.Helper()
 	var office, guide content.Media
@@ -59,8 +59,8 @@ func goldenResolver(t testing.TB) testResolver {
 	for _, m := range []*content.Media{
 		&office,
 		&guide,
-		{ID: "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9", FileName: "pattern.png", MIMEType: "image/png"},
-		{ID: "med_01JB8Z3K5XQ2F5H8K3M6R9V4Y7", FileName: "製品.jpg", MIMEType: "image/jpeg"},
+		{ID: "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9", FileName: "pattern.png", MIMEType: "image/png", Width: 400, Height: 300},
+		{ID: "med_01JB8Z3K5XQ2F5H8K3M6R9V4Y7", FileName: "製品.jpg", MIMEType: "image/jpeg", Width: 1200, Height: 1200},
 		{ID: "med_01JB8Z3K5SK6Y9B3E7T1A4G8H2", FileName: "catalog.pdf", MIMEType: "application/pdf"},
 		{ID: "med_01JB8Z3K5WN9C2E6H1K4P7S3T8", FileName: "brochure.pdf", MIMEType: "application/pdf"},
 	} {

@@ -53,9 +53,13 @@ type Quote struct {
 
 type Image struct {
 	Common
-	Src         template.URL // the URL of the published file of its medium
-	Alt         string       // its alt, else the alt of its medium in the language of the page; "" if decorative
-	HasAlt      bool         // false if neither it nor its medium has an alt; then templates leave the attribute out
+	Src         template.URL    // the URL of the file of its size (6.6.2), else of its published file
+	Srcset      template.Srcset // the URLs of the files of its size and their widths; "" if none
+	Sizes       string          // for the sizes attribute, with Srcset; "" if none
+	SrcWidth    int             // the width to show Src at, in pixels; 0 if unknown
+	SrcHeight   int             // the height to show Src at, in pixels; 0 if unknown
+	Alt         string          // its alt, else the alt of its medium in the language of the page; "" if decorative
+	HasAlt      bool            // false if neither it nor its medium has an alt; then templates leave the attribute out
 	Caption     template.HTML
 	Link        *Link  // nil if it has none or its target cannot be linked
 	Size        string // the name of an image size of the theme, such as "large"
