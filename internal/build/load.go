@@ -40,6 +40,15 @@ type builder struct {
 	forms     map[string]*doc[content.Form]
 	redirects map[string]*doc[content.Redirect]
 
+	base  string // the path of the site URL as written, such as "/blog"; "" at the root of its host
+	pages []*page
+	// The paths of the published entries, the front pages at their language paths and the posts pages at those of
+	// their lists; of the lists of the terms; and of the author pages by language. All by ID.
+	entryPaths  map[string]string
+	termPaths   map[string]string
+	authorPaths map[string]map[string]string
+	outputs     []output
+
 	warnings problems
 }
 
@@ -51,7 +60,7 @@ var kinds = []content.RefKind{
 
 // load reads the site in src and checks what is published, in stages that each stop at their errors: decoding the
 // documents of every kind; reading the site settings and the theme; validating what is published; checking across
-// the documents. The error is content.Errors, or an error of src as it is.
+// the documents; planning the pages and the other outputs. The error is content.Errors, or an error of src as it is.
 func load(src Source) (*builder, error) {
 	b := &builder{src: src}
 	var err error
@@ -84,6 +93,10 @@ func load(src Source) (*builder, error) {
 		return nil, p.sorted()
 	}
 	b.checkAcross(&p)
+	if p.len() > 0 {
+		return nil, p.sorted()
+	}
+	b.plan(&p)
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}

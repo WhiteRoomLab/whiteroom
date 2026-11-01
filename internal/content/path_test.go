@@ -302,6 +302,61 @@ func TestEntryPath(t *testing.T) {
 	}
 }
 
+// TestEntryRulePath checks that the front page has the path of the URL rule of page, apart from the path of its
+// language that EntryPath gives it, and that the other entries have the paths of EntryPath.
+func TestEntryRulePath(t *testing.T) {
+	prefixed := exampleSite()
+	prefixed.PrefixDefaultLanguage = true
+	lookup := func(kind RefKind, id string) (PathRef, bool) {
+		return PathRef{Slug: "home"}, kind == RefEntry && id == testHomePage
+	}
+	home := Entry{ID: testHomePage, Number: 1, Type: TypePage, Language: "ja"}
+	homeRev := Revision{Slug: "home"}
+	tests := []struct {
+		name          string
+		site          *Site // exampleSite() if nil
+		entry         Entry
+		rev           Revision
+		rule, ruleMsg string // the path and the whole error of EntryRulePath
+		path, pathMsg string // and of EntryPath
+	}{
+		{name: "front page", entry: home, rev: homeRev, rule: "/home/", path: "/"},
+		{name: "front page with a prefix", site: prefixed, entry: home, rev: homeRev, rule: "/ja/home/", path: "/ja/"},
+		{
+			name:  "another page",
+			entry: Entry{ID: testAboutPage, Number: 2, Type: TypePage, Language: "ja"},
+			rev:   Revision{Slug: "about"},
+			rule:  "/about/",
+			path:  "/about/",
+		},
+		{
+			name:  "child of the front page",
+			entry: Entry{ID: testAccessPage, Number: 3, Type: TypePage, Language: "ja"},
+			rev:   Revision{Slug: "child", Parent: testHomePage},
+			rule:  "/home/child/",
+			path:  "/home/child/",
+		},
+		{name: "front page without a slug", entry: home, ruleMsg: "missing slug", path: "/"},
+		{
+			name:    "front page of an unknown type",
+			entry:   Entry{ID: testHomePage, Number: 1, Type: "news", Language: "ja"},
+			rev:     homeRev,
+			ruleMsg: `unknown type "news"`,
+			pathMsg: `unknown type "news"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := cmp.Or(tt.site, exampleSite())
+			assertValidSite(t, s)
+			got, err := s.EntryRulePath(&tt.entry, &tt.rev, lookup)
+			assertPath(t, got, err, tt.rule, tt.ruleMsg)
+			got, err = s.EntryPath(&tt.entry, &tt.rev, lookup)
+			assertPath(t, got, err, tt.path, tt.pathMsg)
+		})
+	}
+}
+
 func TestTermPath(t *testing.T) {
 	const upperCase = "contains upper case letters; normalize it first"
 	// taxonomyRule returns testSite with rule as the URL rule of the taxonomy name.

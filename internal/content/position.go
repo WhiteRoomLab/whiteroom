@@ -97,15 +97,18 @@ func DecodeFile(f SiteFile, decode func([]byte) error) error {
 	return locate(err, f.Name, positions)
 }
 
-// LocateErrors returns copies of the errors in err, which are about f, a JSON document, with File set to the Name of f.
-// Those without a Line get the position in f of their Path or, if f does not have it, of its nearest ancestor, such as
-// the parent of a missing key; none if f is not valid JSON. An error that is neither an *Error nor Errors becomes one
-// at the root. It returns nil for nil.
+// LocateErrors returns copies of the errors in err, which are about f, a JSON document or a YAML file such as the
+// schema file, with File set to the Name of f. Those without a Line get the position in f of their Path or, if f does
+// not have it, of its nearest ancestor, such as the parent of a missing key; none if f is neither valid JSON nor YAML
+// that yaml.ToJSON reads. An error that is neither an *Error nor Errors becomes one at the root. It returns nil for nil.
 func LocateErrors(err error, f SiteFile) Errors {
 	if err == nil {
 		return nil
 	}
-	positions, _ := jsonPositions(f.Data)
+	positions, jsonErr := jsonPositions(f.Data)
+	if jsonErr != nil {
+		_, positions, _ = yaml.ToJSON(f.Data)
+	}
 	return locate(err, f.Name, positions)
 }
 
