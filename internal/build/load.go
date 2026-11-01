@@ -50,8 +50,8 @@ var kinds = []content.RefKind{
 }
 
 // load reads the site in src and checks what is published, in stages that each stop at their errors: decoding the
-// documents of every kind; reading the site settings and the theme; validating what is published. The error is
-// content.Errors, or an error of src as it is.
+// documents of every kind; reading the site settings and the theme; validating what is published; checking across
+// the documents. The error is content.Errors, or an error of src as it is.
 func load(src Source) (*builder, error) {
 	b := &builder{src: src}
 	var err error
@@ -80,6 +80,10 @@ func load(src Source) (*builder, error) {
 	if err := b.validate(&p); err != nil {
 		return nil, err
 	}
+	if p.len() > 0 {
+		return nil, p.sorted()
+	}
+	b.checkAcross(&p)
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
