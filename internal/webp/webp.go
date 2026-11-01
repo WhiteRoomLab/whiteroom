@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 )
 
 // Decode reads a WebP image as File.Image does.
@@ -50,6 +51,10 @@ func (f *File) Image() (image.Image, error) {
 	}
 	if len(f.Frames) == 0 {
 		return nil, errors.New("webp: no frames")
+	}
+	// A canvas can have up to 2^32-1 pixels, more than an int counts in bytes on 32-bit platforms.
+	if int64(f.Width)*int64(f.Height) > math.MaxInt/4 {
+		return nil, fmt.Errorf("webp: canvas of %dx%d pixels is too large", f.Width, f.Height)
 	}
 	fr := &f.Frames[0]
 	pix, err := fr.decode()

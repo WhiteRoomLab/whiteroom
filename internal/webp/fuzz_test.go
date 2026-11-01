@@ -62,7 +62,7 @@ func FuzzDecode(f *testing.F) {
 			return
 		}
 		checkFile(t, file)
-		if file.Width*file.Height > fuzzMaxPixels {
+		if int64(file.Width)*int64(file.Height) > fuzzMaxPixels {
 			return
 		}
 		if img, err := file.Image(); err == nil {

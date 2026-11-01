@@ -10,7 +10,7 @@ import (
 // R = (19077 . y + 26149 . v - 14234) >> 6, G = (19077 . y - 6419 . u - 13320 . v + 8708) >> 6 and
 // B = (19077 . y + 33050 . u - 17685) >> 6, where a . b = ((a << 8) * b) >> 16, clamped to 0..255.
 func refRGB(y, u, v int) [3]byte {
-	dot := func(a, b int) int { return (a << 8) * b >> 16 }
+	dot := func(a, b int) int { return int(int64(a) << 8 * int64(b) >> 16) }
 	clamp := func(x int) byte { return byte(min(max(x>>6, 0), 255)) }
 	return [3]byte{
 		clamp(dot(y, 19077) + dot(v, 26149) - 14234),
