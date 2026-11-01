@@ -338,6 +338,66 @@ func TestImgSizes(t *testing.T) {
 	}
 }
 
+// TestPageImage checks the images outside blocks: at the default size, with the alt of the medium in the language of
+// the page, and none for media that are not images.
+func TestPageImage(t *testing.T) {
+	const signSrc = "/media/sign.png?v=1fb1470a" // the published file of enAltImage
+	tests := []struct {
+		name, language, base, id string
+		want                     *PageImage
+	}{
+		{
+			name: "srcset and the alt in ja", language: "ja", id: officeImage,
+			want: &PageImage{
+				Src: officeSrc, Srcset: office640 + " 640w, " + officeSrc + " 1600w", Sizes: "(max-width: 1600px) 100vw, 1600px",
+				Width: 1600, Height: 1067, Alt: "会社外観", HasAlt: true,
+			},
+		},
+		{
+			name: "the base and the alt in en", language: "en", base: "/blog", id: officeImage,
+			want: &PageImage{
+				Src: "/blog" + officeSrc, Srcset: "/blog" + office640 + " 640w, /blog" + officeSrc + " 1600w",
+				Sizes: "(max-width: 1600px) 100vw, 1600px", Width: 1600, Height: 1067, Alt: "Our office building", HasAlt: true,
+			},
+		},
+		{
+			name: "a base with a comma", language: "ja", base: "/a,b", id: officeImage,
+			want: &PageImage{
+				Src: "/a,b" + officeSrc, Srcset: "/a%2Cb" + office640 + " 640w, /a%2Cb" + officeSrc + " 1600w",
+				Sizes: "(max-width: 1600px) 100vw, 1600px", Width: 1600, Height: 1067, Alt: "会社外観", HasAlt: true,
+			},
+		},
+		{
+			name: "one file, and no alt in the language", language: "ja", id: enAltImage,
+			want: &PageImage{Src: signSrc, Width: 600, Height: 200},
+		},
+		{
+			name: "the alt only in en", language: "en", id: enAltImage,
+			want: &PageImage{Src: signSrc, Width: 600, Height: 200, Alt: "Sign", HasAlt: true},
+		},
+		{
+			name: "an animation", language: "ja", id: animatedImage,
+			want: &PageImage{Src: animatedSrc, Width: 800, Height: 600, Alt: "読み込み中", HasAlt: true},
+		},
+		{name: "no files", language: "ja", id: noAltImage, want: &PageImage{Src: "/media/plain.webp"}},
+		{name: "a PDF", language: "ja", id: guideMedia},
+		{name: "a medium of a type that media cannot have", language: "ja", id: svgMedia},
+		{name: "a nil medium", language: "ja", id: nilMedia},
+		{name: "a missing medium", language: "ja", id: missingMedia},
+		{name: "no medium", language: "ja"},
+	}
+	th := testTheme(t, map[string]string{"theme.yaml": mediaTheme})
+	for _, tt := range tests {
+		r := newRenderer(t, th, tt.language, tt.base, mediaResolver(t))
+		if got := r.PageImage(tt.id); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: PageImage(%q) = %+v, want %+v", tt.name, tt.id, got, tt.want)
+		}
+	}
+	if got := newRenderer(t, th, "ja", "", nil).PageImage(officeImage); got != nil {
+		t.Errorf("PageImage() without a Resolver = %+v, want nil", got)
+	}
+}
+
 // fileJSON returns the JSON of a list of a file with the ID b_0000file and the attrs, a JSON object.
 func fileJSON(attrs string) string {
 	return `[{"type": "file", "id": "b_0000file", "attrs": ` + attrs + `}]`

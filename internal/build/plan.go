@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
@@ -61,6 +62,10 @@ const (
 // output goes to b.outputs with where it comes from.
 func (b *builder) plan(p *problems) {
 	b.base = basePath(b.site.URL)
+	var err error
+	if b.loc, err = time.LoadLocation(b.site.TimeZone); err != nil {
+		p.add(b.settings, "/timeZone", "%v", err)
+	}
 	members := b.members()
 	b.planEntries(p, members)
 	b.planLists(p, members)

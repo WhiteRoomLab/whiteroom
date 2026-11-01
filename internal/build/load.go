@@ -6,6 +6,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
@@ -40,7 +41,8 @@ type builder struct {
 	forms     map[string]*doc[content.Form]
 	redirects map[string]*doc[content.Redirect]
 
-	base  string // the path of the site URL as written, such as "/blog"; "" at the root of its host
+	base  string         // the path of the site URL as written, such as "/blog"; "" at the root of its host
+	loc   *time.Location // the time zone of the site
 	pages []*page
 	// The paths of the published entries, the front pages at their language paths and the posts pages at those of
 	// their lists; of the lists of the terms; and of the author pages by language. All by ID.

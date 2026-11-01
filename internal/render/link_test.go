@@ -150,6 +150,18 @@ func TestLink(t *testing.T) {
 			if !slices.Equal(w.warnings, want) {
 				t.Errorf("warnings = %q, want %q", w.warnings, want)
 			}
+			// The same outside blocks, at the path "".
+			got, warnings := r.Link(tt.link)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Link() = %+v, want %+v", got, tt.want)
+			}
+			want = nil
+			if tt.warning != "" {
+				want = []Warning{{Msg: tt.warning}}
+			}
+			if !slices.Equal(warnings, want) {
+				t.Errorf("Link() warnings = %q, want %q", warnings, want)
+			}
 		})
 	}
 }
