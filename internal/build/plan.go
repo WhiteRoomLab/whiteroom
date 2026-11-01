@@ -59,7 +59,8 @@ const (
 // pages of the published entries; the lists of the latest posts, of the terms, of the types and of the authors, each
 // with its pages; the 404 pages if the theme has 404.html; the feeds; the sitemap unless the site has seo.noindex; the
 // site CSS; the assets of the theme; and the actions of the forms, which are paths without files. Every page and
-// output goes to b.outputs with where it comes from.
+// output goes to b.outputs with where it comes from. It also finds the translations of the entries and the terms
+// (groupTranslations).
 func (b *builder) plan(p *problems) {
 	b.base = basePath(b.site.URL)
 	var err error
@@ -70,6 +71,7 @@ func (b *builder) plan(p *problems) {
 	b.planEntries(p, members)
 	b.planLists(p, members)
 	b.planOthers(p)
+	b.groupTranslations()
 }
 
 // planEntries adds the pages of the published entries: the front pages at their language paths, and the posts pages

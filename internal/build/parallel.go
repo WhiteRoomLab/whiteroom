@@ -39,3 +39,26 @@ func forEach(ctx context.Context, n, workers int, f func(i int) error) error {
 	}
 	return nil
 }
+
+// onceMap holds the results of functions by key, each called once for all the callers with its key. The zero value is
+// empty and ready to use. It is safe for concurrent use.
+type onceMap[K comparable, V any] struct {
+	mu sync.Mutex
+	m  map[K]func() V
+}
+
+// get returns the result of f for k: the first caller with k calls f, and the others with k wait for it and get the
+// same result.
+func (o *onceMap[K, V]) get(k K, f func() V) V {
+	o.mu.Lock()
+	g := o.m[k]
+	if g == nil {
+		if o.m == nil {
+			o.m = make(map[K]func() V)
+		}
+		g = sync.OnceValue(f)
+		o.m[k] = g
+	}
+	o.mu.Unlock()
+	return g()
+}

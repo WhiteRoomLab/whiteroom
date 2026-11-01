@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,5 +115,43 @@ func TestForEach(t *testing.T) {
 	if n := late.Load(); !errors.Is(err, context.Canceled) || n > 1 {
 		t.Errorf("forEach() canceled by f(10) = %v, with %d calls after that, want %v after one at most",
 			err, n, context.Canceled)
+	}
+}
+
+// TestOnceMap checks that onceMap calls the function of each key once, while the other callers with the key wait for
+// its result.
+func TestOnceMap(t *testing.T) {
+	var m onceMap[int, string]
+	var calls [3]atomic.Int32
+	release := make(chan struct{})
+	got := make([]string, 30)
+	var wg sync.WaitGroup
+	for i := range got {
+		wg.Go(func() {
+			k := i % len(calls)
+			got[i] = m.get(k, func() string {
+				calls[k].Add(1)
+				<-release
+				return fmt.Sprint("value ", k)
+			})
+		})
+	}
+	close(release)
+	wg.Wait()
+	for i, s := range got {
+		if want := fmt.Sprint("value ", i%len(calls)); s != want {
+			t.Errorf("get(%d) = %q, want %q", i%len(calls), s, want)
+		}
+	}
+	for k := range calls {
+		if n := calls[k].Load(); n != 1 {
+			t.Errorf("the function of %d was called %d times, want once", k, n)
+		}
+	}
+	if s := m.get(1, func() string { return "again" }); s != "value 1" {
+		t.Errorf("get(1) after it was called = %q, want %q", s, "value 1")
+	}
+	if s := m.get(3, func() string { return "new" }); s != "new" {
+		t.Errorf("get(3) = %q, want %q", s, "new")
 	}
 }

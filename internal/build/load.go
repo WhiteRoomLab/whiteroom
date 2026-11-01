@@ -50,10 +50,15 @@ type builder struct {
 	termPaths   map[string]string
 	authorPaths map[string]map[string]string
 	outputs     []output
+	// The IDs of the published entries and of the terms by their translation groups and languages (groupTranslations).
+	entryGroups, termGroups map[groupKey]string
 	// The redirects that the servers serve, sorted by from (resolveRedirects).
 	serverRedirects []redirect
 	// The resolver of the media and the other entities that content refers to, which records the media to publish.
 	res *resolver
+	// What pageData makes once for all the pages that show it: the entries in lists, and the HTML of the posts pages.
+	summaries   onceMap[renderKey, *Entry]
+	postsBodies onceMap[renderKey, renderedEntry]
 
 	warnings problems
 }
