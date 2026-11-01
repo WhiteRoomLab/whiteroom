@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
+	"flag"
 	"fmt"
 	"image"
 	"os"
@@ -317,6 +318,77 @@ func TestDecodeLossless(t *testing.T) {
 	t.Logf("%d lossless frames decoded", n)
 }
 
+var yuvDir = flag.String("yuvdir", "", "a directory of the planes that dwebp -yuv decodes from the lossy frames, "+
+	"<vector>-<frame>.yuv, to find where TestDecodeLossy differs")
+
+// TestDecodeLossy decodes the VP8 bitstream of every lossy frame of the vectors, still images and frames of
+// animations. The Y, U and V planes must be dwebp's.
+func TestDecodeLossy(t *testing.T) {
+	n := 0
+	for _, v := range loadVectors(t) {
+		f, err := Parse(readVector(t, v))
+		if err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		for i, vf := range v.Frames {
+			if vf.Lossless {
+				continue
+			}
+			img, err := decodeVP8(f.Frames[i].bitstream)
+			if err != nil {
+				t.Errorf("%s: frame %d: %v", v.Name, i, err)
+				continue
+			}
+			n++
+			cw, ch := (vf.Width+1)/2, (vf.Height+1)/2
+			if img.w != vf.Width || img.h != vf.Height || len(img.y) != vf.Width*vf.Height || len(img.u) != cw*ch ||
+				len(img.v) != cw*ch {
+				t.Errorf("%s: frame %d: %dx%d with planes of %d, %d and %d bytes, want %dx%d", v.Name, i, img.w, img.h,
+					len(img.y), len(img.u), len(img.v), vf.Width, vf.Height)
+				continue
+			}
+			if got := sha256Hex(slices.Concat(img.y, img.u, img.v)); got != vf.YUVSHA256 {
+				t.Errorf("%s: frame %d: YUV has SHA-256 %s, want %s%s", v.Name, i, got, vf.YUVSHA256,
+					yuvDiff(fmt.Sprintf("%s-%d", v.Name, i), img))
+			}
+		}
+	}
+	t.Logf("%d lossy frames decoded", n)
+}
+
+// yuvDiff describes where img first differs from the planes in -yuvdir, if given.
+func yuvDiff(name string, img *yuvImage) string {
+	if *yuvDir == "" {
+		return ""
+	}
+	file := filepath.Join(*yuvDir, name+".yuv")
+	want, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Sprintf("; %v", err)
+	}
+	cw := (img.w + 1) / 2
+	offset := 0
+	for _, p := range []struct {
+		name    string
+		got     []byte
+		w, size int // the width, and the macroblock size in this plane
+	}{{"Y", img.y, img.w, 16}, {"U", img.u, cw, 8}, {"V", img.v, cw, 8}} {
+		if len(want) < offset+len(p.got) {
+			return fmt.Sprintf("; %s is %d bytes", file, len(want))
+		}
+		for k, g := range p.got {
+			if w := want[offset+k]; g != w {
+				x, y := k%p.w, k/p.w
+				return fmt.Sprintf("; %s (%d, %d) in macroblock (%d, %d) is %d, want %d", p.name, x, y, x/p.size,
+					y/p.size, g, w)
+			}
+		}
+		offset += len(p.got)
+	}
+	return "; the planes are equal"
+}
+
 // rgbaBytes returns the non-premultiplied RGBA bytes of img, row by row. An *image.RGBA must be opaque.
 func rgbaBytes(img image.Image) []byte {
 	var b []byte
@@ -341,11 +413,4 @@ func isOpaque(img image.Image) bool {
 func validSHA256(s string) bool {
 	b, err := hex.DecodeString(s)
 	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
-}
-
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

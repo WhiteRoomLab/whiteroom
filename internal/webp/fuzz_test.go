@@ -3,6 +3,7 @@ package webp
 import (
 	"image"
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -80,8 +81,44 @@ func checkFile(t *testing.T, f *File) {
 	}
 }
 
-// FuzzVP8L decodes image streams without a header, as in VP8L and ALPH chunks.
-func FuzzVP8L(f *testing.F) {
+// FuzzVP8 decodes VP8 bitstreams of frames of at most fuzzMaxPixels.
+func FuzzVP8(f *testing.F) {
+	for _, v := range loadVectors(f) {
+		file, err := Parse(readVector(f, v))
+		if err != nil {
+			f.Fatal(err)
+		}
+		for _, fr := range file.Frames {
+			if !fr.lossless {
+				f.Add(fr.bitstream)
+			}
+		}
+	}
+	for _, s := range slices.Concat(vp8Streams(), vp8ErrorStreams()) {
+		f.Add(s.data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		w, h, err := vp8Header(data)
+		if err != nil || w*h > fuzzMaxPixels {
+			return
+		}
+		img, err := decodeVP8(data)
+		if err != nil {
+			if img != nil {
+				t.Errorf("an image with the error %v", err)
+			}
+			return
+		}
+		cw, ch := (w+1)/2, (h+1)/2
+		if img.w != w || img.h != h || len(img.y) != w*h || len(img.u) != cw*ch || len(img.v) != cw*ch {
+			t.Errorf("%dx%d with planes of %d, %d and %d bytes, want %dx%d", img.w, img.h, len(img.y), len(img.u),
+				len(img.v), w, h)
+		}
+	})
+}
+
+// FuzzLosslessStream decodes image streams without a header, as in VP8L and ALPH chunks.
+func FuzzLosslessStream(f *testing.F) {
 	for _, v := range loadVectors(f) {
 		file, err := Parse(readVector(f, v))
 		if err != nil {
