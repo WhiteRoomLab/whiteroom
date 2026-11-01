@@ -183,10 +183,11 @@ func (b *builder) inSitePath(to string) (string, bool) {
 	return content.SitePath(b.site.URL, to)
 }
 
-// claim records name as the first with key in firsts, or returns the name recorded for key and true.
-func claim[K comparable](firsts map[K]string, key K, name string) (first string, taken bool) {
+// claim records v, such as the name of a file, as the first with key in firsts, or returns the one recorded for key
+// and true.
+func claim[K comparable, V any](firsts map[K]V, key K, v V) (first V, taken bool) {
 	if first, taken = firsts[key]; !taken {
-		firsts[key] = name
+		firsts[key] = v
 	}
 	return first, taken
 }

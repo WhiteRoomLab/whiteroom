@@ -48,6 +48,8 @@ type builder struct {
 	termPaths   map[string]string
 	authorPaths map[string]map[string]string
 	outputs     []output
+	// The redirects that the servers serve, sorted by from (resolveRedirects).
+	serverRedirects []redirect
 
 	warnings problems
 }
