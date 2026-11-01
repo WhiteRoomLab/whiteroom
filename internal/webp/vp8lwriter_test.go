@@ -333,7 +333,3 @@ func anmfChunk(x, y, width, height, duration int, method byte, subchunks ...[]by
 	}
 	return chunk("ANMF", p)
 }
-
-func put24(b []byte, v int) {
-	b[0], b[1], b[2] = byte(v), byte(v>>8), byte(v>>16)
-}

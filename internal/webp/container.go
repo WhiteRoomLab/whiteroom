@@ -21,7 +21,8 @@ type File struct {
 	Background [4]byte // of an animation, as B, G, R and A
 	Frames     []Frame // one for a still image, covering the canvas
 
-	flags byte // of VP8X; 0 in the simple formats
+	extended bool // the file starts with VP8X
+	flags    byte // of VP8X; 0 in the simple formats
 }
 
 // Frame is a frame of an animation, or the still image.
@@ -42,6 +43,7 @@ const (
 	flagAnimation = 0x02
 	flagXMP       = 0x04
 	flagEXIF      = 0x08
+	flagAlpha     = 0x10
 	flagICC       = 0x20
 )
 
@@ -110,7 +112,7 @@ func (f *File) parseExtended(vp8x []byte, r chunkReader) error {
 		return errors.New("webp: VP8X chunk too short")
 	}
 	// Reserved bits and fields after the canvas size are ignored.
-	f.flags = vp8x[0]
+	f.extended, f.flags = true, vp8x[0]
 	p := extendedParser{f: f}
 	f.Width, f.Height = 1+uint24(vp8x[4:]), 1+uint24(vp8x[7:])
 	if uint64(f.Width)*uint64(f.Height) > math.MaxUint32 {
@@ -283,6 +285,9 @@ func newFrame(id string, data, alph []byte) (Frame, error) {
 		fr.lossless = true
 	} else {
 		fr.Width, fr.Height, err = vp8Header(data)
+		if err == nil && alph != nil {
+			err = checkAlpha(alph, fr.Width, fr.Height)
+		}
 		fr.alphaData, fr.hasAlpha = alph, alph != nil
 	}
 	return fr, err

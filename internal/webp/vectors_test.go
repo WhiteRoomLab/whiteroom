@@ -3,9 +3,9 @@ package webp
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json/v2"
-	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -278,10 +278,11 @@ func TestParseVectors(t *testing.T) {
 	}
 }
 
-// TestDecodeLossless decodes every lossless frame of the vectors: Decode for still images, FrameImage for frames of
-// animations. The RGBA bytes must be dwebp's.
-func TestDecodeLossless(t *testing.T) {
-	n := 0
+// TestDecodeVectors decodes every vector: Decode for still images, FrameImage for frames of animations. The RGBA bytes
+// must be dwebp's, and so must the alpha plane of lossy frames with alpha. Image of an animation must be its first
+// frame on a transparent canvas.
+func TestDecodeVectors(t *testing.T) {
+	var stills, frames, alphas, want int
 	for _, v := range loadVectors(t) {
 		data := readVector(t, v)
 		f, err := Parse(data)
@@ -290,12 +291,7 @@ func TestDecodeLossless(t *testing.T) {
 			continue
 		}
 		for i, vf := range v.Frames {
-			if !vf.Lossless {
-				if _, err := f.FrameImage(i); !errors.Is(err, errLossy) {
-					t.Errorf("%s: frame %d: %v, want %v", v.Name, i, err, errLossy)
-				}
-				continue
-			}
+			want++
 			var img image.Image
 			if v.Animated {
 				img, err = f.FrameImage(i)
@@ -306,16 +302,230 @@ func TestDecodeLossless(t *testing.T) {
 				t.Errorf("%s: frame %d: %v", v.Name, i, err)
 				continue
 			}
-			n++
-			if got := sha256Hex(rgbaBytes(img)); got != vf.RGBASHA256 {
+			if img.Bounds() != image.Rect(0, 0, vf.Width, vf.Height) {
+				t.Errorf("%s: frame %d of %v, want %dx%d", v.Name, i, img.Bounds(), vf.Width, vf.Height)
+				continue
+			}
+			pix := rgbaBytes(img)
+			if got := sha256Hex(pix); got != vf.RGBASHA256 {
 				t.Errorf("%s: frame %d: RGBA has SHA-256 %s, want %s", v.Name, i, got, vf.RGBASHA256)
+			} else if v.Animated {
+				frames++
+			} else {
+				stills++
+			}
+			if vf.AlphaSHA256 != "" {
+				if got := sha256Hex(alphaPlane(pix)); got != vf.AlphaSHA256 {
+					t.Errorf("%s: frame %d: alpha has SHA-256 %s, want %s", v.Name, i, got, vf.AlphaSHA256)
+				} else {
+					alphas++
+				}
 			}
 			if _, ok := img.(*image.NRGBA); ok != (vf.Alpha || !isOpaque(img)) {
 				t.Errorf("%s: frame %d: %T, alpha %t", v.Name, i, img, vf.Alpha)
 			}
 		}
+		if v.Animated {
+			if img, err := f.Image(); err != nil {
+				t.Errorf("%s: Image: %v", v.Name, err)
+			} else {
+				checkCanvas(t, v.Name, f, img)
+			}
+		}
 	}
-	t.Logf("%d lossless frames decoded", n)
+	if stills+frames != want {
+		t.Errorf("%d of %d frames equal dwebp's", stills+frames, want)
+	}
+	t.Logf("%d still images, %d frames of animations and %d alpha planes of lossy frames equal dwebp's", stills, frames,
+		alphas)
+}
+
+// checkCanvas checks that img, what Image returned for an animation, is its first frame on a transparent canvas.
+func checkCanvas(t *testing.T, name string, f *File, img image.Image) {
+	t.Helper()
+	canvas, ok := img.(*image.NRGBA)
+	if !ok || canvas.Rect != image.Rect(0, 0, f.Width, f.Height) {
+		t.Errorf("%s: Image is %T of %v, want *image.NRGBA of %dx%d", name, img, img.Bounds(), f.Width, f.Height)
+		return
+	}
+	first, err := f.FrameImage(0)
+	if err != nil {
+		t.Errorf("%s: FrameImage(0): %v", name, err)
+		return
+	}
+	pix, fr := rgbaBytes(first), f.Frames[0]
+	frame := image.Rect(fr.X, fr.Y, fr.X+fr.Width, fr.Y+fr.Height)
+	for y := range f.Height {
+		for x := range f.Width {
+			want := []byte{0, 0, 0, 0}
+			if image.Pt(x, y).In(frame) {
+				i := 4 * ((y-fr.Y)*fr.Width + x - fr.X)
+				want = pix[i : i+4]
+			}
+			if got := canvas.Pix[canvas.PixOffset(x, y):][:4]; !bytes.Equal(got, want) {
+				t.Errorf("%s: Image at (%d, %d) is %v, want %v", name, x, y, got, want)
+				return
+			}
+		}
+	}
+}
+
+// alphaPlane returns the A bytes of RGBA bytes.
+func alphaPlane(pix []byte) []byte {
+	a := make([]byte, len(pix)/4)
+	for i := range a {
+		a[i] = pix[4*i+3]
+	}
+	return a
+}
+
+// TestWriteWithoutMetadataVectors re-muxes every vector. The result must be the vector without its EXIF and XMP chunks
+// and their flags, and decode to the same frames.
+func TestWriteWithoutMetadataVectors(t *testing.T) {
+	stripped := 0
+	for _, v := range loadVectors(t) {
+		data := readVector(t, v)
+		f, err := Parse(data)
+		if err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		var buf bytes.Buffer
+		if err := f.WriteWithoutMetadata(&buf); err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		out := buf.Bytes()
+		if want := withoutMetadata(t, data); !bytes.Equal(out, want) {
+			t.Errorf("%s: WriteWithoutMetadata wrote %d bytes, want the vector without EXIF and XMP, %d bytes", v.Name,
+				len(out), len(want))
+		}
+		if len(out) < len(data) {
+			stripped++
+		}
+		g := checkRemux(t, f, out)
+		if g == nil {
+			continue
+		}
+		for i, vf := range v.Frames {
+			img, err := g.FrameImage(i)
+			if err != nil {
+				t.Errorf("%s: frame %d of the result: %v", v.Name, i, err)
+			} else if got := sha256Hex(rgbaBytes(img)); got != vf.RGBASHA256 {
+				t.Errorf("%s: frame %d of the result: RGBA has SHA-256 %s, want %s", v.Name, i, got, vf.RGBASHA256)
+			}
+		}
+	}
+	if stripped < 15 {
+		t.Errorf("%d vectors lost metadata, want at least 15", stripped)
+	}
+}
+
+// withoutMetadata returns a file made by the tools of libwebp without its EXIF and XMP chunks, and their flags cleared.
+func withoutMetadata(t *testing.T, data []byte) []byte {
+	t.Helper()
+	size := binary.LittleEndian.Uint32(data[4:])
+	var chunks [][]byte
+	for _, c := range splitChunks(t, data[12:8+size]) {
+		switch string(c[:4]) {
+		case "EXIF", "XMP ":
+			continue
+		case "VP8X":
+			c = slices.Clone(c)
+			c[8] &^= flagEXIF | flagXMP
+		}
+		chunks = append(chunks, c)
+	}
+	return riff(chunks...)
+}
+
+// splitChunks returns the chunks of b with their headers and padding.
+func splitChunks(t testing.TB, b []byte) [][]byte {
+	t.Helper()
+	var chunks [][]byte
+	for len(b) > 0 {
+		if len(b) < 8 {
+			t.Fatalf("%d bytes after the last chunk", len(b))
+		}
+		n := int(binary.LittleEndian.Uint32(b[4:]))
+		end := 8 + n + n&1
+		if end > len(b) {
+			t.Fatalf("%q chunk of %d bytes past the end", b[:4], n)
+		}
+		chunks = append(chunks, b[:end:end])
+		b = b[end:]
+	}
+	return chunks
+}
+
+// checkRemux checks out, what f wrote with WriteWithoutMetadata: it must have no metadata and no unknown chunks, parse
+// to f's images and ICC profile, and be written again unchanged. It returns the parsed File, or nil.
+func checkRemux(t *testing.T, f *File, out []byte) *File {
+	t.Helper()
+	g, err := Parse(out)
+	if err != nil {
+		t.Errorf("Parse of the result: %v", err)
+		return nil
+	}
+	if int(binary.LittleEndian.Uint32(out[4:])) != len(out)-8 {
+		t.Errorf("RIFF size %d for %d bytes", binary.LittleEndian.Uint32(out[4:]), len(out))
+	}
+	allowed := []string{"VP8X", "ICCP", "ANIM", "ANMF", "ALPH", "VP8 ", "VP8L"}
+	var ids []string
+	for i, c := range splitChunks(t, out[12:]) {
+		id := string(c[:4])
+		ids = append(ids, id)
+		if !slices.Contains(allowed, id) || id == "VP8X" && i > 0 {
+			t.Errorf("chunk %q in the result", id)
+		}
+		if id == "ANMF" {
+			for _, s := range splitChunks(t, c[24:]) {
+				if !slices.Contains(allowed[4:], string(s[:4])) {
+					t.Errorf("chunk %q in a frame of the result", s[:4])
+				}
+			}
+		}
+		if n := binary.LittleEndian.Uint32(c[4:]); n%2 == 1 && c[len(c)-1] != 0 {
+			t.Errorf("chunk %q padded with %d", id, c[len(c)-1])
+		}
+	}
+	if g.Width != f.Width || g.Height != f.Height || g.Animated != f.Animated || g.Alpha != f.Alpha ||
+		g.Lossless != f.Lossless || g.LoopCount != f.LoopCount || g.Background != f.Background ||
+		g.extended != f.extended {
+		t.Errorf("the result is %+v, want %+v without metadata", g, f)
+	}
+	// The flags of VP8X must tell what the chunks have, as webpinfo checks, and an Alpha flag is kept.
+	var flags byte
+	if slices.Contains(ids, "ICCP") {
+		flags |= flagICC
+	}
+	if slices.Contains(ids, "ANIM") {
+		flags |= flagAnimation
+	}
+	if f.extended && (f.Alpha || f.flags&flagAlpha != 0) {
+		flags |= flagAlpha
+	}
+	if g.flags != flags {
+		t.Errorf("the result has flags %#x and chunks %q, want flags %#x", g.flags, ids, flags)
+	}
+	if !bytes.Equal(g.ICC, f.ICC) || (g.ICC == nil) != (f.ICC == nil) || g.EXIF != nil || g.XMP != nil {
+		t.Errorf("the result has ICC %q, EXIF %q, XMP %q; want ICC %q", g.ICC, g.EXIF, g.XMP, f.ICC)
+	}
+	if !slices.EqualFunc(g.Frames, f.Frames, sameFrame) {
+		t.Errorf("the result has frames %+v, want %+v", g.Frames, f.Frames)
+	}
+	var again bytes.Buffer
+	if err := g.WriteWithoutMetadata(&again); err != nil || !bytes.Equal(again.Bytes(), out) {
+		t.Errorf("writing the result again: %v, %d bytes, want the same %d bytes", err, again.Len(), len(out))
+	}
+	return g
+}
+
+func sameFrame(a, b Frame) bool {
+	return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height && a.Duration == b.Duration &&
+		a.Blend == b.Blend && a.Dispose == b.Dispose && a.lossless == b.lossless && a.hasAlpha == b.hasAlpha &&
+		bytes.Equal(a.bitstream, b.bitstream) && bytes.Equal(a.alphaData, b.alphaData) &&
+		(a.alphaData == nil) == (b.alphaData == nil)
 }
 
 var yuvDir = flag.String("yuvdir", "", "a directory of the planes that dwebp -yuv decodes from the lossy frames, "+

@@ -1,6 +1,7 @@
 package webp
 
 import (
+	"bytes"
 	"image"
 	"math"
 	"slices"
@@ -10,15 +11,47 @@ import (
 // fuzzMaxPixels is the largest canvas that the fuzz tests decode.
 const fuzzMaxPixels = 1 << 20
 
-func FuzzParse(f *testing.F) {
+// fileSeeds returns the vectors and hand-made files.
+func fileSeeds(f *testing.F) [][]byte {
+	var seeds [][]byte
 	for _, v := range loadVectors(f) {
-		f.Add(readVector(f, v))
+		seeds = append(seeds, readVector(f, v))
 	}
 	for _, c := range containerCases() {
-		f.Add(c.data)
+		seeds = append(seeds, c.data)
+	}
+	for _, c := range writeCases() {
+		seeds = append(seeds, c.data)
 	}
 	for _, s := range edgeStreams() {
-		f.Add(riff(chunk("VP8L", s.data)))
+		seeds = append(seeds, riff(chunk("VP8L", s.data)))
+	}
+	// Raw ALPH data of every filtering method on a lossy image.
+	for _, v := range loadVectors(f) {
+		if v.Name != "alpha-photo-17x31-holes" {
+			continue
+		}
+		file, err := Parse(readVector(f, v))
+		if err != nil {
+			f.Fatal(err)
+		}
+		fr := file.Frames[0]
+		raw := make([]byte, fr.Width*fr.Height)
+		for i := range raw {
+			raw[i] = byte(i * 7)
+		}
+		for method := range 4 {
+			seeds = append(seeds, riff(vp8xChunk(flagAlpha, fr.Width, fr.Height), chunk("ALPH", rawAlpha(method, raw)),
+				chunk("VP8 ", fr.bitstream)))
+		}
+	}
+	return seeds
+}
+
+// FuzzDecode parses files and decodes the images of canvases of at most fuzzMaxPixels.
+func FuzzDecode(f *testing.F) {
+	for _, s := range fileSeeds(f) {
+		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		file, err := Parse(data)
@@ -32,8 +65,12 @@ func FuzzParse(f *testing.F) {
 		if file.Width*file.Height > fuzzMaxPixels {
 			return
 		}
-		if img, err := file.Image(); err == nil && img.Bounds() != image.Rect(0, 0, file.Width, file.Height) {
-			t.Errorf("Image() of %v, want the canvas of %dx%d", img.Bounds(), file.Width, file.Height)
+		if img, err := file.Image(); err == nil {
+			if img.Bounds() != image.Rect(0, 0, file.Width, file.Height) {
+				t.Errorf("Image() of %v, want the canvas of %dx%d", img.Bounds(), file.Width, file.Height)
+			} else if file.Animated {
+				checkCanvas(t, "Image()", file, img)
+			}
 		}
 		pixels := 0
 		for i, fr := range file.Frames {
@@ -47,10 +84,31 @@ func FuzzParse(f *testing.F) {
 			if img.Bounds() != image.Rect(0, 0, fr.Width, fr.Height) {
 				t.Errorf("FrameImage(%d) of %v, want %dx%d", i, img.Bounds(), fr.Width, fr.Height)
 			}
-			if _, ok := img.(*image.NRGBA); ok != (fr.hasAlpha || !isOpaque(img)) {
-				t.Errorf("FrameImage(%d) is %T; alpha %t", i, img, fr.hasAlpha)
+			if _, ok := img.(*image.NRGBA); ok != (fr.hasAlpha || !isOpaque(img)) || !fr.lossless && ok != fr.hasAlpha {
+				t.Errorf("FrameImage(%d) is %T; lossless %t, alpha %t", i, img, fr.lossless, fr.hasAlpha)
 			}
 		}
+	})
+}
+
+// FuzzWriteWithoutMetadata re-muxes the files that Parse accepts.
+func FuzzWriteWithoutMetadata(f *testing.F) {
+	for _, s := range fileSeeds(f) {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		file, err := Parse(data)
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := file.WriteWithoutMetadata(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if buf.Len() > len(data) {
+			t.Errorf("%d bytes written for a file of %d", buf.Len(), len(data))
+		}
+		checkRemux(t, file, buf.Bytes())
 	})
 }
 
@@ -71,7 +129,8 @@ func checkFile(t *testing.T, f *File) {
 			t.Errorf("frame %d at (%d, %d) of %dx%d on a canvas of %dx%d", i, fr.X, fr.Y, fr.Width, fr.Height,
 				f.Width, f.Height)
 		}
-		if fr.lossless && fr.alphaData != nil || len(fr.bitstream) < 5 {
+		if fr.lossless && fr.alphaData != nil || len(fr.bitstream) < 5 ||
+			fr.alphaData != nil && checkAlpha(fr.alphaData, fr.Width, fr.Height) != nil {
 			t.Errorf("frame %d: lossless %t, ALPH of %d bytes, bitstream of %d", i, fr.lossless, len(fr.alphaData),
 				len(fr.bitstream))
 		}

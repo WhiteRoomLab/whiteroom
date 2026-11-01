@@ -354,8 +354,8 @@ func TestInspectWebP(t *testing.T) {
 		{"profile without the flag", webpFile(vp8xChunk(0, 16, 16), riffChunk("ICCP", p3Profile), lossy),
 			webpInfo(mediafile.JPEG)},
 		{"flag without a profile", webpFile(vp8xChunk(flagICC, 16, 16), lossy), webpInfo(mediafile.JPEG)},
-		{"lossy with alpha", webpFile(vp8xChunk(0x10, 16, 16), riffChunk("ALPH", []byte{0}), lossy),
-			webpInfo(mediafile.PNG)},
+		{"lossy with alpha", webpFile(vp8xChunk(0x10, 16, 16),
+			riffChunk("ALPH", append([]byte{0}, bytes.Repeat([]byte{0x80}, 16*16)...)), lossy), webpInfo(mediafile.PNG)},
 		{"alpha flag without ALPH", webpFile(vp8xChunk(0x10, 16, 16), lossy), webpInfo(mediafile.JPEG)},
 	}
 	checkInspect(t, tests)

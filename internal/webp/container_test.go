@@ -94,10 +94,26 @@ func containerCases() []containerCase {
 			check: func(f *File) bool {
 				return f.Alpha && !f.Lossless && bytes.Equal(f.Frames[0].alphaData, []byte{0, 1, 2, 3, 4})
 			}},
-		{name: "ALPH, unknown chunk and VP8", data: stillChunks(0, chunk("ALPH", []byte{0}), chunk("XYZW", nil),
-			chunk("EXIF", nil), chunk("VP8 ", fakeVP8(2, 2))), check: func(f *File) bool {
+		{name: "ALPH, unknown chunk and VP8", data: stillChunks(0, chunk("ALPH", []byte{0, 1, 2, 3, 4}),
+			chunk("XYZW", nil), chunk("EXIF", nil), chunk("VP8 ", fakeVP8(2, 2))), check: func(f *File) bool {
 			return f.Alpha && f.Frames[0].alphaData != nil
 		}},
+		{name: "ALPH with reserved bits", data: stillChunks(0, chunk("ALPH", []byte{0x40, 1, 2, 3, 4}),
+			chunk("VP8 ", fakeVP8(2, 2))), err: "reserved bits of ALPH set"},
+		{name: "ALPH of pre-processing 2", data: stillChunks(0, chunk("ALPH", []byte{0x20, 1, 2, 3, 4}),
+			chunk("VP8 ", fakeVP8(2, 2))), err: "unknown ALPH pre-processing 2"},
+		{name: "ALPH of compression 2", data: stillChunks(0, chunk("ALPH", []byte{2, 1, 2, 3, 4}),
+			chunk("VP8 ", fakeVP8(2, 2))), err: "unknown ALPH compression 2"},
+		{name: "ALPH of the header alone", data: stillChunks(0, chunk("ALPH", []byte{1}), chunk("VP8 ", fakeVP8(2, 2))),
+			err: "ALPH chunk too short"},
+		{name: "raw ALPH data too short", data: stillChunks(0, chunk("ALPH", []byte{0, 1, 2, 3}),
+			chunk("VP8 ", fakeVP8(2, 2))), err: "raw ALPH data of 3 bytes for 2x2 pixels"},
+		{name: "ALPH of pre-processing 1 and every filter", data: stillChunks(0, chunk("ALPH", []byte{0x1c, 1, 2, 3, 4}),
+			chunk("VP8 ", fakeVP8(2, 2))), check: func(f *File) bool { return f.Alpha }},
+		{name: "ALPH in a frame with reserved bits", data: anim(animChunk(bg, 0), anmfChunk(0, 0, 2, 2, 0, 0,
+			chunk("ALPH", []byte{0x80, 1, 2, 3, 4}), chunk("VP8 ", fakeVP8(2, 2)))), err: "reserved bits of ALPH set"},
+		{name: "invalid ALPH and VP8L", data: stillChunks(0, chunk("ALPH", []byte{0xff}), solid(2, 2)),
+			check: func(f *File) bool { return f.Lossless && f.Frames[0].alphaData == nil }},
 		{name: "ALPH and VP8L", data: stillChunks(0, chunk("ALPH", []byte{0}), solid(2, 2)), check: func(f *File) bool {
 			return !f.Alpha && f.Lossless && f.Frames[0].alphaData == nil
 		}},
@@ -146,7 +162,7 @@ func containerCases() []containerCase {
 			return f.Animated && len(f.Frames) == 1
 		}},
 		{name: "frames with alpha", data: anim(animChunk(bg, 0), frame(0, 0, 0),
-			anmfChunk(0, 0, 2, 1, 0, 0, alpha), anmfChunk(0, 0, 2, 2, 0, 0, chunk("ALPH", nil),
+			anmfChunk(0, 0, 2, 1, 0, 0, alpha), anmfChunk(0, 0, 2, 2, 0, 0, chunk("ALPH", []byte{1, 0}),
 				chunk("VP8 ", fakeVP8(2, 2)))), check: func(f *File) bool {
 			return f.Alpha && !f.Frames[0].hasAlpha && f.Frames[1].hasAlpha && f.Frames[2].hasAlpha &&
 				f.Frames[2].alphaData != nil
@@ -311,8 +327,8 @@ func TestImage(t *testing.T) {
 			t.Errorf("FrameImage(%d): no error", i)
 		}
 	}
-	if _, err := f.FrameImage(1); !errors.Is(err, errLossy) {
-		t.Errorf("FrameImage of a lossy frame: %v", err)
+	if _, err := f.FrameImage(1); err == nil {
+		t.Error("FrameImage of a lossy frame without data: no error")
 	}
 
 	// A lossless still image of opaque pixels whose alpha_is_used is set is *image.NRGBA.

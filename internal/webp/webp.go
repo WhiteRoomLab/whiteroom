@@ -48,6 +48,9 @@ func (f *File) Image() (image.Image, error) {
 	if !f.Animated {
 		return f.FrameImage(0)
 	}
+	if len(f.Frames) == 0 {
+		return nil, errors.New("webp: no frames")
+	}
 	fr := &f.Frames[0]
 	pix, err := fr.decode()
 	if err != nil {
@@ -72,21 +75,32 @@ func (f *File) FrameImage(i int) (image.Image, error) {
 		return nil, err
 	}
 	r := image.Rect(0, 0, fr.Width, fr.Height)
-	if fr.hasAlpha || !opaque(pix) {
+	if fr.hasAlpha || fr.lossless && !opaque(pix) {
 		return &image.NRGBA{Pix: pix, Stride: 4 * fr.Width, Rect: r}, nil
 	}
 	return &image.RGBA{Pix: pix, Stride: 4 * fr.Width, Rect: r}, nil
 }
 
-var errLossy = errors.New("webp: lossy decoding is not implemented")
-
 // decode returns the non-premultiplied RGBA bytes of the frame.
 func (fr *Frame) decode() ([]byte, error) {
-	if !fr.lossless {
-		return nil, errLossy
+	if fr.lossless {
+		pix, _, _, err := decodeVP8L(fr.bitstream)
+		return pix, err
 	}
-	pix, _, _, err := decodeVP8L(fr.bitstream)
-	return pix, err
+	m, err := decodeVP8(fr.bitstream)
+	if err != nil {
+		return nil, err
+	}
+	var pix []byte
+	if fr.alphaData != nil {
+		if pix, err = decodeAlpha(fr.alphaData, m.w, m.h); err != nil {
+			return nil, err
+		}
+	} else {
+		pix = make([]byte, 4*m.w*m.h)
+	}
+	m.toRGBA(pix, fr.alphaData == nil)
+	return pix, nil
 }
 
 func opaque(pix []byte) bool {
