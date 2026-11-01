@@ -338,6 +338,7 @@ func TestCheckPaths(t *testing.T) {
 				s.addRedirect(t, 3, "/_forms/"+formID+"/", "/contact/")
 				s.addRedirect(t, 4, "/about/?ref=top", "/contact/")
 				s.addRedirect(t, 5, "/category/news/press-release", "/news/")
+				s.addRedirect(t, 6, "/.htaccess/", "/about/")
 			},
 			want: []string{
 				rdr(1) + `:4:3: /from: from "/about" is the output path "/about/" of ` + revisionFile(aboutID),
@@ -346,6 +347,7 @@ func TestCheckPaths(t *testing.T) {
 					fileOf(content.RefForm, formID),
 				rdr(5) + `:4:3: /from: from "/category/news/press-release" is the output path "/category/news/press-release/" of ` +
 					fileOf(content.RefTerm, pressReleaseID),
+				rdr(6) + `:4:3: /from: from "/.htaccess/" is the output path "/.htaccess" of the .htaccess file for Apache`,
 			},
 		},
 	}

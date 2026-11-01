@@ -29,6 +29,9 @@
             # For go generate ./internal/webp.
             pkgs.libwebp
             pkgs.libvpx
+            # For the tests of the server files of internal/build.
+            pkgs.nginx
+            pkgs.apacheHttpd
           ];
 
           env.GOTOOLCHAIN = "local";

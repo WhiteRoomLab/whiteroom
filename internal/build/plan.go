@@ -49,7 +49,7 @@ type output struct {
 // the later one gets the error, so that it goes to a document, such as a page whose slug takes the path of a feed,
 // rather than to what the core or the developers make.
 const (
-	rankCore      = iota // the front pages, the 404 pages, the feeds, the sitemap, the site CSS
+	rankCore      = iota // the front pages, the 404 pages, the feeds, the sitemap, the site CSS, the .htaccess file
 	rankDeveloper        // the assets of the theme and the lists of the types in the schema
 	rankDocument         // the pages of the entries, the lists of the terms, the author pages, the actions of the forms
 	rankRedirect         // the froms of the redirects
@@ -58,9 +58,9 @@ const (
 // plan finds the paths and the files of the pages of the site and of the other outputs, adding the errors to p: the
 // pages of the published entries; the lists of the latest posts, of the terms, of the types and of the authors, each
 // with its pages; the 404 pages if the theme has 404.html; the feeds; the sitemap unless the site has seo.noindex; the
-// site CSS; the assets of the theme; and the actions of the forms, which are paths without files. Every page and
-// output goes to b.outputs with where it comes from. It also finds the translations of the entries and the terms
-// (groupTranslations).
+// site CSS; the .htaccess file; the assets of the theme; and the actions of the forms, which are paths without files.
+// Every page and output goes to b.outputs with where it comes from. It also finds the translations of the entries and
+// the terms (groupTranslations).
 func (b *builder) plan(p *problems) {
 	b.base = basePath(b.site.URL)
 	var err error
@@ -196,6 +196,7 @@ func (b *builder) planOthers(p *problems) {
 		b.addOutput("/sitemap.xml", "sitemap.xml", source{what: "the sitemap"}, rankCore)
 	}
 	b.addOutput("/css/site.css", "css/site.css", source{what: "the site CSS"}, rankCore)
+	b.addOutput("/.htaccess", ".htaccess", source{what: "the .htaccess file for Apache"}, rankCore)
 	for _, a := range b.theme.Assets() {
 		name := "theme/assets/" + a
 		b.addOutput("/assets/"+a, "assets/"+a, source{file: content.SiteFile{Name: name}, what: name}, rankDeveloper)

@@ -104,6 +104,7 @@ func TestPlan(t *testing.T) {
 		"/en/feed/":                       "en/feed/index.xml",
 		"/sitemap.xml":                    "sitemap.xml",
 		"/css/site.css":                   "css/site.css",
+		"/.htaccess":                      ".htaccess",
 		"/_forms/" + formID:               "",
 	}
 	for i := range 11 {
@@ -115,9 +116,9 @@ func TestPlan(t *testing.T) {
 	if got := outputFiles(t, b); !maps.Equal(got, files) {
 		t.Errorf("outputs:\n%v\nwant:\n%v", got, files)
 	}
-	// Apart from the feeds, the sitemap, the site CSS and the form.
-	if n := len(b.pages); n != len(files)-5 {
-		t.Errorf("plan() made %d pages, want %d", n, len(files)-5)
+	// Apart from the feeds, the sitemap, the site CSS, .htaccess and the form.
+	if n := len(b.pages); n != len(files)-6 {
+		t.Errorf("plan() made %d pages, want %d", n, len(files)-6)
 	}
 	if pg := pageAt(b, "/home/"); pg != nil || outputAt(b, "/home/") != nil {
 		t.Errorf("the front page is also at /home/")
@@ -254,6 +255,7 @@ func TestPlan(t *testing.T) {
 		{"/en/feed/", "", "", "the feed in en", rankCore},
 		{"/sitemap.xml", "", "", "the sitemap", rankCore},
 		{"/css/site.css", "", "", "the site CSS", rankCore},
+		{"/.htaccess", "", "", "the .htaccess file for Apache", rankCore},
 	} {
 		o := outputAt(b, tt.path)
 		if o == nil {
