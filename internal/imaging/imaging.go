@@ -10,6 +10,9 @@ const (
 	// processingVersion is in every cache key: bump it whenever the files made from the same original change.
 	processingVersion = 1
 	maxICCBytes       = 4 << 20 // of the ICC profile of an original; larger ones are invalid
+	// maxSide is the longest side of an original, which JPEG and GIF files cannot exceed; it bounds the buffers of the
+	// resampler, which grow with the sides.
+	maxSide = 65535
 )
 
 // srcsetWidths are the widths of the smaller files of an image shown at the default size.

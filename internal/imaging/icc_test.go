@@ -282,7 +282,7 @@ func TestJoinICCSegments(t *testing.T) {
 	}
 }
 
-func TestJPEGICCSegments(t *testing.T) {
+func TestReadJPEGHeaderICC(t *testing.T) {
 	file := jpegOf(t, colored(16, 8))
 	soi := []byte{0xff, 0xd8}
 	sos := jpegSegment(0xda, []byte{1, 1, 0, 0, 63, 0})
@@ -318,12 +318,13 @@ func TestJPEGICCSegments(t *testing.T) {
 		{name: "SOS of length 0", data: slices.Concat(soi, []byte{0xff, 0xda, 0, 0}), err: "invalid JPEG: short segment length"},
 	}
 	for _, tt := range tests {
-		segs, err := jpegICCSegments(tt.data)
+		h, err := readJPEGHeader(tt.data)
+		segs := h.icc
 		switch {
 		case tt.err == "" && (err != nil || len(segs) != tt.want):
-			t.Errorf("%s: jpegICCSegments() = %d segments, %v; want %d", tt.name, len(segs), err, tt.want)
+			t.Errorf("%s: readJPEGHeader() = %d segments, %v; want %d", tt.name, len(segs), err, tt.want)
 		case tt.err != "" && fmt.Sprint(err) != tt.err:
-			t.Errorf("%s: jpegICCSegments() error = %v, want %q", tt.name, err, tt.err)
+			t.Errorf("%s: readJPEGHeader() error = %v, want %q", tt.name, err, tt.err)
 		}
 		if tt.want > 0 {
 			if p, err := joinICCSegments(segs); err != nil || !bytes.Equal(p, p3Profile) {
@@ -396,7 +397,8 @@ func TestEmbedJPEGICC(t *testing.T) {
 		if !bytes.Equal(out[:2], file[:2]) || !bytes.Equal(out[len(out)-len(file)+2:], file[2:]) {
 			t.Errorf("%d bytes: not the file with segments after SOI", n)
 		}
-		segs, err := jpegICCSegments(out)
+		h, err := readJPEGHeader(out)
+		segs := h.icc
 		if want := (n + maxICCSegment - 1) / maxICCSegment; err != nil || len(segs) != want {
 			t.Fatalf("%d bytes: %d segments, %v; want %d", n, len(segs), err, want)
 		}

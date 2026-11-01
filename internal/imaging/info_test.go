@@ -74,6 +74,10 @@ func checkInspect(t *testing.T, tests []inspectTest) {
 			if got.Warnings != nil && len(got.Warnings) == 0 {
 				t.Errorf("Warnings is empty, not nil")
 			}
+			if got.Size != len(tt.data) || got.Memory < int64(got.Width)*int64(got.Height) {
+				t.Errorf("Size %d, Memory %d; want %d bytes, and a byte a pixel at least", got.Size, got.Memory,
+					len(tt.data))
+			}
 			icc, err := keptICC(tt.data, got)
 			if err != nil || (icc != nil) != (got.ICC == iccKeep) {
 				t.Errorf("keptICC() = %d bytes, %v; ICC %q", len(icc), err, got.ICC)
@@ -385,6 +389,10 @@ func TestInspectError(t *testing.T) {
 			err: "too many pixels: 20000x5001 (max 100000000)"},
 		{name: "WebP of too many pixels", data: webpFile(vp8xChunk(0, 16384, 16384), lossy),
 			err: "too many pixels: 16384x16384 (max 100000000)"},
+		{name: "PNG of too long a side", data: pngFile(65536, 1, 8, 2, pngChunk("IDAT", nil), pngChunk("IEND", nil)),
+			err: "too long a side: 65536x1 (max 65535)"},
+		{name: "PNG of too long a side vertically", data: pngFile(1, 65536, 8, 2, pngChunk("IDAT", nil),
+			pngChunk("IEND", nil)), err: "too long a side: 1x65536 (max 65535)"},
 		{name: "JPEG of 2 bytes", data: []byte{0xff, 0xd8}, is: mediafile.ErrUnsupported},
 		{name: "JPEG cut before SOS", data: insertJPEG(file[:sos], jfif), err: "invalid JPEG: no image data"},
 		{name: "JPEG with EOI before SOS", data: slices.Concat(insertJPEG(file[:sos], jfif), []byte{0xff, 0xd9},
@@ -404,6 +412,18 @@ func TestInspectError(t *testing.T) {
 			err: "invalid GIF: no image data"},
 		{name: "WebP of an image smaller than its canvas", data: webpFile(vp8xChunk(0, 17, 16), lossy),
 			err: "webp: image of 16x16 pixels on a canvas of 17x16"},
+		{name: "CMYK JPEG without an Adobe segment", data: slices.Concat(cmykJPEG(0)[:2], cmykJPEG(0)[18:]),
+			err: "unsupported JPEG: 4 components without an Adobe APP14 segment"},
+		{name: "CMYK JPEG with a short Adobe segment", data: insertJPEG(slices.Concat(cmykJPEG(0)[:2], cmykJPEG(0)[18:]),
+			jpegSegment(0xee, []byte("Adobe\x00\x64\x00\x00\x00\x00"))),
+			err: "unsupported JPEG: 4 components without an Adobe APP14 segment"},
+		{name: "GIF of LZW minimum code size 1", data: gifFile(4, 3, patch(frame, 10, 1)),
+			err: "invalid GIF: LZW minimum code size 1"},
+		{name: "GIF of LZW minimum code size 9 in its second frame", data: gifFile(4, 3, frame, patch(frame, 10, 9)),
+			err: "invalid GIF: LZW minimum code size 9"},
+		{name: "GIF of a first frame of too many pixels", data: gifFile(4, 3, gifImage(t, 0, 0, 1, 1, false)[:1],
+			le.AppendUint16(le.AppendUint16(make([]byte, 4), 50000), 2001), frame[9:]),
+			err: "too many pixels in the first GIF frame: 50000x2001 (max 100000000)"},
 	}
 	for _, tt := range tests {
 		got, err := Inspect(tt.data)
@@ -424,6 +444,56 @@ func TestInspectLimit(t *testing.T) {
 	data = gifFile(10000, 10000, gifImage(t, 0, 0, 1, 1, false))
 	if got, err := Inspect(data); err != nil || !equalInfo(got, gifInfo(10000, 10000, false)) {
 		t.Errorf("Inspect() = %+v, %v; want an Info of 10000x10000 pixels", got, err)
+	}
+	data = pngFile(65535, 1, 8, 2, pngChunk("IDAT", nil), pngChunk("IEND", nil))
+	if got, err := Inspect(data); err != nil || !equalInfo(got, pngInfo(65535, 1, 1)) {
+		t.Errorf("Inspect() = %+v, %v; want an Info of 65535x1 pixels", got, err)
+	}
+}
+
+func TestInspectMemory(t *testing.T) {
+	file := jpegOf(t, colored(40, 30)) // 4:2:0, in MCUs of 16 x 16 pixels: 3 x 2 of them
+	sof := jpegMarker(t, file, 0xc0)
+	progressive := patch(file, sof+1, 0xc2)
+	// Other sampling factors than those of 4:2:0, which image/jpeg writes.
+	sampling := func(y, cb, cr byte) []byte { return patch(patch(patch(file, sof+11, y), sof+14, cb), sof+17, cr) }
+	lossy := readVector(t, "lossy-photo-16x16")
+	pal := image.NewPaletted(image.Rect(0, 0, 3, 2), color.Palette{color.Black, color.White})
+	interlaced := slices.Concat([]byte(pngSignature), pngChunk("IHDR", []byte{0, 0, 0, 3, 0, 0, 0, 2, 8, 2, 0, 0, 1}),
+		pngChunk("IDAT", nil), pngChunk("IEND", nil))
+	for _, tt := range []struct {
+		name string
+		data []byte
+		want int64
+	}{
+		{"JPEG 4:2:0", file, 48 * 32 * 3 / 2},
+		{"JPEG 4:4:4", sampling(0x11, 0x11, 0x11), 40 * 32 * 3},
+		{"JPEG 4:1:1", sampling(0x41, 0x11, 0x11), 64 * 32 * 3 / 2},
+		{"JPEG 4:4:0", sampling(0x22, 0x21, 0x21), 48 * 32 * 2},
+		{"JPEG 4:2:0 progressive", progressive, 48 * 32 * 3 / 2 * 5},
+		// image/jpeg decodes the chroma of other ratios at full size.
+		{"JPEG of a non-standard ratio", sampling(0x22, 0x21, 0x12), 48 * 32 * 3},
+		{"JPEG of chroma sampled more than luma", sampling(0x11, 0x22, 0x22), 48 * 32 * 3},
+		{"grayscale JPEG", jpegOf(t, image.NewGray(image.Rect(0, 0, 40, 30))), 40 * 32},
+		{"CMYK JPEG", cmykJPEG(0), 4*64 + 4*64},
+		{"PNG", pngOf(t, colored(3, 2)), 4 * 6},
+		{"16-bit PNG", pngOf(t, image.NewRGBA64(image.Rect(0, 0, 3, 2))), 8 * 6},
+		{"grayscale PNG", pngOf(t, image.NewGray(image.Rect(0, 0, 3, 2))), 6},
+		{"16-bit grayscale PNG", pngOf(t, image.NewGray16(image.Rect(0, 0, 3, 2))), 2 * 6},
+		{"grayscale PNG with tRNS", insertPNG(pngOf(t, image.NewGray(image.Rect(0, 0, 3, 2))),
+			pngChunk("tRNS", []byte{0, 0})), 4 * 6},
+		{"paletted PNG", pngOf(t, pal), 6},
+		{"interlaced PNG", interlaced, 2 * 4 * 6},
+		{"GIF", gifFile(4, 3, gifImage(t, 0, 0, 4, 3, false)), 5 * 12},
+		{"lossy WebP", lossy, 6 * 256},
+		{"lossless WebP", readVector(t, "lossless-photo-16x16"), 4 * 256},
+		{"animated WebP", readVector(t, "anim-img2webp-lossy"), 10 * 48 * 32},
+	} {
+		info, err := Inspect(tt.data)
+		if err != nil || info.Memory != tt.want || info.Size != len(tt.data) {
+			t.Errorf("%s: Inspect() = Size %d, Memory %d, %v; want %d, %d", tt.name, info.Size, info.Memory, err,
+				len(tt.data), tt.want)
+		}
 	}
 }
 
@@ -463,6 +533,7 @@ func FuzzInspect(f *testing.F) {
 		switch {
 		case content.MediaKind(info.MIMEType) != content.MediaImage,
 			info.Width < 1, info.Height < 1, info.Width > content.MaxImagePixels/info.Height,
+			max(info.Width, info.Height) > maxSide, info.Size != len(data), info.Memory < 1,
 			info.Orientation < 1, info.Orientation > 8,
 			!slices.Contains(formats, info.Format), !slices.Contains(iccs, info.ICC),
 			info.Animated && (info.MIMEType == mediafile.JPEG || info.Orientation != 1),

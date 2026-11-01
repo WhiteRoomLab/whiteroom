@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"image/color"
 	"image/jpeg"
 
@@ -28,6 +29,10 @@ type Info struct {
 	// converted to RGB) or "gray" (a profile of a grayscale PNG with transparency, whose still files are RGBA).
 	ICC      string
 	Warnings []string // in English; the same for the same original
+	Size     int      // of the original, in bytes
+	// Memory is about how many bytes decoding the original into the image that its still files are made from takes:
+	// the image and the buffers of the decoder.
+	Memory int64
 }
 
 // The values of Info.ICC other than "".
@@ -40,8 +45,8 @@ const (
 )
 
 // Inspect reads the original of an image medium, data, without decoding its pixels. It returns an error for a PDF, a
-// file in no format of media, more than content.MaxMediaBytes of data, and an image of more than
-// content.MaxImagePixels.
+// file in no format of media, more than content.MaxMediaBytes of data, an image of more than content.MaxImagePixels
+// or with a side of more than 65535 pixels, and headers that the decoders do not read.
 func Inspect(data []byte) (Info, error) {
 	if len(data) > content.MaxMediaBytes {
 		return Info{}, fmt.Errorf("too large: %d bytes (max %d)", len(data), content.MaxMediaBytes)
@@ -56,6 +61,9 @@ func Inspect(data []byte) (Info, error) {
 	if p.Width > content.MaxImagePixels/p.Height {
 		return Info{}, fmt.Errorf("too many pixels: %dx%d (max %d)", p.Width, p.Height, content.MaxImagePixels)
 	}
+	if max(p.Width, p.Height) > maxSide {
+		return Info{}, fmt.Errorf("too long a side: %dx%d (max %d)", p.Width, p.Height, maxSide)
+	}
 	o, err := readOriginal(data, p.MIMEType)
 	if err != nil {
 		return Info{}, err
@@ -68,6 +76,8 @@ func Inspect(data []byte) (Info, error) {
 		Animated:    o.animated,
 		Format:      o.format,
 		Warnings:    o.warnings,
+		Size:        len(data),
+		Memory:      o.memory,
 	}
 	if info.Animated && info.Orientation != 1 {
 		info.Animated = false
@@ -93,6 +103,7 @@ type original struct {
 	icc       []byte // the ICC profile; nil if none
 	iccErr    error  // why the ICC profile cannot be read
 	warnings  []string
+	memory    int64 // Info.Memory
 }
 
 // readOriginal reads data, an image of the MIME type that mediafile.Probe has read.
@@ -151,27 +162,39 @@ func readJPEG(data []byte) (original, error) {
 	if err != nil {
 		return original{}, fmt.Errorf("invalid JPEG: %w", err)
 	}
-	o := original{format: mediafile.JPEG}
+	h, err := readJPEGHeader(data)
+	if err != nil {
+		return original{}, err
+	}
+	o := original{format: mediafile.JPEG, memory: h.memory(c)}
 	switch c.ColorModel {
 	case color.GrayModel:
 		o.gray, o.grayFiles = true, true
 	case color.CMYKModel:
+		if !h.adobe {
+			// image/jpeg cannot tell CMYK from YCCK without it.
+			return original{}, errors.New("unsupported JPEG: 4 components without an Adobe APP14 segment")
+		}
 		o.cmyk = true
 	}
-	segs, err := jpegICCSegments(data)
-	if err != nil {
-		return original{}, err
-	}
-	if segs != nil {
-		o.icc, o.iccErr = joinICCSegments(segs)
+	if h.icc != nil {
+		o.icc, o.iccErr = joinICCSegments(h.icc)
 	}
 	return o, nil
 }
 
-// jpegICCSegments returns the data after iccSignature of the APP2 segments before the first SOS, where image/jpeg also
-// stops reading the header. Like image/jpeg, it skips bytes that are not markers.
-func jpegICCSegments(data []byte) ([][]byte, error) {
-	var segs [][]byte
+// jpegHeader is what readJPEGHeader reads.
+type jpegHeader struct {
+	icc         [][]byte // the data after iccSignature of the APP2 segments
+	adobe       bool     // an APP14 segment that image/jpeg reads as Adobe's
+	progressive bool
+	sampling    [][2]int // the horizontal and vertical sampling factors of the components in the frame header
+}
+
+// readJPEGHeader reads the segments before the first SOS, where image/jpeg also stops reading the header. Like
+// image/jpeg, it skips bytes that are not markers.
+func readJPEGHeader(data []byte) (jpegHeader, error) {
+	var h jpegHeader
 	for i := 2; ; { // after SOI
 		for i < len(data) && data[i] != 0xff {
 			i++
@@ -180,7 +203,7 @@ func jpegICCSegments(data []byte) ([][]byte, error) {
 			i++
 		}
 		if i == len(data) {
-			return nil, errors.New("invalid JPEG: no image data")
+			return jpegHeader{}, errors.New("invalid JPEG: no image data")
 		}
 		marker := data[i]
 		i++
@@ -188,24 +211,74 @@ func jpegICCSegments(data []byte) ([][]byte, error) {
 		case marker == 0x00, 0xd0 <= marker && marker <= 0xd7: // not a marker, or RSTn without data
 			continue
 		case marker == 0xd9: // EOI
-			return nil, errors.New("invalid JPEG: no image data")
+			return jpegHeader{}, errors.New("invalid JPEG: no image data")
 		case len(data)-i < 2:
-			return nil, errors.New("invalid JPEG: no image data")
+			return jpegHeader{}, errors.New("invalid JPEG: no image data")
 		}
 		n := int(binary.BigEndian.Uint16(data[i:])) // including these 2 bytes
 		switch {
 		case n < 2:
-			return nil, errors.New("invalid JPEG: short segment length")
+			return jpegHeader{}, errors.New("invalid JPEG: short segment length")
 		case marker == 0xda: // SOS
-			return segs, nil
+			return h, nil
 		case n > len(data)-i:
-			return nil, errors.New("invalid JPEG: no image data")
+			return jpegHeader{}, errors.New("invalid JPEG: no image data")
 		}
-		if seg := data[i+2 : i+n]; marker == 0xe2 && bytes.HasPrefix(seg, []byte(iccSignature)) {
-			segs = append(segs, seg[len(iccSignature):])
+		seg := data[i+2 : i+n]
+		switch {
+		case marker == 0xe2 && bytes.HasPrefix(seg, []byte(iccSignature)):
+			h.icc = append(h.icc, seg[len(iccSignature):])
+		case marker == 0xee && len(seg) >= 12 && bytes.HasPrefix(seg, []byte("Adobe")):
+			h.adobe = true
+		case 0xc0 <= marker && marker <= 0xc2 && h.sampling == nil && len(seg) >= 6 && len(seg) >= 6+3*int(seg[5]):
+			// SOF0, SOF1 or SOF2, the frame headers that image/jpeg reads
+			h.progressive = marker == 0xc2
+			h.sampling = make([][2]int, seg[5])
+			for k := range h.sampling {
+				hv := seg[7+3*k]
+				h.sampling[k] = [2]int{min(max(int(hv>>4), 1), 4), min(max(int(hv&15), 1), 4)}
+			}
 		}
 		i += n
 	}
+}
+
+// memory returns about how many bytes image/jpeg takes to decode the image of c with the header h: the planes of the
+// components, allocated in whole MCUs, the coefficients of a progressive image, and the image that RGB and CMYK are
+// converted to.
+func (h *jpegHeader) memory(c image.Config) int64 {
+	s := h.sampling
+	if len(s) == 1 {
+		s = [][2]int{{1, 1}} // image/jpeg ignores the factors of grayscale images
+	}
+	maxH, maxV := 1, 1
+	for _, f := range s {
+		maxH, maxV = max(maxH, f[0]), max(maxV, f[1])
+	}
+	mcus := int64((c.Width+8*maxH-1)/(8*maxH)) * int64((c.Height+8*maxV-1)/(8*maxV))
+	var samples int64
+	for _, f := range s {
+		samples += 64 * mcus * int64(f[0]*f[1])
+	}
+	planes := samples
+	if len(s) >= 3 {
+		// Unless the components have a standard subsampling ratio, image/jpeg decodes all three into full planes.
+		r := maxH/s[1][0]<<4 | maxV/s[1][1]
+		standard := s[1] == s[2] && s[0] == [2]int{maxH, maxV} && maxH%s[1][0] == 0 && maxV%s[1][1] == 0 &&
+			(r == 0x11 || r == 0x12 || r == 0x21 || r == 0x22 || r == 0x41 || r == 0x42)
+		if !standard {
+			full := 64 * mcus * int64(maxH*maxV)
+			planes += 3*full - 64*mcus*int64(s[0][0]*s[0][1]+s[1][0]*s[1][1]+s[2][0]*s[2][1])
+		}
+	}
+	m := planes
+	if h.progressive {
+		m += 4 * samples // a block of 64 int32 for each 64 samples
+	}
+	if c.ColorModel == color.RGBAModel || c.ColorModel == color.CMYKModel {
+		m += 4 * int64(c.Width) * int64(c.Height)
+	}
+	return m
 }
 
 const (
@@ -250,75 +323,44 @@ func readPNG(data []byte) (original, error) {
 	if iccp != nil {
 		o.icc, o.iccErr = pngICC(iccp)
 	}
+	// The bytes of a pixel in the image that image/png decodes, which also has an image of each pass of an interlaced
+	// image.
+	n := 4
+	if colorType == 3 || colorType == 0 && !trns {
+		n = 1
+	}
+	if ihdr[8] == 16 {
+		n *= 2
+	}
+	if ihdr[12] != 0 {
+		n *= 2
+	}
+	o.memory = int64(n) * int64(binary.BigEndian.Uint32(ihdr)) * int64(binary.BigEndian.Uint32(ihdr[4:]))
 	return o, nil
 }
 
 // readGIF reads the blocks of a GIF file. It publishes an animation as its first frame if it is truncated, as it cannot
 // be rebuilt, or if its frames have more than maxAnimationPixels in all.
 func readGIF(data []byte) (original, error) {
-	o := original{format: mediafile.PNG}
-	frames, pixels, complete := gifFrames(data)
+	s, err := scanGIF(data)
+	if err != nil {
+		return original{}, err
+	}
+	// The indexes of the first frame and the canvas it is drawn on.
+	screen := int64(binary.LittleEndian.Uint16(data[6:])) * int64(binary.LittleEndian.Uint16(data[8:]))
+	o := original{format: mediafile.PNG, memory: 5 * screen}
 	switch {
-	case frames == 0:
+	case s.frames == 0:
 		return original{}, errors.New("invalid GIF: no image data")
-	case !complete:
+	case !s.complete:
 		o.warnings = []string{"truncated GIF; published as its first frame"}
-	case frames > 1 && pixels > maxAnimationPixels:
+	case s.frames > 1 && s.pixels > maxAnimationPixels:
 		o.warnings = []string{fmt.Sprintf("GIF animation with %d pixels in its frames (max %d); published as its first frame",
-			pixels, maxAnimationPixels)}
-	case frames > 1:
+			s.pixels, maxAnimationPixels)}
+	case s.frames > 1:
 		o.animated = true
 	}
 	return o, nil
-}
-
-// gifFrames returns the number of the images in a GIF file, the sum of their areas, and whether the blocks end without
-// being truncated: at the trailer, at the end of data, or at a byte that does not start a block, where browsers also
-// stop.
-func gifFrames(data []byte) (frames int, pixels int64, complete bool) {
-	// gif.DecodeConfig, which mediafile.Probe calls, has read the logical screen descriptor and the global color table.
-	i := 13
-	if data[10]&0x80 != 0 {
-		i += 3 << (data[10]&7 + 1)
-	}
-	for i < len(data) {
-		var ok bool
-		switch data[i] {
-		case 0x21: // an extension: its label and data sub-blocks
-			i, ok = skipSubBlocks(data, i+2)
-		case 0x2c: // an image descriptor, a local color table, the minimum code size of LZW and data sub-blocks
-			if len(data)-i < 10 {
-				return frames, pixels, false
-			}
-			w, h := binary.LittleEndian.Uint16(data[i+5:]), binary.LittleEndian.Uint16(data[i+7:])
-			j := i + 10
-			if data[i+9]&0x80 != 0 {
-				j += 3 << (data[i+9]&7 + 1)
-			}
-			if i, ok = skipSubBlocks(data, j+1); ok {
-				frames++
-				pixels += int64(w) * int64(h)
-			}
-		default: // the trailer, or not a block
-			return frames, pixels, true
-		}
-		if !ok {
-			return frames, pixels, false
-		}
-	}
-	return frames, pixels, true
-}
-
-// skipSubBlocks returns the index after the data sub-blocks at i in data, and false if they do not end in data.
-func skipSubBlocks(data []byte, i int) (int, bool) {
-	for i < len(data) {
-		n := int(data[i])
-		i += 1 + n
-		if n == 0 {
-			return i, true
-		}
-	}
-	return 0, false
 }
 
 func readWebP(data []byte) (original, error) {
@@ -330,5 +372,14 @@ func readWebP(data []byte) (original, error) {
 	if !f.Animated && !f.Lossless && !f.Alpha {
 		o.format = mediafile.JPEG
 	}
+	// The planes of a lossy frame and its RGBA, or the ARGB of a lossless one, and the canvas of an animation.
+	n := 6
+	switch {
+	case f.Animated:
+		n = 10
+	case f.Lossless:
+		n = 4
+	}
+	o.memory = int64(n) * int64(f.Width) * int64(f.Height)
 	return o, nil
 }
