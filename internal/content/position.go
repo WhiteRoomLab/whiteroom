@@ -83,6 +83,32 @@ func (c *cursor) syntaxError(err error) *Error {
 	return c.errorAt(off, syntaxMsg(err))
 }
 
+// DecodeFile decodes f, a JSON document, with decode, such as the UnmarshalJSON method of a document, as LoadSite does
+// the settings document. The error is Errors with File set to the Name of f: a syntax error at its position, without
+// calling decode, or the errors of decode, located as LocateErrors does.
+func DecodeFile(f SiteFile, decode func([]byte) error) error {
+	positions, err := jsonPositions(f.Data)
+	if err == nil {
+		err = decode(f.Data)
+	}
+	if err == nil {
+		return nil
+	}
+	return locate(err, f.Name, positions)
+}
+
+// LocateErrors returns copies of the errors in err, which are about f, a JSON document, with File set to the Name of f.
+// Those without a Line get the position in f of their Path or, if f does not have it, of its nearest ancestor, such as
+// the parent of a missing key; none if f is not valid JSON. An error that is neither an *Error nor Errors becomes one
+// at the root. It returns nil for nil.
+func LocateErrors(err error, f SiteFile) Errors {
+	if err == nil {
+		return nil
+	}
+	positions, _ := jsonPositions(f.Data)
+	return locate(err, f.Name, positions)
+}
+
 // locate returns copies of the errors in err, which are about the document in file, with File set to file. Those
 // without a Line get the position of their Path or, if positions does not have it, of its nearest ancestor, such as
 // the parent of a missing key. An error that is neither an *Error nor Errors becomes an *Error at the root.
