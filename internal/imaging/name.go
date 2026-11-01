@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -119,17 +120,44 @@ func ext(format string) string {
 	return ""
 }
 
+// goVersion is the version of Go whose encoders make the files, in the cache keys: its major and minor versions, as in
+// "go1.27", or runtime.Version as it is if it has another form, as development versions have.
+var goVersion = goMinor(runtime.Version())
+
+// goMinor returns the version of Go v without its patch version, as "go1.27" for "go1.27.3" and "go1.27", or v as it
+// is if it has another form.
+func goMinor(v string) string {
+	s, ok := strings.CutPrefix(v, "go")
+	parts := strings.Split(s, ".")
+	if !ok || len(parts) < 2 || len(parts) > 3 {
+		return v
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return v
+		}
+	}
+	return "go" + parts[0] + "." + parts[1]
+}
+
 // cacheKey returns the key of the file of variant v made from the original whose Media.Hash is hash: the hex SHA-256
-// of a text of everything that the bytes of the file depend on.
+// of keyText.
 func cacheKey(hash string, v Variant) string {
-	text := fmt.Sprintf("whiteroom imaging\nversion %d\nhash %q\nsize %dx%d\nformat %q\nanimated %t\nquality %d\n",
-		processingVersion, hash, v.Width, v.Height, v.Format, v.Animated, jpegQuality)
-	sum := sha256.Sum256([]byte(text))
+	sum := sha256.Sum256([]byte(keyText(goVersion, hash, v)))
 	return hex.EncodeToString(sum[:])
 }
 
+// keyText returns a text of everything that the bytes of the file of variant v made from the original whose Media.Hash
+// is hash with the version of Go goVer depend on.
+func keyText(goVer, hash string, v Variant) string {
+	return fmt.Sprintf(
+		"whiteroom imaging\nversion %d\ngo %q\nhash %q\nsize %dx%d\nformat %q\nanimated %t\nquality %d\n",
+		processingVersion, goVer, hash, v.Width, v.Height, v.Format, v.Animated, jpegQuality)
+}
+
 // Version returns the version of the file of variant v made from the original whose Media.Hash is hash, which pages
-// put after its path as "?v=<version>": the first 8 hex digits of its cache key.
+// put after its path as "?v=<version>": the first 8 hex digits of its cache key, which changes with anything that the
+// bytes of the file depend on, the minor version of Go included.
 func Version(hash string, v Variant) string {
 	return cacheKey(hash, v)[:8]
 }

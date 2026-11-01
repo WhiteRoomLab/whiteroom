@@ -349,7 +349,7 @@ rows:
 // extensions; the loop count of NETSCAPE2.0 and ANIMEXTS1.0 extensions, as NETSCAPE2.0; and the images, whose LZW data
 // is decoded into exactly width x height indexes and encoded again. Comments, plain text, other application extensions
 // and unknown extensions are left out, and so is what comes after the blocks. Truncated data and an image whose data
-// has fewer indexes are errors.
+// has fewer indexes are errors, which Inspect finds first.
 func rebuildGIF(data []byte) ([]byte, error) {
 	i, err := gifStart(data)
 	if err != nil {
@@ -392,16 +392,10 @@ func rebuildGIF(data []byte) ([]byte, error) {
 			return nil, fmt.Errorf("invalid GIF: LZW minimum code size %d", f.minCodeSize)
 		}
 		out = append(out, data[b.pos:b.subs]...) // the descriptor, the local color table and the minimum code size
-		lr.Reset(&subBlocks{data: data[:b.end], i: b.subs}, lzw.LSB, f.minCodeSize)
 		sw := &subBlockWriter{out: out}
 		lw.Reset(sw, lzw.LSB, f.minCodeSize)
-		want := int64(f.w) * int64(f.h)
-		n, err := io.CopyBuffer(&lw, io.LimitReader(&lr, want), buf)
-		if err == nil && n < want {
-			err = io.ErrUnexpectedEOF
-		}
-		if err != nil {
-			return nil, fmt.Errorf("invalid GIF: frame %d has %d of %d pixels: %w", frame, n, want, err)
+		if err := copyGIFIndexes(&lw, &lr, data, b, frame, buf); err != nil {
+			return nil, err
 		}
 		if err := lw.Close(); err != nil {
 			return nil, err
@@ -410,6 +404,47 @@ func rebuildGIF(data []byte) ([]byte, error) {
 		frame++
 	}
 	return append(out, gifTrailer), nil
+}
+
+// copyGIFIndexes decodes the LZW data of the image block b of data, a GIF file, which is its frame number frame, with
+// lr, and copies the first width x height indexes to w with buf. Fewer of them is an error; more are not read.
+func copyGIFIndexes(w io.Writer, lr *lzw.Reader, data []byte, b gifBlock, frame int, buf []byte) error {
+	f := gifFrameOf(data, b)
+	lr.Reset(&subBlocks{data: data[:b.end], i: b.subs}, lzw.LSB, f.minCodeSize)
+	want := int64(f.w) * int64(f.h)
+	n, err := io.CopyBuffer(w, io.LimitReader(lr, want), buf)
+	if err == nil && n < want {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		return fmt.Errorf("invalid GIF: frame %d has %d of %d pixels: %w", frame, n, want, err)
+	}
+	return nil
+}
+
+// checkGIFFrames returns the error that rebuildGIF would return for the LZW data of a frame of data, a GIF file that
+// scanGIF reads without errors, or nil. It decodes the data of every frame, but keeps none of the indexes.
+func checkGIFFrames(data []byte) error {
+	i, err := gifStart(data)
+	if err != nil {
+		return err
+	}
+	var lr lzw.Reader
+	for frame := 0; ; {
+		b, err := nextGIFBlock(data, i)
+		switch {
+		case errors.Is(err, io.EOF):
+			return nil
+		case err != nil:
+			return err
+		case b.kind == gifImageBlock:
+			if err := copyGIFIndexes(io.Discard, &lr, data, b, frame, nil); err != nil {
+				return err
+			}
+			frame++
+		}
+		i = b.end
+	}
 }
 
 // gifLoopCount returns the loop count in b, an application extension, if it is a NETSCAPE2.0 or ANIMEXTS1.0 extension

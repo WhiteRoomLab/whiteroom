@@ -460,6 +460,43 @@ func TestRebuildGIFError(t *testing.T) {
 	}
 }
 
+// TestCheckGIFFrames checks that checkGIFFrames finds the frames that rebuildGIF cannot rebuild, with its error.
+func TestCheckGIFFrames(t *testing.T) {
+	cover := indexesOf(4, 3, 4)
+	full := gifImageWith(0, 0, 4, 3, 0, nil, 2, lzwOf(t, 2, cover))
+	for _, tt := range []struct {
+		name string
+		data []byte
+		err  string
+	}{
+		{"whole", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(1, 1, 2, 2, 0x80, rgbTable[:6], 3,
+			lzwOf(t, 3, []byte{1, 0, 0, 1}))), ""},
+		{"interlaced", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0x40, nil, 2,
+			lzwOf(t, 2, cover))), ""},
+		{"more indexes", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, append(slices.Clone(cover), 1, 2)))), ""},
+		{"invalid code after the indexes", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 1, 1, 0, nil, 2,
+			lzwInvalidAfter1)), ""},
+		{"no pixels", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 0, 3, 0, nil, 2, nil)), ""},
+		{"no trailer", gifWith("GIF89a", 4, 3, rgbTable, full, full)[:len(gifWith("GIF89a", 4, 3, rgbTable, full,
+			full))-1], ""},
+		{"fewer indexes", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, cover[:11]))), "invalid GIF: frame 1 has 11 of 12 pixels: unexpected EOF"},
+		{"no data", gifWith("GIF89a", 4, 3, rgbTable, full, full, gifImageWith(1, 1, 2, 2, 0, nil, 2, nil)),
+			"invalid GIF: frame 2 has 0 of 4 pixels: unexpected EOF"},
+		{"invalid code", gifWith("GIF89a", 4, 3, rgbTable, gifImageWith(0, 0, 4, 3, 0, nil, 2, []byte{0xff, 0xff}),
+			full), "invalid GIF: frame 0 has 0 of 12 pixels: lzw: invalid code"},
+		{"invalid code after the first index", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 2, 1, 0,
+			nil, 2, lzwInvalidAfter1)), "invalid GIF: frame 1 has 1 of 2 pixels: lzw: invalid code"},
+	} {
+		err := checkGIFFrames(tt.data)
+		_, rerr := rebuildGIF(tt.data)
+		if fmtErr(err) != tt.err || fmtErr(rerr) != tt.err {
+			t.Errorf("%s: checkGIFFrames() = %v, rebuildGIF() = %v; want %q", tt.name, err, rerr, tt.err)
+		}
+	}
+}
+
 func TestScanGIF(t *testing.T) {
 	full := gifImageWith(0, 0, 4, 3, 0, nil, 2, lzwOf(t, 2, indexesOf(4, 3, 4)))
 	one := gifWith("GIF89a", 4, 3, rgbTable, full)

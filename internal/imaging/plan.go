@@ -1,6 +1,8 @@
 package imaging
 
 import (
+	"fmt"
+
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 )
@@ -11,6 +13,15 @@ type Variant struct {
 	Width, Height int
 	Format        string // the MIME type of the file
 	Animated      bool   // the animation, which only the published file of an animated image is
+}
+
+// label returns v for messages, as in "640x480 image/jpeg" and "400x300 image/gif animation".
+func (v Variant) label() string {
+	s := fmt.Sprintf("%dx%d %s", v.Width, v.Height, v.Format)
+	if v.Animated {
+		s += " animation"
+	}
+	return s
 }
 
 // Published returns the published file of the image of info: the animation as it is, or a still image of at most

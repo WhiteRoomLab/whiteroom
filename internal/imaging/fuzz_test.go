@@ -27,6 +27,7 @@ func makeSeeds(t testing.TB) [][]byte {
 			lzwOf(t, 2, cover))),
 		gifWith("GIF89a", 4, 3, rgbTable, gifApp("NETSCAPE2.0", []byte{1, 0, 0}), gifControlWith(9, 5, 1), frame,
 			gifExtension(0xfe, []byte("comment")), frame),
+		gifWith("GIF89a", 4, 3, rgbTable, frame, gifImageWith(0, 0, 4, 3, 0, nil, 2, lzwOf(t, 2, cover[:11]))),
 		readVector(t, "lossless-photo-16x16"),
 		readVector(t, "meta-exif-o3-alpha"),
 		readVector(t, "anim-img2webp-lossy"),
@@ -41,7 +42,7 @@ func TestMakeSeeds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
-		if _, err := makeFiles(data, info, variantsOf(info)); err != nil {
+		if _, err := makeFiles(t.Context(), data, info, variantsOf(info)); err != nil {
 			t.Errorf("seed %d: %v", i, err)
 		}
 	}
@@ -58,8 +59,12 @@ func FuzzMake(f *testing.F) {
 		}
 		vs := append([]Variant{Published(info)}, ForSize(info, nil).Srcset...)
 		vs = append(vs, Icon(info, 32))
-		files, err := makeFiles(data, info, vs)
+		files, err := makeFiles(t.Context(), data, info, vs)
 		if err != nil {
+			// Inspect checks what the rebuild of a GIF reads, and its first frame is drawn from any data.
+			if info.MIMEType == mediafile.GIF {
+				t.Fatalf("makeFiles() of a GIF: %v", err)
+			}
 			return
 		}
 		if len(files) != len(vs) {

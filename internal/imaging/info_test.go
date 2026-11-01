@@ -56,6 +56,7 @@ const (
 	cmykWarning        = "CMYK JPEG; converted to RGB without color management, so its colors may change"
 	grayWarning        = "grayscale ICC profile of a PNG with transparency; published in RGBA without it"
 	gifCutWarning      = "truncated GIF; published as its first frame"
+	gifBrokenWarning   = "GIF animation with a broken frame; published as its first frame"
 	o6AnimationWarning = "animation with EXIF orientation 6; published as its first frame"
 )
 
@@ -232,6 +233,7 @@ func TestInspectGIF(t *testing.T) {
 	text := slices.Concat([]byte{0x21, 0x01, 12}, make([]byte, 12), gifSubBlocks([]byte("text")))
 	animation := gifFile(4, 3, frame, frame2)
 	noTrailer := animation[:len(animation)-1]
+	withBroken := gifFile(4, 3, frame, gifImageWith(0, 0, 4, 3, 0, nil, 2, nil))
 	tests := []inspectTest{
 		{"still", gifFile(4, 3, frame), gifInfo(4, 3, false)},
 		{"still with a local color table", gifFile(4, 3, gifImage(t, 0, 0, 4, 3, true)), gifInfo(4, 3, false)},
@@ -257,6 +259,23 @@ func TestInspectGIF(t *testing.T) {
 			frame))-1], []byte{0x21, 0xfe}), gifInfo(4, 3, false).with("", gifCutWarning)},
 		{"truncated after the introducer of an extension", slices.Concat(gifFile(4, 3, frame)[:len(gifFile(4, 3,
 			frame))-1], []byte{0x21}), gifInfo(4, 3, false).with("", gifCutWarning)},
+		// The LZW data of every frame must have the indexes of all its pixels for the animation to be rebuilt.
+		{"frame of fewer indexes than pixels", gifFile(4, 3, frame, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, make([]byte, 11)))), gifInfo(4, 3, false).with("", gifBrokenWarning)},
+		{"frame of no LZW data", gifFile(4, 3, frame, gifImageWith(1, 1, 2, 2, 0, nil, 2, nil)),
+			gifInfo(4, 3, false).with("", gifBrokenWarning)},
+		{"frame of an invalid LZW code", gifFile(4, 3, frame, gifImageWith(0, 0, 4, 3, 0, nil, 2, []byte{0xff, 0xff})),
+			gifInfo(4, 3, false).with("", gifBrokenWarning)},
+		{"first frame of fewer indexes than pixels", gifFile(4, 3, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, make([]byte, 7))), frame), gifInfo(4, 3, false).with("", gifBrokenWarning)},
+		{"frame of more indexes than pixels", gifFile(4, 3, frame, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, make([]byte, 13)))), gifInfo(4, 3, true)},
+		{"frame of an invalid LZW code after its indexes", gifFile(4, 3, frame, gifImageWith(0, 0, 1, 1, 0, nil, 2,
+			lzwInvalidAfter1)), gifInfo(4, 3, true)},
+		{"still image of fewer indexes than pixels", gifFile(4, 3, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, make([]byte, 7)))), gifInfo(4, 3, false)},
+		{"truncated after a broken frame", slices.Concat(withBroken[:len(withBroken)-1], frame[:12]),
+			gifInfo(4, 3, false).with("", gifCutWarning)},
 	}
 	checkInspect(t, tests)
 
@@ -271,12 +290,21 @@ func TestInspectGIF(t *testing.T) {
 func TestInspectGIFFramePixels(t *testing.T) {
 	defer func(n int64) { maxAnimationPixels = n }(maxAnimationPixels)
 	data := gifFile(4, 3, gifImage(t, 0, 0, 4, 3, false), gifImage(t, 0, 0, 4, 3, false))
+	broken := gifFile(4, 3, gifImage(t, 0, 0, 4, 3, false), gifImageWith(0, 0, 4, 3, 0, nil, 2, nil))
 	maxAnimationPixels = 24
 	checkInspect(t, []inspectTest{{"at most maxAnimationPixels", data, gifInfo(4, 3, true)}})
 	maxAnimationPixels = 23
-	checkInspect(t, []inspectTest{{"more than maxAnimationPixels", data, gifInfo(4, 3, false).with("",
-		"GIF animation with 24 pixels in its frames (max 23); published as its first frame")}})
+	// The LZW data of the frames is not decoded then.
+	tooMany := "GIF animation with 24 pixels in its frames (max 23); published as its first frame"
+	checkInspect(t, []inspectTest{
+		{"more than maxAnimationPixels", data, gifInfo(4, 3, false).with("", tooMany)},
+		{"more than maxAnimationPixels and a broken frame", broken, gifInfo(4, 3, false).with("", tooMany)},
+	})
 }
+
+// lzwInvalidAfter1 is LZW data of the minimum code size 2 with the codes clear, the index 1 and 7, an invalid code
+// there, in 3 bits each from the lowest bit.
+var lzwInvalidAfter1 = []byte{0b11_001_100, 0b1}
 
 // webpVector is a vector of ../webp/testdata/vectors.json.
 type webpVector struct {

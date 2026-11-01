@@ -20,8 +20,8 @@ type Info struct {
 	Width, Height int    // in pixels as displayed, with Orientation applied
 	Orientation   int    // the EXIF orientation, from 1 to 8
 	// Animated is set if the published file is the animation: a GIF of 2 or more frames, an APNG or an animated WebP.
-	// An APNG or a WebP whose orientation is not 1, and a GIF that is truncated or has more than maxAnimationPixels in
-	// its frames, are published as their first frame, with a warning.
+	// An APNG or a WebP whose orientation is not 1, and a GIF that is truncated, has a frame whose LZW data is broken
+	// or has more than maxAnimationPixels in its frames, are published as their first frame, with a warning.
 	Animated bool
 	Format   string // the MIME type of the still files made from it: image/jpeg or image/png
 	// ICC tells what happens to the ICC profile of the original in the still files: "" (there is none), "keep", or it
@@ -44,9 +44,10 @@ const (
 	iccGray    = "gray"
 )
 
-// Inspect reads the original of an image medium, data, without decoding its pixels. It returns an error for a PDF, a
-// file in no format of media, more than content.MaxMediaBytes of data, an image of more than content.MaxImagePixels
-// or with a side of more than 65535 pixels, and headers that the decoders do not read.
+// Inspect reads the original of an image medium, data, without decoding its pixels, apart from the LZW data of the
+// frames of a GIF animation, which it checks without keeping them. It returns an error for a PDF, a file in no format
+// of media, more than content.MaxMediaBytes of data, an image of more than content.MaxImagePixels or with a side of
+// more than 65535 pixels, and headers that the decoders do not read.
 func Inspect(data []byte) (Info, error) {
 	if len(data) > content.MaxMediaBytes {
 		return Info{}, fmt.Errorf("too large: %d bytes (max %d)", len(data), content.MaxMediaBytes)
@@ -339,8 +340,8 @@ func readPNG(data []byte) (original, error) {
 	return o, nil
 }
 
-// readGIF reads the blocks of a GIF file. It publishes an animation as its first frame if it is truncated, as it cannot
-// be rebuilt, or if its frames have more than maxAnimationPixels in all.
+// readGIF reads the blocks of a GIF file. It publishes an animation as its first frame if it cannot be rebuilt, as it
+// is truncated or the LZW data of a frame is broken, or if its frames have more than maxAnimationPixels in all.
 func readGIF(data []byte) (original, error) {
 	s, err := scanGIF(data)
 	if err != nil {
@@ -357,6 +358,8 @@ func readGIF(data []byte) (original, error) {
 	case s.frames > 1 && s.pixels > maxAnimationPixels:
 		o.warnings = []string{fmt.Sprintf("GIF animation with %d pixels in its frames (max %d); published as its first frame",
 			s.pixels, maxAnimationPixels)}
+	case s.frames > 1 && checkGIFFrames(data) != nil:
+		o.warnings = []string{"GIF animation with a broken frame; published as its first frame"}
 	case s.frames > 1:
 		o.animated = true
 	}

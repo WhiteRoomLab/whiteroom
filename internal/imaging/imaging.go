@@ -7,7 +7,8 @@ import "github.com/WhiteRoomLab/whiteroom/internal/content"
 const (
 	maxPublishedSide = 2560 // the long side of the published file of a still image
 	jpegQuality      = 85
-	// processingVersion is in every cache key: bump it whenever the files made from the same original change.
+	// processingVersion is in every cache key and names the directory of the cache: bump it whenever the files made
+	// from the same original, or its Info, change.
 	processingVersion = 1
 	maxICCBytes       = 4 << 20 // of the ICC profile of an original; larger ones are invalid
 	// maxSide is the longest side of an original, which JPEG and GIF files cannot exceed; it bounds the buffers of the

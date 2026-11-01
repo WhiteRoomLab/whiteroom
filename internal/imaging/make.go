@@ -2,6 +2,8 @@ package imaging
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"image"
 
@@ -10,34 +12,39 @@ import (
 )
 
 // makeFiles returns the files of the variants vs, in their order, made from data, an original that Inspect read as
-// info. Each file depends only on data and its variant: a still variant that fits in the published file is made from
-// the published image (the original scaled to the size of the published file) when that is smaller than the original,
-// and others from the original, whichever variants are asked together.
-func makeFiles(data []byte, info Info, vs []Variant) ([][]byte, error) {
-	files := make([][]byte, len(vs))
-	pub := Published(info)
+// info, or ctx.Err() if ctx is done before one of them is made. Each file depends only on data and its variant: a still
+// variant that fits in the published file is made from the published image (the original scaled to the size of the
+// published file) when that is smaller than the original, and others from the original, whichever variants are asked
+// together.
+func makeFiles(ctx context.Context, data []byte, info Info, vs []Variant) ([][]byte, error) {
 	var stills []int // the indexes in vs of the still variants
 	for i, v := range vs {
-		switch {
-		case v.Animated && (!info.Animated || v != pub):
-			return nil, fmt.Errorf("no animation of %+v", v)
-		case v.Animated:
-			f, err := makeAnimation(data, info)
-			if err != nil {
-				return nil, err
-			}
-			files[i] = f
-		case v.Format != mediafile.JPEG && v.Format != mediafile.PNG:
-			return nil, fmt.Errorf("cannot make a still file of %s", v.Format)
-		case v.Width < 1 || v.Height < 1 || v.Width > info.Width || v.Height > info.Height:
-			return nil, fmt.Errorf("cannot make a file of %dx%d pixels from an image of %dx%d", v.Width, v.Height,
-				info.Width, info.Height)
-		default:
+		if err := checkVariant(info, v); err != nil {
+			return nil, fmt.Errorf("%s: %w", v.label(), err)
+		}
+		if !v.Animated {
 			stills = append(stills, i)
 		}
 	}
+	files := make([][]byte, len(vs))
+	for i, v := range vs {
+		if !v.Animated {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		f, err := makeAnimation(data, info)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", v.label(), err)
+		}
+		files[i] = f
+	}
 	if stills == nil {
 		return files, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	profile, err := keptICC(data, info)
 	if err != nil {
@@ -45,31 +52,62 @@ func makeFiles(data []byte, info Info, vs []Variant) ([][]byte, error) {
 	}
 	src, err := decode(data, info)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decoding the original: %w", err)
+	}
+	// one makes the file of vs[i] from m.
+	one := func(m image.Image, i int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		f, err := makeStill(m, info.Orientation, vs[i], profile)
+		if err != nil {
+			return fmt.Errorf("%s: %w", vs[i].label(), err)
+		}
+		files[i] = f
+		return nil
 	}
 	// The variants made from the original come first, so that it can be freed before the others are made.
 	var fromMid []int
 	for _, i := range stills {
 		if fromPublished(info, vs[i]) {
 			fromMid = append(fromMid, i)
-		} else if files[i], err = makeStill(src, info.Orientation, vs[i], profile); err != nil {
+		} else if err := one(src, i); err != nil {
 			return nil, err
 		}
 	}
 	if fromMid == nil {
 		return files, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	pub := Published(info)
 	w, h := stored(pub.Width, pub.Height, info.Orientation)
 	mid, err := resize(src, w, h)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", pub.label(), err)
 	}
 	for _, i := range fromMid {
-		if files[i], err = makeStill(mid, info.Orientation, vs[i], profile); err != nil {
+		if err := one(mid, i); err != nil {
 			return nil, err
 		}
 	}
 	return files, nil
+}
+
+// checkVariant returns an error unless makeFiles can make the file of v from an original that Inspect read as info.
+func checkVariant(info Info, v Variant) error {
+	switch {
+	case v.Animated && (!info.Animated || v != Published(info)):
+		return errors.New("not the published animation")
+	case v.Animated:
+		return nil
+	case v.Format != mediafile.JPEG && v.Format != mediafile.PNG:
+		return fmt.Errorf("no still files of %s", v.Format)
+	case v.Width < 1 || v.Height < 1 || v.Width > info.Width || v.Height > info.Height:
+		return fmt.Errorf("not within the image of %dx%d pixels", info.Width, info.Height)
+	}
+	return nil
 }
 
 // fromPublished reports whether the still variant v of an original that Inspect read as info is made from the published

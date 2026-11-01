@@ -1,6 +1,9 @@
 package imaging
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode"
@@ -198,20 +201,35 @@ func TestPath(t *testing.T) {
 
 const testHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+// keyOf returns the cache key of variant v of the original with hash, made with the version of Go goVer.
+func keyOf(goVer, hash string, v Variant) string {
+	sum := sha256.Sum256([]byte(keyText(goVer, hash, v)))
+	return hex.EncodeToString(sum[:])
+}
+
 func TestCacheKey(t *testing.T) {
 	v := jpegVariant(640, 480)
-	// A change of this key changes every cached file and every version; change it with processingVersion.
-	const want = "a3ce738e4fefa70d265f7476390025a2740dd03e5480f9684f751bdec16cbfe7"
-	if got := cacheKey(testHash, v); got != want {
-		t.Errorf("cacheKey() = %q, want %q", got, want)
+	// A change of this text changes every cached file and every version; change it with processingVersion.
+	const wantText = "whiteroom imaging\nversion 1\ngo \"go1.27\"\nhash \"" + testHash + "\"\nsize 640x480\n" +
+		"format \"image/jpeg\"\nanimated false\nquality 85\n"
+	if got := keyText("go1.27", testHash, v); got != wantText {
+		t.Errorf("keyText() = %q, want %q", got, wantText)
 	}
-	keys := map[string]string{"": cacheKey(testHash, v)}
+	const want = "e37e2ec69e34faf2cef1bbda6d18eb7033bbf9936f51c9835108a36483026c2b"
+	if got := keyOf("go1.27", testHash, v); got != want {
+		t.Errorf("the key of go1.27 = %q, want %q", got, want)
+	}
+	if got, want := cacheKey(testHash, v), keyOf(goMinor(runtime.Version()), testHash, v); got != want {
+		t.Errorf("cacheKey() = %q, want the key of %s %q", got, runtime.Version(), want)
+	}
+	keys := map[string]string{"": keyOf("go1.27", testHash, v)}
 	for what, key := range map[string]string{
-		"hash":     cacheKey("sha256:"+strings.Repeat("0", 64), v),
-		"width":    cacheKey(testHash, jpegVariant(641, 480)),
-		"height":   cacheKey(testHash, jpegVariant(640, 481)),
-		"format":   cacheKey(testHash, pngVariant(640, 480)),
-		"animated": cacheKey(testHash, Variant{Width: 640, Height: 480, Format: mediafile.JPEG, Animated: true}),
+		"Go":       keyOf("go1.28", testHash, v),
+		"hash":     keyOf("go1.27", "sha256:"+strings.Repeat("0", 64), v),
+		"width":    keyOf("go1.27", testHash, jpegVariant(641, 480)),
+		"height":   keyOf("go1.27", testHash, jpegVariant(640, 481)),
+		"format":   keyOf("go1.27", testHash, pngVariant(640, 480)),
+		"animated": keyOf("go1.27", testHash, Variant{Width: 640, Height: 480, Format: mediafile.JPEG, Animated: true}),
 	} {
 		for other, k := range keys {
 			if k == key {
@@ -219,6 +237,35 @@ func TestCacheKey(t *testing.T) {
 			}
 		}
 		keys[what] = key
+	}
+}
+
+func TestGoMinor(t *testing.T) {
+	for _, tt := range []struct{ v, want string }{
+		{"go1.27.3", "go1.27"},
+		{"go1.27.0", "go1.27"},
+		{"go1.27", "go1.27"},
+		{"go1.30.12", "go1.30"},
+		{"go2.0.1", "go2.0"},
+		// Other forms, as they are.
+		{"go1.28rc1", "go1.28rc1"},
+		{"go1.28beta2", "go1.28beta2"},
+		{"devel go1.28-6cc2f4e3 Wed Oct 1 12:00:00 2026 +0000", "devel go1.28-6cc2f4e3 Wed Oct 1 12:00:00 2026 +0000"},
+		{"go1.27.3 X:nodwarf5", "go1.27.3 X:nodwarf5"},
+		{"go1", "go1"},
+		{"go1.27.3.1", "go1.27.3.1"},
+		{"go1..3", "go1..3"},
+		{"go1.27.", "go1.27."},
+		{"go1.-27", "go1.-27"},
+		{"1.27.3", "1.27.3"},
+		{"", ""},
+	} {
+		if got := goMinor(tt.v); got != tt.want {
+			t.Errorf("goMinor(%q) = %q, want %q", tt.v, got, tt.want)
+		}
+	}
+	if !strings.HasPrefix(runtime.Version(), goVersion) {
+		t.Errorf("goVersion = %q, not the start of %q", goVersion, runtime.Version())
 	}
 }
 

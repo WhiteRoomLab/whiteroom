@@ -26,7 +26,7 @@ func makeOf(t *testing.T, data []byte, profile []byte, vs ...Variant) (Info, [][
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := makeFiles(data, info, vs)
+	files, err := makeFiles(t.Context(), data, info, vs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,6 +568,41 @@ func TestMakeAnimation(t *testing.T) {
 	}
 }
 
+// TestMakeBrokenGIF checks that the files of a GIF animation that cannot be rebuilt are made from its first frame.
+func TestMakeBrokenGIF(t *testing.T) {
+	cover := indexesOf(4, 3, 4)
+	full := gifImageWith(0, 0, 4, 3, 0, nil, 2, lzwOf(t, 2, cover))
+	for _, tt := range []struct {
+		name string
+		data []byte
+	}{
+		{"fewer indexes", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, cover[:11])))},
+		{"invalid code", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			[]byte{0xff, 0xff}))},
+		{"broken first frame", gifWith("GIF89a", 4, 3, rgbTable, gifImageWith(0, 0, 4, 3, 0, nil, 2,
+			lzwOf(t, 2, cover[:7])), full)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := rebuildGIF(tt.data); err == nil {
+				t.Fatal("rebuildGIF() succeeds")
+			}
+			info, err := Inspect(tt.data)
+			if err != nil || info.Animated || !slices.Equal(info.Warnings, []string{gifBrokenWarning}) {
+				t.Fatalf("Inspect() = %+v, %v", info, err)
+			}
+			_, files := makeOf(t, tt.data, nil, variantsOf(info)...)
+			want, err := decodeGIF(tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := nrgbaOf(decodeFile(t, files[0])); !bytes.Equal(got.Pix, nrgbaOf(want).Pix) {
+				t.Errorf("the published file is not the first frame")
+			}
+		})
+	}
+}
+
 func TestMakeICC(t *testing.T) {
 	m := colored(40, 30)
 	gray := image.NewGray(m.Rect)
@@ -746,22 +781,22 @@ func TestMakeGroups(t *testing.T) {
 				// A file as large as the original, made from it.
 				vs = append(vs, ForSize(info, &content.ImageSize{Width: 1300}).Srcset...)
 			}
-			all, err := makeFiles(data, info, vs)
+			all, err := makeFiles(t.Context(), data, info, vs)
 			if err != nil {
 				t.Fatal(err)
 			}
-			again, err := makeFiles(data, info, vs)
+			again, err := makeFiles(t.Context(), data, info, vs)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rev := slices.Clone(vs)
 			slices.Reverse(rev)
-			reversed, err := makeFiles(data, info, rev)
+			reversed, err := makeFiles(t.Context(), data, info, rev)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for i, v := range vs {
-				one, err := makeFiles(data, info, []Variant{v})
+				one, err := makeFiles(t.Context(), data, info, []Variant{v})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -810,7 +845,7 @@ func TestMakeFromPublished(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := makeFiles(data, info, []Variant{tt.v})
+		got, err := makeFiles(t.Context(), data, info, []Variant{tt.v})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -959,7 +994,7 @@ func TestMakeError(t *testing.T) {
 		{"PDF", []byte("%PDF-1.7\n"), Info{MIMEType: mediafile.PDF, Width: 1, Height: 1, Orientation: 1},
 			pngVariant(1, 1)},
 	} {
-		if files, err := makeFiles(tt.data, tt.info, []Variant{tt.v}); err == nil {
+		if files, err := makeFiles(t.Context(), tt.data, tt.info, []Variant{tt.v}); err == nil {
 			t.Errorf("%s: makeFiles() = %d files, want an error", tt.name, len(files))
 		}
 	}
@@ -1044,7 +1079,7 @@ func BenchmarkMakeFiles(b *testing.B) {
 		} {
 			b.Run(original.name+" "+bb.name, func(b *testing.B) {
 				for b.Loop() {
-					if _, err := makeFiles(original.data, info, bb.vs); err != nil {
+					if _, err := makeFiles(b.Context(), original.data, info, bb.vs); err != nil {
 						b.Fatal(err)
 					}
 				}
