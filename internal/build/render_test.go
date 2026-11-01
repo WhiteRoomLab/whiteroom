@@ -128,8 +128,10 @@ func TestRenderPages(t *testing.T) {
 	}
 
 	siteSum := sha256.Sum256([]byte(readFile(t, dir, "css/site.css")))
-	head := `<link rel="stylesheet" href="/css/site.css?v=` + hex.EncodeToString(siteSum[:4]) + `">` + "\n" +
+	links := `<link rel="stylesheet" href="/css/site.css?v=` + hex.EncodeToString(siteSum[:4]) + `">` + "\n" +
 		`<link rel="stylesheet" href="/assets/css/style.css?v=b791d850">` + "\n"
+	// headOf returns the head of the page at path, which the layout writes after the links to the CSS.
+	headOf := func(path string) string { return string(b.head(pageAt(b, path))) }
 
 	// The page CSS of the posts page, which the pages of its list share, and that of productID.
 	if len(sheets) != 2 {
@@ -217,14 +219,14 @@ func TestRenderPages(t *testing.T) {
 	}{
 		{"/", []string{
 			"<!DOCTYPE html>\n<html lang=\"ja\">\n",
-			"<title>株式会社〇〇</title>\n" + head + "\n</head>\n",
+			"<title>株式会社〇〇</title>\n" + links + headOf("/") + "\n</head>\n",
 			jaHeader(0),
 			footer,
 			languages("ja", "/", "/en/"),
 			"<h1>ホーム</h1>\n<p>Webサイトの企画と制作の会社です。</p>\n</article>",
 		}},
 		{"/about/", []string{
-			"<title>会社概要｜株式会社〇〇</title>\n" + head + "\n</head>\n",
+			"<title>会社概要｜株式会社〇〇</title>\n" + links + headOf("/about/") + "\n</head>\n",
 			jaHeader(1),
 			languages("ja", "/about/", "/en/about/"),
 			`<img src="` + string(office.Src) + `" srcset="` + string(office.Srcset) + `" sizes="` + office.Sizes +
@@ -250,7 +252,7 @@ func TestRenderPages(t *testing.T) {
 			languages("ja", "/category/news/page/2/", "!/en/"),
 		}},
 		{"/2026/10/26/新サービス/", []string{
-			"<title>新サービスを始めました｜株式会社〇〇</title>\n" + head + "\n</head>\n",
+			"<title>新サービスを始めました｜株式会社〇〇</title>\n" + links + headOf("/2026/10/26/新サービス/") + "\n</head>\n",
 			`<p><time datetime="2026-10-26T00:30:00&#43;09:00">2026-10-26</time> <a href="/author/yamada/">山田 太郎 が投稿</a></p>`,
 			"<li><a href=\"/category/news/press-release/\">プレスリリース</a></li>\n" +
 				"<li><a href=\"/tag/%E3%82%A4%E3%83%99%E3%83%B3%E3%83%88/\">#イベント</a></li>",
@@ -266,21 +268,24 @@ func TestRenderPages(t *testing.T) {
 		}},
 		// The page CSS of the posts page on both pages of its list.
 		{"/news/", []string{
-			"<title>お知らせ｜株式会社〇〇</title>\n" + head + `<link rel="stylesheet" href="` + news.path + "\">\n\n</head>\n",
+			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.path + "\">\n" +
+				headOf("/news/") + "\n</head>\n",
 			"<h1>お知らせ</h1>\n<p>会社からのお知らせです。</p>\n<p class=\"b-news0002\">重要なお知らせ</p>\n<article class=\"card\">",
 			languages("ja", "/news/", "!/en/"),
 		}},
 		{"/news/page/2/", []string{
-			"<title>お知らせ｜株式会社〇〇</title>\n" + head + `<link rel="stylesheet" href="` + news.path + "\">\n\n</head>\n",
+			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.path + "\">\n" +
+				headOf("/news/page/2/") + "\n</head>\n",
 			"<h1>お知らせ</h1>\n<p>会社からのお知らせです。</p>\n<p class=\"b-news0002\">重要なお知らせ</p>\n<article class=\"card\">",
 			languages("ja", "/news/page/2/", "!/en/"),
 		}},
 		{"/products/product-a/", []string{
-			head + `<link rel="stylesheet" href="` + product.path + "\">\n\n</head>\n",
+			links + `<link rel="stylesheet" href="` + product.path + "\">\n" + headOf("/products/product-a/") +
+				"\n</head>\n",
 		}},
 		{"/en/", []string{
 			"<!DOCTYPE html>\n<html lang=\"en\">\n",
-			"<title>Example Inc.</title>\n" + head + "\n</head>\n",
+			"<title>Example Inc.</title>\n" + links + headOf("/en/") + "\n</head>\n",
 			// No menus in en.
 			"<header class=\"site-header\">\n<a href=\"/en/\"><img src=\"" + string(logo.Src) +
 				"\" width=\"400\" height=\"100\" alt=\"\"> Example Inc.</a>\n</header>",
@@ -304,8 +309,9 @@ func TestRenderPages(t *testing.T) {
 				"<h1>山田 太郎</h1>",
 			languages("ja", "/author/yamada/page/2/", "/en/author/yamada/"),
 		}},
+		// The icon of the site has no original: no links to its icons.
 		{"/404.html", []string{
-			"<title>ページが見つかりません | 株式会社〇〇</title>\n" + head + "\n</head>\n",
+			"<title>ページが見つかりません | 株式会社〇〇</title>\n" + links + robotsLine + "\n" + jaFeedLine + "\n</head>\n",
 			"<h1>ページが見つかりません</h1>\n<p><a href=\"/\">株式会社〇〇</a></p>",
 			languages("ja", "/", "/en/"),
 		}},
@@ -909,6 +915,7 @@ func TestPageData(t *testing.T) {
 		}},
 	}
 	for _, tt := range tests {
+		tt.want.Head = b.head(pageAt(b, tt.path))
 		if got := data(tt.path); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("pageData(%s) =\n%+v\nwant\n%+v", tt.path, got, tt.want)
 		}
@@ -961,7 +968,8 @@ func TestPagination(t *testing.T) {
 func TestRenderPagesConcurrent(t *testing.T) {
 	src := testSource(t)
 	site := testSite()
-	site.Logo = ""
+	// No logo, icon or image for Open Graph: only the images of the two pages are inspected.
+	site.Logo, site.Icon, site.SEO.OGImage = "", "", nil
 	src.putSettings(t, site)
 	src.putOriginal(t, imageID, "会社外観.jpg", testJPEG(t, 16, 12))
 	src.putOriginal(t, avatarID, "yamada.png", testPNG(t, 16, 16))

@@ -23,8 +23,8 @@ type renderedEntry struct {
 
 // pageData returns the data of the page template of p, which r renders in the language of p, with menus, the menus of
 // the language (menusOf), and the CSS that the page needs: that of the body and the fields of its entry. It leaves
-// SiteCSS and PageCSS, which depend on the files of the CSS, to the caller, and Head empty. The error is that of
-// rendering the entry (renderEntry).
+// SiteCSS and PageCSS, which depend on the files of the CSS, to the caller. The error is that of rendering the entry
+// (renderEntry).
 func (b *builder) pageData(p *page, r *render.Renderer, menus map[string][]MenuItem) (*Page, render.CSS, error) {
 	url := r.URL(p.path)
 	data := &Page{
@@ -68,6 +68,7 @@ func (b *builder) pageData(p *page, r *render.Renderer, menus map[string][]MenuI
 		data.Author = b.authorData(p.author.v.ID, p.language, r)
 	case theme.KindEntry, theme.KindPosts, theme.KindNotFound:
 	}
+	data.Head = b.head(p)
 	return data, css, nil
 }
 
