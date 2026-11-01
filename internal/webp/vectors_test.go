@@ -1,10 +1,13 @@
 package webp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -227,6 +230,112 @@ func checkVector(v vector) []error {
 		}
 	}
 	return errs
+}
+
+// TestParseVectors checks what Parse reads from every vector against the manifest.
+func TestParseVectors(t *testing.T) {
+	for _, v := range loadVectors(t) {
+		f, err := Parse(readVector(t, v))
+		if err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		if f.Width != v.Width || f.Height != v.Height || f.Animated != v.Animated || f.Alpha != v.Alpha ||
+			f.Lossless != v.Lossless || f.LoopCount != v.LoopCount || len(f.Frames) != len(v.Frames) {
+			t.Errorf("%s: %dx%d, animated %t, alpha %t, lossless %t, loop count %d, %d frames; "+
+				"want %dx%d, %t, %t, %t, %d, %d", v.Name, f.Width, f.Height, f.Animated, f.Alpha, f.Lossless,
+				f.LoopCount, len(f.Frames), v.Width, v.Height, v.Animated, v.Alpha, v.Lossless, v.LoopCount,
+				len(v.Frames))
+			continue
+		}
+		bg := []int{int(f.Background[0]), int(f.Background[1]), int(f.Background[2]), int(f.Background[3])}
+		if v.Animated && !slices.Equal(bg, v.Background) || !v.Animated && f.Background != [4]byte{} {
+			t.Errorf("%s: background %v, want %v", v.Name, bg, v.Background)
+		}
+		for _, p := range []struct {
+			name    string
+			payload []byte
+			sum     string
+		}{{"ICC", f.ICC, v.ICCSHA256}, {"EXIF", f.EXIF, v.EXIFSHA256}, {"XMP", f.XMP, v.XMPSHA256}} {
+			if p.sum == "" && p.payload != nil || p.sum != "" && sha256Hex(p.payload) != p.sum {
+				t.Errorf("%s: %s of %d bytes, want SHA-256 %q", v.Name, p.name, len(p.payload), p.sum)
+			}
+		}
+		for i, vf := range v.Frames {
+			fr := f.Frames[i]
+			got := vectorFrame{X: fr.X, Y: fr.Y, Width: fr.Width, Height: fr.Height, Duration: fr.Duration,
+				Blend: fr.Blend, Dispose: fr.Dispose, Lossless: fr.lossless, Alpha: fr.hasAlpha}
+			want := vf
+			want.YUVSHA256, want.AlphaSHA256, want.RGBASHA256 = "", "", ""
+			if got != want {
+				t.Errorf("%s: frame %d is %+v, want %+v", v.Name, i, got, want)
+			}
+			if (fr.alphaData != nil) != (vf.Alpha && !vf.Lossless) {
+				t.Errorf("%s: frame %d has ALPH %t, want %t", v.Name, i, fr.alphaData != nil, vf.Alpha && !vf.Lossless)
+			}
+		}
+	}
+}
+
+// TestDecodeLossless decodes every lossless frame of the vectors: Decode for still images, FrameImage for frames of
+// animations. The RGBA bytes must be dwebp's.
+func TestDecodeLossless(t *testing.T) {
+	n := 0
+	for _, v := range loadVectors(t) {
+		data := readVector(t, v)
+		f, err := Parse(data)
+		if err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		for i, vf := range v.Frames {
+			if !vf.Lossless {
+				if _, err := f.FrameImage(i); !errors.Is(err, errLossy) {
+					t.Errorf("%s: frame %d: %v, want %v", v.Name, i, err, errLossy)
+				}
+				continue
+			}
+			var img image.Image
+			if v.Animated {
+				img, err = f.FrameImage(i)
+			} else {
+				img, err = Decode(bytes.NewReader(data))
+			}
+			if err != nil {
+				t.Errorf("%s: frame %d: %v", v.Name, i, err)
+				continue
+			}
+			n++
+			if got := sha256Hex(rgbaBytes(img)); got != vf.RGBASHA256 {
+				t.Errorf("%s: frame %d: RGBA has SHA-256 %s, want %s", v.Name, i, got, vf.RGBASHA256)
+			}
+			if _, ok := img.(*image.NRGBA); ok != (vf.Alpha || !isOpaque(img)) {
+				t.Errorf("%s: frame %d: %T, alpha %t", v.Name, i, img, vf.Alpha)
+			}
+		}
+	}
+	t.Logf("%d lossless frames decoded", n)
+}
+
+// rgbaBytes returns the non-premultiplied RGBA bytes of img, row by row. An *image.RGBA must be opaque.
+func rgbaBytes(img image.Image) []byte {
+	var b []byte
+	switch img := img.(type) {
+	case *image.NRGBA:
+		for y := img.Rect.Min.Y; y < img.Rect.Max.Y; y++ {
+			b = append(b, img.Pix[img.PixOffset(img.Rect.Min.X, y):img.PixOffset(img.Rect.Max.X, y)]...)
+		}
+	case *image.RGBA:
+		for y := img.Rect.Min.Y; y < img.Rect.Max.Y; y++ {
+			b = append(b, img.Pix[img.PixOffset(img.Rect.Min.X, y):img.PixOffset(img.Rect.Max.X, y)]...)
+		}
+	}
+	return b
+}
+
+func isOpaque(img image.Image) bool {
+	o, ok := img.(interface{ Opaque() bool })
+	return ok && o.Opaque()
 }
 
 func validSHA256(s string) bool {
