@@ -1,10 +1,23 @@
 {{template "layout" .}}
 {{define "main"}}
+{{- with .Entry}}
 <article class="entry">
 <h1>{{.Title}}</h1>
-{{- if .Author}}
-<p><time>{{.Date}}</time> {{t "postedBy" "name" .Author}}</p>
+{{- with .Date}}
+<p><time datetime="{{.Datetime}}">{{printf "%d-%02d-%02d" .Year .Month .Day}}</time>
+{{- with $.Entry.Author}} <a href="{{.URL}}">{{t "postedBy" "name" .Name}}</a>{{end}}</p>
+{{- end}}
+{{- if or (index .Terms "category") (index .Terms "tag")}}
+<ul class="terms">
+{{- range index .Terms "category"}}
+<li><a href="{{.URL}}">{{.Name}}</a></li>
+{{- end}}
+{{- range index .Terms "tag"}}
+<li><a href="{{.URL}}">#{{.Name}}</a></li>
+{{- end}}
+</ul>
 {{- end}}
 {{.Body}}
 </article>
+{{- end}}
 {{end}}

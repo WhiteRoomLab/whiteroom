@@ -1,8 +1,20 @@
 {{template "layout" .}}
 {{define "main"}}
 <section class="list author">
-<h1>{{.Title}}</h1>
-<p>{{.Bio}}</p>
+{{- with .Author}}
+{{with .Avatar}}{{template "image" .}}{{end -}}
+<h1>{{.Name}}</h1>
+{{- with .Bio}}
+<p>{{.}}</p>
+{{- end}}
+{{- with .Links}}
+<ul class="links">
+{{- range .}}
+<li><a href="{{.}}">{{.}}</a></li>
+{{- end}}
+</ul>
+{{- end}}
+{{- end}}
 {{- range .Entries}}
 {{template "entry/card" dict "entry" . "showAuthor" false}}
 {{- end}}

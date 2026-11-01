@@ -1,8 +1,12 @@
 <article class="card">
+{{with .entry.FeaturedImage}}{{template "image" .}}{{end -}}
 <h2><a href="{{.entry.URL}}">{{.entry.Title}}</a></h2>
-{{- if and .showAuthor .entry.Author}}
-<p>{{t "postedBy" "name" .entry.Author}}</p>
+{{- with .entry.Date}}
+<p><time datetime="{{.Datetime}}">{{printf "%d-%02d-%02d" .Year .Month .Day}}</time>
+{{- if and $.showAuthor $.entry.Author}} {{t "postedBy" "name" $.entry.Author.Name}}{{end}}</p>
 {{- end}}
-<p>{{.entry.Excerpt}}</p>
+{{- with .entry.Excerpt}}
+<p>{{.}}</p>
+{{- end}}
 <a href="{{.entry.URL}}">{{t "readMore"}}</a>
 </article>

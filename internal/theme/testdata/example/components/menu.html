@@ -1,5 +1,9 @@
 <ul>
 {{- range .}}
-<li><a href="{{.URL}}">{{.Label}}</a>{{with .Children}}{{template "menu" .}}{{end}}</li>
+<li>
+{{- if .URL}}<a href="{{.URL}}"{{with .Target}} target="{{.}}"{{end}}{{with .Rel}} rel="{{.}}"{{end}}{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a>
+{{- else}}<span>{{.Label}}</span>
+{{- end}}
+{{- with .Children}}{{template "menu" .}}{{end}}</li>
 {{- end}}
 </ul>

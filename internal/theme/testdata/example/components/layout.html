@@ -3,8 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{block "title" .}}{{.Title}} | {{.Site.Name}}{{end}}</title>
+<title>{{block "title" .}}{{.PageTitle}}{{end}}</title>
+<link rel="stylesheet" href="{{.SiteCSS}}">
 <link rel="stylesheet" href="{{asset "css/style.css"}}">
+{{- with .PageCSS}}
+<link rel="stylesheet" href="{{.}}">
+{{- end}}
+{{.Head}}
 </head>
 <body>
 {{template "header" .}}

@@ -1,5 +1,11 @@
+{{/* The logo has an empty alt: the site name follows it in the link. */ -}}
 <header class="site-header">
-<a href="{{.Site.Home}}"><img src="{{asset "images/logo.png"}}" alt="" width="32" height="32"> {{.Site.Name}}</a>
+<a href="{{.Site.Home}}">
+{{- with .Site.Logo -}}
+<img src="{{.Src}}"{{with .Srcset}} srcset="{{.}}"{{end}}{{with .Sizes}} sizes="{{.}}"{{end}}{{with .Width}} width="{{.}}"{{end}}{{with .Height}} height="{{.}}"{{end}} alt="">
+{{- else -}}
+<img src="{{asset "images/logo.png"}}" alt="" width="32" height="32">
+{{- end}} {{.Site.Name}}</a>
 {{- with .Menus.header}}
 <nav>{{template "menu" .}}</nav>
 {{- end}}

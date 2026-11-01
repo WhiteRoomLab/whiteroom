@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>&lt;script&gt;タグの使い方 | 株式会社〇〇</title>
+<link rel="stylesheet" href="/css/site.css?v=5f3c9e21">
 <link rel="stylesheet" href="/assets/css/style.css?v=b791d850">
+<link rel="canonical" href="https://example.com/2026/10/31/script-tag/">
 </head>
 <body>
 <header class="site-header">
@@ -13,7 +15,12 @@
 <li><a href="/services/">サービス</a></li>
 <li><a href="/works/">制作実績</a></li>
 <li><a href="/news/">お知らせ</a><ul>
-<li><a href="/category/tech/">技術</a></li>
+<li><a href="/category/blog/tech/">技術</a></li>
+</ul>
+</li>
+<li><span>会社情報</span><ul>
+<li><a href="/about/">会社概要</a></li>
+<li><a href="https://recruit.example.com/" target="_blank" rel="noopener">採用情報</a></li>
 </ul>
 </li>
 </ul>
@@ -23,7 +30,11 @@
 <main>
 <article class="entry">
 <h1>&lt;script&gt;タグの使い方</h1>
-<p><time>2026-10-31</time> Hanako Yamada が投稿</p>
+<p><time datetime="2026-10-31T09:00:00&#43;09:00">2026-10-31</time> <a href="/author/yamada/">山田 太郎 が投稿</a></p>
+<ul class="terms">
+<li><a href="/category/blog/tech/">技術</a></li>
+<li><a href="/tag/html/">#HTML</a></li>
+</ul>
 <p class="is-variant-lead"><code>&lt;script&gt;</code>タグには、JavaScriptを書きます。</p>
 <p>ほかのファイルは、<mark class="is-variant-marker">src属性</mark>で読み込みます。</p>
 </article>
@@ -32,6 +43,11 @@
 <nav><ul>
 <li><a href="/about/">会社概要</a></li>
 <li><a href="/contact/">お問い合わせ</a></li>
+</ul>
+</nav>
+<nav><ul class="languages">
+<li><a href="/2026/10/31/script-tag/" hreflang="ja" lang="ja" aria-current="page">ja</a></li>
+<li><a href="/en/2026/10/31/script-tag/" hreflang="en" lang="en">en</a></li>
 </ul>
 </nav>
 <small>&copy; 株式会社〇〇</small>
