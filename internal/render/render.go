@@ -19,8 +19,25 @@ type Resolver interface {
 	Entry(id string) (title, path string, ok bool)
 	// Media returns the medium with the ID and the path of its published file; ok is false if there is none.
 	Media(id string) (m *content.Media, path string, ok bool)
+	// Image returns the files that show the image medium with the ID at size, an image size of the theme, or at the
+	// default size if size is nil; ok is false if there are none.
+	Image(id string, size *content.ImageSize) (files ImageFiles, ok bool)
 	// Form returns the form with the ID; ok is false if there is none.
 	Form(id string) (f *content.Form, ok bool)
+}
+
+// ImageFiles are the files that show an image at one size. Their paths are from the site and may end in a query, such
+// as "?v=1a2b3c4d" for the version of the file.
+type ImageFiles struct {
+	Src           string
+	Width, Height int         // to show Src at, in pixels
+	Srcset        []ImageFile // in increasing width, including Src; nil if Src is the only one
+}
+
+// ImageFile is a file of the srcset of an image.
+type ImageFile struct {
+	Path  string
+	Width int // in pixels, for the w descriptor
 }
 
 // noResolver finds nothing.
@@ -28,6 +45,7 @@ type noResolver struct{}
 
 func (noResolver) Entry(string) (title, path string, ok bool)            { return "", "", false }
 func (noResolver) Media(string) (m *content.Media, path string, ok bool) { return nil, "", false }
+func (noResolver) Image(string, *content.ImageSize) (ImageFiles, bool)   { return ImageFiles{}, false }
 func (noResolver) Form(string) (f *content.Form, ok bool)                { return nil, false }
 
 // Renderer renders rich text and blocks into HTML for the pages in the language of a theme.Renderer. It is safe for

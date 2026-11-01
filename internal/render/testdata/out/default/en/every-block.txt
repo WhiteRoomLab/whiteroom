@@ -1,6 +1,7 @@
 /0/variant: the theme has no paragraph variant "lead"; rendered without its class
 /0/style/textColor/preset: the theme has no color preset "primary"; ignored
 /4/variant: the theme has no quote variant "pull"; rendered without its class
+/5/attrs/size: the theme has no image size "large"; rendered at the default size
 /8/content/0/variant: the theme has no button variant "outline"; rendered without its class
 /9/variant: the theme has no separator variant "wide"; rendered without its class
 /10/attrs/height/preset: the theme has no spacing preset "large"; ignored

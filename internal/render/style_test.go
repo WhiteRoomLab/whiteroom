@@ -424,7 +424,7 @@ func TestStyle(t *testing.T) {
 					]}]}]
 				}
 			]`,
-			want: `<figure class="b-000image"><img src="` + officePath + `" alt="">` +
+			want: `<figure class="b-000image"><img ` + officeAttrs + ` alt="">` +
 				`<figcaption><mark class="hl-065c532e">c</mark></figcaption></figure>
 <figure class="b-000table"><table><tbody>
 <tr>
@@ -556,7 +556,7 @@ func decorativeFigure(class string) string {
 	if class != "" {
 		class = ` class="` + class + `"`
 	}
-	return "<figure" + class + `><img src="` + officePath + `" alt=""></figure>`
+	return "<figure" + class + `><img ` + officeAttrs + ` alt=""></figure>`
 }
 
 // TestAttrClasses checks the class of each choice of the attributes with fixed choices, and the order of the classes:
@@ -856,13 +856,18 @@ func TestAttrCSS(t *testing.T) {
 				` + decorativeImage("b_00image4", `"size": "large", "width": "0"`) + `,
 				` + decorativeImage("b_00image5", `"size": "large"`) + `
 			]`,
-			want: decorativeFigure("b-00image1") + "\n" + decorativeFigure("b-00image2") + "\n" +
+			want: `<figure class="b-00image1"><img ` + officeSrcset + ` sizes="(max-width: 300px) 100vw, 300px" ` +
+				officeWH + ` alt=""></figure>` + "\n" + decorativeFigure("b-00image2") + "\n" +
 				decorativeFigure("b-00image3 aligncenter") + "\n" + decorativeFigure("b-00image4") + "\n" + decorativeFigure(""),
 			css: ".b-00image1 img {\n  width: 300px !important;\n  height: auto !important;\n}\n\n" +
 				".b-00image2 img {\n  aspect-ratio: 16/9 !important;\n  object-fit: cover !important;\n  height: auto !important;\n}\n\n" +
 				".b-00image3 img {\n  width: 50% !important;\n  aspect-ratio: 1.5 !important;\n  object-fit: cover !important;\n" +
 				"  height: auto !important;\n}\n\n" +
 				".b-00image4 img {\n  width: 0 !important;\n  height: auto !important;\n}\n",
+			warnings: []string{
+				`/3/attrs/size: the theme has no image size "large"; rendered at the default size`,
+				`/4/attrs/size: the theme has no image size "large"; rendered at the default size`,
+			},
 		},
 		{
 			name: "the rules of an image, in their order",
@@ -874,7 +879,8 @@ func TestAttrCSS(t *testing.T) {
 					"aspectRatio": "4/3"
 				}
 			}]`,
-			want: `<figure class="b-000image"><a href="https://example.com/"><img src="` + officePath + `" alt=""></a></figure>`,
+			want: `<figure class="b-000image"><a href="https://example.com/"><img ` + officeAttrs +
+				` alt=""></a></figure>`,
 			css: ".b-000image {\n  border-width: 2px !important;\n}\n\n:where(.b-000image) {\n  border-style: solid;\n}\n\n" +
 				".b-000image :where(a) {\n  color: #c00 !important;\n}\n\n" +
 				".b-000image img {\n  aspect-ratio: 4/3 !important;\n  object-fit: cover !important;\n  height: auto !important;\n}\n",
@@ -1244,9 +1250,12 @@ func TestAttrWarnings(t *testing.T) {
 			warnings: []string{
 				`/0/variant: the theme has no image variant "x"; rendered without its class`,
 				`/0/style/textColor/value: invalid color "red"; ignored`,
+				`/0/attrs/media: media "` + noAltImage +
+					`" has no image files; rendered without srcset, width and height`,
 				"/0/attrs/alt: no alt in ja: neither the block nor its medium has one; rendered without the alt attribute",
 				"/0/attrs/caption/0/marks/0: " + unpublished,
 				`/0/attrs/link: entry "` + missingEntry + `" does not exist; rendered without the link`,
+				`/0/attrs/size: the theme has no image size "large"; rendered at the default size`,
 				`/0/attrs/width: invalid length "1"; ignored`,
 				`/0/attrs/aspectRatio: invalid aspect ratio "a"; ignored`,
 				`/0/attrs/align: unknown align "middle"; ignored`,

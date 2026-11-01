@@ -50,6 +50,10 @@ var (
 	// A start tag with its attributes, whose values are in double quotes, and one of the attributes.
 	htmlStartTag = regexp.MustCompile(`^<([a-z][a-z0-9]*)((?: [a-z][a-z-]*(?:="[^"'<>]*")?)*)>$`)
 	htmlAttr     = regexp.MustCompile(` ([a-z][a-z-]*)(?:="([^"'<>]*)")?`)
+	// A file of a srcset, its URL and its width; the sizes of an image, with the width twice; and a positive integer.
+	srcsetFile  = regexp.MustCompile(`^([^ ,]+) ([1-9][0-9]*)w$`)
+	sizesValue  = regexp.MustCompile(`^\(max-width: ([1-9][0-9]*)px\) 100vw, ([1-9][0-9]*)px$`)
+	positiveInt = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
 // The escapes that the renderer writes in text and in attribute values, and those that html/template writes in both.
@@ -124,8 +128,8 @@ func htmlTokens(s string) ([]string, error) {
 }
 
 // checkHTML returns an error if s, the HTML of blocks, is not well formed: every element that is not void is closed,
-// in order; the text and the attribute values are escaped as the renderer and html/template escape them; and URLs are
-// encoded as encodeURL encodes them.
+// in order; the text and the attribute values are escaped as the renderer and html/template escape them; URLs are
+// encoded as encodeURL encodes them; and srcset and sizes are as checkSrcset expects.
 func checkHTML(s string) error {
 	tokens, err := htmlTokens(s)
 	if err != nil {
@@ -148,13 +152,18 @@ func checkHTML(s string) error {
 			if m == nil {
 				return fmt.Errorf("%s is not a start tag", tok)
 			}
+			attrs := make(map[string]string)
 			for _, a := range htmlAttr.FindAllStringSubmatch(m[2], -1) {
 				if !escaped(a[2], templateEscapes) {
 					return fmt.Errorf("%s has the attribute %s, which is not escaped", tok, a[1])
 				}
-				if slices.Contains(urlAttrs, a[1]) && !encoded(html.UnescapeString(a[2])) {
+				attrs[a[1]] = html.UnescapeString(a[2])
+				if slices.Contains(urlAttrs, a[1]) && !encoded(attrs[a[1]]) {
 					return fmt.Errorf("%s has the attribute %s, which is not encoded", tok, a[1])
 				}
+			}
+			if err := checkSrcset(m[1], attrs); err != nil {
+				return fmt.Errorf("%s: %w", tok, err)
 			}
 			if !slices.Contains(voidElements, m[1]) {
 				open = append(open, m[1])
@@ -163,6 +172,58 @@ func checkHTML(s string) error {
 	}
 	if len(open) > 0 {
 		return fmt.Errorf("<%s> is not closed", open[len(open)-1])
+	}
+	return nil
+}
+
+// checkSrcset returns an error if the element name, whose attributes have the values attrs, has a srcset or a sizes,
+// which only the img of an image block has, but they are not as the renderer writes them: in an img, both; a srcset of
+// two or more files in increasing width, each an encoded URL without commas and its width, and one of them src, whose
+// width is the width attribute; sizes for an image shown at most maxSizesWidth wide; and a width and a height, positive
+// integers. HTML of other blocks can have widths and heights of other forms.
+func checkSrcset(name string, attrs map[string]string) error {
+	srcset, hasSrcset := attrs["srcset"]
+	sizes, hasSizes := attrs["sizes"]
+	switch {
+	case !hasSrcset && !hasSizes:
+		return nil
+	case name != "img" || !hasSrcset || !hasSizes:
+		return errors.New("srcset and sizes go together, in img")
+	case !positiveInt.MatchString(attrs["width"]) || !positiveInt.MatchString(attrs["height"]):
+		return fmt.Errorf("width %q and height %q with a srcset are not positive integers",
+			attrs["width"], attrs["height"])
+	}
+	width, err := strconv.Atoi(attrs["width"])
+	if err != nil {
+		return err
+	}
+	m := sizesValue.FindStringSubmatch(sizes)
+	if m == nil || m[1] != m[2] {
+		return fmt.Errorf("sizes %q is not that of an image shown at most a width", sizes)
+	}
+	if n, err := strconv.Atoi(m[1]); err != nil || n > maxSizesWidth {
+		return fmt.Errorf("sizes %q is wider than %d", sizes, maxSizesWidth)
+	}
+	files := strings.Split(srcset, ", ")
+	if len(files) < 2 {
+		return fmt.Errorf("srcset %q has fewer than two files", srcset)
+	}
+	src := strings.ReplaceAll(attrs["src"], ",", "%2C")
+	last, hasSrc := 0, false
+	for _, f := range files {
+		c := srcsetFile.FindStringSubmatch(f)
+		if c == nil || !encoded(c[1]) {
+			return fmt.Errorf("srcset %q has %q, which is not an encoded URL and a width", srcset, f)
+		}
+		w, err := strconv.Atoi(c[2])
+		if err != nil || w <= last {
+			return fmt.Errorf("srcset %q is not in increasing width", srcset)
+		}
+		last = w
+		hasSrc = hasSrc || c[1] == src && w == width
+	}
+	if !hasSrc {
+		return fmt.Errorf("srcset %q does not have src %q at the width %d", srcset, attrs["src"], width)
 	}
 	return nil
 }
@@ -1116,6 +1177,15 @@ func FuzzDocument(f *testing.F) {
 			]}]}
 		]`,
 		imageJSON(`{"media": "` + officeImage + `", "decorative": true, "width": "1rem;}", "aspectRatio": "16/9 !important"}`),
+		// Image sizes that the example theme has or not, widths in px that make sizes smaller or not, an image without
+		// files, and an animation.
+		`[
+			{"type": "image", "id": "b_00image1", "attrs": {"media": "` + officeImage + `", "alt": "a", "size": "thumbnail", "width": "100.5px"}},
+			{"type": "image", "id": "b_00image2", "attrs": {"media": "` + officeImage + `", "alt": "b", "size": "large", "width": "2000px"}},
+			{"type": "image", "id": "b_00image3", "attrs": {"media": "` + officeImage + `", "alt": "c", "size": "huge", "width": "0px"}},
+			{"type": "image", "id": "b_00image4", "attrs": {"media": "` + noAltImage + `", "decorative": true, "size": "medium"}},
+			{"type": "image", "id": "b_00image5", "attrs": {"media": "` + animatedImage + `", "decorative": true, "size": "thumbnail"}}
+		]`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -1140,9 +1210,10 @@ func FuzzDocument(f *testing.F) {
 	}
 	f.Add([]byte("[" + strings.Join(empty, ", ") + "]"))
 	res := goldenResolver(f)
-	// Also the forms of TestForm, and a medium that the resolver finds as nil.
+	// Also the forms of TestForm, and the media of TestImage: one that the resolver finds as nil, one without files and
+	// an animation, among others.
 	maps.Copy(res.forms, testForms)
-	res.media[nilMedia] = testMedium{nil, "/media/nil.png"}
+	maps.Copy(res.media, mediaResolver(f).media)
 	var renderers []fuzzRenderer
 	for _, gt := range goldenThemes(f) {
 		for _, site := range goldenSites {
@@ -1826,6 +1897,66 @@ func TestCheckCSS(t *testing.T) {
 		css := strings.Replace(valid, tt.old, tt.new, 1)
 		if _, err := checkCSS(css, s); err == nil {
 			t.Errorf("%s: checkCSS() accepts\n%s", tt.name, css)
+		}
+	}
+}
+
+// TestCheckSrcset checks that checkHTML accepts the HTML of the golden files and the img of an image as the renderer
+// writes it, and rejects an img that differs from that by a replacement in its srcset, sizes, width or height.
+func TestCheckSrcset(t *testing.T) {
+	for _, gt := range goldenThemes(t) {
+		for _, site := range goldenSites {
+			for _, p := range goldenDocuments {
+				doc := strings.TrimSuffix(filepath.Base(p), ".json")
+				name := filepath.Join(goldenOut, gt.name, site.language, doc+".html")
+				b, err := os.ReadFile(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := checkHTML(string(b)); err != nil {
+					t.Errorf("checkHTML() of %s error: %v", name, err)
+				}
+			}
+		}
+	}
+	const valid = `<img src="/a,b/x.jpg?v=1" srcset="/a%2Cb/x-640x427.jpg?v=2 640w, /a%2Cb/x.jpg?v=1 1600w" ` +
+		`sizes="(max-width: 300px) 100vw, 300px" width="1600" height="1067" alt="">`
+	// Sanitized HTML can have widths and heights of any form, but no srcset or sizes.
+	for _, s := range []string{valid, `<img src="/x.png" width="100%" height="a">`, `<iframe width="0"></iframe>`} {
+		if err := checkHTML(s); err != nil {
+			t.Errorf("checkHTML(%q) error: %v", s, err)
+		}
+	}
+	tests := []struct{ name, old, new string }{
+		{"srcset without sizes", ` sizes="(max-width: 300px) 100vw, 300px"`, ""},
+		{"sizes without srcset", ` srcset="/a%2Cb/x-640x427.jpg?v=2 640w, /a%2Cb/x.jpg?v=1 1600w"`, ""},
+		{"srcset in another element", "<img", "<source"},
+		{"a srcset of one file", "/a%2Cb/x-640x427.jpg?v=2 640w, ", ""},
+		{"a srcset in decreasing width", "640w", "1700w"},
+		{"a srcset with a width twice", "640w", "1600w"},
+		{"a srcset without src", "/a%2Cb/x.jpg?v=1 1600w", "/a%2Cb/x-1024x683.jpg?v=3 1024w"},
+		{"src at another width", `width="1600"`, `width="1024"`},
+		{"a comma in a URL", "/a%2Cb/x-640x427.jpg", "/a,b/x-640x427.jpg"},
+		{"a space in a URL", "/a%2Cb/x-640x427.jpg", "/a%2Cb/x 640x427.jpg"},
+		{"a URL that is not encoded", "/a%2Cb/x-640x427.jpg", "/a%2Cb/x-640x427" + string(rune(0xe9)) + ".jpg"},
+		{"files without a space after the comma", "640w, ", "640w,"},
+		{"a density", "1600w", "2x"},
+		{"a width with a zero first", "640w", "0640w"},
+		{"sizes wider than any file", "300px) 100vw, 300px", "20001px) 100vw, 20001px"},
+		{"sizes of two widths", "100vw, 300px", "100vw, 301px"},
+		{"sizes of another form", "(max-width: 300px) 100vw, 300px", "100vw"},
+		{"a width of 0", `width="1600"`, `width="0"`},
+		{"a height that is not an integer", `height="1067"`, `height="1067.5"`},
+		{"no height", ` height="1067"`, ""},
+	}
+	for _, tt := range tests {
+		if n := strings.Count(valid, tt.old); n != 1 {
+			t.Errorf("%s: %q is in the HTML %d times, want once", tt.name, tt.old, n)
+			continue
+		}
+		s := strings.Replace(valid, tt.old, tt.new, 1)
+		if err := checkHTML(s); err == nil {
+			t.Errorf("%s: checkHTML() accepts %s", tt.name, s)
 		}
 	}
 }
