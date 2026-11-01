@@ -153,6 +153,7 @@ type memSource struct {
 	theme            fs.FS
 	fail             map[string]error // errors to return by the name of the method, such as "Revision"
 	read             []string         // the IDs of the revisions read, in order
+	opened           map[string]int   // the calls of OpenMedia, failing ones too, by hash
 	posts            int              // posts that addPosts has added
 }
 
@@ -198,6 +199,7 @@ func (s *memSource) Revision(id string) (content.SiteFile, error) {
 func (s *memSource) OpenMedia(hash string) (fs.File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.opened[hash]++
 	if err := s.fail["OpenMedia"]; err != nil {
 		return nil, err
 	}
@@ -376,6 +378,7 @@ func testSource(t testing.TB) *memSource {
 		revisions: make(map[string]content.SiteFile),
 		files:     fstest.MapFS{},
 		theme:     testTheme(),
+		opened:    make(map[string]int),
 	}
 	s.putSettings(t, testSite())
 	s.schema = content.SiteFile{Name: "site/schema.yaml", Data: []byte(testSchema)}

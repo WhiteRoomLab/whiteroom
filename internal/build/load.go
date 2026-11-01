@@ -50,6 +50,8 @@ type builder struct {
 	outputs     []output
 	// The redirects that the servers serve, sorted by from (resolveRedirects).
 	serverRedirects []redirect
+	// The resolver of the media and the other entities that content refers to, which records the media to publish.
+	res *resolver
 
 	warnings problems
 }
