@@ -26,6 +26,9 @@
             pkgs.golangci-lint
             pkgs.jq
             pkgs.python3
+            # For go generate ./internal/webp.
+            pkgs.libwebp
+            pkgs.libvpx
           ];
 
           env.GOTOOLCHAIN = "local";

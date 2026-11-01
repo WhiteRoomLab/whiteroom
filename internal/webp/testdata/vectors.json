@@ -1,0 +1,5963 @@
+{
+	"tools": [
+		{
+			"name": "cwebp",
+			"version": "1.6.0, libsharpyuv: 0.4.2"
+		},
+		{
+			"name": "dwebp",
+			"version": "1.6.0"
+		},
+		{
+			"name": "img2webp",
+			"version": "WebP Encoder version: 1.6.0, WebP Mux version: 1.6.0, libsharpyuv: 0.4.2"
+		},
+		{
+			"name": "webpmux",
+			"version": "1.6.0"
+		},
+		{
+			"name": "gif2webp",
+			"version": "WebP Encoder version: 1.6.0, WebP Mux version: 1.6.0, libsharpyuv: 0.4.2"
+		},
+		{
+			"name": "vpxenc",
+			"version": "WebM Project VP8 Encoder v1.17.0"
+		}
+	],
+	"vectors": [
+		{
+			"name": "alpha-noise-13x1-noise",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet noise-13x1-noise.png -o alpha-noise-13x1-noise.webp"
+			],
+			"size": 136,
+			"sha256": "17c2b819d1837fb938fca9dfcacb69f0a0ba9e31316532bcdf9c4acc05056e7f",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 13,
+			"height": 1,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 13,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "f9ae450ed71128330ff4d715914de563470dfd270ec10bca0504f78ab587a49e",
+					"alphaSHA256": "cdb0ce8881d514edd4704ade9eb282605c35376c5a4941b664394bd63a354a0d",
+					"rgbaSHA256": "d70dad3a8d81d31ea901225e519281fffa36b484cb08c2dbc9862a6320092cf8"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-128x96-radial-q90",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet photo-128x96-radial.png -o alpha-photo-128x96-radial-q90.webp"
+			],
+			"size": 3448,
+			"sha256": "d85056e50b84db3693df072119ca519372fe4c0f8343e56e01cb7743c22d0860",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "87414ebc9bbca226ba21336f2a2ad83f68c26dc09a2f00a5a7c0441c799fc2fe",
+					"alphaSHA256": "8f18766a9b707b908ad9e46d0f5e14f124e5810711628ba450c3513cc46d2994",
+					"rgbaSHA256": "944ea56c54cc6bf71e9d9a26e00d0fcf400fb29583678fca469784a10192099e"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-17x31-holes",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-17x31-holes.png -o alpha-photo-17x31-holes.webp"
+			],
+			"size": 352,
+			"sha256": "8dbb4230fcf71f5d5a0ad4fdd2d3db868148a56b3059d30d5e528e05eb27e3da",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 17,
+			"height": 31,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 17,
+					"height": 31,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "af35d830d9028da833472a8fc77659803bf22e16fb7a2ff66e2c825c483c6df2",
+					"alphaSHA256": "0b4b28b09d91837f62d9172e08d5ebbaa62dcfb95ef53a6daa8a2ecdce86559f",
+					"rgbaSHA256": "1e9755ea890e67906def84830d699e8ce7a26d8fba2be5ba744a8e05eae2dc0f"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-1x1-half",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-1x1-half.png -o alpha-photo-1x1-half.webp"
+			],
+			"size": 88,
+			"sha256": "a046db6b4bec2b50491a4a32c3d23db3429db0a3c5042cfbcffd33386e0a9e48",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 1,
+			"height": 1,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "90c7b796ced9cd95a8a4582ea8156369e52e7902a12ba2109ec2423788e04b02",
+					"alphaSHA256": "76be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71",
+					"rgbaSHA256": "8feeeb59a9d48f0da93e4851848a526452bda1eb79427a66cb52fdd91578b691"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-1x13-rampy",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-1x13-rampy.png -o alpha-photo-1x13-rampy.webp"
+			],
+			"size": 134,
+			"sha256": "4d46549f5f6ef1f3c53ec4ac3bc3dc30a74b278ecbd3d0d0cb0c49009a326f64",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 1,
+			"height": 13,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "c265da4858159c7deca7432b477be3628c6e92adb79b8155a7d9a4c14171cbce",
+					"alphaSHA256": "e27379eac71696a16c591c395d97b2f1e9377f95f5166a58eca349606b247d18",
+					"rgbaSHA256": "df949f78d61e2b789320fc81303bcbe04dbe9f5634a0bee5bf0b27c3e48f19eb"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-1x2-rampy",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-1x2-rampy.png -o alpha-photo-1x2-rampy.webp"
+			],
+			"size": 92,
+			"sha256": "a313951ff416689f15e101a7fae4d6a37a59b22fd5cb36bbfbdfec86de986070",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 1,
+			"height": 2,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 2,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "ab5c312978106c14eb662381a2496d7e279e490fb770192bcc692cf7828f2413",
+					"alphaSHA256": "06eb7d6a69ee19e5fbdf749018d3d2abfa04bcbd1365db312eb86dc7169389b8",
+					"rgbaSHA256": "965a329d6bcf0b15592ea7eb6fa8b1b76ed6fa2b08ac18c460fe737181dcb72d"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-2x1-rampx",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-2x1-rampx.png -o alpha-photo-2x1-rampx.webp"
+			],
+			"size": 96,
+			"sha256": "bab68d5231034c65f22924463cb6c6d09f04e63631a83119cb7b109488db0ae0",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 2,
+			"height": 1,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 2,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "5cb1287584f48e9ad24a09e5dc31b9c925035e4d284f6b01cd9161443b9cce51",
+					"alphaSHA256": "06eb7d6a69ee19e5fbdf749018d3d2abfa04bcbd1365db312eb86dc7169389b8",
+					"rgbaSHA256": "6f0177d3ece86f30e1f04bcf7a405e074f34c449c038626005bfa8e526109a06"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-binary-method0",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_method 0 -quiet photo-64x48-binary.png -o alpha-photo-64x48-binary-method0.webp"
+			],
+			"size": 3398,
+			"sha256": "d84fcd7c3e286a5e725e4171304638374e7aa1ca8a588fae6b832d3dbaa5a815",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "f4593b4ac6939206cddec927b2dfda1cc004ea67639d757c231e5414d7e2d7cf",
+					"alphaSHA256": "cc4bee43aab690f66991ad61afb9dad43720928865b81e2edfc44d59ceab9598",
+					"rgbaSHA256": "2875e3b741b862d0635d694cc4909f1fd69cb86b1888e2edc9afed04f5f025d2"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-holes-exact",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -exact -quiet photo-64x48-holes.png -o alpha-photo-64x48-holes-exact.webp"
+			],
+			"size": 636,
+			"sha256": "b225a9fe8b2813a848fcb1c75ef745226eb6f63a90834b22d0709513cd6a55c8",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "9d196687e1338f656ce60877b7fbceef3e2831435a0433d678e10f8f36d18163",
+					"alphaSHA256": "260bc1cb36ccf9bca26c9e699d4c190257ee171e95da10a06144377d9bba26a5",
+					"rgbaSHA256": "680fd4337671e22602069ee068abaa736e1eb6650932314e83d030ca09aa99f4"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-holes-none",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_filter none -quiet photo-64x48-holes.png -o alpha-photo-64x48-holes-none.webp"
+			],
+			"size": 608,
+			"sha256": "98a2aa39f4e9ad5d3948b66218d3a8002a1013ca32ff6c6be754a78383542698",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "af3f75ae480d0c2cb8dbff3a5f662fd96dd233401cf6f90a11987b75ca91c17f",
+					"alphaSHA256": "260bc1cb36ccf9bca26c9e699d4c190257ee171e95da10a06144377d9bba26a5",
+					"rgbaSHA256": "e020aca7beb4093e62c52f819ef335aca72766ee94938ef4af94b289fbe443b7"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-noise-best",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_filter best -quiet photo-64x48-noise.png -o alpha-photo-64x48-noise-best.webp"
+			],
+			"size": 3496,
+			"sha256": "d56133c98b56ec8aaa9c1fc425bf99f3f66b2f3dda00ebf913356bd664211fe5",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "2ce89fa0a12290cd6eb2b816b09d67445845437d02653569d24cf1a719e102d5",
+					"alphaSHA256": "7f4032d9cd5d26e6c4ed004c912fdc509b5fdcdbd7ce7e8b4529a6777733bfea",
+					"rgbaSHA256": "dcb0adc19a32b647729618b545bf79f5ee9953282f3f2c70c6a1bc3a72de18d7"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-plane-best",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_filter best -quiet photo-64x48-plane.png -o alpha-photo-64x48-plane-best.webp"
+			],
+			"size": 452,
+			"sha256": "309bba1f3f72711f5c08a65f8ef6bfe925f72427c24132fd926d86ed387d6b2c",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "9479fbebf030348991520c7b90d9108690b0d360fc23aaccb2d4c286c4a6b1f2",
+					"alphaSHA256": "77603a75b88531e3afd1b3b265c22f383ba48abce09753e143ca8a541ba0863c",
+					"rgbaSHA256": "c69dd76043ec56f0bc2555e99a13aeab226b3760c8550bf163e1f68962285d7a"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-plane-m0-best",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 0 -alpha_filter best -quiet photo-64x48-plane.png -o alpha-photo-64x48-plane-m0-best.webp"
+			],
+			"size": 498,
+			"sha256": "c161e3237541de8083b0d3f2a569fe75b81950b2f6833815390be8a6a0a0cae5",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "f87a0526fb6502ffac4d3ab6b7012276fbdddcc6b1d5ff60cd0299e50782dbdf",
+					"alphaSHA256": "77603a75b88531e3afd1b3b265c22f383ba48abce09753e143ca8a541ba0863c",
+					"rgbaSHA256": "4ae5c2411bf76fc503bfdffcad871019431f4dae09a3eb412c1116c7fc2de6c8"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-radial",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-64x48-radial.png -o alpha-photo-64x48-radial.webp"
+			],
+			"size": 1020,
+			"sha256": "5856addf9049042b89ac90cf8cd4a916c1994c424a73c1a639a2cd0d5623bfb4",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "403f62467e40bfb2c50885d46426038c0d5dcc3ca7b95ef77cba1a54128a239b",
+					"alphaSHA256": "5e71266a639fa3368946d00f3f45258d4ee50d7fbe099883d65992e63a000fbc",
+					"rgbaSHA256": "595f982739b5f31826c8375d7772af6f2109cd6535952b8514151d12053f1322"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-radial-alpha-q0",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_q 0 -quiet photo-64x48-radial.png -o alpha-photo-64x48-radial-alpha-q0.webp"
+			],
+			"size": 532,
+			"sha256": "4f83b2c4abf8e4a53e8b3064395448452874858ccbacf3ead73dcaa4fe7fc5a0",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "403f62467e40bfb2c50885d46426038c0d5dcc3ca7b95ef77cba1a54128a239b",
+					"alphaSHA256": "a454526ba5a2453979b13d416a0393b9d3a9640d02bcaac61a8e66750d7410bc",
+					"rgbaSHA256": "a67bd986b21ae168fb613191d05950174bd5efaf0fa802d253b1c714a5109079"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-radial-alpha-q50",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_q 50 -quiet photo-64x48-radial.png -o alpha-photo-64x48-radial-alpha-q50.webp"
+			],
+			"size": 742,
+			"sha256": "c14ba95be10275dbadc4874524047a91712d126b6c845f3fc80e0440eae86ef1",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "403f62467e40bfb2c50885d46426038c0d5dcc3ca7b95ef77cba1a54128a239b",
+					"alphaSHA256": "7aac0572ea93bf1d2a8ac8ead477f1f0b1ae9495f7a7022a5a2585080badf8fe",
+					"rgbaSHA256": "6decca429a3830d3442fb3c1db6b21cdca4c2d20ed3ed51cb7adb8eaae363cfe"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-radial-best",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_filter best -quiet photo-64x48-radial.png -o alpha-photo-64x48-radial-best.webp"
+			],
+			"size": 1006,
+			"sha256": "28f47670b178d9b80c56227c7e30614e99352401ec3047b7e84de46894129cda",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "403f62467e40bfb2c50885d46426038c0d5dcc3ca7b95ef77cba1a54128a239b",
+					"alphaSHA256": "5e71266a639fa3368946d00f3f45258d4ee50d7fbe099883d65992e63a000fbc",
+					"rgbaSHA256": "595f982739b5f31826c8375d7772af6f2109cd6535952b8514151d12053f1322"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-rampx",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-64x48-rampx.png -o alpha-photo-64x48-rampx.webp"
+			],
+			"size": 448,
+			"sha256": "032679b82d3ffcf4c2e38884a1499fe94e7a4f724740a75a225f9ab69f986ea9",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "91c4e0ae2440ff9218871d2447185905a89aa82dff611a900b361c347cf55077",
+					"alphaSHA256": "3359ff887fdf54fc4f7965bfb9d9d8bbbfad40c8c0da805f4ff5df34f684e9b5",
+					"rgbaSHA256": "ba0c941d9191b76e295172606be6d18f4d1907df1188571fcdbb1d2fcacbea97"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-rampx-m6-best",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 6 -alpha_filter best -quiet photo-64x48-rampx.png -o alpha-photo-64x48-rampx-m6-best.webp"
+			],
+			"size": 396,
+			"sha256": "5e3ca517b4f6b580ce123e45ff6215a5db1397da14fa8243f9fb9385dfc264c4",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "fe3ad9e0cf054182f6823711f7f129e30071190b3df3f881621e8f5be8acfe36",
+					"alphaSHA256": "3359ff887fdf54fc4f7965bfb9d9d8bbbfad40c8c0da805f4ff5df34f684e9b5",
+					"rgbaSHA256": "40285a45a3ab1bb118dcc5a5528b2b277af0a6db7041b5a36fea5a08eb254d11"
+				}
+			]
+		},
+		{
+			"name": "alpha-photo-64x48-steps-q90-m6",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -m 6 -quiet photo-64x48-steps.png -o alpha-photo-64x48-steps-q90-m6.webp"
+			],
+			"size": 806,
+			"sha256": "613f35d441e714e728aec09d56fc95ae79e4a40cd70cd648feda59a58a47c620",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "cf9d285284148951350d13cecdff6a0d05c78807e11b436e7e5c55a9aa88ba21",
+					"alphaSHA256": "d637db08daa917cbe720a40c589c85436275b1e5a6f67784a74cf5744c34e367",
+					"rgbaSHA256": "957916dc26ff3461b53336ddd903e3e6fa5c31c43e670e438a022ac384189277"
+				}
+			]
+		},
+		{
+			"name": "anim-gif2webp",
+			"kind": "animated",
+			"tool": "gif2webp",
+			"commands": [
+				"gif2webp -quiet sprites-40x30.gif -o anim-gif2webp.webp"
+			],
+			"size": 836,
+			"sha256": "760baa0bdc2eca3a48efe50e1f2d1b6bc3920931bf284dc76f1fb708dccd9811",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 40,
+			"height": 30,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"loopCount": 3,
+			"background": [
+				0,
+				0,
+				0,
+				0
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 40,
+					"height": 30,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "928cf0fd1ba2dc581db6196429854d503c6839c3b3a48db3c8d482eb7087efe4"
+				},
+				{
+					"x": 6,
+					"y": 2,
+					"width": 18,
+					"height": 16,
+					"duration": 200,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "4dea9d420c67aa0a3d52600ad028d9566f53c406c74e543783f079178b7944a3"
+				},
+				{
+					"x": 4,
+					"y": 2,
+					"width": 33,
+					"height": 27,
+					"duration": 300,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "e4fb99a7fbcdf04633031c5d3878f8a3b8dc8a5223d8f624ebd3c6c4a3dd5741"
+				},
+				{
+					"x": 0,
+					"y": 0,
+					"width": 37,
+					"height": 29,
+					"duration": 400,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "3d3513d9bf24ef91443c073cf6f8bb6838f071a399da5d7b54e48c9434860e71"
+				}
+			]
+		},
+		{
+			"name": "anim-gif2webp-lossy",
+			"kind": "animated",
+			"tool": "gif2webp",
+			"commands": [
+				"gif2webp -lossy -q 70 -quiet smooth-33x21.gif -o anim-gif2webp-lossy.webp"
+			],
+			"size": 674,
+			"sha256": "58216f213e04d494d96d9e2395925f70680580a1fad8ccf87d77e9dcb86f14ac",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 33,
+			"height": 21,
+			"lossless": false,
+			"alpha": false,
+			"animated": true,
+			"background": [
+				255,
+				128,
+				0,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 33,
+					"height": 21,
+					"duration": 70,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "cfd1b7b520ccb58918ffe4ca6baf79eda002a1b93f273ef7d607bd8c503ee8fc",
+					"rgbaSHA256": "167d523008e940cf4f72cb39690beda5e833d1860cfb7b15aeffda7e393743ba"
+				},
+				{
+					"x": 2,
+					"y": 4,
+					"width": 28,
+					"height": 16,
+					"duration": 130,
+					"blend": true,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "c786a49aba2e59c1bf2611a245db2680bef8840bac63050df5ff5a99c3446c9e",
+					"rgbaSHA256": "eaf0f3dd7c838d2db3c3c40e4c89689f6fe2dc9805d9f748b39724c3c2322f90"
+				},
+				{
+					"x": 10,
+					"y": 2,
+					"width": 11,
+					"height": 11,
+					"duration": 250,
+					"blend": true,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "37ff918f47cca82935f09e3c4a62f6f8048ed9fdc3bba2532147dfcc21737c6e",
+					"rgbaSHA256": "3514101b8dbe7ea25bdb19276eb9426b658df93bbc44f5f6a0837b57f9827e08"
+				}
+			]
+		},
+		{
+			"name": "anim-gif2webp-mixed",
+			"kind": "animated",
+			"tool": "gif2webp",
+			"commands": [
+				"gif2webp -mixed -quiet smooth-33x21.gif -o anim-gif2webp-mixed.webp"
+			],
+			"size": 510,
+			"sha256": "25e4502c534b001ea7fda14cde9a2c6317e1532604822a89aec6f1f15d819e10",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 33,
+			"height": 21,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"background": [
+				255,
+				128,
+				0,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 33,
+					"height": 21,
+					"duration": 70,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "281d69aa53dae76d6a56e537f85f5fc9db1981cc311869ff4a25c6f0c797efef"
+				},
+				{
+					"x": 2,
+					"y": 4,
+					"width": 28,
+					"height": 16,
+					"duration": 130,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "0154d2df27beeff5b0b3aa378081e1f970e5cedd94e5c6dd8e4b8abccbb58455"
+				},
+				{
+					"x": 10,
+					"y": 2,
+					"width": 11,
+					"height": 11,
+					"duration": 250,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "cd5021f44b84369a7a930e25afbe8de2ca87a28f65f403484a373bd7af05ba4c"
+				}
+			]
+		},
+		{
+			"name": "anim-img2webp-keyframes",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -kmax 1 -lossy sprite-flat-48x32-1.png sprite-flat-48x32-2.png sprite-flat-48x32-3.png -o anim-img2webp-keyframes.webp"
+			],
+			"size": 796,
+			"sha256": "78c2f88c0b299453d1ce73f4fbb6697f816ff4e8ba3a8e6455f916838426a40c",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": true,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "3111de02e7321088268c7ce959dd823f063a45fb48371aebe328a4664280dddb",
+					"rgbaSHA256": "8df452677fcff30b35f0ccd5f6c8528b17c88a5a4821a63bdca2d437bd1e1f72"
+				},
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "a31b8767880a4ee71bd2e7f7673a64a103c049cef89bb14a7c5715d8bd78b7c5",
+					"rgbaSHA256": "789b6348594277c8070af61483d826256b0f881b5e98dde54a6ee7f6e3ea2e10"
+				},
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "cb68b5389a618c7f61c89cf85971340b244286cd297d0d6de4d2c1c892eb017c",
+					"rgbaSHA256": "248b5341eb4f090631661a24322725cf575ed29cb75eb2fa9a9c204e6d802e31"
+				}
+			]
+		},
+		{
+			"name": "anim-img2webp-lossless",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -loop 0 -d 50 sprite-flat-48x32-1.png -d 100 sprite-flat-48x32-2.png sprite-flat-48x32-3.png -d 150 sprite-flat-48x32-4.png -o anim-img2webp-lossless.webp"
+			],
+			"size": 428,
+			"sha256": "0246d71a7d4c12b4623b7113b560c785bbd805c97b41e45100494540d07687d7",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 50,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "63111ecaf25f075aed3031dc503484de10d06155860c545b0a055981310e3e0f"
+				},
+				{
+					"x": 0,
+					"y": 10,
+					"width": 22,
+					"height": 12,
+					"duration": 100,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "37bcdf21a51576405ff631d6ab7959544c8c406565c3e6dbaccd1cc80157ae47"
+				},
+				{
+					"x": 12,
+					"y": 10,
+					"width": 23,
+					"height": 12,
+					"duration": 100,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "1313933da3d9ddb903e74a17946195bda26d8d59cb90372d49cefd3ec2782495"
+				},
+				{
+					"x": 24,
+					"y": 10,
+					"width": 24,
+					"height": 12,
+					"duration": 150,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "90567c1acace1139fc227c2a4909cd1ce4204bfbb7ead60f52702d354087bf8b"
+				}
+			]
+		},
+		{
+			"name": "anim-img2webp-lossy",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -loop 2 -lossy -q 60 sprite-clear-48x32-1.png sprite-clear-48x32-2.png sprite-clear-48x32-3.png -o anim-img2webp-lossy.webp"
+			],
+			"size": 538,
+			"sha256": "5a7f2790198c8d459d2c1ccfd2be5c81adcf117f5322dda3a3c0b1f421165bf4",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"loopCount": 2,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 2,
+					"width": 42,
+					"height": 18,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "30beadaf85be743ace316ab036f4f5193fe6f134bc69b0b9e17b183d43f2ca2c",
+					"alphaSHA256": "7a1581fc6b9af5347c2133e3ab60f9576b65fb88ba6f225ff188a66f8c6c0de1",
+					"rgbaSHA256": "e1f0e76cfcd9da276ec1ec5aa452d06980522e5e88686bde18086b22123df462"
+				},
+				{
+					"x": 0,
+					"y": 10,
+					"width": 29,
+					"height": 12,
+					"duration": 100,
+					"blend": false,
+					"dispose": true,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "c065c06a1221fd5b3b663975c01977ecce50724dda6ef40c6e2023beed48e772",
+					"alphaSHA256": "5bff90a2e8bfcf46611505fb981b6a0e2db7c47a6246985de06450850ad5f33b",
+					"rgbaSHA256": "37e5729fde4fdfb2700ce04f9c096dbed501d4af5974715b568b340d40c6ff31"
+				},
+				{
+					"x": 38,
+					"y": 10,
+					"width": 10,
+					"height": 10,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "0e1c10535a8653f21192301e777b74d74d4a166107011e588aeb2dbf15de7bb2",
+					"alphaSHA256": "168848d7489484b4450c822c36b85b036ffaa2f27079fa9198e6c6e0cbe09f33",
+					"rgbaSHA256": "6a51df09039291db922bba24f54b8f08f5b243582baa156cfcd2918b24985821"
+				}
+			]
+		},
+		{
+			"name": "anim-img2webp-min-size",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -min_size sprite-clear-48x32-1.png sprite-clear-48x32-2.png sprite-clear-48x32-3.png -o anim-img2webp-min-size.webp"
+			],
+			"size": 288,
+			"sha256": "791e002e6a97612146c7e25c9a412b24020dbf980dc84744c4e0bf62bcb85476",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 2,
+					"width": 42,
+					"height": 18,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "371edab1d1a9d8f786a349f99dbcc2af266dc606309753161b771486b799f998"
+				},
+				{
+					"x": 0,
+					"y": 10,
+					"width": 29,
+					"height": 12,
+					"duration": 100,
+					"blend": false,
+					"dispose": true,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "7ed82b299ffcc99d407b70ebb36ffaf83efba08e50d4ff1b8aa4e5c9e85d030b"
+				},
+				{
+					"x": 38,
+					"y": 10,
+					"width": 10,
+					"height": 10,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "84c70da8b41589ecf03a58da21627cca6bea56025a4d6cff4392094b69994248"
+				}
+			]
+		},
+		{
+			"name": "anim-img2webp-mixed",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -mixed -loop 3 -kmin 1 -kmax 2 -d 70 sprite-photo-48x32-1.png sprite-photo-48x32-2.png sprite-photo-48x32-3.png sprite-photo-48x32-4.png -o anim-img2webp-mixed.webp"
+			],
+			"size": 1194,
+			"sha256": "c9854f2f93ebb3d8243dd1a7f5052c1e59badc2bb7d00cf4ec7ed94a618b9797",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": true,
+			"loopCount": 3,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 70,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "c34239ddce3480875b2931d32988db6b5423f5495a6405534f3442bfaaa84966",
+					"rgbaSHA256": "6213f2581472809e68b90795b03735d395af488a02196aeca58c201f48a75774"
+				},
+				{
+					"x": 0,
+					"y": 10,
+					"width": 22,
+					"height": 12,
+					"duration": 70,
+					"blend": true,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "42e2afe0bd7f18a1bd705e6f7ddaf34ec18e9eb7ac46144526f814c251a9555a",
+					"rgbaSHA256": "37bb517971fa00f4ace4d12d338b5a507ef532a7f18cf8ec06e888ebbbda8e9b"
+				},
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 70,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "8a9046dd0207da19b003c260373071d17f4ad5ee051dfbec2135de043d875cdd",
+					"rgbaSHA256": "acdf7cb5e689808e914afee095d956a7c7d8548c20035ed25ac46079318494b7"
+				},
+				{
+					"x": 24,
+					"y": 10,
+					"width": 24,
+					"height": 12,
+					"duration": 70,
+					"blend": true,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "8cfc2b8dafec9ac97a3fdf9cc3f002d55ac0a65a14fedb126ce7ca87feff9b26",
+					"rgbaSHA256": "d924fc444662503e570481aeef521bf4a4e629a7410daac468b37691f87f01fb"
+				}
+			]
+		},
+		{
+			"name": "anim-webpmux",
+			"kind": "animated",
+			"tool": "webpmux",
+			"commands": [
+				"cwebp -q 70 -quiet photo-48x32.png -o anim-webpmux-f1.webp",
+				"cwebp -q 70 -quiet photo-20x16-radial.png -o anim-webpmux-f2.webp",
+				"cwebp -lossless -quiet glyphs-16x16.png -o anim-webpmux-f3.webp",
+				"cwebp -lossless -quiet photo-24x12-binary.png -o anim-webpmux-f4.webp",
+				"webpmux -frame anim-webpmux-f1.webp +80+0+0+0-b -frame anim-webpmux-f2.webp +60+10+8+1+b -frame anim-webpmux-f3.webp +100+30+14+0-b -frame anim-webpmux-f4.webp +40+2+18+1+b -loop 4 -bgcolor 255,40,80,120 -o anim-webpmux.webp"
+			],
+			"size": 980,
+			"sha256": "d3cd1670358f1db7d0f032918748a11b0a005550da6f639944e586e01a650400",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"loopCount": 4,
+			"background": [
+				120,
+				80,
+				40,
+				255
+			],
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 80,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "adcd789d2f51911f550b01997133368eed3f178817a85546e1405ca1288fd13f",
+					"rgbaSHA256": "ebfd79a7649e34124e7207b666852f25290f2c6d3b464d88714c247c1e337a27"
+				},
+				{
+					"x": 10,
+					"y": 8,
+					"width": 20,
+					"height": 16,
+					"duration": 60,
+					"blend": true,
+					"dispose": true,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "7fe1918da275710c4a0744aeda06aa54b85944a9c1222fe84a559de487e0af9f",
+					"alphaSHA256": "57597fc80d1f16c4c50a450166b7ab94df95752a6669902f169ab57419ca6cc3",
+					"rgbaSHA256": "5676c4a3e96348845126dfe5f4d0f0958ea2d89446e85688346da0f4ddd764be"
+				},
+				{
+					"x": 30,
+					"y": 14,
+					"width": 16,
+					"height": 16,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "db5832f5df7e189f4b45d138f1b116e955975fd5c38b058b2fc8b34bae5fdf0b"
+				},
+				{
+					"x": 2,
+					"y": 18,
+					"width": 24,
+					"height": 12,
+					"duration": 40,
+					"blend": true,
+					"dispose": true,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "ae44c1537dd5630249e53d7a3ff892e6aefa8c6896999c3b5c3e9c66fa10cf19"
+				}
+			]
+		},
+		{
+			"name": "lossless-asym-32x24",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet asym-32x24.png -o lossless-asym-32x24.webp"
+			],
+			"size": 96,
+			"sha256": "5900904ade29e5785582a6a1d4830ae14d86c5358bcae66e454c3e6e26dc0d9f",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "ae9da6ff54f99ca0b202009f85fd38bcb58f65e6379b0fb768121d6c524340aa"
+				}
+			]
+		},
+		{
+			"name": "lossless-edges-15x15",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet edges-15x15.png -o lossless-edges-15x15.webp"
+			],
+			"size": 146,
+			"sha256": "db3b549e57ed369b7217e1b5dbcba24912cc5ee99c48fe43a3e9a341d4e8d516",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 15,
+			"height": 15,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 15,
+					"height": 15,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "ceba986b49398735611be771c0e4c8ac3c38d3b08fab8337a666de73018a20a3"
+				}
+			]
+		},
+		{
+			"name": "lossless-edges-64x48-hint-graph",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -hint graph -quiet edges-64x48.png -o lossless-edges-64x48-hint-graph.webp"
+			],
+			"size": 590,
+			"sha256": "c5d35ad67a984de88494cf514fe96c6611684f75945d4308ece0a2dc1af17fe0",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "c6b5d22050bf119e71d9a96fa0113e0185742de8c21faf2e24c0f30d3fa9b507"
+				}
+			]
+		},
+		{
+			"name": "lossless-edges-64x48-m6-q100",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -m 6 -q 100 -quiet edges-64x48.png -o lossless-edges-64x48-m6-q100.webp"
+			],
+			"size": 562,
+			"sha256": "aa2a9b050a6479b17c502473895349765a8b5a2f3d23cec42405569c6ca84a21",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "c6b5d22050bf119e71d9a96fa0113e0185742de8c21faf2e24c0f30d3fa9b507"
+				}
+			]
+		},
+		{
+			"name": "lossless-flat-1x1",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet flat-1x1.png -o lossless-flat-1x1.webp"
+			],
+			"size": 38,
+			"sha256": "6a2b0b8e9728cccd943e10f51eef789eb719e3aadb54f40b45608dc801ca5759",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 1,
+			"height": 1,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "1e91ede775680242083a497981d79803d4dd16621d6aeb02fce4971bd150abde"
+				}
+			]
+		},
+		{
+			"name": "lossless-glyphs-128x96-m6-q100",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -m 6 -q 100 -quiet glyphs-128x96.png -o lossless-glyphs-128x96-m6-q100.webp"
+			],
+			"size": 752,
+			"sha256": "f8bb29837e2bc4c4793ed10552c9905379728922f9cd99fba495d6a41bbc7da3",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "92c6a264b0d6966931338150da91aeac45c18de5a85262d54a49722be5d4f45d"
+				}
+			]
+		},
+		{
+			"name": "lossless-glyphs-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet glyphs-64x48.png -o lossless-glyphs-64x48.webp"
+			],
+			"size": 324,
+			"sha256": "1806d5d137ac0000a1d00df63fbc53350ad283169dde003436f5fc5a7904dc92",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "6a8b965c806e984930ce9c7aca83a81384a6db806d1aa285fd0f3e8f797ac46e"
+				}
+			]
+		},
+		{
+			"name": "lossless-gradient-1x2",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet gradient-1x2.png -o lossless-gradient-1x2.webp"
+			],
+			"size": 40,
+			"sha256": "a49f52880f65bc3b6548328df0375cc4aa7afd7fe5678223af0cc2f9d2b6bfb8",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 1,
+			"height": 2,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 2,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "902817f28c654d39a04a72803158efd79a1637d7959f8f393588f0905ac001d9"
+				}
+			]
+		},
+		{
+			"name": "lossless-gradient-2x1",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet gradient-2x1.png -o lossless-gradient-2x1.webp"
+			],
+			"size": 40,
+			"sha256": "a23632ed871ea16ac77237901c4d372c804680edec59c02142e49865ff44e963",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 2,
+			"height": 1,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 2,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "4f8a98532819bdb188212405cf6336e07fc52f9bdae9a2612024efc4a23a5776"
+				}
+			]
+		},
+		{
+			"name": "lossless-gradient-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet gradient-64x48.png -o lossless-gradient-64x48.webp"
+			],
+			"size": 138,
+			"sha256": "fb7dc710e94336eb65a34ca2e71c10f4c16d84af8849ae500af8d90143a7366b",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "dbf1ff6d50ecc4034fe7d1ae5ab5193dd2f923bf9827ae8204a72794509679d6"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z0",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 0 -quiet mix-128x96.png -o lossless-mix-128x96-z0.webp"
+			],
+			"size": 12638,
+			"sha256": "a33b5d0973c10641e61248798d82035189e9cfa8f7705a11c28513fce69f106d",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z1",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 1 -quiet mix-128x96.png -o lossless-mix-128x96-z1.webp"
+			],
+			"size": 11984,
+			"sha256": "015c4087030df4723be0e90a6ded1a28860d51660a1f06e732dfc340d342f5bb",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z2",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 2 -quiet mix-128x96.png -o lossless-mix-128x96-z2.webp"
+			],
+			"size": 12196,
+			"sha256": "ff52acd30dd0a6d19052266419d280b861804170f2b31fd3ae6ab2aab673c379",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z3",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 3 -quiet mix-128x96.png -o lossless-mix-128x96-z3.webp"
+			],
+			"size": 12274,
+			"sha256": "a515b8cb455e038f09e2e989d6f9f239eef5533ae1c5771a1b3d615af5e6f93f",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z4",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 4 -quiet mix-128x96.png -o lossless-mix-128x96-z4.webp"
+			],
+			"size": 12278,
+			"sha256": "a95c5f84de6cf76736729ebfaf17e2719bd0de5cc7797e9d102df7c0290f893a",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z5",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 5 -quiet mix-128x96.png -o lossless-mix-128x96-z5.webp"
+			],
+			"size": 12150,
+			"sha256": "6f8efa4aa8a2f9f308d4f60339db43e113a7c36fae5afdf5b17677855be80c91",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z6",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 6 -quiet mix-128x96.png -o lossless-mix-128x96-z6.webp"
+			],
+			"size": 12184,
+			"sha256": "4ee3c4e32099b5dfea98c2c2598149951def8083f7140e7e8f6e69b6a1803dae",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z7",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 7 -quiet mix-128x96.png -o lossless-mix-128x96-z7.webp"
+			],
+			"size": 12184,
+			"sha256": "37e7552287c06528d16795939d4a753278096838a35479d0547678efd18a40dc",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z8",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 8 -quiet mix-128x96.png -o lossless-mix-128x96-z8.webp"
+			],
+			"size": 12242,
+			"sha256": "2660d8263c4c09d9884d544e7bc2677d381779b21716ce613418e3aa4801ca6a",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-mix-128x96-z9",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 9 -quiet mix-128x96.png -o lossless-mix-128x96-z9.webp"
+			],
+			"size": 12312,
+			"sha256": "5924f8e05fcafc4727408eb5757b15b8e0f76ee02bdf4e6d8618a64ce4507a34",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "87167d02a2ec15fb35daead8aab4084f3cbfb907ed3044bf9cc98241c5e5887e"
+				}
+			]
+		},
+		{
+			"name": "lossless-noise-13x1",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet noise-13x1.png -o lossless-noise-13x1.webp"
+			],
+			"size": 120,
+			"sha256": "6e6a61007863b5bde6222f3c57ddf4c27df5e2049e0aafe2130bbb9e1578cbe3",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 13,
+			"height": 1,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 13,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "0ae5ace20d7a00a44f946718c7606ae8c1bb1f9e7b272118f9540ceeb3f1698b"
+				}
+			]
+		},
+		{
+			"name": "lossless-noise-1x13",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet noise-1x13.png -o lossless-noise-1x13.webp"
+			],
+			"size": 126,
+			"sha256": "503bae7fdb388143a1afa537306c806decc0dcf30a694bfe34026ec4c87ee097",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 1,
+			"height": 13,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "39e6c99abad8fcb93811b19b280b27c875317c973f0e7cd316713e381382b91c"
+				}
+			]
+		},
+		{
+			"name": "lossless-noise-31x13",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet noise-31x13.png -o lossless-noise-31x13.webp"
+			],
+			"size": 1294,
+			"sha256": "5ba53d7e58abaf72cbd7a3f5cd0f0b42d371d5f1ca8efba0839fbd70e35d462e",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 31,
+			"height": 13,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 31,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "6b5d85e0622b15b59b287b92e38758ea63a08b638d67a8d468583d1b42a52ca3"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette16-17x31",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette16-17x31.png -o lossless-palette16-17x31.webp"
+			],
+			"size": 292,
+			"sha256": "7b0b155aaa24d233a94946ceaab471a05252b713f496ed5b652bf51f791d1e8c",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 17,
+			"height": 31,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 17,
+					"height": 31,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "c14b549ca80e182db6aaf8d98a86a845d89f5ffe6ae26e21829e71824fc24174"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette16-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette16-64x48.png -o lossless-palette16-64x48.webp"
+			],
+			"size": 784,
+			"sha256": "cdc1978b14ff01fd8cd03dd6def556f72be7da6876c28d5c0c60134f3c5fdcd4",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "3c05f94a65381859e09dad762bf52f4a2463e045b6d0055b6cee2a025fd0482a"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette2-13x7",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette2-13x7.png -o lossless-palette2-13x7.webp"
+			],
+			"size": 62,
+			"sha256": "c2636f94a90fbc468f8a7667eca41e49b5a1863a69ee04276342712dfc28fa0e",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 13,
+			"height": 7,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 13,
+					"height": 7,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "76e00cdbf94688cd3a576da5b49ced67282f778e0529abfc9402f2df52019732"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette2-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette2-64x48.png -o lossless-palette2-64x48.webp"
+			],
+			"size": 202,
+			"sha256": "f1dbb363878099d4c936ce311255d5817a580b280e0911b8930ce6564215a2d5",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "8e291046965e8b392aab95fa5eb5584eda14cf2c3934719f2cff9468cf26d76c"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette256-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette256-64x48.png -o lossless-palette256-64x48.webp"
+			],
+			"size": 1030,
+			"sha256": "54f16bfeb9f6bafced28e224f2ec55b4ebda93b3a5876cc81b8c5242f1e8a9e7",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "d0094050de7486a0d6df0b564cc40ab829244f429683c61ba84b486160218586"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette4-15x15",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette4-15x15.png -o lossless-palette4-15x15.webp"
+			],
+			"size": 110,
+			"sha256": "ccebe9d7d9664d238b8a75f6fca2c952f848c70de82daddffe974d313724d18e",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 15,
+			"height": 15,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 15,
+					"height": 15,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "db5f07bd0df91d9533480350f62c51596547266f23b75065b7bc08b98cee1e58"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette4-64x48",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette4-64x48.png -o lossless-palette4-64x48.webp"
+			],
+			"size": 392,
+			"sha256": "9b5a6f214cb1eb4251b8719593829ce483e2a195ca55a3ffa554eb43ab195484",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "c800d60c0b01c2545b2450f94e29daede4204b05226cf1a8b2a735ba17d59fa3"
+				}
+			]
+		},
+		{
+			"name": "lossless-palette4a-32x32",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet palette4a-32x32.png -o lossless-palette4a-32x32.webp"
+			],
+			"size": 200,
+			"sha256": "38e7fd4c72dbab5590a2d540264327aa2b6c95e4c4e686c2f04b4a911a681add",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": true,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "2dfd4abf6ebe5508be9250ddae271d30debcaef1503ae4d4fc69dca8c21e8f94"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-16x16",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet photo-16x16.png -o lossless-photo-16x16.webp"
+			],
+			"size": 882,
+			"sha256": "91a89613ee900f6b01c63492b9556281b0845aa10904a8c600c0bb36a3230925",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 16,
+			"height": 16,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 16,
+					"height": 16,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "0b9db663053b903855178d5d657357fc799b399f76c371b54d8a97a38dc3360b"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-hint-photo",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -hint photo -quiet photo-64x48.png -o lossless-photo-64x48-hint-photo.webp"
+			],
+			"size": 5482,
+			"sha256": "e660ce20a302bf6eb2f184acff7186ea2306f6e5e8caa555e3fd3e2ecaa92ea5",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "c0c934d63b777a57e31608204b839331627bddc30ec4a54bb5eaea6fff8aab01"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-holes",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet photo-64x48-holes.png -o lossless-photo-64x48-holes.webp"
+			],
+			"size": 5888,
+			"sha256": "25e88ba22773e231db864ce0e6300b2df852817ad566d7f1d5dcc035919f5b65",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "31bee59f85a8931228a734d53b0d7062952910311a81a59d321f03d7088db083"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-holes-exact",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -exact -quiet photo-64x48-holes.png -o lossless-photo-64x48-holes-exact.webp"
+			],
+			"size": 6152,
+			"sha256": "218938d85ac4d84fa22ccaca55fef11eaaa72b56435ef607139c099e3245240d",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "9129c9efaeac250647dc396fef31fd4b2ff7a30741a4bffad3432253fd134fed"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-near-lossless0",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -near_lossless 0 -quiet photo-64x48.png -o lossless-photo-64x48-near-lossless0.webp"
+			],
+			"size": 2792,
+			"sha256": "fbdf7241f75961dbc9b287a62fa7bb345d5329f3c18eb2dd02e0d4d0d20f8cd5",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "6d9c20fc710c8f3aff9442b2ba2a3a6a38c4799cfadc537850c5969fd4bac830"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-near-lossless40",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -near_lossless 40 -quiet photo-64x48.png -o lossless-photo-64x48-near-lossless40.webp"
+			],
+			"size": 2828,
+			"sha256": "1144820ed7c2809a08cff80d606c5a122db47107d6e97d81a40a4636eebd12e9",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "3574f427aaef3be99c647b5ad073eb9f4c1be4b741966e46f97d7f5a93f764e2"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-near-lossless80",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -near_lossless 80 -quiet photo-64x48.png -o lossless-photo-64x48-near-lossless80.webp"
+			],
+			"size": 4464,
+			"sha256": "5c16632a7ea482680394411ad6a5b9b4506f0051c877661b080035ba7bc56661",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "aa956bfba144a594b530975917dae0a72f6eb602563f8c68acbbfdb6e9049f1d"
+				}
+			]
+		},
+		{
+			"name": "lossless-photo-64x48-steps",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet photo-64x48-steps.png -o lossless-photo-64x48-steps.webp"
+			],
+			"size": 5134,
+			"sha256": "e72cdfc9dda86b97ecadae369652b909f5d5ea3b7b308543a4d97a92728ac42f",
+			"chunks": [
+				"VP8L"
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": true,
+			"alpha": true,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "02f94f505e7afced50da83d3e9a48c81976f5290bfd5238be581b5e0b72cb6a0"
+				}
+			]
+		},
+		{
+			"name": "lossy-asym-32x24-q90",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o lossy-asym-32x24-q90.webp"
+			],
+			"size": 170,
+			"sha256": "42da20fdb907ea4d1a9fa8803dcf1ebfe1b70e46208134d476d04ad21c487704",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-15x15",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet edges-15x15.png -o lossy-edges-15x15.webp"
+			],
+			"size": 204,
+			"sha256": "d8a7350f285d1e38502d607d741c56ab460c1b270ba3924cf4f19c5d9c5f9116",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 15,
+			"height": 15,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 15,
+					"height": 15,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "0bbbc521c54fc5ac91c8f39fcc40252d043b50ebcfff90a1e177cf5c6950ebf0",
+					"rgbaSHA256": "c7095cfbf525214b31b1b1a67a7e8b60af645f0ae413d36c2ca1c3f7ec6047bb"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-31x13",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet edges-31x13.png -o lossy-edges-31x13.webp"
+			],
+			"size": 310,
+			"sha256": "5630ae431e140d624cfb8b9e9fcc4fcc3dd4fbacb88380475b08663e34584598",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 31,
+			"height": 13,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 31,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "5004c3dbfb51f79f9bb09799695aa0c4399593e1f13a3dfe1e228a4f849802d6",
+					"rgbaSHA256": "2b1eff6cdf9fe96121a960ce942bd47caf819d4e364aa2ad100a6924cd6eda58"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 1 -quiet edges-32x32.png -o lossy-edges-32x32-sharpness1.webp"
+			],
+			"size": 426,
+			"sha256": "07b9faaaa9444947911f574e7def682a0c7ebeeb86e5c07d3186e01763469481",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "5bf30fce40c602acd2ddd951a5b79fad66c9c206e49df19d3f77ef7af04a0a0c",
+					"rgbaSHA256": "2b1292e4b77eeb2057b73bfb01b059b9bb4e3951a87b5daa7d30a2c487ce6e00"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness2-nostrong",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 2 -nostrong -quiet edges-32x32.png -o lossy-edges-32x32-sharpness2-nostrong.webp"
+			],
+			"size": 426,
+			"sha256": "20fa0b123c3737a594c564a1ae74a388d531ee48c6013a89d1ebb29f9e98c738",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e4f45c6b5fea04d23eaf33f2d7d196a4d9ea2e3c13d1e2c11b70ad65aa4997ed",
+					"rgbaSHA256": "da8eb039551f71327b7b80a5a86b6e056819d0f963d4406c78edc62bdfbd5530"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness3",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 3 -quiet edges-32x32.png -o lossy-edges-32x32-sharpness3.webp"
+			],
+			"size": 426,
+			"sha256": "dc951d102d609b8e882714bc510c629ffa6da635925d5f8ebe247cc0a7826dcb",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e4b2ca6eadecc00b5053f3acf6d2e3cecc5b05b4fb8b75e46fd2646aa35fece2",
+					"rgbaSHA256": "2014ad87136e2460c7ce99072fcc30db8a0d880997d7d8674e881d0c6c03fc6f"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness4-nostrong",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 4 -nostrong -quiet edges-32x32.png -o lossy-edges-32x32-sharpness4-nostrong.webp"
+			],
+			"size": 426,
+			"sha256": "8c9317878be7a9236b34d224240bea404d98e6986d10dfcdc24e3e16042abaf0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "31b3370cf0df59efbe80161dbb249e4524653b7f8f47bf760b9eef55c01e22ba",
+					"rgbaSHA256": "76ae58422737806e93d418fc868e5a52d98860431cdf56b7a4e20958d4041cb6"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness5",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 5 -quiet edges-32x32.png -o lossy-edges-32x32-sharpness5.webp"
+			],
+			"size": 426,
+			"sha256": "b6ef00291f28fab6290af6fc3278d07e28ba988d24ed76b25537accbbde208ca",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "caf03fd77fc816857cf5d890b35f38d532a84d0083aff5333792c91a21aaeea9",
+					"rgbaSHA256": "0637bbc567fe4f4698af7b295711bf365ea63e3a34e8b81c8c2e84f568a5f79d"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness6-nostrong",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 6 -nostrong -quiet edges-32x32.png -o lossy-edges-32x32-sharpness6-nostrong.webp"
+			],
+			"size": 426,
+			"sha256": "8fd110e1e8584c8a243addc0d84ab8dd9629d75191c7709f1327878bc62fb7c6",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "a21e4754c88376b3ab3d17bfd99c9d9174c442279bb5591251bb7559ae2b1f62",
+					"rgbaSHA256": "dd1f3e912eb38bdb712b8c7c94eed9f18b827ff1816286f693680f391e2a3fbf"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-32x32-sharpness7",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 40 -f 100 -sharpness 7 -quiet edges-32x32.png -o lossy-edges-32x32-sharpness7.webp"
+			],
+			"size": 426,
+			"sha256": "89e706d8bd59003628d1fcae2a0cafe64f6b10090824d69d8ce9449a8afdcc6d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "caf03fd77fc816857cf5d890b35f38d532a84d0083aff5333792c91a21aaeea9",
+					"rgbaSHA256": "0637bbc567fe4f4698af7b295711bf365ea63e3a34e8b81c8c2e84f568a5f79d"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-64x48-preset-drawing",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset drawing -quiet edges-64x48.png -o lossy-edges-64x48-preset-drawing.webp"
+			],
+			"size": 1388,
+			"sha256": "bf7d84d221615bd66040dbeb7027503b3a7e08387cf8fcb40c1da926b0bcb54d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e7a41ca4502ee40a8cb1d47b599042eec7da5cef5ab136427bd16838a070f7aa",
+					"rgbaSHA256": "406a006c24028fcdb774a4a532f23fdf1f99324fcb30e849b63641db54d97b29"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-64x48-q90-m6",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -m 6 -quiet edges-64x48.png -o lossy-edges-64x48-q90-m6.webp"
+			],
+			"size": 1988,
+			"sha256": "0a4946d187de823350c3ff5e2fd6926021b92dc4767fcbaa38bb6181bafd0877",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "1d9fb47126cba672e78130f8da5633e490f4683dd65eee9d40f68bc48e6c0be6",
+					"rgbaSHA256": "7a877b3b23cad57652e867e748b9b299b9d849235bc334dd02f3b52b46dc9a86"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-64x48-sns0",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -sns 0 -quiet edges-64x48.png -o lossy-edges-64x48-sns0.webp"
+			],
+			"size": 1410,
+			"sha256": "0d2ec023e3ea39af0e39abc17aba2a08520cd154344c8241aef127aa85688c82",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "db2d73cccc6f8e98fa8af106b7de8e130072d791da0b68d346ed117fb74977bf",
+					"rgbaSHA256": "79b865e9d6e65d1067dbe68ff12834cb31eb26e1e5fc312481ecd092d58e82c2"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-64x48-sns100",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -sns 100 -quiet edges-64x48.png -o lossy-edges-64x48-sns100.webp"
+			],
+			"size": 1386,
+			"sha256": "a0f2da53ebff89c0713af48287094c3872433081f5be169c654c592b2d676116",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "7c66a0212d31fae8ac21f2aac3926abaa0a5f5d6cc29ba67ec73bb18c799beb1",
+					"rgbaSHA256": "15039bf5e0d0280de17f239a91a9abf3607bdf44255939adffdfe1f6d570726b"
+				}
+			]
+		},
+		{
+			"name": "lossy-edges-64x48-sns50",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -sns 50 -quiet edges-64x48.png -o lossy-edges-64x48-sns50.webp"
+			],
+			"size": 1370,
+			"sha256": "60321f58dfd616e8af85ed834c9f49a7e70d895c3fe9e4e61c6e6df6e749092b",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "d22beab809c86bdd0676c0b97ff9bc51c15698c6211a8af2d2300010ec0641fe",
+					"rgbaSHA256": "095212f9b4be3891b9fea1ae31501f6713989e12db87df7e3100d2b3dfd8df67"
+				}
+			]
+		},
+		{
+			"name": "lossy-flat-1x1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet flat-1x1.png -o lossy-flat-1x1.webp"
+			],
+			"size": 60,
+			"sha256": "4eb01a5543912106ec2f0940fd18e6384953e3d10397da2ae1512f0d4fe60569",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 1,
+			"height": 1,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "259b5702e6bb7326d322d20f5bda3afb5c5f5a6bd9a78abdfa9ed302f8f3a6ca",
+					"rgbaSHA256": "76bf032f69f119819b072b096ba59c2bdad0306bd67fc3e0a06c3dbb377002df"
+				}
+			]
+		},
+		{
+			"name": "lossy-flat-64x48",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet flat-64x48.png -o lossy-flat-64x48.webp"
+			],
+			"size": 84,
+			"sha256": "5920ac94018d6ba93c1b526f06e5e00810eb5ae84b38d1e5c33190a127326268",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2090d81a36949169f3c53dabcef56f2daebbd069d760c68171cf3cbc5db3e699",
+					"rgbaSHA256": "36d06bf9269b98aaf155d15059e627443345dc62a58f64412f5d3c547a7a4c84"
+				}
+			]
+		},
+		{
+			"name": "lossy-glyphs-64x48-preset-picture",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset picture -quiet glyphs-64x48.png -o lossy-glyphs-64x48-preset-picture.webp"
+			],
+			"size": 1846,
+			"sha256": "8840d5d8647eb6f6cd926870a9dba79e8610223e35f2d23b9816f405dc26537d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "cd0625a5a0feb1fbc3234e0ee3c76d24a7506d2e05eee023b79dca5f88f7504d",
+					"rgbaSHA256": "c4f9d4c40319a6c09dd00f3b3632fe8d207c848d25d6689fa051a79329b52387"
+				}
+			]
+		},
+		{
+			"name": "lossy-glyphs-64x48-preset-text",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset text -quiet glyphs-64x48.png -o lossy-glyphs-64x48-preset-text.webp"
+			],
+			"size": 1770,
+			"sha256": "5c8d54a3948b45232e97540fb4da67983a651ee8f216d236080cad65cc69a7a8",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "06bed349e873f1db7f54bf5541acd3424863b2352af01612b4e0a1facc1b9934",
+					"rgbaSHA256": "75756ee9436a59ef1fa34876c86f9f15e03750945a73737b0955da5e13408416"
+				}
+			]
+		},
+		{
+			"name": "lossy-gradient-128x96-q90",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet gradient-128x96.png -o lossy-gradient-128x96-q90.webp"
+			],
+			"size": 480,
+			"sha256": "da580726f1232af42fd5376d5b04ab9a93b74a380fd498b30d3c43f49d9432e7",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "c5ddc0f938d3f9ea3a101567a8abf6bc03dbdcca2f0c8d8f4ad861aabc6fc27f",
+					"rgbaSHA256": "40ab926b809e914701473eb136ecaea525f782ccf4d3834b08901e364a0023ed"
+				}
+			]
+		},
+		{
+			"name": "lossy-gradient-1x2",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet gradient-1x2.png -o lossy-gradient-1x2.webp"
+			],
+			"size": 60,
+			"sha256": "259ebf011778133e3d2c7d5a7a5a7a2ca518ae5d5f7a4e2261ed16e9813a88d0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 1,
+			"height": 2,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 2,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "03c977f07fd577b114ec2c113ed6e480fa0232fef4921f8f82142ca5f270e7cd",
+					"rgbaSHA256": "f13802c59c785551b09dbd54b433a111f8de095286f9b30a079c3cd7260576d2"
+				}
+			]
+		},
+		{
+			"name": "lossy-gradient-2x1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet gradient-2x1.png -o lossy-gradient-2x1.webp"
+			],
+			"size": 56,
+			"sha256": "7a6d97d6eaa33ba20fd3c6b7c5c3d7e2cec81ba68d1b8c5870d5e152abde93ae",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 2,
+			"height": 1,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 2,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "8f8be2cb9d660e3aea88e6d31375b75b052e411d9705ce7678a5ecfff2b7de8b",
+					"rgbaSHA256": "a30741db61543da3142894e1f2120fb23f98b134deab883c341d021cfb036f8d"
+				}
+			]
+		},
+		{
+			"name": "lossy-noise-13x1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet noise-13x1.png -o lossy-noise-13x1.webp"
+			],
+			"size": 98,
+			"sha256": "14e5442625418112041c660a417e2b6facc2775df24117cce79391e8c0ee1e16",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 13,
+			"height": 1,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 13,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "bd4972882c00feb395134e4fa0413b40052217e2ccb6f263cf5ff1580bd51e16",
+					"rgbaSHA256": "541d57ca3f7f7116812ccfce95e74755ce7ab22b018d893fe5bcc56ec2536c90"
+				}
+			]
+		},
+		{
+			"name": "lossy-noise-1x13",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet noise-1x13.png -o lossy-noise-1x13.webp"
+			],
+			"size": 100,
+			"sha256": "35db6bebe6a8c8422533c3e2acd66c4002e08e22725cdea2570d16709b0f14d2",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 1,
+			"height": 13,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "6e8bf8d66ad60bd4bebabafc1c5ca55b5c8e5e50086f5332b19ab689690022e3",
+					"rgbaSHA256": "c64a7d4be1422647087f1972cebe40e382d46af9572813978099c2961cebb8c6"
+				}
+			]
+		},
+		{
+			"name": "lossy-noise-31x13-q100",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 100 -quiet noise-31x13.png -o lossy-noise-31x13-q100.webp"
+			],
+			"size": 768,
+			"sha256": "b7080d46db1387ccd6f5f8158e5ceda41c440d20a35c9dafcd53cfec17c2fb89",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 31,
+			"height": 13,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 31,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "d5fcddadc0767526bf18a4ff7a19f97900ca50699594d172673745a8135fbafb",
+					"rgbaSHA256": "06513fa1049e05703905c4317aad68f20bd8c8289029121c48915d6160a4ee46"
+				}
+			]
+		},
+		{
+			"name": "lossy-noise-64x48-q75-m6",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 75 -m 6 -quiet noise-64x48.png -o lossy-noise-64x48-q75-m6.webp"
+			],
+			"size": 2178,
+			"sha256": "f5146adbc258f074c35e772034a947a83c07030ec088e9deb83b05e25224e30f",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "dc5cb7891b03d642b26c491f53bffc8cacdb81e907c2c02520f0e0d35b13e32c",
+					"rgbaSHA256": "a4e03995ebe8866097b017e10a8a610d03567d6233f95dcbbeee79fba27d334e"
+				}
+			]
+		},
+		{
+			"name": "lossy-noise-64x48-q90-partition-limit100",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -partition_limit 100 -quiet noise-64x48.png -o lossy-noise-64x48-q90-partition-limit100.webp"
+			],
+			"size": 2970,
+			"sha256": "fd73e4c3082289f01c63da80f6c352385e0132971445cb9178de6970bbe61acd",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "9b23ac8b230ebc457c8b5270c7a255507882760a5b17f5cd35de58707ecf4ace",
+					"rgbaSHA256": "64cf88bd5d8805943c4855813f818e5d31c6acf206261ea658d85d3c8e234886"
+				}
+			]
+		},
+		{
+			"name": "lossy-palette16-32x32-preset-icon",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset icon -quiet palette16-32x32.png -o lossy-palette16-32x32-preset-icon.webp"
+			],
+			"size": 710,
+			"sha256": "cca7a901a9dd79d677b6b4e756471a7d811912e7325fe88264a3deef45093177",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "1306a71b962dccd3a232ea1adf2a3b3526786b81c765d6759416423f93463dfb",
+					"rgbaSHA256": "ccc21cacefe059acb770bbd9357fc63f7048672577baa9a4701d074c372a8877"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m0",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 0 -quiet photo-100x75.png -o lossy-photo-100x75-m0.webp"
+			],
+			"size": 1020,
+			"sha256": "ebfb8de8852bd22dade1542f7e5806731ef55c8a669b090efe6403de8a8d0a53",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ce36319d3b78935511efbffb507e8e6e431c7f31c5542cf7aa77e1379c453aab",
+					"rgbaSHA256": "4a9c7180a8d6cf095cad5b5f199e46fb03a3db7a465184984be12f0db2e66816"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 1 -quiet photo-100x75.png -o lossy-photo-100x75-m1.webp"
+			],
+			"size": 988,
+			"sha256": "d672ad829255df9a890589f6fb5e11eb81aaa33ce5e0c54bafa598cf9166d8c0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "b723cb0cde2b8161076c451c01e47ef379a710acdcd78e46a5cfbc1929bc0516",
+					"rgbaSHA256": "62c7f91cc6591f6b3a1e03b6137eeed36f8c019cf30251115e6a35ccb8959965"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m2",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 2 -quiet photo-100x75.png -o lossy-photo-100x75-m2.webp"
+			],
+			"size": 870,
+			"sha256": "41780e69493a7a74283443828db9fa92fb498f706b229738e0e652185b321354",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "a45084ab889bd5a970074973719f0aeeddf0ed6c310aec882f282fa3c480f5df",
+					"rgbaSHA256": "652193e1ed20052d8f54a8778e8740c088f135cc1901a1b841d2f9ee762604c2"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m3",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 3 -quiet photo-100x75.png -o lossy-photo-100x75-m3.webp"
+			],
+			"size": 848,
+			"sha256": "04866620863a65bf1dce9915634ee294817de1ba4fa4031edb76aee758163279",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "4a60c8384bc68012ce4efdc1dee8fed815673b363965b96506523b0094dc13a3",
+					"rgbaSHA256": "32fd95573e9ecd6db7020f00b654782e670eb48605016d243ce2adce53ff9990"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m4",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 4 -quiet photo-100x75.png -o lossy-photo-100x75-m4.webp"
+			],
+			"size": 850,
+			"sha256": "5ebe32a535e79232856b909ce475bfa19929314c1e914f88ce9d6a76c60fa88d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e1a28205d4c2986708324196ba18e036cf1d4abb604c26c1c836d48651fcda3d",
+					"rgbaSHA256": "bacb7bd6153da3ce429557e6e009394bb1fadc0b13d542f7ead5dd24d02b9ebf"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m5",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 5 -quiet photo-100x75.png -o lossy-photo-100x75-m5.webp"
+			],
+			"size": 774,
+			"sha256": "240abdb9c78f99c20c8d791096a7e1853393a03f98269fc3c41c63c3085fc08d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "5d18f160ff51047e17dc22f1fa445ab01526e2adec5684bd4f036ecada97c38c",
+					"rgbaSHA256": "887ea2e99bc3bb1a273d31c74691dcadd382f6ff69daab3539bbdab8ae390c58"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-m6",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -m 6 -quiet photo-100x75.png -o lossy-photo-100x75-m6.webp"
+			],
+			"size": 766,
+			"sha256": "6efe73cbf9e49ae0f16995692765ecf63d6b04dff0da2067af83aedadc78fd66",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "3bc1dac41d145195dc167f6c7df2e449dad88a1489ad13ceac18cf08828620bf",
+					"rgbaSHA256": "3f1f5459823f1dfe26083cb0ee44d6128001a4d0bc0708d7f09f14debedb07ba"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-100x75-preset-photo",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset photo -quiet photo-100x75.png -o lossy-photo-100x75-preset-photo.webp"
+			],
+			"size": 1072,
+			"sha256": "11fc43d344fd8fdea0951635388a511867767911c68a067ca95fa8554e608891",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e81e974407af5224ab5f7879f3b3e85e90ad9fb83308606fe5431d795a6e295c",
+					"rgbaSHA256": "1249781b4b963aa2eb147c16ce86ff5359c304c3afe77004139c197013d55bcc"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-128x96-segments1",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -segments 1 -quiet photo-128x96.png -o lossy-photo-128x96-segments1.webp"
+			],
+			"size": 900,
+			"sha256": "48a86a5247e2288d3d7ae4789ad50e1e5011d88224b536ef1ee0ec9cb60a2cfc",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e8cfeb2ee13c0dbf171bbb9aa26c81e2d411297d993fd455778849afb05b1eb7",
+					"rgbaSHA256": "476525ba64dbb9e72a2c2a6ef447d30bf97dc04ce0ed5955fa01bb3f1a29e507"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-128x96-segments2",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -segments 2 -quiet photo-128x96.png -o lossy-photo-128x96-segments2.webp"
+			],
+			"size": 956,
+			"sha256": "9447a511e5c9fc83520acec4c1523b468d690f836bdd8528720533813d0b5103",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "d79dfda4d3fd7188ab43166a4e3efd2af7523bcd08e1c507ca35b9ce06e49258",
+					"rgbaSHA256": "562c64eca9302b5da2ea1b447adeaff861aed17e8139e287bccf4f18b9a5bde3"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-128x96-segments3",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -segments 3 -quiet photo-128x96.png -o lossy-photo-128x96-segments3.webp"
+			],
+			"size": 974,
+			"sha256": "6a101bdd065a0d5a9a483f8f838e411f4b2b06a8eb0eb69e7a6bc575ab8f0fd0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "b52624e27483142790cc863ef0ad9303bd431378be0f36ed299351ccd8077a86",
+					"rgbaSHA256": "0587dd7e29791ed3e3e837b50af9f4c45b587a3800c09f78cc842e0fd4938c09"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-128x96-segments4",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -segments 4 -quiet photo-128x96.png -o lossy-photo-128x96-segments4.webp"
+			],
+			"size": 946,
+			"sha256": "06b6c4be22f0fc83b957ea8fe6e0da463795c9416ae3a51ca8233da12bd9e226",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 96,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 96,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "308f3b172c8c5eaf1f8fc168cf4f66592631b5b6e8194bff7ad6a72e30cc3173",
+					"rgbaSHA256": "8f63d464aa4ea62797c2c417744a51b3fa673defdb9f7fed440bfbc698deb46a"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-16x16",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-16x16.png -o lossy-photo-16x16.webp"
+			],
+			"size": 118,
+			"sha256": "df2e1bd8b955a7b21a0d9ea3c338ea9f740d3740b284a3df9c8e2fbff3e99c47",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 16,
+			"height": 16,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 16,
+					"height": 16,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "7d570da59e236617635ccc933cc69495e12781320cc4eacaa545328e568877fd",
+					"rgbaSHA256": "438ff95e01f17567ed57c45a75702fdee7c80c6afadaeedddfa368183df0d811"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-17x31",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet photo-17x31.png -o lossy-photo-17x31.webp"
+			],
+			"size": 222,
+			"sha256": "a6a13eaf0267282c4e6cadc07e4b848e1b0d55bf97270eb44bbd76001e573254",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 17,
+			"height": 31,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 17,
+					"height": 31,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "0b31a6881a2c370e1fe0abd29fe0a51b4ccdffa27a8b3d841e2ca1b259f88d9b",
+					"rgbaSHA256": "b899d63074edb1a48a4e834c18b02129297e4b9664c126243557291485613842"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-256x192-q80",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 80 -quiet photo-256x192.png -o lossy-photo-256x192-q80.webp"
+			],
+			"size": 3116,
+			"sha256": "61568127edf9311fb7a9e23d9e037b04ab09b2e67389f037c09149461d6ad517",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 256,
+			"height": 192,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 256,
+					"height": 192,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "59ca9e3d8cd1b5f9a23b812de029f0dd441a9f9a11cee1786e49bbf405c76fda",
+					"rgbaSHA256": "323c72810a8b86cc4ede5d96a8f53c0d5c199c818c70f92dbd09d90cb0a117f9"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-af",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -af -quiet photo-64x48.png -o lossy-photo-64x48-af.webp"
+			],
+			"size": 398,
+			"sha256": "2d6b06eb4be454d2908dad1ec8a55761b8f44d3cd18dbddc61ea49c5ce7a92e5",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "7a558ad3b29e7311c9bbb759f38741d36cd37e29c6e703861fe52e3ae144fe15",
+					"rgbaSHA256": "05bd32f35180ef2dfc73c517c683b84ddd9ae66c04e31991af73ab37290d89c1"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-nostrong",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -nostrong -quiet photo-64x48.png -o lossy-photo-64x48-nostrong.webp"
+			],
+			"size": 398,
+			"sha256": "cf24a0b3ee446b42ca9626defbc5ffa2a352a7397f54f746d3ff07f1004e08e0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "30850601fb172386486e9e6ea53561ae804f52307af7fbc804c304142ece31bb",
+					"rgbaSHA256": "2257b25c684d164f12a745b33c5d7fe7fe79e430780ca9940d0ec27cd3cfed3a"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q0",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 0 -quiet photo-64x48.png -o lossy-photo-64x48-q0.webp"
+			],
+			"size": 120,
+			"sha256": "d1b4c8184146cbabfc04e3f2bf7e993b272fa3aae6068e2cbbc3e586d8421017",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "8e47da0b2d2d8cc9b99efedfef25c6cceb9da3eb200c446b9feef49237c797b3",
+					"rgbaSHA256": "e482041dfec260dee4c52dab4d4453a39816ea764990e5dd44178311b50004e8"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q10",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 10 -quiet photo-64x48.png -o lossy-photo-64x48-q10.webp"
+			],
+			"size": 176,
+			"sha256": "ce9a98c9d43cdaa3c7fcd64aaa4230dcbeefa482704a6fffd2d16e92d4a4d9f8",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "754040a64e3e543156bcc0cf0e6cea10457c6bfa9f8b49aaf036a1650c0e526e",
+					"rgbaSHA256": "91dce541adb6f1742c4d1db32c7f981cac179f00dab2622360298feb7a999812"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q100",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 100 -quiet photo-64x48.png -o lossy-photo-64x48-q100.webp"
+			],
+			"size": 1650,
+			"sha256": "af557e73b9cff1a3a0c395bbc0133f7f7eb142e15986d6858fd3704b8d8689a8",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "58cd6b0a7a6fbf962dbf7d8df33c6f322e5b41e05860787989e2224e5cbdd595",
+					"rgbaSHA256": "154879297dd7198ab8c7001ef0226458ab8467fe23ac1d3fc4754a3a5830d5c1"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q50",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 50 -quiet photo-64x48.png -o lossy-photo-64x48-q50.webp"
+			],
+			"size": 282,
+			"sha256": "1611d8922e9218c8eb3524698c47c5588ef82f6307e07c60d23ce0424b946582",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "f80386b3f50f0c1595f2d6520d10317a58e2c028a58a8c1953d234f7f475154f",
+					"rgbaSHA256": "18b06df8a7ec0064842905a282e11c5035bd263ccdb4f109d19cffe9f25098d3"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q50-f0",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 50 -f 0 -quiet photo-64x48.png -o lossy-photo-64x48-q50-f0.webp"
+			],
+			"size": 280,
+			"sha256": "c592bef07d4adbf593dfd597269fc797438d0e5fdd48ab4ffab01ae4d46064cb",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "b3c5a90647537333ef778d92bf62e665f7548b53ed6d78fdd75c966f74058ad4",
+					"rgbaSHA256": "ab81add320f45936ee7183dff22d6f61aef70d3ac6b35a3ace75b7d21108d282"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q50-f100",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 50 -f 100 -quiet photo-64x48.png -o lossy-photo-64x48-q50-f100.webp"
+			],
+			"size": 282,
+			"sha256": "980ead17c63323ee85e72abaa6436211598659cf40b28e96913c09bd2b6c6579",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "58dbcc1be8fac62966c5843cff6236908e0323f2b665cc0512fc9570d32ddbbd",
+					"rgbaSHA256": "aff15ff244273b5b0494780e0639fad38300b72d4f972db738e8350dbb7ddff9"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q50-f30",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 50 -f 30 -quiet photo-64x48.png -o lossy-photo-64x48-q50-f30.webp"
+			],
+			"size": 282,
+			"sha256": "fda666d7e657d945462e792145cede992535177d3a254acd4f6f899240316a21",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "d412f0dc6607b0bd512c1120a4df06d1315f31df9dfb275d19b36010647e8411",
+					"rgbaSHA256": "cc5d283071b37748cbf5638f1782935267f587aed9be88f014636cadba1e3e1b"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q75",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 75 -quiet photo-64x48.png -o lossy-photo-64x48-q75.webp"
+			],
+			"size": 398,
+			"sha256": "d0ae75ffd68517aedb065bd461eced88ac76d95cbb2103bf05604594afd26660",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "646b69cf6f606cac7e2cc66dea8dafffe0abf4a7631fcc0f60cd38ec050c6bec",
+					"rgbaSHA256": "e80fbdd274a0e9d6a8db2601118042e48ca68dda8f1564128ccbd2bee8bed20f"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-q90",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet photo-64x48.png -o lossy-photo-64x48-q90.webp"
+			],
+			"size": 838,
+			"sha256": "44eb31ea4814ebc8c605db2b5a1b181755e813d4882d09c84bc764d2b5e860fe",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "560d973c85f4561c24a2a80ad8b863c6b3e326952a1adf06939e79dd757db1f1",
+					"rgbaSHA256": "efe47adabb06513829a9669ee978b9af25356b91ca9dea30f6ae8226f885f991"
+				}
+			]
+		},
+		{
+			"name": "lossy-photo-64x48-sharp-yuv",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -sharp_yuv -quiet photo-64x48.png -o lossy-photo-64x48-sharp-yuv.webp"
+			],
+			"size": 404,
+			"sha256": "0ec661206d6166f2c87b9d84b391b5f46a1f0c305732ff6922b5b53e09cd99bb",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2482097ffa0427d53465fc5adb4e8b7a4b3908bb3e5a72a48f45589df7a8cdb9",
+					"rgbaSHA256": "13191955eb134bed28ec251668a8ee75e25a37a9d6ba1ccb8d6cf850a21c6829"
+				}
+			]
+		},
+		{
+			"name": "meta-all-alpha",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -alpha_filter best -quiet photo-64x48-radial.png -o meta-all-alpha-0.webp",
+				"webpmux -set icc p3.icc meta-all-alpha-0.webp -o meta-all-alpha-1.webp",
+				"webpmux -set exif o8.exif meta-all-alpha-1.webp -o meta-all-alpha-2.webp",
+				"webpmux -set xmp packet.xmp meta-all-alpha-2.webp -o meta-all-alpha.webp"
+			],
+			"size": 1946,
+			"sha256": "d06ba1058e72f5bfa18c8f2b6dd14ed166827cd5adc926e1eb2712188c9af20a",
+			"chunks": [
+				"VP8X",
+				"ICCP",
+				"ALPH",
+				"VP8 ",
+				"EXIF",
+				"XMP "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"iccSHA256": "317689309add8dc5ba39df2aa301c1c9b1fbfa11edbe104270be56c192cbb136",
+			"exifSHA256": "51bbcbc4660b0e86c18ab8a5ac5d04eb527448c360d3a97a0a3953ac08c91c3a",
+			"xmpSHA256": "4110514e6471ab847a28bdeda50ee24260dac60086ed347cd1596a58fcc81f84",
+			"orientation": 8,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "403f62467e40bfb2c50885d46426038c0d5dcc3ca7b95ef77cba1a54128a239b",
+					"alphaSHA256": "5e71266a639fa3368946d00f3f45258d4ee50d7fbe099883d65992e63a000fbc",
+					"rgbaSHA256": "595f982739b5f31826c8375d7772af6f2109cd6535952b8514151d12053f1322"
+				}
+			]
+		},
+		{
+			"name": "meta-anim-exif-o6",
+			"kind": "animated",
+			"tool": "img2webp",
+			"commands": [
+				"img2webp -loop 0 -d 50 sprite-flat-48x32-1.png -d 100 sprite-flat-48x32-2.png sprite-flat-48x32-3.png -d 150 sprite-flat-48x32-4.png -o meta-anim-exif-o6-0.webp",
+				"webpmux -set exif o6.exif meta-anim-exif-o6-0.webp -o meta-anim-exif-o6.webp"
+			],
+			"size": 462,
+			"sha256": "e41765196675dfce778199664bd7b5f0716c2501108688783fe4f3dbdacf1c1a",
+			"chunks": [
+				"VP8X",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"EXIF"
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"background": [
+				255,
+				255,
+				255,
+				255
+			],
+			"exifSHA256": "cf572f5aabe811670c63de2cbf0e9f86ac25bc84942d190d4c44abf25632a38a",
+			"orientation": 6,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 50,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "63111ecaf25f075aed3031dc503484de10d06155860c545b0a055981310e3e0f"
+				},
+				{
+					"x": 0,
+					"y": 10,
+					"width": 22,
+					"height": 12,
+					"duration": 100,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "37bcdf21a51576405ff631d6ab7959544c8c406565c3e6dbaccd1cc80157ae47"
+				},
+				{
+					"x": 12,
+					"y": 10,
+					"width": 23,
+					"height": 12,
+					"duration": 100,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "1313933da3d9ddb903e74a17946195bda26d8d59cb90372d49cefd3ec2782495"
+				},
+				{
+					"x": 24,
+					"y": 10,
+					"width": 24,
+					"height": 12,
+					"duration": 150,
+					"blend": true,
+					"dispose": false,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "90567c1acace1139fc227c2a4909cd1ce4204bfbb7ead60f52702d354087bf8b"
+				}
+			]
+		},
+		{
+			"name": "meta-anim-icc-xmp",
+			"kind": "animated",
+			"tool": "webpmux",
+			"commands": [
+				"cwebp -q 70 -quiet photo-48x32.png -o meta-anim-icc-xmp-0-f1.webp",
+				"cwebp -q 70 -quiet photo-20x16-radial.png -o meta-anim-icc-xmp-0-f2.webp",
+				"cwebp -lossless -quiet glyphs-16x16.png -o meta-anim-icc-xmp-0-f3.webp",
+				"cwebp -lossless -quiet photo-24x12-binary.png -o meta-anim-icc-xmp-0-f4.webp",
+				"webpmux -frame meta-anim-icc-xmp-0-f1.webp +80+0+0+0-b -frame meta-anim-icc-xmp-0-f2.webp +60+10+8+1+b -frame meta-anim-icc-xmp-0-f3.webp +100+30+14+0-b -frame meta-anim-icc-xmp-0-f4.webp +40+2+18+1+b -loop 4 -bgcolor 255,40,80,120 -o meta-anim-icc-xmp-0.webp",
+				"webpmux -set icc p3.icc meta-anim-icc-xmp-0.webp -o meta-anim-icc-xmp-1.webp",
+				"webpmux -set xmp packet.xmp meta-anim-icc-xmp-1.webp -o meta-anim-icc-xmp.webp"
+			],
+			"size": 1886,
+			"sha256": "929acae782c2a9935f1029574447be84e0ca128e5c6305492ed1560bba28b2be",
+			"chunks": [
+				"VP8X",
+				"ICCP",
+				"ANIM",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"ANMF",
+				"XMP "
+			],
+			"width": 48,
+			"height": 32,
+			"lossless": false,
+			"alpha": true,
+			"animated": true,
+			"loopCount": 4,
+			"background": [
+				120,
+				80,
+				40,
+				255
+			],
+			"iccSHA256": "317689309add8dc5ba39df2aa301c1c9b1fbfa11edbe104270be56c192cbb136",
+			"xmpSHA256": "4110514e6471ab847a28bdeda50ee24260dac60086ed347cd1596a58fcc81f84",
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 32,
+					"duration": 80,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "adcd789d2f51911f550b01997133368eed3f178817a85546e1405ca1288fd13f",
+					"rgbaSHA256": "ebfd79a7649e34124e7207b666852f25290f2c6d3b464d88714c247c1e337a27"
+				},
+				{
+					"x": 10,
+					"y": 8,
+					"width": 20,
+					"height": 16,
+					"duration": 60,
+					"blend": true,
+					"dispose": true,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "7fe1918da275710c4a0744aeda06aa54b85944a9c1222fe84a559de487e0af9f",
+					"alphaSHA256": "57597fc80d1f16c4c50a450166b7ab94df95752a6669902f169ab57419ca6cc3",
+					"rgbaSHA256": "5676c4a3e96348845126dfe5f4d0f0958ea2d89446e85688346da0f4ddd764be"
+				},
+				{
+					"x": 30,
+					"y": 14,
+					"width": 16,
+					"height": 16,
+					"duration": 100,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "db5832f5df7e189f4b45d138f1b116e955975fd5c38b058b2fc8b34bae5fdf0b"
+				},
+				{
+					"x": 2,
+					"y": 18,
+					"width": 24,
+					"height": 12,
+					"duration": 40,
+					"blend": true,
+					"dispose": true,
+					"lossless": true,
+					"alpha": true,
+					"rgbaSHA256": "ae44c1537dd5630249e53d7a3ff892e6aefa8c6896999c3b5c3e9c66fa10cf19"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o1-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o1-lossy-0.webp",
+				"webpmux -set exif o1.exif meta-exif-o1-lossy-0.webp -o meta-exif-o1-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "c9afe612822f95f01ef62c0aacafff5d28b3378d5ab75885501f8e7d8c7f2d7a",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "fba6f08d470295b37493e2c6985aeac50b1a2f49279c140c0f1d367f3cecc015",
+			"orientation": 1,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o2-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o2-lossy-0.webp",
+				"webpmux -set exif o2.exif meta-exif-o2-lossy-0.webp -o meta-exif-o2-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "68bdae4a4f7a81f3bbbe44f26183d5fe54f16a1c803979d9d5d319d49c2876d8",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "62c71cc703c25788f68d8373f7bad69e14b148aaee5da58e0fec2690a61831cb",
+			"orientation": 2,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o3-alpha",
+			"kind": "alpha",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -quiet asym-32x24-holes.png -o meta-exif-o3-alpha-0.webp",
+				"webpmux -set exif o3.exif meta-exif-o3-alpha-0.webp -o meta-exif-o3-alpha.webp"
+			],
+			"size": 344,
+			"sha256": "a9a71cf0000d59abab4026442ecf169263a09a1944600cc529144969f64360fc",
+			"chunks": [
+				"VP8X",
+				"ALPH",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": true,
+			"animated": false,
+			"exifSHA256": "ac74b4f2d29d43405e3a8010d1585a60424c8fa445b3341b657abd42691dbe09",
+			"orientation": 3,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": true,
+					"yuvSHA256": "31c7294566c8a5dda4cd762d63cb59378febd827c0c02de993e463e93e53db1c",
+					"alphaSHA256": "2eb10456fd4f90ed77989e3368ab68c6cfcfa468b76f2ef538b420494f5bb57b",
+					"rgbaSHA256": "1f80d7f1fc629495fcc59ffc3d376aaa8709d27ae2a787ef52616e95b9086a8a"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o3-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o3-lossy-0.webp",
+				"webpmux -set exif o3.exif meta-exif-o3-lossy-0.webp -o meta-exif-o3-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "f801e6129ad64f23597575eabe2de87d811600dd8faa94eec824ad85823acc0d",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "ac74b4f2d29d43405e3a8010d1585a60424c8fa445b3341b657abd42691dbe09",
+			"orientation": 3,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o4-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o4-lossy-0.webp",
+				"webpmux -set exif o4.exif meta-exif-o4-lossy-0.webp -o meta-exif-o4-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "b3efed202bfe806f6eeecb3601746a0fd1fad7f159569ef9bdf4ab4e76de60c3",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "1570bec3a87967d2e6dba716178af6356c9262706bdd5f8cb66ee4c3e20563db",
+			"orientation": 4,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o5-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o5-lossy-0.webp",
+				"webpmux -set exif o5.exif meta-exif-o5-lossy-0.webp -o meta-exif-o5-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "fe036bc0f4eb40930addcfd9d2428e7c8bbcef546e43dee5838648750e22f4ae",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "7140c64232e5223fc9eaebd2538abda59ec18dffd2adac2105ca72f40b00c9df",
+			"orientation": 5,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o6-lossless",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -lossless -quiet asym-32x24.png -o meta-exif-o6-lossless-0.webp",
+				"webpmux -set exif o6.exif meta-exif-o6-lossless-0.webp -o meta-exif-o6-lossless.webp"
+			],
+			"size": 148,
+			"sha256": "bbb1fce6898dc300302d3092716f8a2cf6877c80a6331fd88c0c54affc7cb8f5",
+			"chunks": [
+				"VP8X",
+				"VP8L",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "cf572f5aabe811670c63de2cbf0e9f86ac25bc84942d190d4c44abf25632a38a",
+			"orientation": 6,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "ae9da6ff54f99ca0b202009f85fd38bcb58f65e6379b0fb768121d6c524340aa"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o6-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o6-lossy-0.webp",
+				"webpmux -set exif o6.exif meta-exif-o6-lossy-0.webp -o meta-exif-o6-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "bbd8f7bbf1652744f28bc463db26d3214544ab681910992b2f0eb328900b5d5a",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "cf572f5aabe811670c63de2cbf0e9f86ac25bc84942d190d4c44abf25632a38a",
+			"orientation": 6,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o7-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o7-lossy-0.webp",
+				"webpmux -set exif o7.exif meta-exif-o7-lossy-0.webp -o meta-exif-o7-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "6d1c88de7ab7e45970272845a3f96069344df6c8db7e57fc307e44ffe3500c2f",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "edeba6d72a70eec620e79a55524407d6ec4f64f8bec5d0342b0e3463ad23840b",
+			"orientation": 7,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-o8-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-o8-lossy-0.webp",
+				"webpmux -set exif o8.exif meta-exif-o8-lossy-0.webp -o meta-exif-o8-lossy.webp"
+			],
+			"size": 222,
+			"sha256": "eefca97c71e85182dc18d1c7b8fcf4e7a0a513f594debb3bc24f5cbd65988f9d",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "51bbcbc4660b0e86c18ab8a5ac5d04eb527448c360d3a97a0a3953ac08c91c3a",
+			"orientation": 8,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-exif-prefix-o6-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 90 -quiet asym-32x24.png -o meta-exif-prefix-o6-lossy-0.webp",
+				"webpmux -set exif o6-prefix.exif meta-exif-prefix-o6-lossy-0.webp -o meta-exif-prefix-o6-lossy.webp"
+			],
+			"size": 228,
+			"sha256": "c17c7900ab7199d07dac21b4b59b9771df52af1e3b0b1fb8c66f415a500dd9c9",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"EXIF"
+			],
+			"width": 32,
+			"height": 24,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"exifSHA256": "d15780822342c2539a6f04ad6f46405ba93655ffef8e4c29cce220389297d52e",
+			"orientation": 6,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 24,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ea22b0d57b8d97529000da1caab14a7528095bb44d9eadee1397f0084cf797c6",
+					"rgbaSHA256": "689f983bb59abd75651ac9d082e24cc05f26bf0acd554248e66e8e8838741c0f"
+				}
+			]
+		},
+		{
+			"name": "meta-icc-p3-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -q 75 -quiet photo-64x48.png -o meta-icc-p3-lossy-0.webp",
+				"webpmux -set icc p3.icc meta-icc-p3-lossy-0.webp -o meta-icc-p3-lossy.webp"
+			],
+			"size": 916,
+			"sha256": "ff86c8d2ba9e7e6ed585ab2f94cb3dc67ebaa0efd2a746b7180a504bd4ae624b",
+			"chunks": [
+				"VP8X",
+				"ICCP",
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"iccSHA256": "317689309add8dc5ba39df2aa301c1c9b1fbfa11edbe104270be56c192cbb136",
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "646b69cf6f606cac7e2cc66dea8dafffe0abf4a7631fcc0f60cd38ec050c6bec",
+					"rgbaSHA256": "e80fbdd274a0e9d6a8db2601118042e48ca68dda8f1564128ccbd2bee8bed20f"
+				}
+			]
+		},
+		{
+			"name": "meta-icc-srgb-lossless",
+			"kind": "lossless",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -z 6 -quiet photo-48x36.png -o meta-icc-srgb-lossless-0.webp",
+				"webpmux -set icc srgb.icc meta-icc-srgb-lossless-0.webp -o meta-icc-srgb-lossless.webp"
+			],
+			"size": 3796,
+			"sha256": "7eea196a3524eb77f1d5c29b526325045126c22292dbfed52aebf63c01a91a81",
+			"chunks": [
+				"VP8X",
+				"ICCP",
+				"VP8L"
+			],
+			"width": 48,
+			"height": 36,
+			"lossless": true,
+			"alpha": false,
+			"animated": false,
+			"iccSHA256": "647432aee60754b3a04a34bf0a11cfdc20315de6b6d378a37a75bbb14ca39dd2",
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 48,
+					"height": 36,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": true,
+					"alpha": false,
+					"rgbaSHA256": "9eb314892afdb19018a99ba91d384ae387c53c4a23420f5d3a944101736c421c"
+				}
+			]
+		},
+		{
+			"name": "meta-xmp-lossy",
+			"kind": "lossy",
+			"tool": "cwebp",
+			"commands": [
+				"cwebp -preset text -quiet glyphs-64x48.png -o meta-xmp-lossy-0.webp",
+				"webpmux -set xmp packet.xmp meta-xmp-lossy-0.webp -o meta-xmp-lossy.webp"
+			],
+			"size": 2194,
+			"sha256": "32bba0b00e455f2bdfb817e1333222b5b2daa9e30855bcdc90b0552db57fdac6",
+			"chunks": [
+				"VP8X",
+				"VP8 ",
+				"XMP "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"xmpSHA256": "4110514e6471ab847a28bdeda50ee24260dac60086ed347cd1596a58fcc81f84",
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "06bed349e873f1db7f54bf5541acd3424863b2352af01612b4e0a1facc1b9934",
+					"rgbaSHA256": "75756ee9436a59ef1fa34876c86f9f15e03750945a73737b0955da5e13408416"
+				}
+			]
+		},
+		{
+			"name": "vpx-edges-31x13-q24",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=24 --max-q=24 -o vpx-edges-31x13-q24.ivf edges-31x13.y4m"
+			],
+			"size": 312,
+			"sha256": "b35624a6a9491b080b806ade4916feb9658672baa8b1b773d6e303245ad7dc0d",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 31,
+			"height": 13,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 31,
+					"height": 13,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "6535a224cd46a14e34eec14128c0b5ecc73065eb5a8b89cf0a2880e7e151e9e2",
+					"rgbaSHA256": "3bdc69066c80ce440b852d2bfcf28c969eb790390216b8b6b41b8b40d43b38b6"
+				}
+			]
+		},
+		{
+			"name": "vpx-edges-64x48-q63-error-resilient",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=63 --max-q=63 --error-resilient=1 -o vpx-edges-64x48-q63-error-resilient.ivf edges-64x48.y4m"
+			],
+			"size": 232,
+			"sha256": "3124287e206cdfda5cb3f2704b54ba62de1f57bc89d1e2dbef57c2e4120fcf83",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "f8f5298c2c78ce2d3321a85e20fda2ef145e4be4cb64293a6410327be17d55a7",
+					"rgbaSHA256": "a7e83145ab17181158f045dc5e8bbcda10a2a5d9143bffa4a22f438bfadc9696"
+				}
+			]
+		},
+		{
+			"name": "vpx-glyphs-64x48-q50-screen-content",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=50 --max-q=50 --screen-content-mode=1 -o vpx-glyphs-64x48-q50-screen-content.ivf glyphs-64x48.y4m"
+			],
+			"size": 932,
+			"sha256": "35f02a155a0a841f3667fb6c718a2a4203246ccc566292863e281803d7e4f537",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e6226bf1f2318fa4ff2d71ed0d82309f476386ea42e68d4df182d474134c2d47",
+					"rgbaSHA256": "ee23420b99462d072cbba04d398027cfc0be50e62973b5393c69f6f44510d9bb"
+				}
+			]
+		},
+		{
+			"name": "vpx-gradient-1x1",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt -o vpx-gradient-1x1.ivf gradient-1x1.y4m"
+			],
+			"size": 48,
+			"sha256": "cb23d2dbd3abfd14064599b48192f7865b79197bf7333953235b2c41bcc52042",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 1,
+			"height": 1,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 1,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "8ae40a3583aef6697d2c2eff57eb915ed0bda54aaa92812ad97982743ac06f37",
+					"rgbaSHA256": "3ec89e14a0821bb5838a03f9bb56e817b1a12c57a2b1eb60935ded0655c99d78"
+				}
+			]
+		},
+		{
+			"name": "vpx-noise-13x1-q24",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=24 --max-q=24 -o vpx-noise-13x1-q24.ivf noise-13x1.y4m"
+			],
+			"size": 102,
+			"sha256": "13b04e9440fcf473ecc5ba5cddbe6eeddbc3be6dd830d76f17cc90feec345737",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 13,
+			"height": 1,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 13,
+					"height": 1,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "487c0d861364e561a9efe3e75bdf24e3198e1c738a02299563c429a3b0321fb0",
+					"rgbaSHA256": "0bf3c71e78fa5ebad5ccbff95c6f8b4e8ac97fc6e02c111c8169a01778f74056"
+				}
+			]
+		},
+		{
+			"name": "vpx-noise-32x32-q0",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=0 --max-q=0 -o vpx-noise-32x32-q0.ivf noise-32x32.y4m"
+			],
+			"size": 1620,
+			"sha256": "648fde8f005aaf2fbacf480c4b50cae33e22c96cc4dbd51edf0f24ab880ef2e2",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 32,
+			"height": 32,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 32,
+					"height": 32,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "0269613c5067125803a45a700802ebac5ba83fdbd0414ba03c8ebdd574963858",
+					"rgbaSHA256": "b6bf6f67e176d3b9d1f25c750c4a7e1e9a7b37b0f2cf1ad4ea283b93681bf467"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-100x75",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt -o vpx-photo-100x75.ivf photo-100x75.y4m"
+			],
+			"size": 3090,
+			"sha256": "c9f5653cd09adaa43b3020e9903360a5f19768e83fc4c465a51830b65944f232",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e84cc773a8702efbbae5d169b7c6e263359abb685ad3e9f9a32db739752ebc30",
+					"rgbaSHA256": "79a8ae95e84a9cada88898ae6eec7fd472cabd0e3e73f664484daff3abc7438d"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-100x75-q20-tune-ssim",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=20 --max-q=20 --tune=ssim -o vpx-photo-100x75-q20-tune-ssim.ivf photo-100x75.y4m"
+			],
+			"size": 808,
+			"sha256": "cd43340d6d8ee4853adba0aa683b248672c3db7cadca932b128cac21951580c0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 100,
+			"height": 75,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 100,
+					"height": 75,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "b2268fd13fcbc7ad0a8c1b4c7c7aa3c20d14e46ad959fc7c7d62f0d3b6d33d57",
+					"rgbaSHA256": "26aacdc2f30d00b06759883884f3987e7c06229088bf7a6a371a76d1e09d1df3"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-128x128-token-parts0",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=30 --max-q=30 --token-parts=0 -o vpx-photo-128x128-token-parts0.ivf photo-128x128.y4m"
+			],
+			"size": 548,
+			"sha256": "8c6e2a8cfb51f745292cff9481788440d851a19ba7efa67c01695b1bca80a9c2",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 128,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 128,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2b499d0b6466ab41f1987ee4672543baafaf0dbab7b2d5de103bee45733dd364",
+					"rgbaSHA256": "8e2a9e4dfdefb11c8d3acb0557b5a8eeda1552d752a9c2c80f7fec7c031bb625"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-128x128-token-parts1",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=30 --max-q=30 --token-parts=1 -o vpx-photo-128x128-token-parts1.ivf photo-128x128.y4m"
+			],
+			"size": 552,
+			"sha256": "f0305a7f4b06d4c275656147334c5bebe1308ba72648f8600ddf5daf9c274b1e",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 128,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 128,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2b499d0b6466ab41f1987ee4672543baafaf0dbab7b2d5de103bee45733dd364",
+					"rgbaSHA256": "8e2a9e4dfdefb11c8d3acb0557b5a8eeda1552d752a9c2c80f7fec7c031bb625"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-128x128-token-parts2",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=30 --max-q=30 --token-parts=2 -o vpx-photo-128x128-token-parts2.ivf photo-128x128.y4m"
+			],
+			"size": 562,
+			"sha256": "13ad764c21a15b634387f1e082465f19868e7efd7f8e6516fd5ad0fa81be6946",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 128,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 128,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2b499d0b6466ab41f1987ee4672543baafaf0dbab7b2d5de103bee45733dd364",
+					"rgbaSHA256": "8e2a9e4dfdefb11c8d3acb0557b5a8eeda1552d752a9c2c80f7fec7c031bb625"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-128x128-token-parts3",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=30 --max-q=30 --token-parts=3 -o vpx-photo-128x128-token-parts3.ivf photo-128x128.y4m"
+			],
+			"size": 578,
+			"sha256": "bccfe057a99f43aa7d15b1a616cb62620fb614133eefa40d8afffb68e6e49d73",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 128,
+			"height": 128,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 128,
+					"height": 128,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "2b499d0b6466ab41f1987ee4672543baafaf0dbab7b2d5de103bee45733dd364",
+					"rgbaSHA256": "8e2a9e4dfdefb11c8d3acb0557b5a8eeda1552d752a9c2c80f7fec7c031bb625"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-17x31-q24",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=24 --max-q=24 -o vpx-photo-17x31-q24.ivf photo-17x31.y4m"
+			],
+			"size": 236,
+			"sha256": "98db1e3cd6e42c87afa9fdd7217f351e6db6a834c559f789fa27b3548d496448",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 17,
+			"height": 31,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 17,
+					"height": 31,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "dc14ab185e97ba32c93b3c2e5322b307ce9c1c3516d77833afd0e052096effe5",
+					"rgbaSHA256": "2ef7427107392e3e97464154ede6afa20ff29a078e5e4ea0acc9d19692dd193a"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q0",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=0 --max-q=0 -o vpx-photo-64x48-q0.ivf photo-64x48.y4m"
+			],
+			"size": 2018,
+			"sha256": "c4a4507dd8bf2ff8fff1f210e1bd67ba6f9b3e766d82831be9f8d2631862a84f",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "ba34a135556e17cce35334f2ed84378175fed9daa845db09f0ddc26fd956e141",
+					"rgbaSHA256": "07c7673fe4b2c214b9fc15754a0b63d8177282045630f0fa2c79dc0013b44d52"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q10-token-parts3",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=10 --max-q=10 --token-parts=3 -o vpx-photo-64x48-q10-token-parts3.ivf photo-64x48.y4m"
+			],
+			"size": 658,
+			"sha256": "9aee108d7d954896f84b86f981da983bb27d866294e9d3b39cdfca223c3bb1e9",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "e34b2cea952e586646e8eb8d33a1e17f5578377380a0d99ef86c4d370a9db28b",
+					"rgbaSHA256": "56184c90e1a164a496c6a60e403e17b82682211ec299fc60e7085b71944cf060"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q30",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=30 --max-q=30 -o vpx-photo-64x48-q30.ivf photo-64x48.y4m"
+			],
+			"size": 246,
+			"sha256": "13a56142c6f7fba8c350a346c8f2da90f8ed7831b41639ba423bdc1a2518e082",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "83de0bbb4b72abd0dba299c619251fc8ceb15f1f4d217eed370551817e90b612",
+					"rgbaSHA256": "4f6b6fcb5f95d769a69aca63c7db27fc3df9fdeda22d3ad7f6cd4613be3c925c"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q40-error-resilient",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=40 --max-q=40 --error-resilient=1 -o vpx-photo-64x48-q40-error-resilient.ivf photo-64x48.y4m"
+			],
+			"size": 198,
+			"sha256": "47dec1984a096336cff54f8bffcfdea3ca58f88a7bd7be54105a112cff9a4bd9",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "27072ede3a7f84510389df79c36722e79bf4b97a503e9f78b5a2780b7a8e752f",
+					"rgbaSHA256": "a11b5dd47fcf7e94b702da73aa15d9ff61b721ae2a8aa4fd87b18d70ab1c7cd8"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q45-profile0",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=45 --max-q=45 --profile=0 -o vpx-photo-64x48-q45-profile0.ivf photo-64x48.y4m"
+			],
+			"size": 174,
+			"sha256": "6cf00a3e650a00f6012587310d5eac6e5c8d20e0dea85c66e2acbc2259f3ea86",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "5b6f9e5275ea94be191fcb2624b212785f6b6bf13e51c12acd7ab8d5f16d9bc1",
+					"rgbaSHA256": "79351f8fe194a0f0bbdb36b945b22facb576acc4d37bc15fdf83ccb824731c6b"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q45-profile1",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=45 --max-q=45 --profile=1 -o vpx-photo-64x48-q45-profile1.ivf photo-64x48.y4m"
+			],
+			"size": 174,
+			"sha256": "361c6014ddc45cae450a42c91b2db00cd21bb92009617da45ca579cd54c16ad8",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "a3439e309d7f181c30df2c2e73a2584ee135d6599f586758892cbca5302c4b27",
+					"rgbaSHA256": "80bd28ea7f0976640b7b0535e6928136ffb63bc3fd139830eec2b3cad2dde057"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q45-profile2",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=45 --max-q=45 --profile=2 -o vpx-photo-64x48-q45-profile2.ivf photo-64x48.y4m"
+			],
+			"size": 174,
+			"sha256": "706490b2d68141e1e62e128ab06e34100d300c7e142d3692b2eefaac4e93c3b5",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "005975522104940bd35c55d8b82a3796ac6f906ee492b7807d0db5ba08225ea6",
+					"rgbaSHA256": "45fcce0c2c4c3e56e72e2a924317b2d6602e2ee2f493977012f8bcfccae85d31"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q45-profile3",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=45 --max-q=45 --profile=3 -o vpx-photo-64x48-q45-profile3.ivf photo-64x48.y4m"
+			],
+			"size": 174,
+			"sha256": "e24ef3a9898f38ad1082a84826b0886e4bcd1260d718c8b321c6dce88b8c11e0",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "005975522104940bd35c55d8b82a3796ac6f906ee492b7807d0db5ba08225ea6",
+					"rgbaSHA256": "45fcce0c2c4c3e56e72e2a924317b2d6602e2ee2f493977012f8bcfccae85d31"
+				}
+			]
+		},
+		{
+			"name": "vpx-photo-64x48-q63",
+			"kind": "vpx",
+			"tool": "vpxenc",
+			"commands": [
+				"vpxenc --codec=vp8 --ivf --limit=1 --passes=1 --lag-in-frames=0 --threads=1 --quiet --disable-warning-prompt --min-q=63 --max-q=63 -o vpx-photo-64x48-q63.ivf photo-64x48.y4m"
+			],
+			"size": 116,
+			"sha256": "dfe5b40aa9f18745d43c8cd884112ef062b08c685c6f3a264ed864af7280feba",
+			"chunks": [
+				"VP8 "
+			],
+			"width": 64,
+			"height": 48,
+			"lossless": false,
+			"alpha": false,
+			"animated": false,
+			"frames": [
+				{
+					"x": 0,
+					"y": 0,
+					"width": 64,
+					"height": 48,
+					"duration": 0,
+					"blend": false,
+					"dispose": false,
+					"lossless": false,
+					"alpha": false,
+					"yuvSHA256": "a5e0842214e17c79016ccc4df2098ea890dfda2d650036dbbd0a731fd4fa3214",
+					"rgbaSHA256": "73a1a0076e2f8d949c0b2582d99f9c23040acea0252162c282bd62cdea4f0d4e"
+				}
+			]
+		}
+	]
+}
