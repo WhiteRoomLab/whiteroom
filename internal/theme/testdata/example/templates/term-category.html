@@ -1,9 +1,14 @@
 {{template "layout" .}}
 {{define "main"}}
 <section class="list term-category">
-<h1>{{.Title}}</h1>
+{{- with .Term}}
+{{- with .Parent}}
+<p><a href="{{.URL}}">{{.Name}}</a></p>
+{{- end}}
+<h1>{{.Name}}</h1>
 {{- with .Description}}
 <p>{{.}}</p>
+{{- end}}
 {{- end}}
 {{- range .Entries}}
 {{template "entry/card" dict "entry" . "showAuthor" true}}

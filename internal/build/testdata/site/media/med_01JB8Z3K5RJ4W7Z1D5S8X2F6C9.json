@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9",
+  "hash": "sha256:f062025053fcdf8f2b530338556f24819f04561bbaeae3bf7fd4e95df5c8900d",
+  "fileName": "yamada.png",
+  "mimeType": "image/png",
+  "size": 1908,
+  "width": 256,
+  "height": 256,
+  "alt": {
+    "en": "Taro Yamada",
+    "ja": "山田 太郎"
+  },
+  "uploadedAt": "2026-10-20T09:00:00+09:00",
+  "uploadedBy": "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+}

@@ -24,15 +24,21 @@ type PathRef struct {
 // The paths of a site follow its URL, as "/about/" does in "https://example.com/blog/about/", and start with "/".
 // They are not percent-encoded, as in "/news/新サービス/". s must be valid.
 func (s *Site) EntryPath(e *Entry, r *Revision, lookup func(kind RefKind, id string) (PathRef, bool)) (string, error) {
-	if err := checkSiteLanguage(s, e.Language); err != nil {
-		return "", err
-	}
-	t := s.Type(e.Type)
-	if t == nil {
-		return "", fmt.Errorf("unknown type %q", e.Type)
-	}
 	if id := s.FrontPage[e.Language]; id != "" && id == e.ID {
+		if _, err := s.entryType(e); err != nil {
+			return "", err
+		}
 		return s.LanguagePath(e.Language), nil
+	}
+	return s.EntryRulePath(e, r, lookup)
+}
+
+// EntryRulePath returns the path of e, whose content is r, by the URL rule of its type, as EntryPath does, even if e is
+// the front page in its language: "/home/" for the front page whose slug is "home", which EntryPath puts at "/".
+func (s *Site) EntryRulePath(e *Entry, r *Revision, lookup func(kind RefKind, id string) (PathRef, bool)) (string, error) {
+	t, err := s.entryType(e)
+	if err != nil {
+		return "", err
 	}
 	rule := t.URLRule()
 	return s.fillRule(e.Language, rule, func(name string) (string, error) {
@@ -64,6 +70,18 @@ func (s *Site) EntryPath(e *Entry, r *Revision, lookup func(kind RefKind, id str
 		}
 		return "", placeholderError(rule, name, t.Name)
 	})
+}
+
+// entryType returns the type of e, or an error if s does not have the language or the type of e.
+func (s *Site) entryType(e *Entry) (*TypeDef, error) {
+	if err := checkSiteLanguage(s, e.Language); err != nil {
+		return nil, err
+	}
+	t := s.Type(e.Type)
+	if t == nil {
+		return nil, fmt.Errorf("unknown type %q", e.Type)
+	}
+	return t, nil
 }
 
 // TermPath returns the path of the list of the entries with t, such as "/category/news/press-release/" or

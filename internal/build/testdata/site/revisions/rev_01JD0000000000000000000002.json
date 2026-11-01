@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "title": "秋の勉強会を開きます",
+  "slug": "autumn-study",
+  "date": "2026-10-03T10:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7E2G5J8K1M4P7R2T5W8"], "tag": ["trm_01JBA4C7G4J7M1P4R7T1W4Y7B1"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0002",
+      "content": [{ "type": "text", "text": "10月13日に、Webアクセシビリティの勉強会を開きます。どなたでも参加できます。" }]
+    }
+  ]
+}

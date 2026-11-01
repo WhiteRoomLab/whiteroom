@@ -81,11 +81,16 @@ func TestEncodeURL(t *testing.T) {
 		{"\xff", "%FF"},
 		{"https://例え.jp/パス", "https://%E4%BE%8B%E3%81%88.jp/%E3%83%91%E3%82%B9"},
 		{`javascript:alert("x")`, "javascript:alert%28%22x%22%29"},
+		// U+3000, which slugs may have, before a path that is encoded already.
+		{"https://example.com/a" + string(rune(0x3000)) + "b/%E3%81%82/", "https://example.com/a%E3%80%80b/%E3%81%82/"},
 	}
 	for _, tt := range tests {
 		got := encodeURL(tt.in)
 		if got != tt.want {
 			t.Errorf("encodeURL(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+		if exported := EncodeURL(tt.in); exported != got {
+			t.Errorf("EncodeURL(%q) = %q, want %q", tt.in, exported, got)
 		}
 		checkEncoded(t, tt.in, got)
 	}
@@ -148,6 +153,9 @@ func TestSiteURLs(t *testing.T) {
 		for i, p := range paths {
 			if got := r.sitePath(p); got != tt.want[i] {
 				t.Errorf("base %q: sitePath(%q) = %q, want %q", tt.base, p, got, tt.want[i])
+			}
+			if got := r.URL(p); string(got) != tt.want[i] {
+				t.Errorf("base %q: URL(%q) = %q, want %q", tt.base, p, got, tt.want[i])
 			}
 			if got := r.hrefURL(p); got != tt.want[i] {
 				t.Errorf("base %q: hrefURL(%q) = %q, want %q", tt.base, p, got, tt.want[i])

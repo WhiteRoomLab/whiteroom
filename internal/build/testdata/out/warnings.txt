@@ -1,0 +1,5 @@
+menus/mnu_01JC0000000000000000000001.json:10:5: /items/2: entry "ent_01JC0000000000000000000003" is not published; the item and its children are left out
+menus/mnu_01JC0000000000000000000002.json:5:3: /location: the theme has no location "sidebar"; the menu is left out
+redirects/rdr_01JC0000000000000000000006.json:5:3: /to: entry "ent_01JC0000000000000000000003" is not published; the redirect is left out
+revisions/rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9.json:5:3: /template: the theme has no page template "standard"; rendered with entry.html
+theme: no translation in en for the key "postedBy"; pages in en use its text in ja, the default language of the theme

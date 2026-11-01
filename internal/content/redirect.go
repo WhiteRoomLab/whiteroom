@@ -144,6 +144,14 @@ func (x Redirect) checkURL(site *Site) error {
 	return nil
 }
 
+// SitePath returns u, an http or https URL, as a path in the site at siteURL with its query, such as "/about/?ref=top"
+// for "https://example.com/blog/about/?ref=top" in the site at "https://example.com/blog", without the fragment. The
+// path is in the canonical form of Redirect.From, and the query is left as it is. ok is false if u is outside the site
+// or siteURL is invalid.
+func SitePath(siteURL, u string) (path string, ok bool) {
+	return sitePath(siteURL, u)
+}
+
 // sitePath returns to, an http or https URL, as a path in the site at siteURL with its query, such as "/about/?ref=top"
 // for "https://example.com/blog/about/?ref=top" in the site at "https://example.com/blog". ok is false if to is outside
 // the site or siteURL is invalid.
@@ -198,6 +206,13 @@ func checkRedirectStatus(v int) error {
 		return fmt.Errorf("unsupported status %d (use 301 or 302)", v)
 	}
 	return nil
+}
+
+// CanonicalFrom returns s, a path in the site with an optional query, in the canonical form of Redirect.From, as
+// Normalize makes it. Other paths, such as those of pages and of the targets of redirects, which may not be in that
+// form, are compared with froms in it.
+func CanonicalFrom(s string) string {
+	return normalizeRedirectFrom(s)
 }
 
 // normalizeRedirectFrom returns from, a path in the site with an optional query, percent-encoded only where needed

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "mnu_01JC0000000000000000000001",
+  "title": "Header",
+  "location": "header",
+  "language": "en",
+  "items": [
+    { "label": "About us", "entry": "ent_01JB8Y6T2VS4W7Z2B5D8F1H6J9" },
+    { "term": "trm_01JBA4C7H5K8N3Q6S9V3X6Z9C2" },
+    { "label": "Careers", "entry": "ent_01JC0000000000000000000003" },
+    { "label": "Privacy policy", "entry": "ent_01JBD1M2N3P4Q5R6S7T8V9W0X1" }
+  ]
+}

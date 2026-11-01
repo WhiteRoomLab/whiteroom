@@ -454,6 +454,26 @@ func TestNormalizeRedirectFrom(t *testing.T) {
 	}
 }
 
+func TestCanonicalFrom(t *testing.T) {
+	const ideographicSpace = string(rune(0x3000))
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "encoded path and unsorted query", in: "/%E4%BC%9A/?b=2&a=1", want: "/会/?a=1&b=2"},
+		{name: "path of a page with an ideographic space", in: "/tag/a" + ideographicSpace + "b/", want: "/tag/a%E3%80%80b/"},
+		{name: "canonical", in: "/会社/?p=123", want: "/会社/?p=123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanonicalFrom(tt.in); got != tt.want {
+				t.Errorf("CanonicalFrom(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckRedirectFrom(t *testing.T) {
 	const (
 		normalize = "contains control characters or surrounding spaces; normalize it first"
@@ -678,6 +698,9 @@ func TestSitePath(t *testing.T) {
 			got, ok := sitePath(tt.site, tt.to)
 			if got != tt.want || ok != (tt.want != "") {
 				t.Errorf("sitePath(%q, %q) = %q, %t, want %q, %t", tt.site, tt.to, got, ok, tt.want, tt.want != "")
+			}
+			if got, ok := SitePath(tt.site, tt.to); got != tt.want || ok != (tt.want != "") {
+				t.Errorf("SitePath(%q, %q) = %q, %t, want %q, %t", tt.site, tt.to, got, ok, tt.want, tt.want != "")
 			}
 		})
 	}

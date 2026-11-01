@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "title": "Welcome to our English news",
+  "slug": "welcome",
+  "date": "2026-10-02T01:00:00Z",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0013",
+      "content": [{ "type": "text", "text": "We will post our news in English here, too." }]
+    }
+  ]
+}

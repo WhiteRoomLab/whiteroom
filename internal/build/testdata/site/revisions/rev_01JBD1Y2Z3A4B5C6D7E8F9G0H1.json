@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "title": "お問い合わせ",
+  "slug": "contact",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_cont0001",
+      "content": [{ "type": "text", "text": "ご相談やお見積もりのご依頼は、こちらのフォームからどうぞ。" }]
+    },
+    { "type": "form", "id": "b_cont0002", "attrs": { "form": "frm_01JB8Z3K5VP1D4G7J2M5Q8T3W6" } }
+  ]
+}

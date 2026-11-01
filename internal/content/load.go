@@ -2,7 +2,8 @@ package content
 
 import "strings"
 
-// SiteFile is a file of the site settings. Name is the name of the file in errors, such as "site/schema.yaml".
+// SiteFile is a file of a site, such as a file of the site settings or a JSON document ("entries/<ID>.json"). Name is
+// its name in errors, such as "site/schema.yaml".
 type SiteFile struct {
 	Name string
 	Data []byte

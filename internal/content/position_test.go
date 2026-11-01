@@ -408,6 +408,145 @@ func TestLocateUnmarshal(t *testing.T) {
 	}
 }
 
+func TestDecodeFile(t *testing.T) {
+	const name = "entries/" + testAboutPage + ".json"
+	tests := []struct {
+		name   string
+		in     string
+		want   string // Error() of the error; "" for none
+		decode bool   // the decode function is called
+	}{
+		{name: "valid", in: "{\n  \"schemaVersion\": 1,\n  \"number\": 2\n}\n", decode: true},
+		{
+			name:   "unknown key",
+			in:     "{\n  \"schemaVersion\": 1,\n  \"numbr\": 2\n}\n",
+			want:   name + ":3:3: /numbr: unknown key",
+			decode: true,
+		},
+		{
+			name:   "missing key at the root",
+			in:     "\n{\n  \"number\": 2\n}\n",
+			want:   name + `:2:1: missing key "schemaVersion"`,
+			decode: true,
+		},
+		{
+			name: "syntax error",
+			in:   "{\n  \"schemaVersion\": 1\n  \"number\": 2\n}\n",
+			want: name + `:3:3: invalid character '"' after object value (expecting ',' or '}')`,
+		},
+		{name: "duplicate key", in: "{\n  \"number\": 1,\n  \"number\": 2\n}\n", want: name + ":3:3: duplicate key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var e Entry
+			decoded := false
+			err := DecodeFile(SiteFile{Name: name, Data: []byte(tt.in)}, func(data []byte) error {
+				decoded = true
+				return e.UnmarshalJSON(data)
+			})
+			if decoded != tt.decode {
+				t.Errorf("DecodeFile() called decode: %t, want %t", decoded, tt.decode)
+			}
+			if tt.want == "" {
+				if err != nil || e.Number != 2 {
+					t.Errorf("DecodeFile() = %v and the number %d, want nil and 2", err, e.Number)
+				}
+				return
+			}
+			var es Errors
+			if !errors.As(err, &es) || err.Error() != tt.want {
+				t.Errorf("DecodeFile() = %q (%T), want %q", err, err, tt.want)
+			}
+			if !tt.decode && len(es) == 1 && es[0].Path != "" {
+				t.Errorf("DecodeFile() = %#v, want a syntax error without a Path", es[0])
+			}
+		})
+	}
+}
+
+func TestLocateErrors(t *testing.T) {
+	const name = "revisions/" + testRevision + ".json"
+	doc := []byte("{\n  \"schemaVersion\": 1,\n  \"seo\": {\n    \"noindex\": true\n  }\n}\n")
+	tests := []struct {
+		name string
+		err  error
+		data []byte
+		want string // Error() of the errors; "" for nil
+	}{
+		{name: "nil", data: doc},
+		{name: "member", err: &Error{Path: "/seo/noindex", Msg: "m"}, data: doc, want: name + ":4:5: /seo/noindex: m"},
+		{
+			name: "missing member at its parent",
+			err:  &Error{Path: "/seo/title", Msg: "missing title"},
+			data: doc,
+			want: name + ":3:3: /seo/title: missing title",
+		},
+		{
+			name: "errors in order",
+			err:  Errors{{Path: "/title", Msg: "missing title"}, {Path: "/schemaVersion", Msg: "m"}},
+			data: doc,
+			want: name + ":1:1: /title: missing title\n" + name + ":2:3: /schemaVersion: m",
+		},
+		{name: "position kept", err: &Error{Path: "/seo", Msg: "m", Line: 9, Column: 2}, data: doc, want: name + ":9:2: /seo: m"},
+		{name: "other error", err: errors.New("boom"), data: doc, want: name + ":1:1: boom"},
+		{
+			name: "not JSON",
+			err:  &Error{Path: "/seo/title", Msg: "missing title"},
+			data: []byte("{\n  \"seo\": {"),
+			want: name + ": /seo/title: missing title",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := fmt.Sprint(tt.err)
+			got := LocateErrors(tt.err, SiteFile{Name: name, Data: tt.data})
+			if tt.want == "" {
+				if got != nil {
+					t.Errorf("LocateErrors() = %#v, want nil", got)
+				}
+				return
+			}
+			if got.Error() != tt.want {
+				t.Errorf("LocateErrors() = %q, want %q", got.Error(), tt.want)
+			}
+			if after := fmt.Sprint(tt.err); after != before {
+				t.Errorf("LocateErrors() changed the error to %q", after)
+			}
+		})
+	}
+}
+
+// TestLocateErrorsYAML checks that LocateErrors locates the errors about the schema file, which is YAML, as LoadSite
+// does.
+func TestLocateErrorsYAML(t *testing.T) {
+	const name = "site/schema.yaml"
+	schema := []byte("# the types\nschemaVersion: 1\ntypes:\n  works:\n    url: /works/{slug}/\n    archive: /works/\n")
+	tests := []struct {
+		name string
+		err  error
+		data []byte
+		want string // Error() of the errors
+	}{
+		{name: "member", err: &Error{Path: "/types/works/archive", Msg: "m"}, data: schema, want: name + ":6:5: /types/works/archive: m"},
+		{
+			name: "missing member at its parent",
+			err:  &Error{Path: "/types/works/label", Msg: "m"},
+			data: schema,
+			want: name + ":4:3: /types/works/label: m",
+		},
+		{name: "root", err: errors.New("boom"), data: schema, want: name + ":2:1: boom"},
+		{name: "neither JSON nor YAML", err: &Error{Path: "/types", Msg: "m"}, data: []byte("types:\n\tworks: {}\n"), want: name + ": /types: m"},
+		{name: "empty", err: &Error{Path: "/types", Msg: "m"}, want: name + ": /types: m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := LocateErrors(tt.err, SiteFile{Name: name, Data: tt.data}); got.Error() != tt.want {
+				t.Errorf("LocateErrors() = %q, want %q", got.Error(), tt.want)
+			}
+		})
+	}
+}
+
 // offsetAt returns the byte offset of pos in data.
 func offsetAt(data []byte, pos yaml.Position) int {
 	off := 0

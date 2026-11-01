@@ -1,8 +1,11 @@
 {{template "layout" .}}
 {{define "main"}}
+{{- with .Entry}}
 <article class="entry entry-works">
 <h1>{{.Title}}</h1>
-<p>{{.Client}} ({{.Year}})</p>
+<p>{{.Fields.client}}{{with .Fields.year}} ({{.}}){{end}}</p>
+{{range .Fields.images}}{{with .}}{{template "image" .Image}}{{end}}{{end -}}
 {{.Body}}
 </article>
+{{- end}}
 {{end}}

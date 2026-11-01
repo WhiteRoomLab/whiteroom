@@ -14,6 +14,13 @@ type Link struct {
 	Rel    string       // "noopener" for a new tab, then the rel of the link, separated by spaces; "" if none
 }
 
+// Link returns the link of l outside blocks, such as a link field or an item of a menu, or nil if l is nil or its
+// target cannot be linked, which the warnings tell, at the path "".
+func (r *Renderer) Link(l *content.Link) (*Link, []Warning) {
+	w := &walker{r: r}
+	return w.link(l, ""), w.warnings
+}
+
 // link returns the link of l, at path, or nil if l is nil or its target cannot be linked, which it warns about. Of
 // several targets, which only invalid content has, href comes first, then entry, media and anchor.
 func (w *walker) link(l *content.Link, path string) *Link {

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "mnu_01JC0000000000000000000002",
+  "title": "Sidebar",
+  "location": "sidebar",
+  "language": "en",
+  "items": [
+    { "label": "Contact us", "entry": "ent_01JBD1Y2Z3A4B5C6D7E8F9G0H1" }
+  ]
+}

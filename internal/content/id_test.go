@@ -42,16 +42,16 @@ func TestCheckID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkID(tt.kind, tt.in)
+			err := CheckID(tt.kind, tt.in)
 			if tt.ok {
 				if err != nil {
-					t.Errorf("checkID(%q, %q) = %v, want nil", tt.kind, tt.in, err)
+					t.Errorf("CheckID(%q, %q) = %v, want nil", tt.kind, tt.in, err)
 				}
 				return
 			}
 			want := `invalid ` + string(tt.kind) + ` ID "` + tt.in + `": use "` + idPrefixes[tt.kind] + `" and a ULID (26 characters in upper case)`
 			if err == nil || err.Error() != want {
-				t.Errorf("checkID(%q, %q) = %v, want %s", tt.kind, tt.in, err, want)
+				t.Errorf("CheckID(%q, %q) = %v, want %s", tt.kind, tt.in, err, want)
 			}
 		})
 	}

@@ -1,0 +1,5 @@
+<ul class="languages">
+{{- range .Translations}}
+<li><a href="{{.URL}}" hreflang="{{.Language}}" lang="{{.Language}}"{{if .Current}} aria-current="page"{{end}}{{if .Missing}} class="missing"{{end}}>{{.Language}}</a></li>
+{{- end}}
+</ul>

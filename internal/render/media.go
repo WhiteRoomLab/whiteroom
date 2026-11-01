@@ -114,6 +114,36 @@ func imgSizes(n int, width string) string {
 	return "(max-width: " + px + ") 100vw, " + px
 }
 
+// PageImage is an image outside blocks, such as the featured image of an entry, the logo of a site or the avatar of an
+// author, at the default size (6.6.2), as an image block without a size or a width shows it.
+type PageImage struct {
+	Src           template.URL    // the URL of its published file
+	Srcset        template.Srcset // the URLs of the files of the default size and their widths; "" if there is one
+	Sizes         string          // for the sizes attribute, with Srcset; "" if none
+	Width, Height int             // to show Src at, in pixels; 0 if unknown
+	Alt           string          // the alt of its medium in the language of the page; "" if none
+	HasAlt        bool            // false without Alt; then templates leave out the alt attribute
+}
+
+// PageImage returns the data of the image medium with the ID outside blocks, or nil if there is no such image: its
+// files as those of an image block without a size or a width, and the alt of the medium in the language of r.
+func (r *Renderer) PageImage(id string) *PageImage {
+	m, p, ok := r.res.Media(id)
+	if !ok || m == nil || m.Kind() != content.MediaImage {
+		return nil
+	}
+	img := &PageImage{Src: template.URL(r.sitePath(p)), Alt: m.Alt[r.language]}
+	img.HasAlt = img.Alt != ""
+	if files, found := r.res.Image(id, nil); found {
+		img.Src = template.URL(r.sitePath(files.Src))
+		img.Width, img.Height = files.Width, files.Height
+		if len(files.Srcset) > 1 {
+			img.Srcset, img.Sizes = r.srcset(files.Srcset), imgSizes(files.Width, "")
+		}
+	}
+	return img
+}
+
 // file returns the data of b, a file at path; ok is false if its medium does not exist, which it warns about before
 // anything else.
 func (w *walker) file(b *content.Block, path string) (File, bool) {

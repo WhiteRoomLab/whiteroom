@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "title": "ホーム",
+  "slug": "home",
+  "template": "landing",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_home0001",
+      "variant": "lead",
+      "content": [{ "type": "text", "text": "Webサイトの企画、制作と運用を手がける会社です。" }]
+    },
+    {
+      "type": "group",
+      "id": "b_home0002",
+      "variant": "box",
+      "attrs": { "tagName": "section", "label": "サービス" },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_home0003",
+          "content": [{ "type": "text", "text": "企画から制作、公開した後の運用まで、まとめてお手伝いします。" }]
+        },
+        {
+          "type": "buttons",
+          "id": "b_home0004",
+          "content": [
+            {
+              "type": "button",
+              "id": "b_home0005",
+              "attrs": { "label": "サービスを見る", "link": { "entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" } }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_home0006",
+      "variant": "note",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_home0007",
+          "content": [
+            { "type": "text", "text": "10月26日に、" },
+            {
+              "type": "text",
+              "text": "新しいサービス",
+              "marks": [{ "type": "link", "attrs": { "entry": "ent_01JB8Y6T2WT6X9C3E6G9J2K5M8" } }]
+            },
+            { "type": "text", "text": "を始めました。" }
+          ]
+        }
+      ]
+    }
+  ]
+}

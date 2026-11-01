@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "title": "採用情報を更新しました",
+  "slug": "hiring",
+  "date": "2026-10-17T16:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7E2G5J8K1M4P7R2T5W8"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0008",
+      "content": [
+        { "type": "text", "text": "デザイナーとエンジニアを募集しています。ご応募は、" },
+        {
+          "type": "text",
+          "text": "お問い合わせ",
+          "marks": [{ "type": "link", "attrs": { "entry": "ent_01JBD1Y2Z3A4B5C6D7E8F9G0H1" } }]
+        },
+        { "type": "text", "text": "からどうぞ。" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "med_01JBG3N6V3X6Z9C2E5G8J1K4M7",
+  "hash": "sha256:026f7e3a079bd272dacbfad448ed2064991ec5c992056ddff67fccd5388fb85d",
+  "fileName": "logo.png",
+  "mimeType": "image/png",
+  "size": 1446,
+  "width": 400,
+  "height": 100,
+  "alt": {
+    "en": "Example Inc.",
+    "ja": "株式会社〇〇"
+  },
+  "uploadedAt": "2026-10-20T09:00:00+09:00",
+  "uploadedBy": "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+}

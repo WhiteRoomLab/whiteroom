@@ -1,6 +1,21 @@
 package render
 
-import "strings"
+import (
+	"html/template"
+	"strings"
+)
+
+// EncodeURL percent-encodes s, such as an absolute URL, as the renderer encodes the URLs of the data of templates: the
+// bytes that are not URL characters, but not a "%" followed by two hex digits, so that s may be encoded already.
+func EncodeURL(s string) string {
+	return encodeURL(s)
+}
+
+// URL returns the URL of p, a path of the site such as "/about/", for the data of templates: with the base of r before
+// it, percent-encoded, and trusted as the URLs of the data of blocks are.
+func (r *Renderer) URL(p string) template.URL {
+	return template.URL(r.sitePath(p))
+}
 
 // encodeURL percent-encodes the bytes of s, with upper-case hex digits, except ASCII letters and digits, "-", ".", "_",
 // "~", the reserved characters ! # $ & * + , / : ; = ? @ [ ] and a "%" followed by two hex digits. These are the bytes

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "title": "運用サポートの料金を改定します",
+  "slug": "price",
+  "date": "2026-10-29T10:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0012",
+      "content": [
+        { "type": "text", "text": "11月から、運用サポートの料金を改定します。詳しくは、" },
+        {
+          "type": "text",
+          "text": "サービス",
+          "marks": [{ "type": "link", "attrs": { "entry": "ent_01JB8Y6T2RG7M4XK9P2D5W8NQ3" } }]
+        },
+        { "type": "text", "text": "のページをご覧ください。" }
+      ]
+    }
+  ]
+}

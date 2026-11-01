@@ -48,6 +48,11 @@ const (
 // crockford is the alphabet of ULIDs.
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+// CheckID checks that id is the ID of an entity of kind: its prefix, such as "ent_", and a ULID in upper case.
+func CheckID(kind RefKind, id string) error {
+	return checkID(kind, id)
+}
+
 // checkID checks that id is the ID of an entity of kind: the prefix of kind and a ULID in upper case.
 func checkID(kind RefKind, id string) error {
 	prefix := idPrefixes[kind]

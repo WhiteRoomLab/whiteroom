@@ -1,7 +1,7 @@
 {{template "layout" .}}
 {{define "main"}}
 <section class="list archive-works">
-<h1>{{.Title}}</h1>
+<h1>{{.Type.Label}}</h1>
 {{- range .Entries}}
 {{template "entry/card" dict "entry" . "showAuthor" false}}
 {{- end}}

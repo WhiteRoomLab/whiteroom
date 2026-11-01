@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": { "en": "Example Inc.", "ja": "株式会社〇〇" },
+  "tagline": { "ja": "Webサイトの企画と制作" },
+  "url": "https://example.com",
+  "timeZone": "Asia/Tokyo",
+  "logo": "med_01JBG3N6V3X6Z9C2E5G8J1K4M7",
+  "icon": "med_01JBG3N6W4Y7B0D3F6H9K2M5P8",
+  "languages": ["ja", "en"],
+  "defaultLanguage": "ja",
+  "frontPage": { "ja": "ent_01JBG3N6S1V4X7Z0C3E6G9J2K5" },
+  "postsPage": { "ja": "ent_01JBG3N6T2W5Y8B1D4F7H0K3M6" },
+  "seo": {
+    "titleFormat": { "en": "{title} | {siteName}", "ja": "{title}｜{siteName}" },
+    "ogImage": { "ja": "med_01JBG3N6X5Z8C1E4G7J0K3N6Q9" }
+  }
+}

@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>技術 | 株式会社〇〇</title>
+<link rel="stylesheet" href="/css/site.css?v=5f3c9e21">
 <link rel="stylesheet" href="/assets/css/style.css?v=b791d850">
+<link rel="canonical" href="https://example.com/category/blog/tech/">
 </head>
 <body>
 <header class="site-header">
@@ -13,7 +15,12 @@
 <li><a href="/services/">サービス</a></li>
 <li><a href="/works/">制作実績</a></li>
 <li><a href="/news/">お知らせ</a><ul>
-<li><a href="/category/tech/">技術</a></li>
+<li><a href="/category/blog/tech/" aria-current="page">技術</a></li>
+</ul>
+</li>
+<li><span>会社情報</span><ul>
+<li><a href="/about/">会社概要</a></li>
+<li><a href="https://recruit.example.com/" target="_blank" rel="noopener">採用情報</a></li>
 </ul>
 </li>
 </ul>
@@ -22,18 +29,20 @@
 
 <main>
 <section class="list term-category">
+<p><a href="/category/blog/">ブログ</a></p>
 <h1>技術</h1>
 <p>Webの技術についての記事です。</p>
 <article class="card">
+<img src="/media/med_01JBQ3V6Y9B2E5H8K1N4R7T0X3/script-tag.png?v=15e6f809" srcset="/media/med_01JBQ3V6Y9B2E5H8K1N4R7T0X3/script-tag-768x403.png?v=70503cc2 768w, /media/med_01JBQ3V6Y9B2E5H8K1N4R7T0X3/script-tag.png?v=15e6f809 1200w" sizes="(max-width: 1200px) 100vw, 1200px" width="1200" height="630" alt="エディターに書いたscript要素">
 <h2><a href="/2026/10/31/script-tag/">&lt;script&gt;タグの使い方</a></h2>
-<p>Hanako Yamada が投稿</p>
+<p><time datetime="2026-10-31T09:00:00&#43;09:00">2026-10-31</time> 山田 太郎 が投稿</p>
 <p>JavaScriptを書く方法です。</p>
 <a href="/2026/10/31/script-tag/">続きを読む</a>
 </article>
 
 <nav class="pagination">
 <span>1 / 2 ページ</span>
-<a href="/category/tech/page/2/" rel="next">次へ</a>
+<a href="/category/blog/tech/page/2/" rel="next">次へ</a>
 </nav>
 
 </section>
@@ -42,6 +51,11 @@
 <nav><ul>
 <li><a href="/about/">会社概要</a></li>
 <li><a href="/contact/">お問い合わせ</a></li>
+</ul>
+</nav>
+<nav><ul class="languages">
+<li><a href="/category/blog/tech/" hreflang="ja" lang="ja" aria-current="page">ja</a></li>
+<li><a href="/en/category/blog/tech/" hreflang="en" lang="en">en</a></li>
 </ul>
 </nav>
 <small>&copy; 株式会社〇〇</small>

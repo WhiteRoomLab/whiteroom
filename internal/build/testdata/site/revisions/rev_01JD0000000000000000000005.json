@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "title": "オフィスを移転しました",
+  "slug": "office",
+  "featuredImage": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5",
+  "date": "2026-10-10T09:30:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7E2G5J8K1M4P7R2T5W8"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0005",
+      "content": [
+        { "type": "text", "text": "本社を移転しました。新しい住所は、" },
+        {
+          "type": "text",
+          "text": "会社概要",
+          "marks": [{ "type": "link", "attrs": { "entry": "ent_01JB8W2N5KD3F6H9J1M4P7R2T5" } }]
+        },
+        { "type": "text", "text": "をご覧ください。" }
+      ]
+    }
+  ]
+}
