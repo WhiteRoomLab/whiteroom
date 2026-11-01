@@ -186,7 +186,7 @@ func (b *builder) planOthers(p *problems) {
 		}
 	}
 	for _, lang := range languages {
-		path := b.site.LanguagePath(lang) + "feed/"
+		path := b.feedPath(lang)
 		src := source{what: "the feed in " + lang}
 		if file, ok := outputFile(p, path, src); ok {
 			b.addOutput(path, strings.TrimSuffix(file, "index.html")+"index.xml", src, rankCore)

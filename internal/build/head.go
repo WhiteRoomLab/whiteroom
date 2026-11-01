@@ -56,7 +56,7 @@ func (b *builder) head(p *page) template.HTML {
 	for _, a := range b.alternates(p) {
 		lines = append(lines, tag("link", "rel", "alternate", "hreflang", a.hreflang, "href", a.url))
 	}
-	feed := b.absURL(b.site.LanguagePath(lang) + "feed/")
+	feed := b.absURL(b.feedPath(lang))
 	lines = append(lines, tag("link", "rel", "alternate", "type", "application/rss+xml", "title", siteName,
 		"href", feed))
 	lines = append(lines, b.iconLinks()...)
