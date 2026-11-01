@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "title": "About us",
+  "slug": "about",
+  "seo": { "description": "About Example Inc." },
+  "body": [
+    {
+      "type": "heading",
+      "id": "b_enab0001",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "Who we are" }]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_enab0002",
+      "content": [{ "type": "text", "text": "We plan, make and run websites." }]
+    },
+    {
+      "type": "image",
+      "id": "b_enab0003",
+      "attrs": { "media": "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "alt": "Our office building" }
+    },
+    {
+      "type": "table",
+      "id": "b_enab0004",
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            { "type": "tableCell", "attrs": { "header": true }, "content": [{ "type": "text", "text": "Address" }] },
+            { "type": "tableCell", "content": [{ "type": "text", "text": "1-2-3 〇〇, Chiyoda-ku, Tokyo" }] }
+          ]
+        }
+      ]
+    }
+  ]
+}

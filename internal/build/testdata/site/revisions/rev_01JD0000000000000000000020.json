@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "title": "Talk at a web conference",
+  "slug": "web-conference",
+  "date": "2026-10-21T05:00:00Z",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "tag": ["trm_01JBA4C7H5K8N3Q6S9V3X6Z9C2"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0021",
+      "content": [{ "type": "text", "text": "Taro Yamada talks about websites that everyone can use on November 5." }]
+    }
+  ]
+}

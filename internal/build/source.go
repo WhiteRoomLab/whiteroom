@@ -2,6 +2,8 @@
 // theme, checks what is published, and makes the pages and the other files.
 package build
 
+//go:generate go run ./gen
+
 import (
 	"io/fs"
 

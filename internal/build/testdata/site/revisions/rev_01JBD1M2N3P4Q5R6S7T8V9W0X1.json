@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "title": "Privacy policy",
+  "slug": "privacy",
+  "body": [
+    {
+      "type": "heading",
+      "id": "b_enpr0001",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "Personal information" }]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_enpr0002",
+      "content": [{ "type": "text", "text": "We use what you send us with the contact form only to reply to you." }]
+    }
+  ]
+}

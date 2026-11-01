@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "title": "Webサイトをリニューアルしました",
+  "slug": "renewal",
+  "date": "2026-10-01T09:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "sticky": true,
+  "terms": { "category": ["trm_01JBA4C7E2G5J8K1M4P7R2T5W8"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0001",
+      "content": [{ "type": "text", "text": "Webサイトを新しくしました。読みやすさと使いやすさを見直しています。" }]
+    }
+  ]
+}

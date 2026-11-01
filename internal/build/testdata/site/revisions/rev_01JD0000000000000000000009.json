@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "title": "フォームに確認画面を付けました",
+  "slug": "form-confirmation",
+  "date": "2026-10-20T10:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0009",
+      "content": [{ "type": "text", "text": "お問い合わせフォームで、送信する前に内容を確かめられるようになりました。" }]
+    }
+  ]
+}

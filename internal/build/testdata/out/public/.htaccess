@@ -1,0 +1,14 @@
+DirectoryIndex index.html index.xml
+ErrorDocument 404 /404.html
+<If "%{REQUEST_URI} =~ m#^/en/#">
+    ErrorDocument 404 /en/404.html
+</If>
+RewriteEngine On
+RewriteCond %{QUERY_STRING} (?:^|&)p=123(?:&|$)
+RewriteRule ^$ /2026/10/26/\%E6\%96\%B0\%E3\%82\%B5\%E3\%83\%BC\%E3\%83\%93\%E3\%82\%B9/ [R=301,L,QSD,NE]
+RewriteRule ^company/?$ /about/ [R=301,L,QSD,NE]
+RewriteRule ^home/?$ / [R=301,L,QSD,NE]
+RewriteRule ^old-news/?$ /category/news/ [R=301,L,QSD,NE]
+RewriteRule ^recruit/?$ https://recruit.example.com/ [R=302,L,QSD,NE]
+RewriteRule ^wp-content/uploads/2024/04/\xE4\xBC\x9A\xE7\xA4\xBE\xE6\xA1\x88\xE5\x86\x85\x2Epdf/?$ /media/med_01JB8Z3K5TM8A1C5F9V3J6K2N7/\%E4\%BC\%9A\%E7\%A4\%BE\%E6\%A1\%88\%E5\%86\%85.pdf [R=301,L,QSD,NE]
+RewriteRule ^yamada/?$ /author/yamada/ [R=301,L,QSD,NE]

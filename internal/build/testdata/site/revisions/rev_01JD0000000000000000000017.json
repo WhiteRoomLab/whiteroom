@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "title": "A faster contact form",
+  "slug": "contact-form",
+  "date": "2026-10-14T02:00:00Z",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0018",
+      "content": [{ "type": "text", "text": "Our contact form now lets you check what you wrote before you send it." }]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "title": "お知らせ",
+  "slug": "news",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_news0001",
+      "content": [{ "type": "text", "text": "会社からのお知らせです。" }]
+    }
+  ]
+}

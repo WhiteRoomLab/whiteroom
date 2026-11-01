@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+<title>Example Inc.</title>
+<link>https://example.com/en/</link>
+<description>Example Inc.</description>
+<language>en</language>
+<atom:link href="https://example.com/en/feed/" rel="self" type="application/rss+xml"/>
+<item>
+<title>Support plans for 2027</title>
+<link>https://example.com/en/2026/10/30/support-plans/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000022</guid>
+<pubDate>Fri, 30 Oct 2026 10:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>From November, our support plans have new prices.</description>
+<content:encoded>&lt;p&gt;From November, our support plans have new prices.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>We started a new service</title>
+<link>https://example.com/en/2026/10/25/new-service/</link>
+<guid isPermaLink="false">ent_01JC0000000000000000000001</guid>
+<pubDate>Mon, 26 Oct 2026 00:30:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<category>Events</category>
+<description>A service to update and run your website.</description>
+<content:encoded>&lt;p&gt;A service to update and run your website.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>Choosing colors for a brand</title>
+<link>https://example.com/en/2026/10/23/brand-colors/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000021</guid>
+<pubDate>Fri, 23 Oct 2026 11:30:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>Pick colors with enough contrast first, then make them your own.</description>
+<content:encoded>&lt;p&gt;Pick colors with enough contrast first, then make them your own.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>Talk at a web conference</title>
+<link>https://example.com/en/2026/10/21/web-conference/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000020</guid>
+<pubDate>Wed, 21 Oct 2026 14:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<category>Events</category>
+<description>Taro Yamada talks about websites that everyone can use on November 5.</description>
+<content:encoded>&lt;p&gt;Taro Yamada talks about websites that everyone can use on November 5.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>We are hiring designers</title>
+<link>https://example.com/en/2026/10/19/hiring/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000019</guid>
+<pubDate>Mon, 19 Oct 2026 10:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>We are looking for designers who care about accessibility.</description>
+<content:encoded>&lt;p&gt;We are looking for designers who care about accessibility.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>Notes on Japanese typography</title>
+<link>https://example.com/en/2026/10/16/japanese-typography/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000018</guid>
+<pubDate>Fri, 16 Oct 2026 13:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>Japanese text needs more line height than English text.</description>
+<content:encoded>&lt;p&gt;Japanese text needs more line height than English text.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>A faster contact form</title>
+<link>https://example.com/en/2026/10/14/contact-form/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000017</guid>
+<pubDate>Wed, 14 Oct 2026 11:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>Our contact form now lets you check what you wrote before you send it.</description>
+<content:encoded>&lt;p&gt;Our contact form now lets you check what you wrote before you send it.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>Slides from the online meetup</title>
+<link>https://example.com/en/2026/10/12/meetup-slides/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000016</guid>
+<pubDate>Mon, 12 Oct 2026 15:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<category>Events</category>
+<description>Thank you for joining the meetup. Here are the slides.</description>
+<content:encoded>&lt;p&gt;Thank you for joining the meetup. Here are the slides.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>How we review accessibility</title>
+<link>https://example.com/en/2026/10/09/accessibility-review/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000015</guid>
+<pubDate>Fri, 09 Oct 2026 10:30:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<description>We check every page with a keyboard and a screen reader.</description>
+<content:encoded>&lt;p&gt;We check every page with a keyboard and a screen reader.&lt;/p&gt;</content:encoded>
+</item>
+<item>
+<title>Join our online meetup</title>
+<link>https://example.com/en/2026/10/07/online-meetup/</link>
+<guid isPermaLink="false">ent_01JD0000000000000000000014</guid>
+<pubDate>Wed, 07 Oct 2026 12:00:00 +0900</pubDate>
+<dc:creator>山田 太郎</dc:creator>
+<category>Events</category>
+<description>On October 20, we hold an online meetup about accessible websites.</description>
+<content:encoded>&lt;p&gt;On October 20, we hold an online meetup about accessible websites.&lt;/p&gt;</content:encoded>
+</item>
+</channel>
+</rss>

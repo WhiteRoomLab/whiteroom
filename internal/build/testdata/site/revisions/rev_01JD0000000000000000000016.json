@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "title": "Slides from the online meetup",
+  "slug": "meetup-slides",
+  "date": "2026-10-12T06:00:00Z",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "tag": ["trm_01JBA4C7H5K8N3Q6S9V3X6Z9C2"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0017",
+      "content": [{ "type": "text", "text": "Thank you for joining the meetup. Here are the slides." }]
+    }
+  ]
+}

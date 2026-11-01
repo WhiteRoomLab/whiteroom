@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "title": "プライバシーポリシー",
+  "slug": "privacy",
+  "body": [
+    {
+      "type": "heading",
+      "id": "b_priv0001",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "個人情報の取り扱い" }]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_priv0002",
+      "content": [{ "type": "text", "text": "お問い合わせでいただいた個人情報は、ご返信のためだけに使います。" }]
+    }
+  ]
+}

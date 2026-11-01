@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "title": "〇〇株式会社のコーポレートサイト",
+  "slug": "example-corporate-site",
+  "terms": { "works_category": ["trm_01JB9A00000000000000000001"] },
+  "fields": {
+    "client": "〇〇株式会社",
+    "images": ["med_01JB8Z3K5QH2V6T9C4R7Y1E8B5", "med_01JB8Z3K5RJ4W7Z1D5S8X2F6C9"],
+    "year": 2024
+  },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_7k2m9x4p",
+      "content": [{ "type": "text", "text": "コーポレートサイトを全面的に作り直しました。" }]
+    }
+  ]
+}

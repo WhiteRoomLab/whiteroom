@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "title": "サービス",
+  "slug": "services",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_9x3v7k5m",
+      "style": {
+        "textColor": { "preset": "primary" },
+        "fontSize": { "preset": "large" }
+      },
+      "content": [
+        { "type": "text", "text": "当社の" },
+        { "type": "text", "text": "事業内容", "marks": [{ "type": "bold" }] },
+        { "type": "text", "text": "をご紹介します。" }
+      ]
+    },
+    {
+      "type": "list",
+      "id": "b_serv0001",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [{ "type": "paragraph", "id": "b_serv0002", "content": [{ "type": "text", "text": "Webサイトの企画" }] }]
+        },
+        {
+          "type": "listItem",
+          "content": [{ "type": "paragraph", "id": "b_serv0003", "content": [{ "type": "text", "text": "デザインと制作" }] }]
+        },
+        {
+          "type": "listItem",
+          "content": [{ "type": "paragraph", "id": "b_serv0004", "content": [{ "type": "text", "text": "公開した後の運用" }] }]
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "id": "b_serv0005",
+      "attrs": { "media": "med_01JB8Z3K5TM8A1C5F9V3J6K2N7", "label": "会社案内（PDF）" }
+    }
+  ]
+}

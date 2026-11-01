@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "title": "新サービスを始めました",
+  "slug": "新サービス",
+  "date": "2026-10-26T00:30:00+09:00",
+  "terms": { "category": ["trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7"], "tag": ["trm_01JBA4C7G4J7M1P4R7T1W4Y7B1"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_3r8w1n6t",
+      "content": [{ "type": "text", "text": "Webサイトの更新と運用をお手伝いするサービスです。" }]
+    }
+  ]
+}

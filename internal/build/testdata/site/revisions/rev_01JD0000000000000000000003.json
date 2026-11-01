@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "title": "制作実績を追加しました",
+  "slug": "new-works",
+  "date": "2026-10-06T15:00:00+09:00",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "terms": { "category": ["trm_01JBA4C7E2G5J8K1M4P7R2T5W8"] },
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0003",
+      "content": [
+        { "type": "text", "text": "〇〇株式会社の" },
+        {
+          "type": "text",
+          "text": "コーポレートサイト",
+          "marks": [{ "type": "link", "attrs": { "entry": "ent_01JC0000000000000000000002" } }]
+        },
+        { "type": "text", "text": "を、制作実績に追加しました。" }
+      ]
+    }
+  ]
+}

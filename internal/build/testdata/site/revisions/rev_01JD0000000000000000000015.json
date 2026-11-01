@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "title": "How we review accessibility",
+  "slug": "accessibility-review",
+  "date": "2026-10-09T01:30:00Z",
+  "author": "aut_01JBA4C7N9Q3T6W9Z3C6F9H2K5",
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_post0016",
+      "content": [{ "type": "text", "text": "We check every page with a keyboard and a screen reader." }]
+    }
+  ]
+}
