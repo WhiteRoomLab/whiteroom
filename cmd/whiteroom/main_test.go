@@ -22,7 +22,7 @@ func runCmd(t *testing.T, args ...string) (code int, stdout, stderr string) {
 }
 
 // TestRun checks the exit codes and the output of the command for the usage and for errors in the arguments, none of
-// which builds.
+// which builds or serves.
 func TestRun(t *testing.T) {
 	code, stdout, help := runCmd(t, "build", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(help, buildUsage) {
@@ -34,9 +34,18 @@ func TestRun(t *testing.T) {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
 	}
+	code, stdout, serveHelp := runCmd(t, "serve", "public", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(serveHelp, servePublicUsage) {
+		t.Fatalf("whiteroom serve public -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code,
+			stdout, serveHelp)
+	}
+	if !strings.Contains(serveHelp, "\n  -addr ADDR\n") || !strings.Contains(serveHelp, `(default "127.0.0.1:8080")`) {
+		t.Errorf("the usage of whiteroom serve public has no flag -addr ADDR with its default:\n%s", serveHelp)
+	}
 
 	unknown := "whiteroom: unknown command \"nope\"\nRun \"whiteroom help\" for usage.\n"
 	tooMany := "whiteroom build: too many arguments: give at most one SITE, after the flags\n" + help
+	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -58,6 +67,14 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-memory", "-1"}, 2, "", memory("-1")},
 		{[]string{"build", "-memory", "8796093022208"}, 2, "", memory("8796093022208")},
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"serve"}, 2, "", usage},
+		{[]string{"serve", "-h"}, 0, usage, ""},
+		{[]string{"serve", "help"}, 0, usage, ""},
+		{[]string{"serve", "nope"}, 2, "", "whiteroom serve: unknown server \"nope\"\nRun \"whiteroom help\" for usage.\n"},
+		{[]string{"serve", "admin"}, 2, "", "whiteroom serve: admin is not available yet\n"},
+		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},
+		{[]string{"serve", "public", "a", "b"}, 2, "", tooManyOuts},
+		{[]string{"serve", "public", "a", "-addr", "b"}, 2, "", tooManyOuts},
 	} {
 		code, stdout, stderr := runCmd(t, tt.args...)
 		if code != tt.code || stdout != tt.stdout || stderr != tt.stderr {
@@ -182,6 +199,25 @@ func TestSummary(t *testing.T) {
 	} {
 		if got := summary(&tt.res, "out"); got != tt.want {
 			t.Errorf("summary(%+v) = %q, want %q", tt.res, got, tt.want)
+		}
+	}
+}
+
+// TestSiteURL checks the URLs that whiteroom serve public prints: with localhost for an unspecified IP, and with the
+// bytes of the path of the site URL that URLs cannot have percent-encoded in upper case, and the others as they are.
+func TestSiteURL(t *testing.T) {
+	for _, tt := range []struct{ addr, base, want string }{
+		{"127.0.0.1:8080", "", "http://127.0.0.1:8080/"},
+		{"127.0.0.1:41234", "/blog", "http://127.0.0.1:41234/blog/"},
+		{"0.0.0.0:8080", "", "http://localhost:8080/"},
+		{"[::]:8080", "/blog", "http://localhost:8080/blog/"},
+		{"[::1]:8080", "", "http://[::1]:8080/"},
+		{"127.0.0.1:8080", "/ブ%20ログ", "http://127.0.0.1:8080/%E3%83%96%20%E3%83%AD%E3%82%B0/"},
+		{"127.0.0.1:8080", "/a(b)/it's/%e6", "http://127.0.0.1:8080/a(b)/it's/%e6/"},
+		{"127.0.0.1:8080", "/a b\x01\x7f", "http://127.0.0.1:8080/a%20b%01%7F/"},
+	} {
+		if got := siteURL(tt.addr, tt.base); got != tt.want {
+			t.Errorf("siteURL(%q, %q) = %q, want %q", tt.addr, tt.base, got, tt.want)
 		}
 	}
 }
