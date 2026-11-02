@@ -5,27 +5,31 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/serve"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
-// serverSites are the sites of the tests with the real servers, and the requests to check: the fixture with all the
-// redirects of the tests of the server files, at the root of its host, under a path, and with prefixDefaultLanguage
-// under a path in Japanese with a space (which TestServerEscaping has percent-encoded); a site in one language, which
-// has one 404 page; and one under a path that nginx.conf and .htaccess cannot have, which then have only the directory
-// index.
+// serverSites are the sites of the tests with the servers (the built-in server, nginx and Apache), and the requests to
+// check: the fixture with all the redirects of the tests of the server files, at the root of its host, under a path,
+// with prefixDefaultLanguage under a path in Japanese with a space (which TestServerEscaping has percent-encoded), and
+// under a path with "(" and ")", which links have percent-encoded; a site in one language, which has one 404 page; and
+// one under a path that nginx.conf and .htaccess cannot have, which then have only the directory index.
 var serverSites = []struct {
 	name  string
 	site  func(t *testing.T) *builder // loaded, with its redirects resolved
@@ -34,6 +38,7 @@ var serverSites = []struct {
 	{"root", fixtureSite("https://example.com", false), fixtureCases},
 	{"path", fixtureSite("https://example.com/blog", false), fixtureCases},
 	{"prefix", fixtureSite("https://example.com/ブ ログ", true), fixtureCases},
+	{"parens", fixtureSite("https://example.com/a(b)", false), fixtureCases},
 	{"one language", oneLanguageSite("/blog"), oneLanguageCases},
 	{"path for neither", oneLanguageSite("/a$b"), indexCases},
 }
@@ -72,6 +77,17 @@ func TestApache(t *testing.T) {
 	}
 }
 
+// TestBuiltinServer serves releases of serverSites with the built-in server, which reads their server.json, and checks
+// the responses.
+func TestBuiltinServer(t *testing.T) {
+	for _, s := range serverSites {
+		t.Run(s.name, func(t *testing.T) {
+			b := s.site(t)
+			checkServer(t, "builtin", startBuiltin(t, b), b, builtinCases(b, s.cases(b)))
+		})
+	}
+}
+
 // fixtureSite returns a function that loads the fixture at siteURL, with prefixDefaultLanguage if prefix, and with all
 // the redirects of the tests of the server files.
 func fixtureSite(siteURL string, prefix bool) func(t *testing.T) *builder {
@@ -95,22 +111,13 @@ func oneLanguageSite(base string) func(t *testing.T) *builder {
 	}
 }
 
-// serverRelease writes a release of b: in public/, a file for each output that has one, whose content is its path; and
-// the server files. It returns the directory of the release, and the directory that the servers serve: public/, or,
-// for a site under a path, a directory that has a link to public/ at that path.
+// serverRelease writes a release of b (writeServerRelease) into a new directory. It returns the directory of the
+// release, and the directory that nginx and Apache serve: public/, or, for a site under a path, a directory that has a
+// link to public/ at that path.
 func serverRelease(t *testing.T, b *builder) (dir, root string) {
 	t.Helper()
 	dir, rel := newPublic(t)
-	for _, o := range b.outputs {
-		if o.file != "" && o.file != ".htaccess" {
-			if err := writeFile(rel, "public/"+o.file, []byte(o.path)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if err := b.writeServerFiles(rel); err != nil {
-		t.Fatal(err)
-	}
+	writeServerRelease(t, b, rel)
 	root = filepath.Join(dir, "public")
 	if b.base == "" {
 		return dir, root
@@ -127,6 +134,22 @@ func serverRelease(t *testing.T, b *builder) (dir, root string) {
 		t.Fatal(err)
 	}
 	return dir, filepath.Join(dir, "www")
+}
+
+// writeServerRelease writes a release of b into rel: in public/, a file for each output that has one, whose content is
+// its path; and the server files.
+func writeServerRelease(t *testing.T, b *builder, rel *os.Root) {
+	t.Helper()
+	for _, o := range b.outputs {
+		if o.file != "" && o.file != ".htaccess" {
+			if err := writeFile(rel, "public/"+o.file, []byte(o.path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := b.writeServerFiles(rel); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // nginxTestConf is the configuration of nginx for the tests, with the files that it writes, the address, the root and
@@ -172,8 +195,8 @@ func startNginx(t *testing.T, bin, dir, root string) string {
 	if err := os.WriteFile(name, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	log := filepath.Join(tmp, "error.log")
-	runServer(t, exec.Command(bin, "-p", tmp, "-c", name, "-e", log), addr, log)
+	errorLog := filepath.Join(tmp, "error.log")
+	runServer(t, exec.Command(bin, "-p", tmp, "-c", name, "-e", errorLog), addr, errorLog)
 	return addr
 }
 
@@ -234,16 +257,45 @@ func startApache(t *testing.T, bin, serverRoot, root string) string {
 		fmt.Fprintf(&modules, "LoadModule %s_module modules/mod_%s.so\n", name, name)
 	}
 	addr := freeAddr(t)
-	log := filepath.Join(tmp, "error.log")
+	errorLog := filepath.Join(tmp, "error.log")
 	conf := fmt.Sprintf(apacheTestConf, nginxString(serverRoot), addr, modules.String(),
-		nginxString(filepath.Join(tmp, "httpd.pid")), nginxString(log), nginxString(tmp), nginxString(root))
+		nginxString(filepath.Join(tmp, "httpd.pid")), nginxString(errorLog), nginxString(tmp), nginxString(root))
 	name := filepath.Join(tmp, "httpd.conf")
 	if err := os.WriteFile(name, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// -X runs one process in the foreground, which leaves no children when it stops.
-	runServer(t, exec.Command(bin, "-f", name, "-X"), addr, log)
+	runServer(t, exec.Command(bin, "-f", name, "-X"), addr, errorLog)
 	return addr
+}
+
+// startBuiltin runs the built-in server at a free port, serving a release of b, which it publishes in a new output
+// directory as the build does (4.3), until the end of the test, and returns its address.
+func startBuiltin(t *testing.T, b *builder) string {
+	t.Helper()
+	const name = "0123456789abcdef"
+	out := t.TempDir()
+	dir := filepath.Join(out, "releases", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rel.Close() })
+	writeServerRelease(t, b, rel)
+	if err := os.Symlink("releases/"+name, filepath.Join(out, "current")); err != nil {
+		t.Fatal(err)
+	}
+	h, err := serve.New(out, log.New(t.Output(), "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().String()
 }
 
 // freeAddr returns an address on the loopback interface with a port that nothing listens at. The tests that start
@@ -479,7 +531,26 @@ func indexCases(*builder) []serverCase {
 	}
 }
 
-// checkServer checks the responses of server, "nginx" or "apache", at addr, which serves the release of b, to cases.
+// builtinCases returns cases for the built-in server, which matches requests with froms in the canonical form (6.6.6),
+// where nginx and Apache decode the paths and compare the queries as sent; and which serves the redirects that
+// nginx.conf and .htaccess leave out.
+func builtinCases(b *builder, cases []serverCase) []serverCase {
+	cases = slices.Clone(cases)
+	for i, c := range cases {
+		switch c.target {
+		case "/?q=%e6%96%b0":
+			cases[i] = redirectCase(c.target, "/?q=新")
+		case "/%24var":
+			cases[i] = notFoundCase(c.target, b.site.LanguagePath("ja")+"404.html")
+		case "/a+b/", "/a%2Fb/", "/a%01b/", "/a//b/", "/%FF/", "/.htaccess?x=1":
+			cases[i] = redirectCase(c.target, c.target)
+		}
+	}
+	return cases
+}
+
+// checkServer checks the responses of server, "builtin", "nginx" or "apache", at addr, which serves the release of b,
+// to cases.
 func checkServer(t *testing.T, server, addr string, b *builder, cases []serverCase) {
 	t.Helper()
 	base := render.EncodeURL(b.base)
@@ -528,7 +599,7 @@ func checkServer(t *testing.T, server, addr string, b *builder, cases []serverCa
 }
 
 // siteLocation returns loc, a Location, without the scheme and the host if it is in the site of the tests at
-// 127.0.0.1, which the servers put before paths.
+// 127.0.0.1, which nginx and Apache put before paths.
 func siteLocation(loc string) string {
 	if rest, ok := strings.CutPrefix(loc, "http://127.0.0.1:"); ok {
 		if i := strings.IndexByte(rest, '/'); i >= 0 {
