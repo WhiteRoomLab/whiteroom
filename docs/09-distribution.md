@@ -45,7 +45,7 @@
 
 - フラグ：Goの `flag` パッケージの書き方（`-out DIR`・`-out=DIR`。`--out` も同じ）で、引数（`SITE`・`OUT`）より前に書く。引数より後ろのものは、引数とみなす（引数が多すぎる誤り（`whiteroom build: too many arguments: give at most one SITE, after the flags`）になる）。
 - 使い方：引数の無い `whiteroom` は、使い方を標準エラーに、`whiteroom help` は標準出力に示す。サブコマンドの `-h`（`whiteroom build -h`・`whiteroom serve public -h`）は、そのサブコマンドの使い方とフラグを、標準エラーに示す。
-- 知らないもの：知らないコマンドには、`whiteroom: unknown command "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` の後ろには、`public` を書く（`admin` には `whiteroom serve: admin is not available yet` を、ほかには `whiteroom serve: unknown server "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` だけなら、使い方を示す）。
+- 知らないもの：知らないコマンドには、`whiteroom: unknown command "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` の後ろには、`public` を書く（`admin` には `whiteroom serve: admin is not available yet` を、`help`・`-h`・`-help`・`--help` には `whiteroom help` と同じ使い方を、ほかには `whiteroom serve: unknown server "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` だけなら、使い方を示す）。
 
 **終了コード**
 
@@ -109,7 +109,7 @@ release <名前> in <出力先> is already published: <P> pages, <F> files, <W> 
 ```
 
 - `<P>` は書いたページの数（`Pages`）、`<F>` は公開ディレクトリのファイルの数（`Files`）、`<W>` は警告の数（警告が無ければ、`, <W> warnings` を書かない）。1のときは、単数にする（`1 warning` など）。出力先は、渡したもの（既定では、`SITE` の後ろに `out` を続けたもの。`SITE` が `.` なら `out`）。
-- 公開の後の失敗（4.3の「リリースと切り替え」）では、警告と結果の1行の後に、エラーを示して、1で終わる。ほかの失敗では、標準出力に何も書かない。
+- 公開の後の失敗（4.3の「リリースと切り替え」）では、警告と結果の1行の後に、エラーを示して、1で終わる。ほかの失敗では、エラーだけを示し（ビルドは、失敗したときに結果を返さないので、警告も示さない。4.3の「渡すものと結果」）、標準出力に何も書かない。
 
 **ビルドの取り消し**
 
@@ -181,7 +181,7 @@ serving out at http://127.0.0.1:8080/
 6. ファイル：パスの区切りを戻して、公開ディレクトリのファイルの名前にする（公開ディレクトリを開けなければ、500を返す）。
    - `/` で終わるパスには、そのディレクトリの、`server.json` の `index` の名前（`index.html`、次に `index.xml`。6.6.6）のうち、最初にあるふつうのファイルを返す。索引の無いディレクトリは、ファイルが無いものとする（ディレクトリの一覧は返さない）。
    - ほかのパスには、その名前のファイルを返す。ディレクトリなら、`/` を付けたパスへの301を返す（クエリは残す。6.6.8の「末尾の `/`」）。
-   - ファイルには、`Content-Type`（下記）・`Content-Length`・`Last-Modified`（ファイルの更新日時）を付け、範囲のリクエスト（`Range`。206）と、条件付きのリクエスト（`If-Modified-Since` の304など）にも答える（Goの `http.ServeContent` による）。`ETag` と `Cache-Control` は、まだ付けない（6.12の122）。
+   - ファイルには、`Content-Type`（下記）・`Content-Length`・`Last-Modified`（ファイルの更新日時）を付け、範囲のリクエスト（`Range`。206）と、条件付きのリクエスト（`If-Modified-Since` の304など）にも答える（Goの `http.ServeContent` による）。`ETag` と `Cache-Control` は、まだ付けず、圧縮（`Content-Encoding`）もしない（6.12の122）。
 7. 404：ファイルが無ければ、`server.json` の `notFound` のうち、`prefix` がパスの先頭に一致する最初のもの（長いものから並ぶ。6.6.6）の `page`（言語ごとの404のページ。6.6.8）を、ステータス404で返す。一致するものが無いか、そのページのファイルが無ければ、ただの404を返す。
 
 - 転送の先：4と6の転送の `Location` は、送られたままのパスに、`/` と、あればクエリを続けたもので、スキームとホストは付けない（NginxとApacheは付ける。6.6.6）。5の `Location` は、`server.json` の `to` のまま（サイトの中の行き先は、サイトのURLのパスを付けたパス）。
@@ -267,7 +267,7 @@ Content-Security-Policy: script-src 'self'; style-src 'self'; object-src 'none';
 | 次のリクエストを待つ、使い回す接続（`IdleTimeout`） | 120秒 |
 | 応答を送り終えるまで（`WriteTimeout`） | なし |
 
-- ヘッダーと本文の上限は、少しずつ送るクライアントや、送ると言った本文を送らないクライアント（本文は使わないが、Goの `net/http` は、応答の前に読む）が、接続を持ち続けないため。応答の送信には上限を付けない。遅い回線での大きいファイルのダウンロード（30秒を超えるものも）を切らないため。
+- ヘッダーと本文の上限は、少しずつ送るクライアントや、送ると言った本文を送らないクライアント（本文は使わないが、Goの `net/http` は、応答の前に読む）が、接続を持ち続けないため。応答の送信には上限を付けない。遅い回線での大きいファイルのダウンロード（30秒を超えるものも）を切らないため。受け取らないクライアントも接続を持ち続けられることは、6.12の124。
 
 **エラーの記録**
 

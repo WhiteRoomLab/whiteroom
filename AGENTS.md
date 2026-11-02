@@ -7,7 +7,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `nix develop` で入る（direnv を使うなら、最初に一度 `direnv allow`）。
 - ツールの版は flake で決まる。Go のマイナー版は `flake.nix` の `go_1_27` で、それ以外は `flake.lock`（更新は `nix flake update`）。CI も `nix develop -c` で同じ版を使うので、`actions/setup-go` などで版を足さない。
 - `go.mod` の `go` 行は言語の最低版（いまは `1.27.0`）で、パッチ版に合わせて上げない。`toolchain` 行は書かない（`GOTOOLCHAIN=local` なので使われない）。
-- `internal/build` のサーバーの設定のテスト（`TestNginx`・`TestApache`）のために、開発シェルに Nginx と Apache（flake の `pkgs.nginx`・`pkgs.apacheHttpd`）を入れている。テストは、書き出した設定で実際のサーバーを動かして確かめ、サーバーが無いとき（開発シェルの外など）は飛ばす（Apache は、root で動かしたときと、要るモジュールが無いときも飛ばす）。
+- `internal/build` のサーバーの設定のテスト（`TestNginx`・`TestApache`）のために、開発シェルに Nginx と Apache（flake の `pkgs.nginx`・`pkgs.apacheHttpd`）を入れている。テストは、書き出した設定で実際のサーバーを動かして確かめ、サーバーが無いとき（開発シェルの外など）は飛ばす（Apache は、root で動かしたときと、要るモジュールが無いときも飛ばす）。同じサイトとリクエストで内蔵サーバー（`internal/serve`）を確かめる `TestBuiltinServer` は、ほかのプログラムが要らないので、いつも動く。
 
 ## よく使うコマンド
 
@@ -21,6 +21,8 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 
 `flake.nix` や `flake.lock` を変えたら、`nix fmt` と `nix flake check --all-systems` も実行する。
 
+見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。ページの `<head>` の正規 URL・アイコン・OGP などは、サイトの URL（`https://example.com/`）を指したまま（構想書の 9.4）。
+
 ## パッケージの置き場所
 
 - パッケージは `internal/` の下に置く。コンテンツモデルは `internal/content`、Unicode の NFC は `internal/nfc`、メディアのファイルの中身（形式・大きさ・向き）を読む処理は `internal/mediafile`、開発者が書くファイル（`site/schema.yaml`、テーマの `theme.yaml` と翻訳ファイル）の YAML を読む処理は `internal/yaml`、HTML の構文解析と書き出し（HTML Standard の構文解析に従う。取り込みでも使う）は `internal/html`、WebP の画像の復号（RFC 9649・RFC 6386 に従う。メタデータを除いた書き直しも）は `internal/webp`。
@@ -28,8 +30,8 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - 文中装飾とブロックの HTML と、`style` などの見た目の CSS（ページの CSS とサイトの CSS。構想書の 6.5.3）は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（構想書の 6.8）は `internal/render/blocks/` に、本体が付けるクラスの CSS（構想書の 6.5.4。サイトの CSS に入る）は `internal/render/classes.css` に置く。
 - `html`・`legacy` ブロックの HTML のサニタイズ（構想書の 6.5.4）は `internal/sanitize`。
 - 公開する画像と派生ファイル（構想書の 6.6.2。原本を調べること、ファイルの大きさ・名前・版を決めること、ファイルを作ること、キャッシュ）は `internal/imaging`。作るファイルか、原本を調べた結果が変わる変更をしたら、`internal/imaging/imaging.go` の `processingVersion` を上げる（キャッシュのキーとページの `?v=` に入るので、上げないと、キャッシュの古いファイルが使われる）。
-- 静的ビルド（構想書の 4.3）は `internal/build`。保存先が決まるまでサイトを置くディレクトリ（構想書の 4.3）を読み、ビルドの読み込みの口（`build.Source`）を実装する処理は `internal/sitedir`。依存の向きは `build` → `render`・`imaging`・`theme`・`mediafile`・`content`、`sitedir` → `content`、`render` → `theme` → `content`、`render` → `sanitize` → `html`、`sanitize` → `content`、`imaging` → `webp`・`mediafile`・`content`（`html`・`webp` は、ほかの `internal` のパッケージを使わない）。`sitedir` は `build` を使わない（`build` のテストが `sitedir` を使うので、使うと循環する）。`render` は `imaging` を使わず、画像のファイルを照会の関数（`Resolver` の `Image`）から受け取る（`build` が `imaging` で作る）。
-- コマンドは、作るときに `cmd/<名前>/` に置く（名前は未定）。
+- 静的ビルド（構想書の 4.3）は `internal/build`。保存先が決まるまでサイトを置くディレクトリ（構想書の 4.3）を読み、ビルドの読み込みの口（`build.Source`）を実装する処理は `internal/sitedir`。ビルドが公開したリリースを、その `server.json` のとおりに配信する、公開用の内蔵サーバー（構想書の 9.5）は `internal/serve`。依存の向きは `build` → `render`・`imaging`・`theme`・`mediafile`・`content`、`sitedir` → `content`、`serve` → `content`、`render` → `theme` → `content`、`render` → `sanitize` → `html`、`sanitize` → `content`、`imaging` → `webp`・`mediafile`・`content`（`html`・`webp` は、ほかの `internal` のパッケージを使わない）。`sitedir` と `serve` は `build` を使わない（`build` のテストが `sitedir` と `serve` を使うので、使うと循環する）。`render` は `imaging` を使わず、画像のファイルを照会の関数（`Resolver` の `Image`）から受け取る（`build` が `imaging` で作る）。
+- コマンド `whiteroom`（構想書の 9.4）は `cmd/whiteroom/`。構想書の 9.2 のコマンドは、どれもそのサブコマンドにする（いまは `build` と `serve public`）。依存の向きは `cmd/whiteroom` → `build`・`sitedir`・`serve`・`content`。
 
 ## 生成するファイル
 
@@ -42,7 +44,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `internal/theme/testdata/example-out/` は、見本のテーマ（`internal/theme/testdata/example/`）で描画したページの正解で、`go test ./internal/theme -run TestExamplePages -update` で作る（`-update` はパッケージの後ろに書く）。手で編集しない。出力が変わる変更をしたら作り直し、差分を確かめる。
 - `internal/render/testdata/out/` は、テストの文書（`internal/content/testdata/` の `every-block.json`・`about-page-body.json` と、`internal/render/testdata/` の `every-mark.json`・`every-style.json`）を、ブロックのテンプレートとプリセットの無いテーマ（`default`。本体の既定のテンプレートで描画し、`style` は直接指定だけが残る）と見本のテーマ（`example`）で、日本語（サイトのパスなし）と英語（`/blog`）に描画した正解で、`go test ./internal/render -run TestGolden -update` で作る（`-update` はパッケージの後ろに書く）。ファイルは、`<テーマ>/<言語>/<文書>.html`（HTML）・`.txt`（警告）・`.css`（ページの CSS。言語によらず同じ）と、`<テーマ>/site.css`（サイトの CSS）。手で編集しない。出力が変わる変更（`internal/render/classes.css` を変えると `site.css` が変わる）をしたら作り直し、差分を確かめる。見本のテーマを変えたときは、`internal/theme/testdata/example-out/` と `internal/build/testdata/out/` の作り直しも要ることがある（`assets/css/style.css` を変えると、`?v=` が変わる。構想書の 5.4.7 と 6.12 の 80 の例の版も合わせる）。
 - `internal/build/testdata/site/` は、構想書の 6.11 の例を集めた見本のサイト（`internal/sitedir` の形。構想書の 4.3）で、テーマには、コピーせずに見本のテーマ（`internal/theme/testdata/example/`）を使う。そのうち `files/`（メディアの原本）と `media/`（メディアの文書）は `go generate ./internal/build` で作る（`internal/build/gen` が、2つのディレクトリを空にしてから、Go で描いた画像と手で書いた PDF を書き、文書に原本の `hash`・`size`・`mimeType`・`width`・`height` を入れる。ネットもツールも要らず、第三者のデータは使わない）。手で編集しない。ほかの文書は手で書く（構想書の 6.11 の例のものは、`internal/content/testdata/` の同じ例のファイルの写しなので、例を変えたら両方を変える）。同じ Go の版なら、作り直しても同じファイルになる。原本は Go の標準ライブラリの書き出し（`image/jpeg`・`image/png`・`compress/flate`）で決まるので、Go の版を上げて変わったら、`internal/build/testdata/out/` も作り直す（原本の `hash` が入る）。
-- `internal/build/testdata/out/` は、見本のサイトをビルドした正解で、`go test ./internal/build -run TestSampleSite -update` で作る（`-update` はパッケージの後ろに書く。ディレクトリを消してから書き直す）。ファイルは、`manifest.txt`（リリースのすべてのファイルの、パス・大きさ・SHA-256）、`warnings.txt`（ビルドの警告）と、主なページ・404 のページ・フィード・サイトマップ・`public/css/` のファイル・`public/.htaccess`・`server.json`・`nginx.conf` の写し（リリースの中と同じパスに置く）。手で編集しない。ビルドの出力が変わる変更（描画、見本のテーマ、`internal/render/classes.css` の変更も）をしたら作り直し、差分を確かめる。Go のマイナー版を上げると、ビルドが作る画像の `?v=` が変わり、ファイルも変わることがある（構想書の 6.6.2）ので、`manifest.txt` とほとんどのページが変わる。そのときも作り直し、それだけが変わったことを確かめる（サイトの CSS・ページの CSS・PDF・テーマの assets は変わらない）。
+- `internal/build/testdata/out/` は、見本のサイトをビルドした正解で、`go test ./internal/build -run TestSampleSite -update` で作る（`-update` はパッケージの後ろに書く。ディレクトリを消してから書き直す）。ファイルは、`manifest.txt`（リリースのすべてのファイルの、パス・大きさ・SHA-256）、`warnings.txt`（ビルドの警告）と、主なページ・404 のページ・フィード・サイトマップ・`public/css/` のファイル・`public/.htaccess`・`server.json`・`nginx.conf` の写し（リリースの中と同じパスに置く）。`cmd/whiteroom` のテスト（結果の1行・警告・配信したページ）と、`internal/serve` のテスト（`server.json`）も、これを使う。手で編集しない。ビルドの出力が変わる変更（描画、見本のテーマ、`internal/render/classes.css` の変更も）をしたら作り直し、差分を確かめる。Go のマイナー版を上げると、ビルドが作る画像の `?v=` が変わり、ファイルも変わることがある（構想書の 6.6.2）ので、`manifest.txt` とほとんどのページが変わる。そのときも作り直し、それだけが変わったことを確かめる（サイトの CSS・ページの CSS・PDF・テーマの assets は変わらない）。
 
 ## 規約
 
