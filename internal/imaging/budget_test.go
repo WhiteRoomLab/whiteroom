@@ -3,6 +3,8 @@ package imaging
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,6 +46,24 @@ func receive(t *testing.T, got <-chan string, want string) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("timed out waiting for %s", want)
+	}
+}
+
+// receiveAll receives what each of the jobs of want sends, in any order.
+func receiveAll(t *testing.T, got <-chan string, want ...string) {
+	t.Helper()
+	want = slices.Sorted(slices.Values(want))
+	var names []string
+	for range want {
+		select {
+		case name := <-got:
+			names = append(names, name)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for %s", strings.Join(want, " and "))
+		}
+	}
+	if slices.Sort(names); !slices.Equal(names, want) {
+		t.Fatalf("%s returned, want %s", strings.Join(names, " and "), strings.Join(want, " and "))
 	}
 }
 
@@ -112,10 +132,9 @@ func TestBudgetCancel(t *testing.T) {
 	waitFor(t, "a waiter of 8 bytes", func() bool { _, w := b.state(); return w == 1 })
 	acquireAsync(ctx, b, "3", 3, got)
 	waitFor(t, "a waiter of 3 bytes", func() bool { _, w := b.state(); return w == 2 })
-	// The first waiter leaves, and the next one fits.
+	// The first waiter leaves, and the next one fits; they return in either order.
 	cancel()
-	receive(t, got, context.Canceled.Error())
-	receive(t, got, "3")
+	receiveAll(t, got, context.Canceled.Error(), "3")
 	checkState(t, b, 9, 0)
 	// A done context is an error even when the bytes are free.
 	b.release(9)
