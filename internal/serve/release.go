@@ -157,8 +157,12 @@ func baseSegments(base string) ([]string, error) {
 	segs := strings.Split(base[1:], "/")
 	for i, s := range segs {
 		d, err := url.PathUnescape(s)
-		if err != nil {
+		switch {
+		case err != nil:
 			return nil, fmt.Errorf("base %q has an invalid percent-encoding", base)
+		case d == "" || d == "." || d == "..":
+			// The redirect to the base with "/" would go to another host for "//x".
+			return nil, fmt.Errorf("base %q has an empty or a dot segment", base)
 		}
 		segs[i] = d
 	}

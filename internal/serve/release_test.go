@@ -342,6 +342,10 @@ func TestParseReleaseErrors(t *testing.T) {
 		{base("/a?"), `base "/a?" has a query`},
 		{base("/a%zz"), `base "/a%zz" has an invalid percent-encoding`},
 		{base("/a/%"), `base "/a/%" has an invalid percent-encoding`},
+		{base("//x"), `base "//x" has an empty or a dot segment`},
+		{base("/a//b"), `base "/a//b" has an empty or a dot segment`},
+		{base("/a/./b"), `base "/a/./b" has an empty or a dot segment`},
+		{base("/.."), `base "/.." has an empty or a dot segment`},
 		{
 			redirects(serverRedirect{"/a/", "/b/", 301}, serverRedirect{"/b?b=1&a=1", "/c/", 301}),
 			`redirects[2]: from "/b?b=1&a=1" is not in the canonical form`,
