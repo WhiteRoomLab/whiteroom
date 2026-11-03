@@ -122,6 +122,36 @@ func checkConsistent(t *testing.T, s *Store) {
 	}
 }
 
+// checkIntegrity checks that SQLite finds the database of s intact, and that the data of every object has its hash.
+func checkIntegrity(t *testing.T, s *Store) {
+	t.Helper()
+	var result string
+	var changed []string
+	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&result); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(t.Context(), "SELECT hash, data FROM objects")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var hash string
+			var data []byte
+			if err := rows.Scan(&hash, &data); err != nil {
+				return err
+			}
+			if sum(data) != hash {
+				changed = append(changed, hash)
+			}
+		}
+		return rows.Err()
+	}); err != nil || result != "ok" || changed != nil {
+		t.Errorf("integrity_check = %q, objects with other data %q, %v; want ok and none", result, changed, err)
+	}
+}
+
 // modeOf returns the mode of name, without following a symbolic link.
 func modeOf(t *testing.T, name string) fs.FileMode {
 	t.Helper()

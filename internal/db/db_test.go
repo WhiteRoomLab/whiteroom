@@ -340,26 +340,41 @@ func TestMigrations(t *testing.T) {
 }
 
 func TestSettings(t *testing.T) {
-	d, _ := newDB(t)
 	type settings struct {
 		journalMode                                          string
 		synchronous, foreignKeys, recursiveTriggers, timeout int
 		queryOnly, applicationID, userVersion                int
 	}
-	var got settings
-	read := func(tx *sql.Tx) error {
-		return tx.QueryRow(`SELECT * FROM pragma_journal_mode, pragma_synchronous, pragma_foreign_keys,
-			pragma_recursive_triggers, pragma_busy_timeout, pragma_query_only, pragma_application_id, pragma_user_version`).
-			Scan(&got.journalMode, &got.synchronous, &got.foreignKeys, &got.recursiveTriggers, &got.timeout,
-				&got.queryOnly, &got.applicationID, &got.userVersion)
+	check := func(t *testing.T, d *DB) {
+		t.Helper()
+		var got settings
+		read := func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT * FROM pragma_journal_mode, pragma_synchronous, pragma_foreign_keys,
+				pragma_recursive_triggers, pragma_busy_timeout, pragma_query_only, pragma_application_id,
+				pragma_user_version`).
+				Scan(&got.journalMode, &got.synchronous, &got.foreignKeys, &got.recursiveTriggers, &got.timeout,
+					&got.queryOnly, &got.applicationID, &got.userVersion)
+		}
+		want := settings{"wal", 2, 1, 1, 5000, 0, applicationID, len(migrations)}
+		if err := d.Write(t.Context(), read); err != nil || got != want {
+			t.Errorf("settings of the writer = %+v, %v; want %+v", got, err, want)
+		}
+		got = settings{}
+		want.queryOnly = 1
+		if err := d.Read(t.Context(), read); err != nil || got != want {
+			t.Errorf("settings of the readers = %+v, %v; want %+v", got, err, want)
+		}
 	}
-	want := settings{"wal", 2, 1, 1, 5000, 0, applicationID, len(migrations)}
-	if err := d.Write(t.Context(), read); err != nil || got != want {
-		t.Errorf("settings of the writer = %+v, %v; want %+v", got, err, want)
+
+	d, p := newDB(t)
+	t.Run("created", func(t *testing.T) { check(t, d) })
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
 	}
-	got = settings{}
-	want.queryOnly = 1
-	if err := d.Read(t.Context(), read); err != nil || got != want {
-		t.Errorf("settings of the readers = %+v, %v; want %+v", got, err, want)
+	d, err := Open(p)
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
 	}
+	t.Cleanup(func() { _ = d.Close() })
+	t.Run("opened", func(t *testing.T) { check(t, d) })
 }
