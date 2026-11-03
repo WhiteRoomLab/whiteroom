@@ -25,8 +25,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
-const MaxDocumentBytes = 64 << 20 // bytes in a document or a file of the site settings
-
 // Dir is a site directory that Open has opened. Its methods may be called concurrently. The problems of its files
 // are content.Errors, each with File set to the path of its file from the directory, such as "site/schema.yaml".
 type Dir struct {
@@ -78,23 +76,12 @@ func (d *Dir) Settings() (settings, schema content.SiteFile, err error) {
 	return settings, schema, nil
 }
 
-// kindDirs are the directories of the kinds of documents that Documents reads.
-var kindDirs = map[content.RefKind]string{
-	content.RefEntry:    "entries",
-	content.RefTerm:     "terms",
-	content.RefMedia:    "media",
-	content.RefAuthor:   "authors",
-	content.RefMenu:     "menus",
-	content.RefForm:     "forms",
-	content.RefRedirect: "redirects",
-}
-
 // Documents reads the documents of kind from its directory, such as entries/, and returns them by their IDs; none if
 // the directory does not exist. Each entry of the directory, apart from hidden ones, must be a regular file named
 // <ID>.json with an ID of kind; the error has the problems of every entry, sorted.
 func (d *Dir) Documents(kind content.RefKind) (map[string]content.SiteFile, error) {
-	dir, ok := kindDirs[kind]
-	if !ok {
+	dir := content.DocumentDir(kind)
+	if dir == "" {
 		return nil, fmt.Errorf("unsupported kind %q", kind)
 	}
 	info, e := d.stat(dir, true)
@@ -250,10 +237,10 @@ func (d *Dir) readFile(name string) ([]byte, *content.Error) {
 	return d.read(name, info)
 }
 
-// read reads name, a regular file whose FileInfo is info, if it has at most MaxDocumentBytes.
+// read reads name, a regular file whose FileInfo is info, if it has at most content.MaxDocumentBytes.
 func (d *Dir) read(name string, info fs.FileInfo) ([]byte, *content.Error) {
-	if info.Size() > MaxDocumentBytes {
-		return nil, errorf(name, "too large: %d bytes (max %d)", info.Size(), MaxDocumentBytes)
+	if info.Size() > content.MaxDocumentBytes {
+		return nil, errorf(name, "too large: %d bytes (max %d)", info.Size(), content.MaxDocumentBytes)
 	}
 	f, err := d.root.Open(name)
 	if err != nil {
@@ -263,11 +250,11 @@ func (d *Dir) read(name string, info fs.FileInfo) ([]byte, *content.Error) {
 	var b bytes.Buffer
 	b.Grow(int(info.Size()) + bytes.MinRead)
 	// The file may have grown since its size was read.
-	if _, err := b.ReadFrom(io.LimitReader(f, MaxDocumentBytes+1)); err != nil {
+	if _, err := b.ReadFrom(io.LimitReader(f, content.MaxDocumentBytes+1)); err != nil {
 		return nil, readError(name, err)
 	}
-	if b.Len() > MaxDocumentBytes {
-		return nil, errorf(name, "too large: at least %d bytes (max %d)", b.Len(), MaxDocumentBytes)
+	if b.Len() > content.MaxDocumentBytes {
+		return nil, errorf(name, "too large: at least %d bytes (max %d)", b.Len(), content.MaxDocumentBytes)
 	}
 	return b.Bytes(), nil
 }

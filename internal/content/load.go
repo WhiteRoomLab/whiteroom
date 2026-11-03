@@ -9,6 +9,23 @@ type SiteFile struct {
 	Data []byte
 }
 
+var documentDirs = map[RefKind]string{
+	RefEntry:    "entries",
+	RefTerm:     "terms",
+	RefMedia:    "media",
+	RefAuthor:   "authors",
+	RefMenu:     "menus",
+	RefForm:     "forms",
+	RefRedirect: "redirects",
+}
+
+// DocumentDir returns the directory of the documents of kind in a site directory (4.3), such as "entries", which also
+// names them in errors, as in "entries/<ID>.json". Only the kinds of the entries, the terms, the media, the authors,
+// the menus, the forms and the redirects have one: for the others, such as RefRevision, it returns "".
+func DocumentDir(kind RefKind) string {
+	return documentDirs[kind]
+}
+
 // LoadSite reads the site settings from settings, the settings document in JSON that the admin screen writes, and
 // schema, the schema file in YAML that developers write, and validates them with lookup as Validate does. The error is
 // Errors, each with the Name of its file and the line and the column of the problem; for a missing item, those of the

@@ -435,6 +435,31 @@ func TestInSchemaFile(t *testing.T) {
 	}
 }
 
+func TestDocumentDir(t *testing.T) {
+	for _, tt := range []struct {
+		kind RefKind
+		want string
+	}{
+		{RefEntry, "entries"},
+		{RefTerm, "terms"},
+		{RefMedia, "media"},
+		{RefAuthor, "authors"},
+		{RefMenu, "menus"},
+		{RefForm, "forms"},
+		{RefRedirect, "redirects"},
+		{RefRevision, ""},
+		{RefTranslationGroup, ""},
+		{RefUser, ""},
+		{"settings", ""},
+		{"entries", ""},
+		{"", ""},
+	} {
+		if got := DocumentDir(tt.kind); got != tt.want {
+			t.Errorf("DocumentDir(%q) = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+}
+
 // FuzzLoadSite checks that LoadSite returns a site that passes Validate, or nil and Errors, each in one of the files at
 // a position in it.
 func FuzzLoadSite(f *testing.F) {

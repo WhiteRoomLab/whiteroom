@@ -6,6 +6,7 @@ const (
 	MaxTableCells = 5000    // tableCell blocks in a table
 	MaxTextBytes  = 1 << 20 // UTF-8 bytes in each string
 
+	MaxDocumentBytes = 64 << 20    // bytes in a JSON document, a revision or a file of the site settings
 	MaxMediaBytes    = 64 << 20    // bytes in an uploaded file, an image or a PDF
 	MaxImagePixels   = 100_000_000 // width times height of an image
 	MaxImageSide     = 10000       // width or height of an image size of a theme, in pixels
