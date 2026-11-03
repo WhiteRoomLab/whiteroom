@@ -8,10 +8,11 @@
 ### 9.2 提案段階
 
 - 単一バイナリ、または少数の実行ファイルで配布する。
+- SQLiteのドライバー（3.4）は、cgoを使うので、ビルドに、Cコンパイラーが要る（実行ファイルの静的リンクとクロスビルドは6.12の126）。
 - systemdユニットを同梱し、Linuxの標準ディレクトリ体系に合わせて配置する。
 - 内蔵HTTP/HTTPSサーバーを標準とし、必要に応じてNginx/Apache/Caddy等の背後でも動作させる。公開用の内蔵サーバー（9.5）は、いまはHTTPだけ（HTTPSは9.3）。
 - **公開用と管理用を別プロセス・別Unixユーザー**で起動できるようにする。
-- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。ほかは、まだ無い（`doctor` は、保存先と索引を決めてから作る。6.9）。
+- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。ほかは、まだ無い（`doctor` は、索引を作ってから作る。6.9）。
 - Ubuntu、Debian、Fedora、NixOSなどへの配布形式を検討する。
 - 本番運用時にPHP、Node.js、外部DBサーバーなどを必須としない構成を目指す。
 

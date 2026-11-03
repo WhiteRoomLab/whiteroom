@@ -219,7 +219,7 @@ func TestDocumentsErrors(t *testing.T) {
 	if err := os.WriteFile(big, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Truncate(big, MaxDocumentBytes+1); err != nil {
+	if err := os.Truncate(big, content.MaxDocumentBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	d := openDir(t, dir)
@@ -377,7 +377,7 @@ func TestRevision(t *testing.T) {
 	if err := os.WriteFile(big, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Truncate(big, MaxDocumentBytes+1); err != nil {
+	if err := os.Truncate(big, content.MaxDocumentBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	d := openDir(t, dir)
