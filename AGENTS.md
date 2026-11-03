@@ -7,6 +7,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `nix develop` で入る（direnv を使うなら、最初に一度 `direnv allow`）。
 - ツールの版は flake で決まる。Go のマイナー版は `flake.nix` の `go_1_27` で、それ以外は `flake.lock`（更新は `nix flake update`）。CI も `nix develop -c` で同じ版を使うので、`actions/setup-go` などで版を足さない。
 - `go.mod` の `go` 行は言語の最低版（いまは `1.27.0`）で、パッチ版に合わせて上げない。`toolchain` 行は書かない（`GOTOOLCHAIN=local` なので使われない）。
+- 外部の Go のモジュールは、足す前に、そのたびに、理由を添えてメンテナーに確かめる（決まった条件は無く、一度認められたモジュールがあっても、ほかのモジュールは改めて確かめる）。いまは `github.com/mattn/go-sqlite3`（SQLite のドライバー。構想書の 3.4）だけで、cgo を使う。開発シェルの C コンパイラーで SQLite をコンパイルするので、初めのビルドは約40秒かかる（後はキャッシュを使う）。`CGO_ENABLED=0` ではビルドはできるが、データベースを開けない（`internal/db` と `internal/store` のテストは失敗する）。
 - `internal/build` のサーバーの設定のテスト（`TestNginx`・`TestApache`）のために、開発シェルに Nginx と Apache（flake の `pkgs.nginx`・`pkgs.apacheHttpd`）を入れている。テストは、書き出した設定で実際のサーバーを動かして確かめ、サーバーが無いとき（開発シェルの外など）は飛ばす（Apache は、root で動かしたときと、要るモジュールが無いときも飛ばす）。同じサイトとリクエストで内蔵サーバー（`internal/serve`）を確かめる `TestBuiltinServer` は、ほかのプログラムが要らないので、いつも動く。
 
 ## よく使うコマンド
@@ -30,7 +31,8 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - 文中装飾とブロックの HTML と、`style` などの見た目の CSS（ページの CSS とサイトの CSS。構想書の 6.5.3）は `internal/render`。テーマにブロックのテンプレートが無いときに使う、本体の既定のテンプレート（構想書の 6.8）は `internal/render/blocks/` に、本体が付けるクラスの CSS（構想書の 6.5.4。サイトの CSS に入る）は `internal/render/classes.css` に置く。
 - `html`・`legacy` ブロックの HTML のサニタイズ（構想書の 6.5.4）は `internal/sanitize`。
 - 公開する画像と派生ファイル（構想書の 6.6.2。原本を調べること、ファイルの大きさ・名前・版を決めること、ファイルを作ること、キャッシュ）は `internal/imaging`。作るファイルか、原本を調べた結果が変わる変更をしたら、`internal/imaging/imaging.go` の `processingVersion` を上げる（キャッシュのキーとページの `?v=` に入るので、上げないと、キャッシュの古いファイルが使われる）。
-- 静的ビルド（構想書の 4.3）は `internal/build`。保存先が決まるまでサイトを置くディレクトリ（構想書の 4.3）を読み、ビルドの読み込みの口（`build.Source`）を実装する処理は `internal/sitedir`。ビルドが公開したリリースを、その `server.json` のとおりに配信する、公開用の内蔵サーバー（構想書の 9.5）は `internal/serve`。依存の向きは `build` → `render`・`imaging`・`theme`・`mediafile`・`content`、`sitedir` → `content`、`serve` → `content`、`render` → `theme` → `content`、`render` → `sanitize` → `html`、`sanitize` → `content`、`imaging` → `webp`・`mediafile`・`content`（`html`・`webp` は、ほかの `internal` のパッケージを使わない）。`sitedir` と `serve` は `build` を使わない（`build` のテストが `sitedir` と `serve` を使うので、使うと循環する）。`render` は `imaging` を使わず、画像のファイルを照会の関数（`Resolver` の `Image`）から受け取る（`build` が `imaging` で作る）。
+- 静的ビルド（構想書の 4.3）は `internal/build`。保存先からのビルドができるまでサイトを置くディレクトリ（構想書の 4.3）を読み、ビルドの読み込みの口（`build.Source`）を実装する処理は `internal/sitedir`。ビルドが公開したリリースを、その `server.json` のとおりに配信する、公開用の内蔵サーバー（構想書の 9.5）は `internal/serve`。依存の向きは `build` → `render`・`imaging`・`theme`・`mediafile`・`content`、`sitedir` → `content`、`serve` → `content`、`render` → `theme` → `content`、`render` → `sanitize` → `html`、`sanitize` → `content`、`imaging` → `webp`・`mediafile`・`content`（`html`・`webp` は、ほかの `internal` のパッケージを使わない）。`sitedir` と `serve` は `build` を使わない（`build` のテストが `sitedir` と `serve` を使うので、使うと循環する）。`render` は `imaging` を使わず、画像のファイルを照会の関数（`Resolver` の `Image`）から受け取る（`build` が `imaging` で作る）。
+- 管理の側の保存先（構想書の 3.4）のうち、SQLite のファイルを作って開き、表の定義を最新の版にし、トランザクションを動かす処理は `internal/db`、文書・リビジョン・メディアの原本を保存して読む Content Store は `internal/store`。表の定義は `internal/db/schema.go` の `migrations` に、版ごとの変更として足すだけで、`main` ブランチに入った変更は書き換えない（その版の表を持つファイルがあるため）。依存の向きは `store` → `db`・`content`、`db` → `github.com/mattn/go-sqlite3`（ドライバーを import するのは `internal/db` だけ）。`build` は、まだ `store` を使わない（保存先からのビルドは、まだ無い。構想書の 4.3）。
 - コマンド `whiteroom`（構想書の 9.4）は `cmd/whiteroom/`。構想書の 9.2 のコマンドは、どれもそのサブコマンドにする（いまは `build` と `serve public`）。依存の向きは `cmd/whiteroom` → `build`・`sitedir`・`serve`・`content`。
 
 ## 生成するファイル
