@@ -72,6 +72,11 @@ func docJSON(kind content.RefKind, id string) []byte {
 	return []byte(`{"schemaVersion": 1, "id": "` + id + `"}`)
 }
 
+// revJSON returns the JSON of a revision with title, which AddRevision takes.
+func revJSON(title string) []byte {
+	return []byte(`{"schemaVersion": 1, "title": "` + title + `"}`)
+}
+
 // sum returns the hash of data, as Version.Hash has it.
 func sum(data []byte) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(data))
@@ -89,10 +94,10 @@ func count(t *testing.T, s *Store, table string) int {
 	return n
 }
 
-// checkEmpty checks that s has no object, no version and no current document.
+// checkEmpty checks that s has no object, no version, no current document and no revision.
 func checkEmpty(t *testing.T, s *Store) {
 	t.Helper()
-	for _, table := range []string{"objects", "versions", "documents"} {
+	for _, table := range []string{"objects", "versions", "documents", "revisions"} {
 		if n := count(t, s, table); n != 0 {
 			t.Errorf("rows of %s = %d, want 0", table, n)
 		}
@@ -391,7 +396,8 @@ func mkdir(t *testing.T, name string) {
 	}
 }
 
-// calls are calls of every method of tx, by name, on the entry entryID or its data, which return their errors.
+// calls are calls of every method of tx, by name, on the entry entryID or its data, and on its revision revisionID or
+// its data, revJSON("About"), which return their errors.
 func calls(tx *Tx) map[string]func() error {
 	data := docJSON(content.RefEntry, entryID)
 	return map[string]func() error{
@@ -401,18 +407,33 @@ func calls(tx *Tx) map[string]func() error {
 		"Object":    func() error { _, err := tx.Object(sum(data)); return err },
 		"Put":       func() error { _, err := tx.Put(content.RefEntry, entryID, data, userID); return err },
 		"Delete":    func() error { _, err := tx.Delete(content.RefEntry, entryID, userID); return err },
+		"Revision":  func() error { _, err := tx.Revision(revisionID); return err },
+		"Revisions": func() error { _, err := tx.Revisions(entryID); return err },
+		"AddRevision": func() error {
+			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
+			return err
+		},
 	}
 }
 
 // writes are the methods of Tx that write.
-var writes = []string{"Put", "Delete"}
+var writes = []string{"Put", "Delete", "AddRevision"}
+
+// putWithRevision puts the entry entryID with its revision revisionID, whose data calls has, in an Update of s.
+func putWithRevision(t *testing.T, s *Store) {
+	t.Helper()
+	update(t, s, func(tx *Tx) error {
+		if _, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID); err != nil {
+			return err
+		}
+		_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
+		return err
+	})
+}
 
 func TestViewCannotWrite(t *testing.T) {
 	s, _ := newStore(t)
-	update(t, s, func(tx *Tx) error {
-		_, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)
-		return err
-	})
+	putWithRevision(t, s)
 	view(t, s, func(tx *Tx) error {
 		for name, call := range calls(tx) {
 			err := call()
@@ -426,8 +447,10 @@ func TestViewCannotWrite(t *testing.T) {
 		}
 		return nil
 	})
-	if n := count(t, s, "versions"); n != 1 {
-		t.Errorf("versions after the writes in View() = %d, want 1", n)
+	for _, table := range []string{"versions", "revisions"} {
+		if n := count(t, s, table); n != 1 {
+			t.Errorf("%s after the writes in View() = %d, want 1", table, n)
+		}
 	}
 }
 

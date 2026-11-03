@@ -97,12 +97,13 @@ func checkHistory(t *testing.T, tx *Tx, kind content.RefKind, id string, want []
 	}
 }
 
-// savedAts returns the saved_at of the versions in s, in the order of saving, as they are in the table.
-func savedAts(t *testing.T, s *Store) []string {
+// savedAts returns the saved_at of the rows of table in s, versions or revisions, in the order of saving, as they are
+// in the table.
+func savedAts(t *testing.T, s *Store, table string) []string {
 	t.Helper()
 	var got []string
 	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(t.Context(), "SELECT saved_at FROM versions ORDER BY seq")
+		rows, err := tx.QueryContext(t.Context(), "SELECT saved_at FROM "+table+" ORDER BY seq")
 		if err != nil {
 			return err
 		}
@@ -177,7 +178,7 @@ func TestDocuments(t *testing.T) {
 				checkDocument(t, s, Document{v4, first}, []Version{v1, v2, v3, v4})
 				savedAt = append(savedAt, savedAt[1], savedAt[1])
 			}
-			if got := savedAts(t, s); !slices.Equal(got, savedAt) {
+			if got := savedAts(t, s, "versions"); !slices.Equal(got, savedAt) {
 				t.Errorf("saved_at = %q, want %q", got, savedAt)
 			}
 			if n := count(t, s, "objects"); n != 2 {
@@ -225,7 +226,7 @@ func TestSavedAt(t *testing.T) {
 		}
 	}
 	first, second := "2026-11-03T08:00:00.120000001Z", "2026-11-03T08:00:00.120000002Z"
-	if got, want := savedAts(t, s), []string{first, first, first, second}; !slices.Equal(got, want) {
+	if got, want := savedAts(t, s, "versions"), []string{first, first, first, second}; !slices.Equal(got, want) {
 		t.Errorf("saved_at = %q, want %q", got, want)
 	}
 	checkConsistent(t, s)
@@ -398,37 +399,42 @@ func TestDeleteErrors(t *testing.T) {
 	checkConsistent(t, s)
 }
 
-// TestCorruptObject changes the data of an object, which the triggers of the tables keep from changing, and checks
-// that the reads of the data fail.
+// TestCorruptObject changes the data of the objects of an entry and its revision, which the triggers of the tables keep
+// from changing, and checks that the reads of the data fail.
 func TestCorruptObject(t *testing.T) {
 	s, _ := newStore(t)
-	data := docJSON(content.RefEntry, entryID)
-	update(t, s, func(tx *Tx) error {
-		_, err := tx.Put(content.RefEntry, entryID, data, userID)
-		return err
-	})
+	putWithRevision(t, s)
 	bad := docJSON(content.RefEntry, pageID)
 	if err := s.db.Write(t.Context(), func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(t.Context(), "DROP TRIGGER objects_no_update"); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(t.Context(), "UPDATE objects SET data = ? WHERE hash = ?", bad, sum(data))
+		_, err := tx.ExecContext(t.Context(), "UPDATE objects SET data = ?", bad)
 		return err
 	}); err != nil {
 		t.Fatalf("Write() = %v", err)
 	}
-	want := "object " + sum(data) + ": the data has the hash " + sum(bad)
+	changed := func(data []byte) string { return "object " + sum(data) + ": the data has the hash " + sum(bad) }
+	entry, rev := changed(docJSON(content.RefEntry, entryID)), changed(revJSON("About"))
+	// History and Revisions read no data.
+	wants := map[string]string{"Document": entry, "Documents": entry, "Object": entry, "Revision": rev}
 	view(t, s, func(tx *Tx) error {
 		for name, call := range calls(tx) {
-			if slices.Contains(writes, name) || name == "History" {
+			if slices.Contains(writes, name) {
 				continue
 			}
-			if err := call(); err == nil || err.Error() != want {
+			err := call()
+			if want, ok := wants[name]; ok && (err == nil || err.Error() != want) {
 				t.Errorf("%s() of a changed object = %v, want %q", name, err, want)
+			} else if !ok && err != nil {
+				t.Errorf("%s() = %v", name, err)
 			}
 		}
 		if h, err := tx.History(content.RefEntry, entryID); err != nil || len(h) != 1 {
 			t.Errorf("History() = %+v, %v; want the version", h, err)
+		}
+		if revs, err := tx.Revisions(entryID); err != nil || len(revs) != 1 {
+			t.Errorf("Revisions() = %+v, %v; want the revision", revs, err)
 		}
 		return nil
 	})

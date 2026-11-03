@@ -84,18 +84,24 @@ func name(kind content.RefKind, id string) string {
 	return content.DocumentDir(kind) + "/" + id + ".json"
 }
 
+// decodeFile checks that f, the JSON of a document or a revision, has at most content.MaxDocumentBytes, and decodes it
+// with decode. The error is content.Errors.
+func decodeFile(f content.SiteFile, decode func([]byte) error) error {
+	if len(f.Data) > content.MaxDocumentBytes {
+		return content.Errors{{
+			File: f.Name,
+			Msg:  fmt.Sprintf("too large: %d bytes (max %d)", len(f.Data), content.MaxDocumentBytes),
+		}}
+	}
+	return content.DecodeFile(f, decode)
+}
+
 // checkData checks that data, the JSON of the document of kind with id, decodes as the build decodes it, without
 // validating it against the site settings. The error is content.Errors.
 func checkData(kind content.RefKind, id string, data []byte) error {
 	f := content.SiteFile{Name: name(kind, id), Data: data}
-	if len(data) > content.MaxDocumentBytes {
-		return content.Errors{{
-			File: f.Name,
-			Msg:  fmt.Sprintf("too large: %d bytes (max %d)", len(data), content.MaxDocumentBytes),
-		}}
-	}
 	var got string
-	if err := content.DecodeFile(f, func(b []byte) (err error) {
+	if err := decodeFile(f, func(b []byte) (err error) {
 		got, err = decoders[kind](b)
 		return err
 	}); err != nil {
@@ -377,8 +383,8 @@ func verify(hash string, data []byte) error {
 	return nil
 }
 
-// notFoundError is the error for a document, a revision or an object that does not exist, by its name in errors, such
-// as "entries/<ID>.json".
+// notFoundError is the error for a document, a revision, an object or an original that does not exist, by its name in
+// errors, such as "entries/<ID>.json".
 type notFoundError string
 
 func (e notFoundError) Error() string { return string(e) + ": not found" }
