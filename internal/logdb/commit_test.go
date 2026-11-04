@@ -166,16 +166,22 @@ func TestHooks(t *testing.T) {
 	}}
 	fsys, db := newSim(t, o)
 	putKey(t, db, 1, "a", "1")
-	if got := strings.Join(points, " "); got != "update:written update:synced update:published" {
+	if got := strings.Join(points, " "); got != "update:objects update:written update:synced update:published" {
 		t.Errorf("hook points: %s", got)
 	}
 	size := fileSize(t, fsys, seg1)
-	fail = "update:written"
-	if err := db.Update(context.Background(), putF(1, "b", "2")); !errors.Is(err, hookErr) {
-		t.Errorf("Update with the hook %s failing: %v", fail, err)
-	}
-	if fileSize(t, fsys, seg1) != size || len(pendingOn(fsys, seg1)) != 0 {
-		t.Error("the record of the failed Update is not cut durably")
+	for _, p := range []string{"update:objects", "update:written"} {
+		fail = p
+		counted := fsys.Counted()
+		if err := db.Update(context.Background(), putF(1, "b", "2")); !errors.Is(err, hookErr) {
+			t.Errorf("Update with the hook %s failing: %v", fail, err)
+		}
+		if fileSize(t, fsys, seg1) != size || len(pendingOn(fsys, seg1)) != 0 {
+			t.Errorf("the record of the Update that failed at %s is not cut durably", p)
+		}
+		if p == "update:objects" && fsys.Counted() != counted {
+			t.Errorf("the Update that failed at %s wrote", p)
+		}
 	}
 	for _, p := range []string{"update:synced", "update:published"} {
 		fail = p

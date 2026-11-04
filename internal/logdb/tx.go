@@ -14,6 +14,7 @@ type Tx struct {
 	owner  *owner   // of the nodes that the writes make
 	tables tableMap // with the writes, or nil before the first one
 	ops    []op
+	objs   map[[32]byte][]byte // the objects that the tx puts, with their data
 	done   bool
 }
 
@@ -93,12 +94,22 @@ func (tx *Tx) Delete(table uint32, key []byte) error {
 	return nil
 }
 
-func (tx *Tx) checkWrite(table uint32, key []byte) error {
+// checkTx returns why tx cannot write now, or nil.
+func (tx *Tx) checkTx() error {
 	switch {
 	case tx.done:
 		return errEnded
 	case !tx.write:
 		return ErrReadOnly
+	}
+	return nil
+}
+
+func (tx *Tx) checkWrite(table uint32, key []byte) error {
+	if err := tx.checkTx(); err != nil {
+		return err
+	}
+	switch {
 	case table == 0:
 		return fmt.Errorf("invalid table %d", table)
 	case len(key) > MaxKey:

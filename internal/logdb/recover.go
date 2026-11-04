@@ -35,8 +35,23 @@ func checkLayout(fsys vfs.FS) error {
 // checkEntry checks, with the messages of internal/store, that name is a directory if dir is true, and a regular file
 // if not, without following a symbolic link.
 func checkEntry(fsys vfs.FS, name string, dir bool) error {
+	_, err := lstatEntry(fsys, name, dir)
+	return err
+}
+
+// lstatEntry is checkEntry that also returns what Lstat says of name.
+func lstatEntry(fsys vfs.FS, name string, dir bool) (fs.FileInfo, error) {
 	p := path.Join(fsys.Name(), name)
 	info, err := fsys.Lstat(name)
+	if err != nil {
+		return nil, entryError(p, err, dir)
+	}
+	return info, checkType(p, info.Mode(), dir)
+}
+
+// entryError returns err, of looking up the file at path p, or the directory if dir is true, with the messages of
+// internal/store. A missing file of the engine is damage: the error does not wrap fs.ErrNotExist.
+func entryError(p string, err error, dir bool) error {
 	var pe *fs.PathError
 	switch {
 	case errors.Is(err, fs.ErrNotExist) && dir:
@@ -45,10 +60,8 @@ func checkEntry(fsys vfs.FS, name string, dir bool) error {
 		return fmt.Errorf("%s: missing file", p)
 	case errors.As(err, &pe):
 		return fmt.Errorf("%s: cannot read: %w", p, pe.Err)
-	case err != nil:
-		return err
 	}
-	return checkType(p, info.Mode(), dir)
+	return err
 }
 
 func checkType(p string, mode fs.FileMode, dir bool) error {
@@ -128,7 +141,7 @@ func recoverLog(fsys vfs.FS) (*recovery, error) {
 		}
 	}
 	r := &recovery{
-		st:   &state{gen: 1, seg: 1, end: segHeaderSize, tables: tableMap{}},
+		st:   &state{gen: 1, seg: 1, end: segHeaderSize, tables: tableMap{}, nextEvent: 1},
 		cut:  -1,
 		info: RecoveryInfo{Generation: 1, Checkpoint: "none", TruncatedAt: -1},
 	}
@@ -163,6 +176,7 @@ func recoverLog(fsys vfs.FS) (*recovery, error) {
 		r.st.logBytes += seg.end
 		r.seg = seg
 	}
+	r.st.segments = int(r.seg.index)
 	r.info.Seq = r.st.seq
 	if err := r.openFiles(fsys); err != nil {
 		r.close()
@@ -188,15 +202,9 @@ func (r *recovery) scan(p string, b []byte, seg *segment, own *owner, last bool)
 			r.cut, r.info.TruncatedAt = off, off
 			break
 		}
-		rec, reason := parseBody(body)
-		if reason == "" && rec.seq != st.seq+1 {
-			reason = fmt.Sprintf("sequence %d, want %d", rec.seq, st.seq+1)
-		}
-		if reason == "" && rec.typ != recCommit {
-			reason = "a base record in generation 1"
-		}
+		rec, reason := nextRecord(body, st.seq+1)
 		if reason == "" {
-			reason = st.apply(own, rec.ops)
+			reason = st.apply(own, rec.ops, rec.seq, seg.index, off)
 		}
 		if reason != "" {
 			return &CorruptError{Path: p, Offset: off, Reason: reason}
@@ -210,6 +218,19 @@ func (r *recovery) scan(p string, b []byte, seg *segment, own *owner, last bool)
 	}
 	seg.end = off
 	return nil
+}
+
+// nextRecord decodes body, the body of a frame that must hold the commit want, or says why it cannot.
+func nextRecord(body []byte, want uint64) (record, string) {
+	rec, reason := parseBody(body)
+	switch {
+	case reason != "":
+	case rec.seq != want:
+		reason = fmt.Sprintf("sequence %d, want %d", rec.seq, want)
+	case rec.typ != recCommit:
+		reason = "a base record in generation 1"
+	}
+	return rec, reason
 }
 
 // mayBeTorn reports whether reason, of parseFrame, is one that a crash while the frame was written can leave. The
@@ -276,6 +297,11 @@ func (r *recovery) apply(fsys vfs.FS) error {
 }
 
 func readFile(fsys vfs.FS, name string) ([]byte, error) {
+	return readPrefix(fsys, name, -1)
+}
+
+// readPrefix reads the file name to its end, or its first limit bytes if it has more and limit is not negative.
+func readPrefix(fsys vfs.FS, name string, limit int64) ([]byte, error) {
 	f, err := fsys.Open(name)
 	if err != nil {
 		return nil, err
@@ -286,10 +312,14 @@ func readFile(fsys vfs.FS, name string) ([]byte, error) {
 		return nil, err
 	}
 	p := path.Join(fsys.Name(), name)
-	if info.Size() > math.MaxInt {
+	size := info.Size()
+	if limit >= 0 {
+		size = min(size, limit)
+	}
+	if size > math.MaxInt {
 		return nil, fmt.Errorf("%s: too large to read", p)
 	}
-	b := make([]byte, info.Size())
+	b := make([]byte, size)
 	if err := readAt(f, b, 0, p); err != nil {
 		return nil, err
 	}

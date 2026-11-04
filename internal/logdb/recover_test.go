@@ -133,7 +133,10 @@ func TestCorruptionNotTail(t *testing.T) {
 		{"unknown op", frame(rawBody(recCommit, []byte{1, 9})), "unknown op 9"},
 		{"trailing bytes", frame(append(appendCommit(nil, 3, nil), 0)), "trailing bytes"},
 		{"base record", frame(appendBase(nil, 3, 0, nil)), "a base record in generation 1"},
-		{"object", frame(appendCommit(nil, 3, []op{{code: opInline, hash: hashOf(1), value: []byte("x")}})), "op 3 is not supported yet"},
+		{"event number", frame(appendCommit(nil, 3, []op{{code: opEvent, number: 2, seq: 3}})), "event number 2, want 1"},
+		{"event sequence", frame(appendCommit(nil, 3, []op{{code: opEvent, number: 1, seq: 2}})), "event sequence 2, want 3"},
+		{"an object twice", frame(appendCommit(nil, 3, []op{{code: opFile, hash: hashOf(1), size: 1},
+			{code: opInline, hash: hashOf(1), value: []byte("x")}})), fmt.Sprintf("object %x is in the store already", hashOf(1))},
 		{"nonzero padding", func() []byte {
 			b := slices.Clone(full)
 			b[len(b)-1] = 1

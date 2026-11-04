@@ -13,6 +13,8 @@ import (
 
 // Options are the options of Create and Open. The zero value of a field is its default.
 type Options struct {
+	Placement    Placement     // of the data of new objects
+	Threshold    int           // Hybrid: the size from which objects go in files; 0: 64 KiB
 	SegmentBytes int64         // a record that would take a segment past it goes in a new one, unless it is the first; 0: 64 MiB
 	WriterWait   time.Duration // how long Open waits for lock/writer, which readers hold briefly; 0: 2 s
 	// Hook is called at points of the engine such as "update:written", for the tests. Its error makes the operation
@@ -21,6 +23,28 @@ type Options struct {
 	// Accept is called by Open with a transaction that reads the recovered state, before Open changes a file. Its error
 	// is that of Open.
 	Accept func(tx *Tx) error
+}
+
+// fill checks o and sets the defaults of the fields that are zero.
+func (o *Options) fill() error {
+	switch o.Placement {
+	case Inline, Files, Hybrid:
+	default:
+		return fmt.Errorf("unknown placement %d", o.Placement)
+	}
+	if o.Threshold < 0 {
+		return fmt.Errorf("negative threshold %d", o.Threshold)
+	}
+	if o.Threshold == 0 {
+		o.Threshold = 64 << 10
+	}
+	if o.SegmentBytes == 0 {
+		o.SegmentBytes = 64 << 20
+	}
+	if o.WriterWait == 0 {
+		o.WriterWait = 2 * time.Second
+	}
+	return nil
 }
 
 // RecoveryInfo is what Open found in the log.
@@ -42,6 +66,7 @@ type DB struct {
 	closed     atomic.Bool
 	info       RecoveryInfo
 	headErrors atomic.Int64
+	handles    *handles
 
 	// Guarded by sem.
 	seg      *segment // the last segment, which the next record goes in
@@ -49,11 +74,15 @@ type DB struct {
 	logBytes int64
 	failed   error // after a sync failed: the error of every Update
 	unlock   func() error
+	objDirs  map[string]bool // the directories of objects/ whose names are known to be durable
 }
 
 // Create makes a new store in fsys, which must be an empty directory, and opens it. If it fails after making
 // something, fsys must be emptied before Create can try again.
 func Create(fsys vfs.FS, o Options) (*DB, error) {
+	if err := o.fill(); err != nil {
+		return nil, err
+	}
 	entries, err := fsys.ReadDir(".")
 	if err != nil {
 		return nil, err
@@ -119,11 +148,8 @@ func createFile(fsys vfs.FS, name string, data []byte) error {
 // Open opens the store in fsys as its writer: it takes the locks, recovers the state from the log, and makes durable
 // what it goes on from.
 func Open(fsys vfs.FS, o Options) (*DB, error) {
-	if o.SegmentBytes == 0 {
-		o.SegmentBytes = 64 << 20
-	}
-	if o.WriterWait == 0 {
-		o.WriterWait = 2 * time.Second
+	if err := o.fill(); err != nil {
+		return nil, err
 	}
 	if err := checkLayout(fsys); err != nil {
 		return nil, err
@@ -133,36 +159,45 @@ func Open(fsys vfs.FS, o Options) (*DB, error) {
 		return nil, err
 	}
 	var r *recovery
+	var h *handles
 	opened := false
 	defer func() {
-		if !opened {
-			if r != nil {
-				r.close()
-			}
-			_ = unlock()
+		if opened {
+			return
 		}
+		switch {
+		case h != nil:
+			_ = h.close() // it has the file of r.seg
+			_ = r.head.f.Close()
+		case r != nil:
+			r.close()
+		}
+		_ = unlock()
 	}()
 	r, err = recoverLog(fsys)
 	if err != nil {
 		return nil, err
 	}
+	h = newHandles(fsys)
+	h.add(r.seg.gen, r.seg.index, r.seg.f)
+	db := &DB{fsys: fsys, o: o, sem: make(chan struct{}, 1), info: r.info, handles: h, seg: r.seg, head: r.head,
+		logBytes: r.st.logBytes, unlock: unlock, objDirs: map[string]bool{}}
 	if o.Accept != nil {
-		if err := (&Tx{st: r.st}).run(o.Accept); err != nil {
+		if err := (&Tx{db: db, st: r.st}).run(o.Accept); err != nil {
 			return nil, err
 		}
 	}
 	if err := r.apply(fsys); err != nil {
 		return nil, err
 	}
-	db := &DB{fsys: fsys, o: o, sem: make(chan struct{}, 1), info: r.info, seg: r.seg, head: r.head,
-		logBytes: r.st.logBytes, unlock: unlock}
 	db.cur.Store(r.st)
 	db.writeHead()
 	opened = true
 	return db, nil
 }
 
-// Close closes the store: unless it has failed, it writes and syncs head first. Then View and Update fail.
+// Close closes the store: unless it has failed, it writes and syncs head first. Then View and Update fail; the Views
+// that run go on until they end.
 func (db *DB) Close() error {
 	db.sem <- struct{}{}
 	defer func() { <-db.sem }()
@@ -177,7 +212,7 @@ func (db *DB) Close() error {
 			err = db.head.f.Sync()
 		}
 	}
-	return errors.Join(err, db.seg.f.Close(), db.head.f.Close(), db.unlock())
+	return errors.Join(err, db.handles.close(), db.head.f.Close(), db.unlock())
 }
 
 // Recovery returns what Open found in the log.
