@@ -309,6 +309,45 @@ func TestStats(t *testing.T) {
 	check(reopen(t, fsys, o), 0)
 }
 
+// TestEventsDuringClose checks that Events, like a View, goes on reading when Close is called, and that the files are
+// closed when it ends.
+func TestEventsDuringClose(t *testing.T) {
+	ctx := context.Background()
+	_, db := newSim(t, Options{SegmentBytes: 200})
+	for i := range 6 {
+		if err := db.Update(ctx, appendF(strings.Repeat(string(rune('a'+i)), 80))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read, closed, done := make(chan struct{}), make(chan struct{}), make(chan error)
+	n := 0
+	go func() {
+		done <- db.Events(ctx, func(Event) bool {
+			if n == 0 {
+				close(read)
+				<-closed
+			}
+			n++
+			return true
+		})
+	}()
+	<-read
+	closeDB(t, db)
+	close(closed)
+	if err := <-done; err != nil || n != 6 {
+		t.Errorf("Events during Close: %d events, %v", n, err)
+	}
+	db.handles.mu.Lock()
+	files := db.handles.files
+	db.handles.mu.Unlock()
+	if files != nil {
+		t.Errorf("%d files are open after Events", len(files))
+	}
+	if err := db.Events(ctx, func(Event) bool { return true }); !errors.Is(err, errClosed) {
+		t.Errorf("Events after Close: %v", err)
+	}
+}
+
 // TestEventsNotInMemory checks that the engine does not keep the data of events in memory.
 func TestEventsNotInMemory(t *testing.T) {
 	ctx := context.Background()

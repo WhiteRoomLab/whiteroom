@@ -131,8 +131,9 @@ func seqOf(t *testing.T, db *DB) uint64 {
 	return seq
 }
 
-// build makes a store with n commits that each put a key, closes it, and returns it with the dumps after 0..n
-// commits. Each record has a frame of 40 bytes, 7 of them padding (for n < 10).
+// build makes a store with n commits that each put a key, closes it, removes the checkpoint that Close has written, so
+// that Open replays the log from its start, and returns it with the dumps after 0..n commits. Each record has a frame
+// of 40 bytes, 7 of them padding (for n < 10).
 func build(t *testing.T, o Options, n int) (*simfs.FS, []string) {
 	t.Helper()
 	fsys, db := newSim(t, o)
@@ -142,7 +143,16 @@ func build(t *testing.T, o Options, n int) (*simfs.FS, []string) {
 		dumps = append(dumps, dump(t, db))
 	}
 	closeDB(t, db)
+	dropCheckpoint(t, fsys)
 	return fsys, dumps
+}
+
+// dropCheckpoint removes the checkpoint of the store in fsys, durably, if it has one.
+func dropCheckpoint(t *testing.T, fsys vfs.FS) {
+	t.Helper()
+	if exists(t, fsys, "checkpoint") {
+		removeFile(t, fsys, "checkpoint")
+	}
 }
 
 func fileData(t *testing.T, fsys vfs.FS, name string) []byte {
@@ -240,7 +250,8 @@ func checkFilesUnchanged(t *testing.T, fsys *simfs.FS, before map[string]string)
 func frames(t *testing.T, fsys vfs.FS, name string) (segHeader, []int64) {
 	t.Helper()
 	b := fileData(t, fsys, name)
-	h, err := parseSegHeader(path.Join(simDir, name), b, 1, segIndex(name))
+	gen, index, _ := parseSegName(path.Base(name))
+	h, err := parseSegHeader(path.Join(simDir, name), b, gen, index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,15 +265,6 @@ func frames(t *testing.T, fsys vfs.FS, name string) (segHeader, []int64) {
 		off += int64(n)
 	}
 	return h, offs
-}
-
-// segIndex returns the index of the segment named name.
-func segIndex(name string) uint64 {
-	_, index, ok := parseSegName(path.Base(name))
-	if !ok {
-		panic(name)
-	}
-	return index
 }
 
 // commitFrame returns the frame of a commit that puts key in table, for a segment with salt.

@@ -41,6 +41,15 @@ func (h *handles) readAt(gen, index uint64, b []byte, off int64) error {
 	return readAt(f, b, off, path.Join(h.fsys.Name(), segName(gen, index)))
 }
 
+// readPrefix reads the segment index of generation gen as readPrefix reads a file.
+func (h *handles) readPrefix(gen, index uint64, limit int64) ([]byte, error) {
+	f, err := h.file(gen, index)
+	if err != nil {
+		return nil, err
+	}
+	return readOpen(f, path.Join(h.fsys.Name(), segName(gen, index)), limit)
+}
+
 func (h *handles) file(gen, index uint64) (vfs.File, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

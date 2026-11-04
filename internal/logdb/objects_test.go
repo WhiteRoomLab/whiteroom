@@ -747,6 +747,12 @@ func TestCloseReleasesFiles(t *testing.T) {
 		for i := range 8 {
 			hashes = append(hashes, putObjects(t, db, objData(i, 100+20*i))...)
 		}
+		if err := compactDB(db, Rewrite{}); err != nil { // the files of both generations are closed too
+			t.Fatal(err)
+		}
+		for i := 8; i < 10; i++ {
+			hashes = append(hashes, putObjects(t, db, objData(i, 100+20*i))...)
+		}
 		read, closed, done := make(chan struct{}), make(chan struct{}), make(chan error)
 		go func() {
 			done <- db.View(ctx, func(tx *Tx) error {
@@ -1067,6 +1073,8 @@ func TestVerify(t *testing.T) {
 			differs + "next event: 2 in the log, 5 in memory"},
 		{"the sequence in memory", func(_ *simfs.FS, db *DB) { changeState(db, func(st *state) { st.seq = 3 }) },
 			differs + "sequence: 2 in the log, 3 in memory"},
+		{"the offset in memory", func(_ *simfs.FS, db *DB) { changeState(db, func(st *state) { st.off += 8 }) },
+			differs + fmt.Sprintf("offset of the last record: %d in the log, %d in memory", offs[1], offs[1]+8)},
 		{"the CRC in memory", func(_ *simfs.FS, db *DB) { changeState(db, func(st *state) { st.lastCRC++ }) },
 			differs + fmt.Sprintf("CRC of the last record: %d in the log, %d in memory", crcAt(t, base, seg1, offs[1]),
 				crcAt(t, base, seg1, offs[1])+1)},

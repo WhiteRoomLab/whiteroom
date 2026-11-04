@@ -77,7 +77,7 @@ func TestCreateLayout(t *testing.T) {
 	}
 	putKey(t, db, 1, "k", "v")
 	closeDB(t, db)
-	if got := osTree(t, dir); got != want {
+	if got, want := osTree(t, dir), "checkpoint 600\n"+want; got != want {
 		t.Errorf("after Close:\n%s\nwant:\n%s", got, want)
 	}
 	_, offs := frames(t, fsys, seg1)
@@ -188,11 +188,21 @@ func TestReopen(t *testing.T) {
 		t.Fatalf("dump:\n%s\nwant:\n%s", got, want)
 	}
 	closeDB(t, db)
+	// Without the checkpoint of Close, Open replays the log.
+	replayed := copyFS(fsys)
+	dropCheckpoint(t, replayed)
+	db = reopen(t, replayed, Options{})
+	if got := dump(t, db); got != want {
+		t.Errorf("after reopening without the checkpoint:\n%s\nwant:\n%s", got, want)
+	}
+	if info := db.Recovery(); !equalInfo(info, RecoveryInfo{Generation: 1, Seq: 3, Checkpoint: "none", Replayed: 3, TruncatedAt: -1}) {
+		t.Errorf("Recovery: %+v", info)
+	}
 	db = reopen(t, fsys, Options{})
 	if got := dump(t, db); got != want {
 		t.Errorf("after reopening:\n%s\nwant:\n%s", got, want)
 	}
-	if info := db.Recovery(); !equalInfo(info, RecoveryInfo{Generation: 1, Seq: 3, Checkpoint: "none", Replayed: 3, TruncatedAt: -1}) {
+	if info := db.Recovery(); !equalInfo(info, RecoveryInfo{Generation: 1, Seq: 3, Checkpoint: "used", TruncatedAt: -1}) {
 		t.Errorf("Recovery: %+v", info)
 	}
 	err := db.View(ctx, func(tx *Tx) error {
@@ -240,13 +250,19 @@ func TestReopen(t *testing.T) {
 	delKey(t, db, 1, "")
 	delKey(t, db, 1, "ab")
 	closeDB(t, db)
-	db = reopen(t, fsys, Options{})
-	if got := dump(t, db); got != "1/a=one\n1/c=" || seqOf(t, db) != 5 {
-		t.Errorf("after deleting and reopening:\n%s", got)
-	}
-	// Values read from the log do not keep the segment in memory.
-	if v, _ := db.cur.Load().tables[1].Get("a"); cap(v) > 8 {
-		t.Errorf("a value of %d bytes has a capacity of %d", len(v), cap(v))
+	for _, ckp := range []bool{true, false} {
+		if !ckp {
+			closeDB(t, db)
+			dropCheckpoint(t, fsys)
+		}
+		db = reopen(t, fsys, Options{})
+		if got := dump(t, db); got != "1/a=one\n1/c=" || seqOf(t, db) != 5 {
+			t.Errorf("after deleting and reopening, checkpoint %v:\n%s", ckp, got)
+		}
+		// Values read from the log or the checkpoint do not keep its buffer in memory.
+		if v, _ := db.cur.Load().tables[1].Get("a"); cap(v) > 8 {
+			t.Errorf("a value of %d bytes has a capacity of %d, checkpoint %v", len(v), cap(v), ckp)
+		}
 	}
 	// head names the last record.
 	_, offs := frames(t, fsys, seg1)
@@ -812,7 +828,7 @@ func TestRollover(t *testing.T) {
 	if got := dump(t, db); got != want {
 		t.Error("the dump differs after reopening")
 	}
-	if info := db.Recovery(); info.Seq != 102 || info.Replayed != 102 {
+	if info := db.Recovery(); info.Seq != 102 || info.Checkpoint != "used" || info.Replayed != 0 {
 		t.Errorf("Recovery: %+v", info)
 	}
 	putKey(t, db, 1, "reopened", "y")

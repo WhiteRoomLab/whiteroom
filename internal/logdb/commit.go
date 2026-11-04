@@ -112,6 +112,7 @@ func (db *DB) commit(tx *Tx) error {
 	db.cur.Store(st)
 	_ = db.hook("update:published")
 	db.writeHead()
+	db.autoCheckpoint(st)
 	return nil
 }
 
@@ -120,7 +121,7 @@ func (db *DB) commit(tx *Tx) error {
 func (db *DB) next(tx *Tx, seg *segment, frame []byte) *state {
 	base := tx.st
 	n := int64(len(frame))
-	st := &state{gen: base.gen, seq: base.seq + 1, seg: seg.index, end: seg.end + n,
+	st := &state{gen: base.gen, seq: base.seq + 1, seg: seg.index, off: seg.end, end: seg.end + n,
 		lastCRC: binary.LittleEndian.Uint32(frame[4:]), tables: tx.tables, objects: base.objects,
 		nextEvent: base.nextEvent, events: base.events, logBytes: db.logBytes + n, segments: int(seg.index)}
 	if st.tables == nil {

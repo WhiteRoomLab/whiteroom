@@ -30,11 +30,11 @@ func (db *DB) Verify(ctx context.Context) error {
 	st := db.cur.Load()
 	log := &state{gen: st.gen, seg: 1, end: segHeaderSize, tables: tableMap{}, nextEvent: 1}
 	own := new(owner)
-	err := readLog(ctx, db.fsys, st, func(r logRecord) (bool, error) {
-		if reason := log.apply(own, r.rec.ops, r.rec.seq, r.seg, r.off); reason != "" {
+	err := readLog(ctx, db.handles, st, func(r logRecord) (bool, error) {
+		if reason := log.applyRecord(own, &r.rec, r.seg, r.off); reason != "" {
 			return false, &CorruptError{Path: r.p, Offset: r.off, Reason: reason}
 		}
-		log.seq, log.seg, log.end, log.lastCRC = r.rec.seq, r.seg, r.off+r.n, r.crc
+		log.seq, log.seg, log.off, log.end, log.lastCRC = r.rec.seq, r.seg, r.off, r.off+r.n, r.crc
 		return true, nil
 	})
 	if err != nil {
@@ -70,6 +70,7 @@ func diffStates(log, mem *state) string {
 		{"generation", log.gen, mem.gen},
 		{"sequence", log.seq, mem.seq},
 		{"segment of the last record", log.seg, mem.seg},
+		{"offset of the last record", log.off, mem.off},
 		{"end of the last record", log.end, mem.end},
 		{"CRC of the last record", log.lastCRC, mem.lastCRC},
 		{"next event", log.nextEvent, mem.nextEvent},

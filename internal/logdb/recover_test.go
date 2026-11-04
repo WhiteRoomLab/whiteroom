@@ -1,7 +1,9 @@
 package logdb
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -52,6 +54,7 @@ func TestTornTail(t *testing.T) {
 	db := reopen(t, base, Options{})
 	putKey(t, db, 1, "last", strings.Repeat("x", 600)) // a frame of more than 600 bytes
 	closeDB(t, db)
+	dropCheckpoint(t, base)
 	_, offs := frames(t, base, seg1)
 	full := fileData(t, base, seg1)
 	last, end := offs[2], int64(len(full))
@@ -264,12 +267,17 @@ func TestMissingSegment(t *testing.T) {
 		}
 		checkRefused(t, fsys, "log", -1, c.reason)
 	}
-	// the last one missing: the commits in it are lost, which Open cannot tell
+	// the last one missing: without a checkpoint, the commits in it are lost, which Open cannot tell
 	fsys := copyFS(base)
 	removeFile(t, fsys, seg3)
 	if db := reopen(t, fsys, Options{}); seqOf(t, db) != 2 {
 		t.Errorf("seq %d", seqOf(t, db))
 	}
+	// A checkpoint of the last record bounds it.
+	fsys = copyFS(base)
+	closeDB(t, reopen(t, fsys, Options{}))
+	removeFile(t, fsys, seg3)
+	checkRefused(t, fsys, "checkpoint", -1, "the log does not have sequence 3 at "+simPath(seg3)+" offset 64")
 }
 
 func TestNameMismatch(t *testing.T) {
@@ -304,10 +312,18 @@ func TestNameMismatch(t *testing.T) {
 		})
 	}
 	t.Run("another generation", func(t *testing.T) {
+		// A generation without a base-end is one that a compaction has begun: it is ignored.
 		fsys := copyFS(base)
 		name := segName(2, 1)
-		setFile(t, fsys, name, appendSegHeader(nil, segHeader{gen: 2, index: 1, firstSeq: 4}))
-		checkRefused(t, fsys, name, -1, "unsupported generation 2")
+		setFile(t, fsys, name, appendSegHeader(nil, segHeader{gen: 2, index: 1, firstSeq: 3}))
+		before := fileData(t, fsys, name)
+		db := reopen(t, fsys, Options{})
+		if info := db.Recovery(); info.Generation != 1 || info.Seq != 3 || !slices.Equal(info.IgnoredGenerations, []uint64{2}) {
+			t.Errorf("Recovery: %+v", info)
+		}
+		if got := fileData(t, fsys, name); !slices.Equal(got, before) {
+			t.Errorf("%s changed", name)
+		}
 	})
 	t.Run("a directory", func(t *testing.T) {
 		fsys := copyFS(base)
@@ -532,6 +548,29 @@ func TestAccept(t *testing.T) {
 		}()
 		reopen(t, fsys, Options{WriterWait: 1}) // the locks were released
 	})
+	t.Run("refused with a checkpoint", func(t *testing.T) {
+		// Open writes no checkpoint, and leaves the one that the store has.
+		fsys := copyFS(base)
+		closeDB(t, reopen(t, fsys, Options{}))
+		if !exists(t, fsys, "checkpoint") {
+			t.Fatal("no checkpoint")
+		}
+		setFile(t, fsys, seg1, torn)
+		before := fileMap(fsys)
+		if _, err := Open(fsys, Options{Accept: func(tx *Tx) error {
+			if v, ok := tx.Get(1, []byte("k2")); tx.Seq() != 2 || !ok || string(v) != "value 2." {
+				t.Errorf("Accept sees seq %d, %q", tx.Seq(), v)
+			}
+			return refused
+		}}); !errors.Is(err, refused) {
+			t.Errorf("Open: %v", err)
+		}
+		checkFilesUnchanged(t, fsys, before)
+		db := reopen(t, fsys, Options{})
+		if info := db.Recovery(); info.Checkpoint != "used" || info.TruncatedAt != int64(len(full)) || dump(t, db) != dumps[2] {
+			t.Errorf("Recovery: %+v", info)
+		}
+	})
 	t.Run("accepted", func(t *testing.T) {
 		fsys := copyFS(base)
 		called := false
@@ -544,6 +583,16 @@ func TestAccept(t *testing.T) {
 		}
 		if err := db.View(context.Background(), func(*Tx) error { return nil }); err != nil {
 			t.Error(err)
+		}
+	})
+	t.Run("at Create", func(t *testing.T) {
+		seq := uint64(1)
+		_, err := Create(simfs.New(simDir), Options{Accept: func(tx *Tx) error {
+			seq = tx.Seq()
+			return refused
+		}})
+		if !errors.Is(err, refused) || seq != 0 {
+			t.Errorf("Create: %v, Accept saw seq %d", err, seq)
 		}
 	})
 }
@@ -590,6 +639,259 @@ func TestCrashDuringRecovery(t *testing.T) {
 				}
 			}
 			t.Logf("%d crash points, %d crashes", ops+1, crashes)
+		})
+	}
+}
+
+// genSeg returns the header of the segment index of generation gen, whose first sequence number is first, and its salt.
+func genSeg(gen, index, first uint64) ([]byte, uint64) {
+	salt := gen<<8 | index
+	return appendSegHeader(nil, segHeader{gen: gen, index: index, firstSeq: first, salt: salt}), salt
+}
+
+// writeSeg makes that segment with the frames of bodies, durably, and returns their offsets.
+func writeSeg(t *testing.T, fsys *simfs.FS, gen, index, first uint64, bodies ...[]byte) []int64 {
+	t.Helper()
+	b, salt := genSeg(gen, index, first)
+	var offs []int64
+	for _, body := range bodies {
+		offs = append(offs, int64(len(b)))
+		b = appendFrame(b, salt, body)
+	}
+	setFile(t, fsys, segName(gen, index), b)
+	return offs
+}
+
+// TestGenerations checks the rules of recovery for a log with more than one generation, on generations made by hand:
+// the newest complete one is used, newer incomplete ones are ignored, and records that break the order of a base are
+// corruption.
+func TestGenerations(t *testing.T) {
+	base, dumps := build(t, Options{}, 3) // generation 1, up to the commit 3
+	object := []byte("an object of the base")
+	oh := sha256.Sum256(object)
+	puts := []op{
+		{code: opPut, table: 1, key: "k1", value: []byte("value 1.")},
+		{code: opPut, table: 1, key: "k2", value: []byte("value 2.")},
+		{code: opPut, table: 1, key: "k3", value: []byte("value 3.")},
+		{code: opInline, hash: oh, value: object},
+		{code: opEvent, number: 2, seq: 1, value: []byte("kept")},
+	}
+	part0 := appendBase(nil, 3, 0, puts)
+	end := baseEnd{parts: 1, keys: 3, objects: 1, events: 1, nextEvent: 5}
+	endF := func(fn func(e *baseEnd)) []byte {
+		e := end
+		if fn != nil {
+			fn(&e)
+		}
+		return appendBaseEnd(nil, 3, e)
+	}
+	commit4 := appendCommit(nil, 4, []op{{code: opPut, table: 1, key: "k4", value: []byte("v")}})
+	g21, g22 := segName(2, 1), segName(2, 2)
+	t.Run("complete", func(t *testing.T) {
+		fsys := copyFS(base)
+		writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
+		db := reopen(t, fsys, Options{})
+		if info := db.Recovery(); !equalInfo(info, RecoveryInfo{Generation: 2, Seq: 4, Checkpoint: "none", Replayed: 3, TruncatedAt: -1}) {
+			t.Errorf("Recovery: %+v", info)
+		}
+		if got := dump(t, db); got != dumps[3]+"\n1/k4=v" {
+			t.Errorf("dump:\n%s", got)
+		}
+		if got, err := readObject(db, oh); err != nil || !bytes.Equal(got, object) {
+			t.Errorf("object: %q, %v", got, err)
+		}
+		checkObjects(t, db)
+		if err := db.Update(context.Background(), appendF("next")); err != nil {
+			t.Fatal(err)
+		}
+		if got := eventLines(t, db); got != "2/1=kept\n5/5=next" {
+			t.Errorf("events:\n%s", got)
+		}
+		closeDB(t, db)
+		// Its checkpoint is used, and the older generation is not read.
+		setFile(t, fsys, seg1, make([]byte, 100))
+		db = reopen(t, fsys, Options{})
+		if info := db.Recovery(); info.Generation != 2 || info.Checkpoint != "used" || info.Seq != 5 {
+			t.Errorf("Recovery: %+v", info)
+		}
+	})
+	t.Run("a checkpoint of the base-end", func(t *testing.T) {
+		fsys := copyFS(base)
+		offs := writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
+		loc := slices.Concat(oh[:], []byte{placeInline}, uv(1, uint64(segHeaderSize+8+puts[3].valueOff), uint64(len(object))))
+		body := slices.Concat(uv(5, 1, 1, 1, 3), kv("k1", "value 1."), kv("k2", "value 2."), kv("k3", "value 3."), uv(1), loc)
+		setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: offs[1],
+			recCRC: crcAt(t, fsys, g21, offs[1])}, body))
+		db := reopen(t, fsys, Options{})
+		if info := db.Recovery(); info.Generation != 2 || info.Checkpoint != "used" || info.Replayed != 1 {
+			t.Errorf("Recovery: %+v", info)
+		}
+		if got := dump(t, db); got != dumps[3]+"\n1/k4=v" {
+			t.Errorf("dump:\n%s", got)
+		}
+		checkObjects(t, db)
+	})
+	t.Run("stale", func(t *testing.T) {
+		fsys := copyFS(base)
+		closeDB(t, reopen(t, fsys, Options{})) // a checkpoint of generation 1
+		writeSeg(t, fsys, 2, 1, 3, part0, endF(nil))
+		db := reopen(t, fsys, Options{})
+		if info := db.Recovery(); info.Generation != 2 || info.Checkpoint != "stale" || info.Replayed != 2 {
+			t.Errorf("Recovery: %+v", info)
+		}
+		closeDB(t, db)
+		if h := ckpOf(t, fsys); h.gen != 2 || h.seq != 3 {
+			t.Errorf("checkpoint after Close: %+v", h)
+		}
+	})
+	lost := segHeaderSize + frameLen(len(part0)) // the offset after a frame of part 0 that a crash has lost
+	hole := func(fsys *simfs.FS, bodies ...[]byte) {
+		b, salt := genSeg(2, 1, 3)
+		b = append(b, make([]byte, frameLen(len(part0)))...)
+		for _, body := range bodies {
+			b = appendFrame(b, salt, body)
+		}
+		setFile(t, fsys, g21, b)
+	}
+	for _, c := range []struct {
+		name   string
+		make   func(fsys *simfs.FS)
+		file   string
+		off    int64
+		reason string
+	}{
+		{"a base part missing", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, appendBase(nil, 3, 2, nil), endF(nil))
+		}, g21, int64(lost), "base part 2, want 1"},
+		{"a base-end with another count of keys", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(func(e *baseEnd) { e.keys = 4 }))
+		}, g21, int64(lost), "the base of generation 2 does not match its end record"},
+		{"a base-end with another count of parts", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(func(e *baseEnd) { e.parts = 2 }))
+		}, g21, int64(lost), "the base of generation 2 does not match its end record"},
+		{"a base-end with another count of objects", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(func(e *baseEnd) { e.objects = 0 }))
+		}, g21, int64(lost), "the base of generation 2 does not match its end record"},
+		{"a base-end with another count of events", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(func(e *baseEnd) { e.events = 2 }))
+		}, g21, int64(lost), "the base of generation 2 does not match its end record"},
+		{"a base-end with a next event before an event of the base", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(func(e *baseEnd) { e.nextEvent = 2 }))
+		}, g21, int64(lost), "the base of generation 2 does not match its end record"},
+		{"a commit before the end of the base", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, commit4)
+		}, g21, int64(lost), "a commit before the end of the base"},
+		{"a base record after the end of the base", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), appendBase(nil, 4, 1, nil))
+		}, g21, int64(lost + frameLen(len(endF(nil)))), "a base record after the end of the base"},
+		{"a base record of another sequence number", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, appendBase(nil, 2, 1, nil))
+		}, g21, int64(lost), "sequence 2, want 3"},
+		{"a delete in the base", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, appendBase(nil, 3, 0, []op{{code: opDelete, table: 1, key: "k1"}}))
+		}, g21, segHeaderSize, "op 2 in a base record"},
+		{"base events out of order", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, appendBase(nil, 3, 0, []op{{code: opEvent, number: 2, seq: 1}, {code: opEvent, number: 2, seq: 1}}))
+		}, g21, segHeaderSize, "event number 2, want 3 or more"},
+		{"a base event of a later commit", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, appendBase(nil, 3, 0, []op{{code: opEvent, number: 1, seq: 4}}))
+		}, g21, segHeaderSize, "event sequence 4, want 1 to 3"},
+		{"a base event of no commit", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, appendBase(nil, 3, 0, []op{{code: opEvent, number: 1, seq: 0}}))
+		}, g21, segHeaderSize, "event sequence 0, want 1 to 3"},
+		{"a damaged record of a segment before the last", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			b := fileData(t, fsys, g21)
+			b[segHeaderSize+20] ^= 1
+			setFile(t, fsys, g21, b)
+			writeSeg(t, fsys, 2, 2, 3, endF(nil))
+		}, g21, segHeaderSize, "bad record CRC"},
+		{"a second segment that does not continue the base", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			writeSeg(t, fsys, 2, 2, 4, endF(nil))
+		}, g22, -1, "the header names first sequence 4, want 3"},
+		{"a base-end after a lost record", func(fsys *simfs.FS) { hole(fsys, endF(nil)) }, g21, segHeaderSize,
+			fmt.Sprintf("a valid record follows at offset %d", lost)},
+		{"a commit after a lost record", func(fsys *simfs.FS) { hole(fsys, commit4) }, g21, segHeaderSize,
+			fmt.Sprintf("a valid record follows at offset %d", lost)},
+		{"a gap in a newer generation", func(fsys *simfs.FS) { writeSeg(t, fsys, 2, 2, 3, part0, endF(nil)) },
+			"log", -1, "missing segment 1 of generation 2"},
+		{"a checkpoint of an incomplete generation", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: segHeaderSize,
+				recCRC: crcAt(t, fsys, g21, segHeaderSize)}, uv(1, 0, 0, 0)))
+		}, "checkpoint", -1, "names generation 2, which is incomplete"},
+		{"a checkpoint of a generation without segments", func(fsys *simfs.FS) {
+			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 3, seq: 3, seg: 1, off: segHeaderSize}, uv(1, 0, 0, 0)))
+		}, "checkpoint", -1, "names generation 3, which is incomplete"},
+		{"a checkpoint that does not pair with a complete generation", func(fsys *simfs.FS) {
+			offs := writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
+			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 4, seg: 1, off: offs[2],
+				recCRC: crcAt(t, fsys, g21, offs[2]) + 1}, uv(1, 0, 0, 0)))
+		}, "checkpoint", -1, fmt.Sprintf("the log does not have sequence 4 at %s offset %d", simPath(g21),
+			lost+frameLen(len(endF(nil))))},
+		{"no complete generation", func(fsys *simfs.FS) {
+			removeFile(t, fsys, seg1)
+			writeSeg(t, fsys, 2, 1, 3, part0)
+		}, "log", -1, "no complete generation"},
+		{"no complete generation, and a checkpoint of it", func(fsys *simfs.FS) {
+			removeFile(t, fsys, seg1)
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: segHeaderSize,
+				recCRC: crcAt(t, fsys, g21, segHeaderSize)}, uv(1, 0, 0, 0)))
+		}, "checkpoint", -1, "names generation 2, which is incomplete"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fsys := copyFS(base)
+			c.make(fsys)
+			checkRefused(t, fsys, c.file, c.off, c.reason)
+		})
+	}
+	for _, c := range []struct {
+		name    string
+		make    func(fsys *simfs.FS)
+		ignored []uint64
+	}{
+		{"no base-end", func(fsys *simfs.FS) { writeSeg(t, fsys, 2, 1, 3, part0) }, []uint64{2}},
+		{"a header only", func(fsys *simfs.FS) { writeSeg(t, fsys, 2, 1, 3) }, []uint64{2}},
+		{"a torn base-end", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0, endF(nil))
+			b := fileData(t, fsys, g21)
+			setFile(t, fsys, g21, b[:len(b)-5])
+		}, []uint64{2}},
+		{"a base record after a lost one", func(fsys *simfs.FS) { hole(fsys, appendBase(nil, 3, 1, nil)) }, []uint64{2}},
+		{"a torn header", func(fsys *simfs.FS) {
+			b, _ := genSeg(2, 1, 3)
+			setFile(t, fsys, g21, b[:30])
+		}, []uint64{2}},
+		{"zeros", func(fsys *simfs.FS) { setFile(t, fsys, g21, make([]byte, 200)) }, []uint64{2}},
+		{"a torn second segment", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			b, _ := genSeg(2, 2, 3)
+			setFile(t, fsys, g22, b[:40])
+		}, []uint64{2}},
+		{"two incomplete generations", func(fsys *simfs.FS) {
+			writeSeg(t, fsys, 2, 1, 3, part0)
+			writeSeg(t, fsys, 3, 1, 3, part0)
+		}, []uint64{2, 3}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fsys := copyFS(base)
+			c.make(fsys)
+			before := fileMap(fsys)
+			db := reopen(t, fsys, Options{})
+			if info := db.Recovery(); info.Generation != 1 || info.Seq != 3 || !slices.Equal(info.IgnoredGenerations, c.ignored) {
+				t.Errorf("Recovery: %+v", info)
+			}
+			if got := dump(t, db); got != dumps[3] {
+				t.Errorf("dump:\n%s", got)
+			}
+			after := fileMap(fsys)
+			for p, data := range before {
+				if strings.HasPrefix(p, "log/") && !strings.HasPrefix(p, "log/0000000000000001-") && after[p] != data {
+					t.Errorf("%s changed", p)
+				}
+			}
 		})
 	}
 }

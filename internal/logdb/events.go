@@ -3,10 +3,7 @@ package logdb
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"path"
-
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // Event is an audit event in the log. Number counts the events of the store from 1, and Seq is the sequence number of
@@ -27,15 +24,17 @@ func (tx *Tx) AppendEvent(data []byte) error {
 }
 
 // Events calls fn with each event of the store that Views see now, in order, until fn returns false. It reads them
-// from the log: the engine keeps only their number in memory.
+// from the log of the generation, those of its base first: the engine keeps only their number in memory. Like a View,
+// it can go on when Close is called.
 func (db *DB) Events(ctx context.Context, fn func(Event) bool) error {
-	if db.closed.Load() {
+	if !db.handles.enter() {
 		return errClosed
 	}
+	defer db.handles.leave()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return readLog(ctx, db.fsys, db.cur.Load(), func(r logRecord) (bool, error) {
+	return readLog(ctx, db.handles, db.cur.Load(), func(r logRecord) (bool, error) {
 		for _, p := range r.rec.ops {
 			if p.code == opEvent && !fn(Event{Number: p.number, Seq: p.seq, Data: clone(p.value)}) {
 				return false, nil
@@ -55,28 +54,27 @@ type logRecord struct {
 	rec    record
 }
 
-// readLog reads the records of the log of st from disk, up to the last record of st, and calls fn with each, in order,
-// until fn returns false or an error. It checks the headers and the frames, that the sequence numbers follow each other,
-// and ctx before each record; the meaning of the ops is for fn to check.
-func readLog(ctx context.Context, fsys vfs.FS, st *state, fn func(r logRecord) (bool, error)) error {
-	seq := uint64(0)
+// readLog reads the records of the log of the generation of st from disk, through h, up to the last record of st,
+// and calls fn with each, in order, until fn returns false or an error. It checks the headers and the frames, that the
+// records follow each other as sequence says, and ctx before each record; the meaning of the ops is for fn to check.
+func readLog(ctx context.Context, h *handles, st *state, fn func(r logRecord) (bool, error)) error {
+	q := newSequence(st.gen)
 	for index := uint64(1); index <= st.seg; index++ {
-		name := segName(st.gen, index)
-		p := path.Join(fsys.Name(), name)
+		p := path.Join(h.fsys.Name(), segName(st.gen, index))
 		end := int64(-1) // a segment before the last one ends with its file
 		if index == st.seg {
 			end = st.end
 		}
-		b, err := readPrefix(fsys, name, end) // beyond st.end, an Update may be writing
+		b, err := h.readPrefix(st.gen, index, end) // beyond st.end, an Update may be writing
 		if err != nil {
 			return err
 		}
-		h, err := parseSegHeader(p, b, st.gen, index)
+		sh, err := parseSegHeader(p, b, st.gen, index)
 		if err != nil {
 			return err
 		}
-		if h.firstSeq != seq+1 {
-			return corruptFile(p, fmt.Sprintf("the header names first sequence %d, want %d", h.firstSeq, seq+1))
+		if err := q.first(p, sh); err != nil {
+			return err
 		}
 		if end < 0 {
 			end = int64(len(b))
@@ -86,10 +84,13 @@ func readLog(ctx context.Context, fsys vfs.FS, st *state, fn func(r logRecord) (
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			body, n, reason := parseFrame(b[off:], h.salt)
+			body, n, reason := parseFrame(b[off:], sh.salt)
 			var rec record
 			if reason == "" {
-				rec, reason = nextRecord(body, seq+1)
+				rec, reason = parseBody(body)
+			}
+			if reason == "" {
+				reason = q.check(&rec)
 			}
 			if reason != "" {
 				return &CorruptError{Path: p, Offset: off, Reason: reason}
@@ -98,7 +99,7 @@ func readLog(ctx context.Context, fsys vfs.FS, st *state, fn func(r logRecord) (
 			if err != nil || !more {
 				return err
 			}
-			seq = rec.seq
+			q.advance(&rec)
 			off += int64(n)
 			records++
 		}
