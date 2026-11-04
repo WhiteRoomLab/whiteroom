@@ -4,6 +4,8 @@
 
 - AWSや特定クラウドに依存せず、**Linuxにインストールして利用可能**とする。
 - **実装言語はGo**とする。
+- コマンドの**名前は `whiteroom`** にし、9.2のコマンドは、そのサブコマンド（`whiteroom build`・`whiteroom serve public` など）にする（9.4）。
+- `whiteroom serve public` は、**公開用の内蔵サーバー**にする（9.4・9.5。ヘッダーとCSPは6.12の122、変更を見て作り直すかは6.12の123）。
 
 ### 9.2 提案段階
 
@@ -12,7 +14,7 @@
 - systemdユニットを同梱し、Linuxの標準ディレクトリ体系に合わせて配置する。
 - 内蔵HTTP/HTTPSサーバーを標準とし、必要に応じてNginx/Apache/Caddy等の背後でも動作させる。公開用の内蔵サーバー（9.5）は、いまはHTTPだけ（HTTPSは9.3）。
 - **公開用と管理用を別プロセス・別Unixユーザー**で起動できるようにする。
-- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。ほかは、まだ無い（`doctor` は、索引を作ってから作る。6.9）。
+- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（`whiteroom` のサブコマンドにすることは決定済み。9.1。名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。ほかは、まだ無い（`doctor` は、索引を作ってから作る。6.9）。
 - Ubuntu、Debian、Fedora、NixOSなどへの配布形式を検討する。
 - 本番運用時にPHP、Node.js、外部DBサーバーなどを必須としない構成を目指す。
 
@@ -26,12 +28,12 @@
 
 ### 9.4 コマンド（案）
 
-コマンド `whiteroom` を、`cmd/whiteroom` に作った。サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）がある。9.2のほかのコマンドは、まだ無い。この節の規則は、どれも仮に決めたもの（案）。
+コマンド `whiteroom` を、`cmd/whiteroom` に作った。サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）がある。9.2のほかのコマンドは、まだ無い。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。
 
 **名前とサブコマンド**
 
-- 名前は `whiteroom` にする。リポジトリとGoのモジュール（`github.com/WhiteRoomLab/whiteroom`）と同じ名前で、コードを `cmd/whiteroom` に置くので、`go build`・`go install` で作る実行ファイルも、この名前になる。
-- 9.2のコマンドは、`whiteroom` のサブコマンドにする。
+- 名前は `whiteroom` にする（決定済み。9.1）。リポジトリとGoのモジュール（`github.com/WhiteRoomLab/whiteroom`）と同じ名前で、コードを `cmd/whiteroom` に置くので、`go build`・`go install` で作る実行ファイルも、この名前になる。
+- 9.2のコマンドは、`whiteroom` のサブコマンドにする（決定済み。9.1）。
 
 | コマンド | 内容 |
 | --- | --- |
@@ -123,7 +125,7 @@ release <名前> in <出力先> is already published: <P> pages, <F> files, <W> 
 whiteroom serve public [-addr ADDR] [OUT]
 ```
 
-出力先 `OUT` の公開中のリリースを、止めるまで、内蔵サーバー（9.5）で配信する。公開用のサーバー（9.2）で、手元での確認にも使う。出力先は読むだけで、何も書かない。
+出力先 `OUT` の公開中のリリースを、止めるまで、内蔵サーバー（9.5）で配信する。公開用のサーバー（9.2。決定済み。9.1）で、手元での確認にも使う。出力先は読むだけで、何も書かない。
 
 | 引数・フラグ | 内容 | 省略したとき |
 | --- | --- | --- |
@@ -159,7 +161,7 @@ serving out at http://127.0.0.1:8080/
 
 ### 9.5 内蔵サーバー（案）
 
-公開用の内蔵サーバー（9.2）を、`internal/serve` に作った。`whiteroom serve public`（9.4）が動かし、ビルドが出力先に公開したリリース（4.3）を、そのリリースの `server.json`（6.6.6）の、リダイレクト・404のページ・ディレクトリの索引のとおりに配信する。いまはHTTPだけで、HTTPS（9.3）は、まだ無い。この節の規則は、どれも仮に決めたもの（案）。
+公開用の内蔵サーバー（9.2）を、`internal/serve` に作った。`whiteroom serve public`（9.4）が動かし、ビルドが出力先に公開したリリース（4.3）を、そのリリースの `server.json`（6.6.6）の、リダイレクト・404のページ・ディレクトリの索引のとおりに配信する。いまはHTTPだけで、HTTPS（9.3）は、まだ無い。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。このサーバーを、`whiteroom serve public` で動かす公開用の内蔵サーバーにすることは、決定済み（9.1）。
 
 **配信するもの**
 
