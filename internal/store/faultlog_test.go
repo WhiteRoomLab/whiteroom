@@ -191,8 +191,8 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 // that keeps what is pending.
 // Every crash that simfs can make in the end (crashModels with 4 subsets; long: 64), and before each restart, after
 // the step of the fault and after each later step (the same, but with -race only the one that loses everything that
-// is not durable), opens to what SQLite has after the steps that have succeeded, with the failed step whole or not at
-// all while its outcome is not known. A case is TestStoreFaultMatrix/<backend>/op=<n>-<kind>/<fault>.
+// is not durable), opens to what the model has after the steps that have succeeded, with the failed step whole or not
+// at all while its outcome is not known. A case is TestStoreFaultMatrix/<backend>/op=<n>-<kind>/<fault>.
 func TestStoreFaultMatrix(t *testing.T) {
 	t.Parallel() // with the other matrices, after the tests that do not run in parallel
 	refs, err := theRefs()
@@ -204,7 +204,7 @@ func TestStoreFaultMatrix(t *testing.T) {
 	t.Cleanup(func() {
 		t.Logf("%d faults; %d crashes after them", cases, crashes)
 	})
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		t.Parallel()
 		o := matrixOptions(tb)
 		base := newMatrixBase(t, o)

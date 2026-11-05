@@ -8,11 +8,13 @@ import (
 )
 
 // backend keeps the documents, their versions, the objects and the revisions of a store. The shared code makes every
-// check, and the errors of the checks; a backend only reads and writes.
+// check, and the errors of the checks; a backend only reads and writes. The store has one backend, the log backend
+// (logbackend.go), and the tests compare it with a model (model_test.go).
 type backend interface {
 	// view and update run f in a transaction as View and Update do; update commits it if f returns nil.
 	view(ctx context.Context, f func(backendTx) error) error
 	update(ctx context.Context, f func(backendTx) error) error
+	events(ctx context.Context, fn func(number uint64, data []byte) bool) error // as Store.events
 	close() error
 }
 

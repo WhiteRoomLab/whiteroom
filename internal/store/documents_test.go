@@ -387,8 +387,8 @@ func TestDeleteErrors(t *testing.T) {
 	})
 }
 
-// TestCorruptObject changes the data of the objects of an entry and its revision behind the back of the store (on
-// SQLite, past the triggers of the tables that keep it from changing), and checks that the reads of the data fail.
+// TestCorruptObject changes the data of the objects of an entry and its revision behind the back of the store, and
+// checks that the reads of the data fail.
 func TestCorruptObject(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		s, _ := newStore(t, tb)

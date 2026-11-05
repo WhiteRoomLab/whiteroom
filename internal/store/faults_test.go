@@ -3,9 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -82,7 +80,7 @@ func TestCommitFault(t *testing.T) {
 
 // TestOriginalFaults checks what PutOriginal leaves in files/ when it fails at the points of its hook.
 func TestOriginalFaults(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		data := []byte("GIF89a")
 		hash := sum(data)
 		digits := strings.TrimPrefix(hash, "sha256:")
@@ -138,49 +136,22 @@ func TestOriginalFaults(t *testing.T) {
 func TestUpdateCanceled(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		s, _ := newStore(t, tb)
-		for _, tt := range []struct {
-			name string
-			// f waits until database/sql has rolled the transaction back, and Commit fails with sql.ErrTxDone.
-			rollback bool
-		}{
-			{"canceled", false},
-			{"rolled back", true},
-		} {
-			if tt.rollback && tb.log != nil {
-				continue // the engine of the log backend has no rollback while f runs, which "canceled" covers
-			}
-			t.Run(tt.name, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				err := s.Update(ctx, func(tx *Tx) error {
-					data := docJSON(content.RefEntry, entryID)
-					if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
-						return err
-					}
-					cancel()
-					if !tt.rollback {
-						return nil
-					}
-					sqlTx, ok := tx.b.(*sqliteTx)
-					if !ok {
-						return fmt.Errorf("the transaction of the backend is %T, want SQLite", tx.b)
-					}
-					for {
-						_, err := sqlTx.tx.ExecContext(context.Background(), "SELECT 1")
-						switch {
-						case errors.Is(err, sql.ErrTxDone):
-							return nil
-						case err != nil:
-							return err
-						}
-					}
-				})
-				if !errors.Is(err, context.Canceled) {
-					t.Errorf("Update() = %v, want context.Canceled", err)
+		t.Run("canceled", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			err := s.Update(ctx, func(tx *Tx) error {
+				data := docJSON(content.RefEntry, entryID)
+				if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
+					return err
 				}
-				checkEmpty(t, s)
+				cancel()
+				return nil
 			})
-		}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("Update() = %v, want context.Canceled", err)
+			}
+			checkEmpty(t, s)
+		})
 
 		update(t, s, func(tx *Tx) error {
 			_, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)

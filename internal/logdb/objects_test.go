@@ -889,6 +889,20 @@ func TestOptionsErrors(t *testing.T) {
 	}
 }
 
+// TestOptionsDefaults checks the defaults of the zero Options, which the store uses but for the placement (3.4).
+func TestOptionsDefaults(t *testing.T) {
+	var o Options
+	if err := o.fill(); err != nil {
+		t.Fatal(err)
+	}
+	if o.Placement != Inline || o.Threshold != 64<<10 || o.SegmentBytes != 64<<20 || o.WriterWait != 2*time.Second ||
+		o.CheckpointBytes != 64<<20 || o.SyncCheckpoints {
+		t.Errorf("the defaults are placement %d, threshold %d, segments %d, writer wait %v, checkpoints %d (sync %t); "+
+			"want 0, 65536, 67108864, 2s, 67108864 (false)", o.Placement, o.Threshold, o.SegmentBytes, o.WriterWait,
+			o.CheckpointBytes, o.SyncCheckpoints)
+	}
+}
+
 // logNamesOrNone returns the names in log/, or none if it is missing.
 func logNamesOrNone(fsys *simfs.FS) []string {
 	entries, _ := fsys.ReadDir("log")

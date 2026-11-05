@@ -31,7 +31,7 @@ func backupMedia(n int) string {
 // the next pair.
 func TestBackupWhileWriting(t *testing.T) {
 	t.Parallel() // with the matrices, after the tests that do not run in parallel
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		t.Parallel()
 		o := *tb.log
 		o.SegmentBytes, o.CheckpointBytes = 4096, 8192

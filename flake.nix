@@ -18,7 +18,7 @@
     in
     {
       devShells = forAllSystems (pkgs: {
-        # Not mkShellNoCC: nixpkgs' Go enables cgo and needs a C compiler.
+        # Not mkShellNoCC: nixpkgs' Go enables cgo, and -race needs it.
         default = pkgs.mkShell {
           packages = [
             pkgs.go_1_27

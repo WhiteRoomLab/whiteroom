@@ -257,8 +257,8 @@ func TestRevisionReadErrors(t *testing.T) {
 	})
 }
 
-// TestCorruptSavedAt changes the saved time of a revision behind the back of the store (on SQLite, past the triggers of
-// the tables that keep it from changing), and checks that the reads of the revision fail.
+// TestCorruptSavedAt changes the saved time of a revision behind the back of the store, and checks that the reads of
+// the revision fail.
 func TestCorruptSavedAt(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		s, _ := newStore(t, tb)

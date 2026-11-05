@@ -18,9 +18,8 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// The log backend keeps a store in the engine of internal/logdb, the PoC of #63 (3.5), which only the tests select. Its
-// data directory has logdb/, the directory of the engine, in place of whiteroom.db, and files/ as with SQLite. The
-// tables of its schema, logSchemaVersion:
+// The log backend keeps a store in the engine of internal/logdb (3.5), in logdb/ of its data directory, beside files/.
+// The tables of its schema, logSchemaVersion:
 //
 //	meta (1)            "schema", "versions", "revisions" -> uvarint: the schema; the last seq of a version,
 //	                    of a revision
@@ -534,10 +533,10 @@ func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst v
 		return err
 	}
 	defer doneSrc()
-	if err := checkEntry(src, srcDir, "logdb", true); err != nil {
+	if err := checkDir(src, srcDir, "logdb"); err != nil {
 		return err
 	}
-	if err := checkEntry(src, srcDir, "files", true); err != nil {
+	if err := checkDir(src, srcDir, "files"); err != nil {
 		return err
 	}
 	srcLog, err := src.Sub("logdb")

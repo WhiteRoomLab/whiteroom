@@ -86,7 +86,7 @@ func TestOriginals(t *testing.T) {
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("the originals of the sample site: %d, %v", len(entries), err)
 	}
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		originals := make(map[string][]byte) // by hash
 		dirs := make(map[string][]string)    // the names of the files in each directory of files/
@@ -133,7 +133,7 @@ func TestOriginals(t *testing.T) {
 
 // TestLargestOriginal puts and reads an original of content.MaxMediaBytes, and reads it again while its file grows.
 func TestLargestOriginal(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		h := sha256.New()
 		if _, err := io.Copy(h, io.LimitReader(zeros{}, content.MaxMediaBytes)); err != nil {
@@ -171,7 +171,7 @@ func TestLargestOriginal(t *testing.T) {
 }
 
 func TestPutOriginalErrors(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		errTest := errors.New("test")
 		canceled, cancel := context.WithCancel(t.Context())
@@ -213,7 +213,7 @@ func TestPutOriginalErrors(t *testing.T) {
 
 // TestPutOriginalRenameError checks that PutOriginal removes its temporary file when it cannot rename it.
 func TestPutOriginalRenameError(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		data := []byte("GIF89a")
 		d := filepath.Dir(originalPath(dir, sum(data)))
@@ -259,7 +259,7 @@ func TestOriginalDirDurable(t *testing.T) {
 }
 
 func TestOpenOriginalErrors(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		data := []byte("GIF89a")
 		hash := sum(data)
 		digits := strings.TrimPrefix(hash, "sha256:")
@@ -375,7 +375,7 @@ func TestOpenOriginalErrors(t *testing.T) {
 // TestDamagedOriginal checks that reading an original whose file has changed fails at its end, and that PutOriginal
 // repairs it.
 func TestDamagedOriginal(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		data, damaged := []byte("GIF89a"), []byte("GIF87a")
 		hash := sum(data)
