@@ -26,7 +26,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `golangci-lint config verify`：`.golangci.yml` を変えたとき（`run` は未知の項目を黙って無視する）
 - `golangci-lint fmt`：整形（gofmt・goimports）
 - `go mod tidy`
-- `CGO_ENABLED=0 go test ./internal/logdb/...`：自作の保存の層のエンジン（構想書の 3.5）が cgo なしでビルドでき、テストが通ること（CI の `test without cgo`）。`-race` を付けないので、クラッシュ・強制終了・失敗の差し込みの行列を、減らさずに動かす
+- `CGO_ENABLED=0 go build ./...`・`CGO_ENABLED=0 go test ./...`：リポジトリのすべてが cgo なしでビルドでき、テストが通ること（CI の `build without cgo`・`test without cgo`）。`-race` を付けないので、クラッシュ・強制終了・失敗の差し込みの行列を、減らさずに動かす
 
 `flake.nix` や `flake.lock` を変えたら、`nix fmt` と `nix flake check --all-systems` も実行する。
 
