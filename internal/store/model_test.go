@@ -15,6 +15,7 @@ import (
 
 // modelBackend is the model of a backend, in Go maps and slices alone, that the differential tests, TestLogRoundTrip
 // and the matrices compare the log backend with. An Update works on a copy of the state and keeps it if f returns nil.
+// It is for sequential use: a View sees the state when it starts, and a waiting Update does not stop when ctx ends.
 type modelBackend struct {
 	mu  sync.Mutex  // guards st
 	upd sync.Mutex  // one Update at a time
