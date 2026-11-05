@@ -117,15 +117,23 @@ func writeTemp(ctx context.Context, f vfs.File, r io.Reader) (o Original, err er
 	return o, nil
 }
 
-// mkdir makes dir, a directory of originals in files/, if it is missing, and then syncs files/.
+// mkdir makes dir, a directory of originals in files/, if it is missing, and then syncs files/, unless it has synced
+// files/ after an earlier call made or found dir. A directory that is there may not have a durable name yet: a
+// PutOriginal whose sync failed, or a process that was killed, may have made it.
 func (s *Store) mkdir(dir string) error {
 	switch err := s.files.Mkdir(dir, 0o700); {
 	case errors.Is(err, fs.ErrExist):
-		return nil
+		if _, ok := s.dirs.Load(dir); ok {
+			return nil
+		}
 	case err != nil:
 		return err
 	}
-	return s.files.SyncDir(".")
+	if err := s.files.SyncDir("."); err != nil {
+		return err
+	}
+	s.dirs.Store(dir, true)
+	return nil
 }
 
 // OpenOriginal opens the original whose hash is hash. If there is none, the error wraps fs.ErrNotExist. The file checks

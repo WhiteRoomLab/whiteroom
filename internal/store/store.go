@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -30,7 +31,8 @@ const SettingsKind content.RefKind = "settings"
 // Store is the Content Store of a data directory. Its methods may be called concurrently.
 type Store struct {
 	b     backend
-	files vfs.FS // files/
+	files vfs.FS   // files/
+	dirs  sync.Map // the directories of files/ whose names are durable, as keys
 	now   func() time.Time
 	hook  func(point string) error // nil outside the tests, which make it fail at points such as "commit"
 }
