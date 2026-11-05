@@ -19,7 +19,7 @@ const (
 
 // TestStoreKillMatrix runs the steps of the scenario of the matrices on the log backend in each placement in a process
 // that is killed after each of their counted operations (simfs.FS.KillAt), which leaves the page cache as it is. Then
-// a writer, or a reader, opens the store: it has what SQLite has after the steps that returned nil and the step that
+// a writer, or a reader, opens the store: it has what the model has after the steps that returned nil and the step that
 // was running, whole or not at all, with its audit events and the originals that checkState wants, and everything
 // that it shows is durable: for each crash that simfs can make then (crashModels with 16 subsets; with -race only the
 // one that loses everything that is not durable; 256 in the long mode), the store opens to that state. The probe of

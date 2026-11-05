@@ -626,7 +626,7 @@ func afterReopen(t *testing.T, s *Store) []string {
 	return out
 }
 
-// compareLines checks that got, the lines of the log backend, are want, those of SQLite.
+// compareLines checks that got, the lines of the log backend, are want, those of the model.
 func compareLines(t *testing.T, what string, got, want []string) {
 	t.Helper()
 	for i := range max(len(got), len(want)) {
@@ -638,26 +638,18 @@ func compareLines(t *testing.T, what string, got, want []string) {
 			w = want[i]
 		}
 		if g != w {
-			t.Errorf("%s: line %d is %q, want %q as on SQLite", what, i+1, g, w)
+			t.Errorf("%s: line %d is %q, want %q as in the model", what, i+1, g, w)
 			return
 		}
 	}
 }
 
-// TestLogRoundTrip runs the same Updates on SQLite and on the log backend, in each placement, and checks that both
-// return and read the same, also after the store is closed and opened again.
+// TestLogRoundTrip runs the same Updates on the model (model_test.go) and on the log backend, in each placement, and
+// checks that both return and read the same, also after the log store is closed and opened again.
 func TestLogRoundTrip(t *testing.T) {
-	ref, refDir := newStore(t, sqliteOnly[0])
-	want, wantRead := roundTrip(t, ref), readAll(t, ref)
-	if err := ref.Close(); err != nil {
-		t.Fatalf("Close() = %v", err)
-	}
-	ref, err := Open(refDir)
-	if err != nil {
-		t.Fatalf("Open() = %v", err)
-	}
+	ref := newModelStore()
 	t.Cleanup(func() { _ = ref.Close() })
-	compareLines(t, "the reads of SQLite after Open()", readAll(t, ref), wantRead)
+	want, wantRead := roundTrip(t, ref), readAll(t, ref)
 	wantNext := afterReopen(t, ref)
 	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)

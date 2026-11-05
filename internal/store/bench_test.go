@@ -4,8 +4,6 @@ package store
 
 import (
 	"cmp"
-	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -29,8 +27,8 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// The benchmarks of 3.5, whose conditions docs/03.05-log-engine.md gives: TestBenchmarks compares SQLite with the log
-// backend in each placement on the data sets of benchdata_test.go. Each scenario of a run is a process of its own,
+// The benchmarks of 3.5, whose conditions docs/03.05-log-engine.md gives: TestBenchmarks compares the log backend in
+// each placement on the data sets of benchdata_test.go. Each scenario of a run is a process of its own,
 // TestBenchHelper, which writes what it measures to a file; TestBenchmarks gathers it in the directory of envBench.
 
 const (
@@ -49,30 +47,22 @@ const (
 	benchLimit     = 2 * time.Hour // a process of a scenario that runs longer is killed, and the run fails
 )
 
-// benchBackends are SQLite with the settings of internal/db, and the log backend in each placement with the defaults
-// of the engine, not the options of allBackends: Hybrid puts objects of 64 KiB or more in files, segments and
-// automatic checkpoints come every 64 MiB of the log, and the checkpoints are written in the background.
+// benchBackends are the log backend in each placement with the defaults of the engine, not the options of allBackends:
+// Hybrid puts objects of 64 KiB or more in files, segments and automatic checkpoints come every 64 MiB of the log, and
+// the checkpoints are written in the background.
 var benchBackends = []testBackend{
-	{name: "sqlite"},
 	{name: "log-inline", log: &logdb.Options{Placement: logdb.Inline}},
 	{name: "log-files", log: &logdb.Options{Placement: logdb.Files}},
 	{name: "log-hybrid", log: &logdb.Options{Placement: logdb.Hybrid}},
 }
 
-// benchScenarios are the scenarios of a run, each a process, in order; those of benchLogOnly are of the log backend
-// alone. Before open-killed, the process of the scenario loop makes single saves until it is killed.
-var (
-	benchScenarios = []string{"load", "ops", "open-clean", "open-replay", "open-killed", "checkpoint", "backup"}
-	benchLogOnly   = map[string]bool{"open-replay": true, "checkpoint": true}
-)
+// benchScenarios are the scenarios of a run, each a process, in order. Before open-killed, the process of the scenario
+// loop makes single saves until it is killed.
+var benchScenarios = []string{"load", "ops", "open-clean", "open-replay", "open-killed", "checkpoint", "backup"}
 
 // benchKinds are the kinds of documents, all of which the build-like read of ops reads.
 var benchKinds = []content.RefKind{content.RefEntry, content.RefTerm, content.RefMedia, content.RefAuthor,
 	content.RefMenu, content.RefForm, content.RefRedirect, SettingsKind}
-
-// benchEventsTable is the table of the audit events of SQLite, which the benchmarks make for themselves: no migration
-// of internal/db makes it.
-const benchEventsTable = "CREATE TABLE bench_events (seq INTEGER PRIMARY KEY, data BLOB NOT NULL) STRICT"
 
 const mib = 1 << 20
 
@@ -226,23 +216,10 @@ func benchWriteBytes() int64 {
 	return -1
 }
 
-// benchStore opens the store of tb in the data directory dir, or makes it there if fresh is true. The log backend uses
-// dir through a vfs.Counter, which benchStore returns too.
+// benchStore opens the store of tb in the data directory dir, or makes it there if fresh is true. It uses dir through a
+// vfs.Counter, which it returns too.
 func benchStore(t *testing.T, tb testBackend, dir string, fresh bool) (*Store, *vfs.Counter) {
 	t.Helper()
-	var s *Store
-	var err error
-	if tb.log == nil {
-		if fresh {
-			s, err = Create(dir)
-		} else {
-			s, err = Open(dir)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s, nil
-	}
 	if fresh {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -253,6 +230,7 @@ func benchStore(t *testing.T, tb testBackend, dir string, fresh bool) (*Store, *
 		t.Fatal(err)
 	}
 	c := vfs.Count(root)
+	var s *Store
 	if fresh {
 		s, err = create(dir, options{log: tb.log, fs: c})
 	} else {
@@ -274,20 +252,16 @@ func benchClose(t *testing.T, s *Store, c *vfs.Counter) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c != nil {
-		if err := c.Close(); err != nil {
-			t.Fatal(err)
-		}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
 	}
 	return int64(d)
 }
 
-// count sets the counts of the result to those of c, if it is not nil.
+// count sets the counts of the result to those of c.
 func (r *benchResult) count(c *vfs.Counter) {
-	if c != nil {
-		counts := c.Counts()
-		r.Counts = &counts
-	}
+	counts := c.Counts()
+	r.Counts = &counts
 }
 
 // benchUpdate puts saves in one Update of s, and returns how long the Update has taken.
@@ -305,7 +279,7 @@ func benchUpdate(t *testing.T, s *Store, saves ...benchSave) time.Duration {
 				}
 			}
 			for _, e := range sv.events {
-				if err := benchAppendEvent(tx, e); err != nil {
+				if err := tx.appendEvent(e); err != nil {
 					return err
 				}
 			}
@@ -319,34 +293,15 @@ func benchUpdate(t *testing.T, s *Store, saves ...benchSave) time.Duration {
 	return d
 }
 
-// benchAppendEvent appends the audit event data in the Update of tx: to the table of benchEventsTable on SQLite, in the
-// same transaction of SQLite as the other writes.
-func benchAppendEvent(tx *Tx, data []byte) error {
-	if st, ok := tx.b.(*sqliteTx); ok {
-		_, err := st.tx.ExecContext(st.ctx, "INSERT INTO bench_events (data) VALUES (?)", data)
-		return err
-	}
-	return tx.appendEvent(data)
-}
-
-// benchCount returns the documents, versions, revisions, audit events and objects of s, with the Stats of the engine of
-// the log backend.
+// benchCount returns the documents, versions, revisions, audit events and objects of s, with the Stats of its engine.
 func benchCount(t *testing.T, s *Store) (map[string]int64, *logdb.Stats) {
 	t.Helper()
-	if _, ok := s.b.(*logBackend); ok {
-		st := logDB(t, s).Stats()
-		return map[string]int64{
-			"documents": int64(st.Keys[tableDocuments]), "versions": int64(st.Keys[tableHistory]),
-			"revisions": int64(st.Keys[tableRevisions]), "events": int64(st.Events),
-			"objects": int64(st.InlineObjects + st.FileObjects),
-		}, &st
-	}
-	counts := map[string]int64{}
-	for name, table := range map[string]string{"documents": "documents", "versions": "versions",
-		"revisions": "revisions", "events": "bench_events", "objects": "objects"} {
-		counts[name] = int64(countSQLite(t, s, table))
-	}
-	return counts, nil
+	st := logDB(t, s).Stats()
+	return map[string]int64{
+		"documents": int64(st.Keys[tableDocuments]), "versions": int64(st.Keys[tableHistory]),
+		"revisions": int64(st.Keys[tableRevisions]), "events": int64(st.Events),
+		"objects": int64(st.InlineObjects + st.FileObjects),
+	}, &st
 }
 
 // benchHeapAt returns the live heap after a GC.
@@ -360,14 +315,6 @@ func benchHeapAt(stage string) benchHeap {
 // benchLoad makes the store of the job and loads bs, one Update for each batch of saves of a stage.
 func benchLoad(t *testing.T, bs benchSet, tb testBackend, res *benchResult) {
 	s, c := benchStore(t, tb, res.Job.Dir, true)
-	if tb.log == nil {
-		if err := sqliteDB(t, s).Write(t.Context(), func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(t.Context(), benchEventsTable)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
 	var load time.Duration
 	for i, stage := range bs.stages() {
 		load += benchLoadStage(t, s, bs, bs.stage(i), res)
@@ -538,9 +485,9 @@ func benchBuild(t *testing.T, s *Store, res *benchResult) int64 {
 	return int64(d)
 }
 
-// benchOpen measures how long the store of the job takes to open, and then to read a document: with the checkpoint of
-// the log backend (open-clean), without it (open-replay: benchOpen removes it), or after the process of the scenario
-// loop has been killed (open-killed).
+// benchOpen measures how long the store of the job takes to open, and then to read a document: with the checkpoint
+// (open-clean), without it (open-replay: benchOpen removes it), or after the process of the scenario loop has been
+// killed (open-killed).
 func benchOpen(t *testing.T, tb testBackend, res *benchResult) {
 	dir := res.Job.Dir
 	if res.Job.Scenario == "open-replay" {
@@ -557,10 +504,8 @@ func benchOpen(t *testing.T, tb testBackend, res *benchResult) {
 		return err
 	})
 	res.Durations["first read"] = int64(time.Since(start))
-	if tb.log != nil {
-		info := logDB(t, s).Recovery()
-		res.Recovery = &info
-	}
+	info := logDB(t, s).Recovery()
+	res.Recovery = &info
 	res.Heap = append(res.Heap, benchHeapAt("open"))
 	res.Found, res.Stats = benchCount(t, s)
 	res.Durations["close"] = benchClose(t, s, c)
@@ -580,8 +525,7 @@ func benchLoop(t *testing.T, bs benchSet, tb testBackend, dir string) {
 	t.Fatal("not killed")
 }
 
-// benchCheckpoint opens the store of the job, a store of the log backend, makes a single save, and measures a
-// checkpoint of the whole state.
+// benchCheckpoint opens the store of the job, makes a single save, and measures a checkpoint of the whole state.
 func benchCheckpoint(t *testing.T, bs benchSet, tb testBackend, res *benchResult) {
 	s, c := benchStore(t, tb, res.Job.Dir, false)
 	benchUpdate(t, s, bs.single(benchStreamCheckpoint, 1))
@@ -611,19 +555,13 @@ func benchCheckpoint(t *testing.T, bs benchSet, tb testBackend, res *benchResult
 	res.count(c)
 }
 
-// benchBackup measures a backup of the data directory of the job, which no process has open, to a new directory: with
-// backupLog on the log backend, and with benchSQLiteBackup on SQLite. Then it checks that the copy opens with what the
-// store has.
+// benchBackup measures backupLog of the data directory of the job, which no process has open, to a new directory. Then
+// it checks that the copy opens with what the store has.
 func benchBackup(t *testing.T, tb testBackend, res *benchResult) {
 	dir := res.Job.Dir
 	dst := filepath.Join(filepath.Dir(dir), "backup")
 	start := time.Now()
-	var err error
-	if tb.log != nil {
-		err = backupLog(t.Context(), dir, dst)
-	} else {
-		err = benchSQLiteBackup(t.Context(), dir, dst)
-	}
+	err := backupLog(t.Context(), dir, dst)
 	res.Durations["backup"] = int64(time.Since(start))
 	if err != nil {
 		t.Fatal(err)
@@ -643,67 +581,6 @@ func benchBackup(t *testing.T, tb testBackend, res *benchResult) {
 	if err := os.RemoveAll(dst); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// benchSQLiteBackup copies the data directory src of a store on SQLite, which no process has open, to dst, a new
-// directory: whiteroom.db with VACUUM INTO, after which it syncs the copy, and files/ as backupLog copies it.
-func benchSQLiteBackup(ctx context.Context, src, dst string) error {
-	if err := os.Mkdir(dst, 0o700); err != nil {
-		return err
-	}
-	target := filepath.Join(dst, "whiteroom.db")
-	// As the store makes whiteroom.db: VACUUM INTO takes an empty file.
-	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	abs, err := filepath.Abs(filepath.Join(src, "whiteroom.db"))
-	if err != nil {
-		return err
-	}
-	conn, err := sql.Open("sqlite3", "file:"+strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(abs)+
-		"?mode=rw&_busy_timeout=5000")
-	if err != nil {
-		return err
-	}
-	_, err = conn.ExecContext(ctx, "VACUUM INTO ?", target)
-	if cerr := conn.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	// VACUUM INTO does not sync the copy.
-	if f, err = os.OpenFile(target, os.O_RDWR, 0); err != nil {
-		return err
-	}
-	err = f.Sync()
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	srcRoot, err := vfs.OpenRoot(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = srcRoot.Close() }()
-	dstRoot, err := vfs.OpenRoot(dst)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dstRoot.Close() }()
-	if err := dstRoot.Mkdir("files", 0o700); err != nil {
-		return err
-	}
-	if err := copyFiles(ctx, srcRoot, dstRoot, "files"); err != nil {
-		return err
-	}
-	return dstRoot.SyncDir(".")
 }
 
 // benchDiskOf returns what dir takes on the disk.
@@ -805,9 +682,6 @@ func TestBenchmarks(t *testing.T) {
 				}
 				job := benchJob{Set: bs.name, Backend: tb.name, Run: run, Dir: filepath.Join(runDir, "data")}
 				for _, scenario := range benchScenarios {
-					if benchLogOnly[scenario] && tb.log == nil {
-						continue
-					}
 					if scenario == "open-killed" {
 						loop := job
 						loop.Scenario, loop.Result = "loop", ""
@@ -964,7 +838,6 @@ type benchEnv struct {
 	WorkDir           string
 	Mount             benchMount // the file system of WorkDir, from /proc/mounts
 	DiskModel         string
-	SQLite            map[string]string // sqlite_version() and the settings of a store on SQLite
 	Modules           map[string]string
 	Settings          benchSettings
 	Sets              map[string]benchFacts
@@ -977,10 +850,10 @@ type benchMount struct {
 // benchSettings are the settings of the benchmarks.
 type benchSettings struct {
 	Seed, Runs                              int
-	Backends                                map[string]*benchOptions // nil: SQLite
+	Backends                                map[string]*benchOptions
 	EngineDefaults                          string
 	Sets                                    []benchSetting
-	Scenarios, LogOnly                      []string
+	Scenarios                               []string
 	Singles, Reads, Lists, LoopSaves        int
 	Limit                                   string
 	Sizes                                   map[string][2]int
@@ -1015,8 +888,7 @@ func benchEnvironment(t *testing.T, work string, runs int) *benchEnv {
 	env := &benchEnv{Args: os.Args, Go: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Kernel: benchFirst("/proc/sys/kernel/osrelease", ""), CPU: benchFirst("/proc/cpuinfo", "model name"),
 		CPUs: runtime.NumCPU(), GOMAXPROCS: runtime.GOMAXPROCS(0), Vars: map[string]string{}, WorkDir: abs,
-		Mount: benchMountOf(abs), SQLite: benchSQLite(t, work), Modules: map[string]string{},
-		Sets: map[string]benchFacts{}}
+		Mount: benchMountOf(abs), Modules: map[string]string{}, Sets: map[string]benchFacts{}}
 	memory := strings.TrimSuffix(benchFirst("/proc/meminfo", "MemTotal"), " kB")
 	if kb, err := strconv.ParseInt(memory, 10, 64); err == nil {
 		env.MemoryBytes = kb << 10
@@ -1037,19 +909,11 @@ func benchEnvironment(t *testing.T, work string, runs int) *benchEnv {
 		LargeRevisions: benchLarge, LargeShare: "1%", RevisionMedian: strconv.Itoa(benchMedian) + " bytes",
 		RevisionP90: "4 times the median (log-normal)", ParagraphText: [2]int{200, 1000}}
 	for _, tb := range benchBackends {
-		if tb.log == nil {
-			s.Backends[tb.name] = nil
-			continue
-		}
 		o := tb.log
 		s.Backends[tb.name] = &benchOptions{Placement: strings.TrimPrefix(tb.name, "log-"), Threshold: o.Threshold,
 			SegmentBytes: o.SegmentBytes, CheckpointBytes: o.CheckpointBytes, SyncCheckpoints: o.SyncCheckpoints,
 			WriterWait: o.WriterWait.String()}
 	}
-	for scenario := range benchLogOnly {
-		s.LogOnly = append(s.LogOnly, scenario)
-	}
-	slices.Sort(s.LogOnly)
 	for _, bs := range append(slices.Clip(benchSets), benchSmoke) {
 		s.Sets = append(s.Sets, benchSetting{Name: bs.name, Entries: bs.entries, Terms: bs.terms, Media: bs.media,
 			Second: bs.second, Rounds: bs.rounds, EventsPerSave: bs.events, SavesPerUpdate: bs.batch,
@@ -1110,43 +974,6 @@ func benchDiskModel(dev string) string {
 		sys = filepath.Dir(sys)
 	}
 	return benchFirst(filepath.Join(sys, "device", "model"), "")
-}
-
-// benchSQLite returns sqlite_version() and the settings of a store on SQLite that it makes in work, as its connections
-// that read have them.
-func benchSQLite(t *testing.T, work string) map[string]string {
-	t.Helper()
-	dir := filepath.Join(work, "sqlite")
-	s, err := Create(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]string{}
-	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
-		for _, q := range []string{"sqlite_version()", "journal_mode", "synchronous", "foreign_keys",
-			"recursive_triggers", "busy_timeout", "query_only", "page_size", "cache_size", "wal_autocheckpoint",
-			"journal_size_limit", "mmap_size", "temp_store", "locking_mode"} {
-			query := "PRAGMA " + q
-			if strings.HasSuffix(q, ")") {
-				query = "SELECT " + q
-			}
-			var v string
-			if err := tx.QueryRowContext(t.Context(), query).Scan(&v); err != nil {
-				return fmt.Errorf("%s: %w", query, err)
-			}
-			got[q] = v
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	return got
 }
 
 // benchMetric is a row of the tables of the results: a number of the results of a scenario, in unit ("" for a count),
@@ -1358,8 +1185,8 @@ func benchMarkdown(env *benchEnv, runs int, tables []benchTable) string {
 	if runs > 1 {
 		b.WriteString(": the median, and in parentheses the smallest and the largest")
 	}
-	fmt.Fprintf(&b, ". %s, Linux %s, %s (%d CPUs), %s on %s (%s), SQLite %s.\n", env.Go, env.Kernel, env.CPU,
-		env.CPUs, env.Mount.Type, env.Mount.Device, env.DiskModel, env.SQLite["sqlite_version()"])
+	fmt.Fprintf(&b, ". %s, Linux %s, %s (%d CPUs), %s on %s (%s).\n", env.Go, env.Kernel, env.CPU, env.CPUs,
+		env.Mount.Type, env.Mount.Device, env.DiskModel)
 	for _, table := range tables {
 		f := env.Sets[table.Set]
 		fmt.Fprintf(&b, "\n## %s\n\n%d documents, %d versions, %d revisions (%d of 64 KiB or more), %d events, "+

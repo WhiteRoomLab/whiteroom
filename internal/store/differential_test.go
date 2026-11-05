@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
@@ -49,23 +47,21 @@ func reproduce(t *testing.T) string {
 // errAbort is the error with which the function of an Update of the generator ends to roll it back.
 var errAbort = errors.New("abort")
 
-// externalPackages are those of the errors of the OS, SQLite and the engine of internal/logdb, which have messages of
-// their own; externalSentinels are those of their errors that are values.
+// externalPackages are those of the errors of the OS and the engine of internal/logdb, which have messages of their
+// own; externalSentinels are those of their errors that are values.
 var (
 	externalPackages = []string{
-		"os", "io/fs", "syscall", "internal/poll", "database/sql", "database/sql/driver", "github.com/mattn/go-sqlite3",
-		"github.com/WhiteRoomLab/whiteroom/internal/db", "github.com/WhiteRoomLab/whiteroom/internal/logdb",
+		"os", "io/fs", "syscall", "internal/poll", "github.com/WhiteRoomLab/whiteroom/internal/logdb",
 		"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs",
 		"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs",
 	}
 	externalSentinels = []error{
-		logdb.ErrFailed, logdb.ErrReadOnly, vfs.ErrLocked, simfs.ErrCrashed, sql.ErrTxDone, sql.ErrConnDone,
-		sql.ErrNoRows, driver.ErrBadConn, context.Canceled, context.DeadlineExceeded, io.EOF, io.ErrUnexpectedEOF,
-		fs.ErrClosed, fs.ErrPermission, fs.ErrInvalid,
+		logdb.ErrFailed, logdb.ErrReadOnly, vfs.ErrLocked, simfs.ErrCrashed, context.Canceled, context.DeadlineExceeded,
+		io.EOF, io.ErrUnexpectedEOF, fs.ErrClosed, fs.ErrPermission, fs.ErrInvalid,
 	}
 )
 
-// externalError reports whether err has an error of the OS, SQLite or the engine in its tree.
+// externalError reports whether err has an error of the OS or the engine in its tree.
 func externalError(err error) bool {
 	return inTree(err, func(e error) bool {
 		t := reflect.TypeOf(e)
@@ -98,9 +94,9 @@ func inTree(err error, f func(error) bool) bool {
 	return false
 }
 
-// TestDifferentialLines checks the lines of the differential tests: which errors they take for errors of the OS,
-// SQLite or the engine (not those that the store makes, with their own texts), and that the texts of versions that
-// they keep are those of show.
+// TestDifferentialLines checks the lines of the differential tests: which errors they take for errors of the OS or the
+// engine (not those that the store makes, with their own texts), and that the texts of versions that they keep are
+// those of show.
 func TestDifferentialLines(t *testing.T) {
 	at := testTime.UTC()
 	versions := []Version{
@@ -131,7 +127,6 @@ func TestDifferentialLines(t *testing.T) {
 		{fmt.Errorf("x: %w", &logdb.CorruptError{Path: "x", Offset: -1, Reason: "bad header CRC"}), true},
 		{fmt.Errorf("%w: %w", logdb.ErrFailed, io.ErrShortWrite), true},
 		{errors.Join(errAbort, vfs.ErrLocked), true},
-		{sql.ErrTxDone, true},
 		{context.Canceled, true},
 		{fmt.Errorf("x: %w", fs.ErrNotExist), false},
 	} {
@@ -143,8 +138,8 @@ func TestDifferentialLines(t *testing.T) {
 
 // diffLines are the lines of what a step of a differential run has done on a store, a line for each call: the result as
 // show has it, and the text of the error with whether it wraps fs.ErrNotExist or fs.ErrExist and whether it is
-// content.Errors. An error of the OS, SQLite or the engine has a text of its own, so its line has only its kind; none
-// is expected, and external keeps the first, which fails the test.
+// content.Errors. An error of the OS or the engine has a text of its own, so its line has only its kind; none is
+// expected, and external keeps the first, which fails the test.
 type diffLines struct {
 	lines    []string
 	shown    map[Version]string // the texts of versions, by version
@@ -164,7 +159,7 @@ func (l *diffLines) add(desc string, v any, err error) {
 			if l.external == nil {
 				l.external, l.at = err, len(l.lines)
 			}
-			line += " error of the OS, SQLite or the engine " + kind
+			line += " error of the OS or the engine " + kind
 		} else {
 			line += fmt.Sprintf(" error %q %s", err, kind)
 		}
@@ -188,12 +183,12 @@ func (l *diffLines) show(v any) string {
 	return "[" + strings.Join(texts, " ") + "]"
 }
 
-// diffStore is a store of a differential run: SQLite in a directory of the OS, or the log backend with log in a
-// directory of the OS or, if fsys is not nil, in that simfs world. The clock of its Updates gives each one a
-// millisecond more.
+// diffStore is a store of a differential run: the model, or the log backend with log in a directory of the OS or, if
+// fsys is not nil, in that simfs world. The clock of its Updates gives each one a millisecond more.
 type diffStore struct {
 	name   string
-	log    *logdb.Options // nil for SQLite
+	log    *logdb.Options // nil for the model
+	model  *modelBackend  // of the model; nil for the log backend
 	dir    string         // the data directory; with fsys only its name in errors
 	fsys   *simfs.FS
 	s      *Store // nil while closed
@@ -216,10 +211,11 @@ func (d *diffStore) open(t *testing.T, fresh bool) {
 	var s *Store
 	var err error
 	switch {
-	case d.log == nil && fresh:
-		s, err = Create(d.dir)
 	case d.log == nil:
-		s, err = Open(d.dir)
+		if fresh {
+			d.model = newModelBackend()
+		}
+		s = &Store{b: d.model, files: simfs.New("files")}
 	case fresh:
 		s, err = create(d.dir, d.options())
 	default:
@@ -342,8 +338,8 @@ type diffCounts struct {
 	readers                                    int
 }
 
-// diffRun runs the same steps on SQLite and on the log backend in each placement, and checks that each log store has
-// the lines of SQLite.
+// diffRun runs the same steps on the model and on the log backend in each placement, and checks that each log store has
+// the lines of the model.
 type diffRun struct {
 	t      *testing.T
 	about  string // the run in the messages
@@ -353,11 +349,11 @@ type diffRun struct {
 	counts diffCounts
 }
 
-// newDiffRun creates the stores of a run: SQLite, and the log backend in each placement with the options of
+// newDiffRun creates the stores of a run: the model, and the log backend in each placement with the options of
 // logBackends changed by change, on simfs if sim is true, else on the OS.
 func newDiffRun(t *testing.T, change func(o *logdb.Options), sim bool) *diffRun {
 	t.Helper()
-	r := &diffRun{t: t, ref: &diffStore{name: "sqlite", dir: filepath.Join(t.TempDir(), "data")}}
+	r := &diffRun{t: t, ref: &diffStore{name: "model"}}
 	for _, tb := range logBackends {
 		o := *tb.log
 		change(&o)
@@ -392,8 +388,8 @@ func (r *diffRun) stores() []*diffStore {
 	return append([]*diffStore{r.ref}, r.logs...)
 }
 
-// compare runs f on each store, and stops the test at the first line in which a log store differs from SQLite, or at
-// an error of the OS, SQLite or the engine. It returns the lines of SQLite.
+// compare runs f on each store, and stops the test at the first line in which a log store differs from the model, or at
+// an error of the OS or the engine. It returns the lines of the model.
 func (r *diffRun) compare(step string, f func(d *diffStore) diffLines) diffLines {
 	r.t.Helper()
 	want := f(r.ref)
@@ -401,7 +397,7 @@ func (r *diffRun) compare(step string, f func(d *diffStore) diffLines) diffLines
 	external := func(d *diffStore, l diffLines) {
 		if l.external != nil {
 			problems = append(problems, fmt.Sprintf(
-				"%s: line %d has an error of the OS, SQLite or the engine: %v\n  %s", d.name, l.at+1, l.external,
+				"%s: line %d has an error of the OS or the engine: %v\n  %s", d.name, l.at+1, l.external,
 				l.lines[l.at]))
 		}
 	}
@@ -412,7 +408,7 @@ func (r *diffRun) compare(step string, f func(d *diffStore) diffLines) diffLines
 		for i := range max(len(got.lines), len(want.lines)) {
 			if g, w := line(got.lines, i), line(want.lines, i); g != w {
 				problems = append(problems, fmt.Sprintf(
-					"%s differs from SQLite at line %d of %d:\n  %s: %s\n  sqlite: %s", d.name, i+1, len(want.lines),
+					"%s differs from the model at line %d of %d:\n  %s: %s\n  model: %s", d.name, i+1, len(want.lines),
 					d.name, g, w))
 				break
 			}
@@ -492,7 +488,7 @@ func (r *diffRun) reopen(step string, replay bool) {
 		}
 	}
 	r.view(step+", the View after opening the stores again", true)
-	for _, d := range r.stores() {
+	for _, d := range r.logs {
 		checkIntegrity(r.t, d.s)
 		checkConsistent(r.t, d.s)
 	}
@@ -505,8 +501,8 @@ func (r *diffRun) reopen(step string, replay bool) {
 
 // crash crashes the world of each log store as model does: keep-all as when its process is killed (the page cache
 // stays), lose-all as when the machine loses power (only what was synced stays). Every Update has returned, so each
-// must have its commits. It opens the store in the new world, with a new reader, and SQLite again; then it reads
-// everything, also in the new readers, and checks the stores.
+// must have its commits. It opens the store in the new world, with a new reader, and the model again; then it reads
+// everything, also in the new readers, and checks the log stores.
 func (r *diffRun) crash(step, model string) {
 	r.t.Helper()
 	for _, d := range r.stores() {
@@ -549,14 +545,14 @@ func (r *diffRun) crash(step, model string) {
 		}
 		return d.dump(r.t, d.reader, reads)
 	})
-	for _, d := range r.stores() {
+	for _, d := range r.logs {
 		checkIntegrity(r.t, d.s)
 		checkConsistent(r.t, d.s)
 	}
 	r.counts.crashes++
 }
 
-// readers reads everything in readers of each log store, beside its writer if that is open, and in SQLite: in the
+// readers reads everything in readers of each log store, beside its writer if that is open, and in the model: in the
 // reader open since the store was created, and in a new one.
 func (r *diffRun) readers(step string) {
 	r.t.Helper()
@@ -611,7 +607,7 @@ func (r *diffRun) finish() {
 	r.t.Logf("%s: %d updates (%d committed, %d aborted, %d failed), %d calls in them (%d failed), %d reads; "+
 		"%d versions, %d revisions; opened again %d times, %d without the checkpoints, %d times after crashes (%d "+
 		"replaying records after a checkpoint), read %d times in readers; %s", r.about, c.updates, c.commits, c.aborted,
-		c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.ref.s, "versions"), count(r.t, r.ref.s, "revisions"),
+		c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.logs[0].s, "versions"), count(r.t, r.logs[0].s, "revisions"),
 		c.reopens, c.replays, c.crashes, c.afterCheckpoint, c.readers, strings.Join(stats, ", "))
 }
 
@@ -622,8 +618,8 @@ var (
 	diffCheckpointBytes = []int64{0, 2048, 8192}
 )
 
-// runDiff runs updates Updates of the generator of seed, each with a View that reads everything after it, on SQLite and
-// on the log backend in each placement on simfs.
+// runDiff runs updates Updates of the generator of seed, each with a View that reads everything after it, on the model
+// and on the log backend in each placement on simfs.
 func runDiff(t *testing.T, seed uint64, updates int) {
 	segment, checkpoint := diffSegmentBytes[seed%3], diffCheckpointBytes[seed/3%3]
 	r := newDiffRun(t, func(o *logdb.Options) { o.SegmentBytes, o.CheckpointBytes = segment, checkpoint }, true)
@@ -651,10 +647,10 @@ func runDiff(t *testing.T, seed uint64, updates int) {
 	r.finish()
 }
 
-// TestDifferential runs the same seeded random Updates of valid and invalid operations on SQLite and on the log backend
-// in each placement, with a View that reads everything after each, and checks that every result and every error is
-// that of SQLite: in the Updates, after the stores are opened again (with and without the checkpoints of the log
-// stores) and after crashes of the log stores, and in readers of the log stores.
+// TestDifferential runs the same seeded random Updates of valid and invalid operations on the model and on the log
+// backend in each placement, with a View that reads everything after each, and checks that every result and every
+// error is that of the model: in the Updates, after the stores are opened again (with and without the checkpoints of
+// the log stores) and after crashes of the log stores, and in readers of the log stores.
 func TestDifferential(t *testing.T) {
 	seeds, updates := 6, 120
 	switch {
@@ -671,9 +667,9 @@ func TestDifferential(t *testing.T) {
 	}
 }
 
-// TestDifferentialSampleSite puts the documents and the revisions of the sample site of internal/build on SQLite and on
-// the log backend in each placement, on the OS, and checks that the results and the reads of everything are those of
-// SQLite, also after the stores are opened again and in readers.
+// TestDifferentialSampleSite puts the documents and the revisions of the sample site of internal/build on the model and
+// on the log backend in each placement, on the OS, and checks that the results and the reads of everything are those of
+// the model, also after the stores are opened again and in readers.
 func TestDifferentialSampleSite(t *testing.T) {
 	updates, reads := sampleSiteSteps(t)
 	r := newDiffRun(t, func(*logdb.Options) {}, false)

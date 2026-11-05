@@ -9,8 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,9 +24,9 @@ import (
 
 // The matrices of the store (this file, kill_test.go and faultlog_test.go) run a scenario of originals and Updates on
 // the log backend in each placement on simfs, and crash it, kill it or make one of its operations fail after each of
-// its counted operations. What a store must then have is what SQLite has after the same steps (matrixRefs), with the
-// audit events of the Updates that it has, and every original that a PutOriginal that has returned nil, or a media
-// document, names.
+// its counted operations. What a store must then have is what the model (model_test.go) has after the same steps
+// (matrixRefs), with the audit events of the Updates that it has, and every original that a PutOriginal that has
+// returned nil, or a media document, names.
 
 // matrixSize returns n, the size of a matrix, or fewer with -race, which makes every case several times slower, or
 // long in the long mode.
@@ -342,31 +340,23 @@ func (sc *matrixScenario) ackedAt(done int) []bool {
 	return acked
 }
 
-// matrixRefs are the reads of the scenario on SQLite: states[j] after the setup and the first j steps, probed[j] after
-// them and the probe.
+// matrixRefs are the reads of the scenario in the model: states[j] after the setup and the first j steps, probed[j]
+// after them and the probe.
 type matrixRefs struct {
 	states, probed []string
 }
 
-// theRefs returns the reads of the scenario on SQLite.
+// theRefs returns the reads of the scenario in the model.
 var theRefs = sync.OnceValues(func() (*matrixRefs, error) {
 	sc := theScenario()
-	dir, err := os.MkdirTemp("", "whiteroom-matrix-")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
 	refs := &matrixRefs{}
 	for j := range len(sc.steps) + 1 {
-		s, err := Create(filepath.Join(dir, fmt.Sprint(j)))
-		if err != nil {
-			return nil, err
-		}
+		s := newModelStore()
 		r := &mrun{s: s}
 		for _, st := range slices.Concat(sc.setup, sc.steps[:j]) {
 			if st.kind == mOriginal || st.kind == mUpdate {
 				if err := r.do(context.Background(), &st); err != nil {
-					return nil, errors.Join(fmt.Errorf("%s on SQLite: %w", st.name, err), s.Close())
+					return nil, errors.Join(fmt.Errorf("%s in the model: %w", st.name, err), s.Close())
 				}
 			}
 		}
@@ -377,7 +367,7 @@ var theRefs = sync.OnceValues(func() (*matrixRefs, error) {
 		refs.states = append(refs.states, text)
 		for _, st := range sc.probe {
 			if err := r.do(context.Background(), &st); err != nil {
-				return nil, errors.Join(fmt.Errorf("%s on SQLite: %w", st.name, err), s.Close())
+				return nil, errors.Join(fmt.Errorf("%s in the model: %w", st.name, err), s.Close())
 			}
 		}
 		if text, _, err = viewState(s); err != nil {
@@ -500,7 +490,7 @@ func readsText(tx *Tx, r diffReads) string {
 }
 
 // hasObject reports whether tx has the object hash: on the log backend, whether its engine has it, without reading the
-// data, which Verify of checkStore reads and checks against its hash.
+// data, which Verify of checkStore reads and checks against its hash; in the model, by reading it.
 func hasObject(tx *Tx, hash string) (bool, error) {
 	if lt, ok := tx.b.(*logTx); ok {
 		d, err := digest(hash)
@@ -924,7 +914,7 @@ func checkProbe(t *testing.T, s *Store, fsys *simfs.FS, o logdb.Options, refs *m
 // TestStoreCrashMatrix runs the steps of the scenario of the matrices on the log backend in each placement, and
 // crashes it after each of their counted operations; then, for each crash that simfs can make of what was not durable
 // then (crashModels with 16 subsets, 4 with -race, 256 in the long mode: the writes of logdb/head in one group), the
-// store opens with its checkpoint and has what SQLite has after the steps that returned nil and the step that was
+// store opens with its checkpoint and has what the model has after the steps that returned nil and the step that was
 // running, whole or not at all, with the audit events of its Updates and every original that a PutOriginal that
 // returned nil has put or that a media document names, and passes checkStore. A reader that opens the crash first has
 // the same state, and the probe of the scenario is durable without Close (with -race, these two only after lose-all
