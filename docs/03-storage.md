@@ -190,7 +190,7 @@
 **依存**
 
 - 標準ライブラリだけ：保存先は、Goの標準ライブラリと、エンジン（`internal/logdb`・`internal/logdb/vfs`）と、`internal/content` だけを使う。外部のモジュールは無い（1.2）。SQLiteのドライバー（`github.com/mattn/go-sqlite3`）は、#66 で外した。
-- cgo：要らない。`CGO_ENABLED=0` でもビルドでき、すべてのテストが通る（CIの `build without cgo`・`test without cgo`）。テストの `-race` だけが、cgoとCコンパイラーを使う（開発シェルにある）。
+- cgo：要らない。`CGO_ENABLED=0` でもビルドでき、すべてのテストが通る（CIの `build without cgo`・`test without cgo`）。cgoが要るのは、テストの `-race` だけ（開発シェルのCコンパイラーを使う）。cgoが有効なビルド（開発シェルの既定）では、Goの `net` などがcgoを使う（6.12の126）。
 - 配布：実行ファイルの静的リンク、ほかのシステム向けのビルド（クロスビルド）、配る実行ファイルに付けるライセンスの表示は、6.12の126。
 - コマンド：コマンド `whiteroom`（9.4）は、まだ保存先を使わない。
 
