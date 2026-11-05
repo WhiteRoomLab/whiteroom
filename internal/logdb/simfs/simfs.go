@@ -2,7 +2,8 @@
 // promises after a crash only what POSIX does, not what ext4 adds: the data of a file is durable after a Sync of it,
 // and a name after a SyncDir of its directory. Crash builds what a crash can leave from the durable state and a model
 // of the changes that are not durable yet; Inject makes operations fail, and CrashAt stops every operation after a
-// point. It is deterministic: the same calls give the same results, numbers and crashes.
+// point. KillAt and HangAt make a process that dies or hangs after a point, while the page cache stays for the other
+// processes. It is deterministic: the same calls give the same results, numbers and crashes.
 package simfs
 
 import (

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -42,11 +43,17 @@ const (
 // crashOriginal is the original that the helper puts.
 var crashOriginal = bytes.Repeat([]byte("original "), 100_000)
 
+// The points of the engine of the log backend at which the helper process blocks in an Update, in the modes of the same
+// names.
+var enginePoints = []string{"logdb:update:objects", "logdb:update:written", "logdb:update:synced",
+	"logdb:update:published"}
+
 // TestHelperProcess is the process that the tests below run, with the environment of envMode, envDir and envBackend. In
 // the modes commit, original:synced and original:renamed, it blocks at that point of the hook, where the test kills
-// it; in loop, it puts the pair until it is killed; in write, it puts 50 entries and ends; in open, it prints the
-// result of opening the store and ends; in hold, it keeps the store open until it is killed. On its own, it does
-// nothing.
+// it, and so it does in the modes of enginePoints in an Update that puts the pair after the one in the store; in loop,
+// it puts the pair until it is killed; in write, it puts 50 entries and ends; in open, it prints the result of opening
+// the store and ends; in hold, it keeps the store open until it is killed; in reader, it opens the store with
+// openLogReader and checks the pair in Views until it is killed (readerLoop). On its own, it does nothing.
 func TestHelperProcess(t *testing.T) {
 	mode := os.Getenv(envMode)
 	if mode == "" {
@@ -55,6 +62,15 @@ func TestHelperProcess(t *testing.T) {
 	tb, ok := backendByName(os.Getenv(envBackend))
 	if !ok {
 		t.Fatalf("no backend %q", os.Getenv(envBackend))
+	}
+	if mode == "reader" {
+		s, err := openLogReader(os.Getenv(envDir), tb.options())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = s.Close() }()
+		readerLoop(t, s)
+		return
 	}
 	s, err := tb.open(os.Getenv(envDir))
 	if mode == "open" {
@@ -101,6 +117,13 @@ func TestHelperProcess(t *testing.T) {
 				fmt.Println(marker + "progress")
 			}
 		}
+	case enginePoints[0], enginePoints[1], enginePoints[2], enginePoints[3]:
+		var n [2]int
+		view(t, s, func(tx *Tx) error {
+			n, err = readPair(tx)
+			return err
+		})
+		err = s.Update(t.Context(), func(tx *Tx) error { return putPair(tx, n[0]+1) })
 	case "original:synced", "original:renamed":
 		_, err = s.PutOriginal(t.Context(), bytes.NewReader(crashOriginal))
 	case "write":
@@ -120,6 +143,38 @@ func TestHelperProcess(t *testing.T) {
 		time.Sleep(time.Minute)
 	}
 	t.Fatalf("not killed in the mode %s: %v", mode, err)
+}
+
+// readerLoop checks the pair in Views of s, a store that openLogReader has opened, until the process is killed
+// (checkPairView), and that its number never goes back. It prints "ready" first, "seen <n>" when it sees a new number
+// n, "views <n>" after every 50 Views, and "violation: <what>" when a check fails, after which it waits to be killed.
+func readerLoop(t *testing.T, s *Store) {
+	fmt.Println(marker + "ready")
+	seen := 0
+	for views := 1; ; views++ {
+		var n int
+		err := s.View(t.Context(), func(tx *Tx) error {
+			var err error
+			n, err = checkPairView(tx)
+			return err
+		})
+		if err == nil && n < seen {
+			err = fmt.Errorf("the pair of %d after that of %d", n, seen)
+		}
+		if err != nil {
+			fmt.Println(marker + "violation: " + err.Error())
+			time.Sleep(time.Minute)
+			t.Fatal("not killed")
+		}
+		if n > seen {
+			fmt.Println(marker + "seen " + strconv.Itoa(n))
+			seen = n
+		}
+		if views%50 == 0 {
+			fmt.Println(marker + "views " + strconv.Itoa(views))
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // helper is a process that runs TestHelperProcess.
@@ -388,5 +443,111 @@ func TestOtherWriterRefused(t *testing.T) {
 			s = reopen(t, tb, dir)
 			putWithRevision(t, s)
 		})
+	})
+}
+
+// waitMarkers reads what h prints after marker until ok reports true of a mark, and returns the marks that it has read.
+// It fails the test if h ends first, or if timeout passes.
+func waitMarkers(t *testing.T, h *helper, timeout time.Duration, ok func(mark string) bool) []string {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	var marks []string
+	for {
+		select {
+		case m, open := <-h.markers:
+			if !open {
+				t.Fatalf("the helper has ended after printing %q", marks)
+			}
+			if marks = append(marks, m); ok(m) {
+				return marks
+			}
+		case <-deadline.C:
+			t.Fatalf("the helper has not printed what the test waits for in %v, after %q", timeout, marks)
+		}
+	}
+}
+
+func isViolation(mark string) bool {
+	return strings.HasPrefix(mark, "violation: ")
+}
+
+// TestReadersWhileWriting runs two readers in other processes (the helper in the mode reader), which check the pair in
+// Views (checkPairView), while the test puts the pair 200 times in a store of the log backend, in segments of 4096
+// bytes with checkpoints every 8192 bytes: no reader sees a violation or a step back, and each sees a pair before the
+// last one, and then the last one.
+func TestReadersWhileWriting(t *testing.T) {
+	const updates = 200
+	forBackends(t, logBackends[:2:2], func(t *testing.T, tb testBackend) {
+		o := *tb.log
+		o.SegmentBytes, o.CheckpointBytes = 4096, 8192
+		dir := filepath.Join(t.TempDir(), "data")
+		s, err := create(dir, options{log: &o})
+		if err != nil {
+			t.Fatalf("create() = %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		var readers []*helper
+		for range 2 {
+			readers = append(readers, startHelper(t, tb, dir, "reader", "ready"))
+		}
+		for n := 1; n <= updates; n++ {
+			update(t, s, func(tx *Tx) error { return putPair(tx, n) })
+		}
+		last := "seen " + strconv.Itoa(updates)
+		for i, h := range readers {
+			marks := waitMarkers(t, h, 10*time.Second, func(m string) bool { return m == last || isViolation(m) })
+			kill(t, h)
+			seen, views := 0, "no"
+			for _, m := range marks {
+				switch {
+				case isViolation(m):
+					t.Errorf("reader %d: %s", i, m)
+				case strings.HasPrefix(m, "seen "):
+					seen++
+				case strings.HasPrefix(m, "views "):
+					views = strings.TrimPrefix(m, "views ")
+				}
+			}
+			if seen < 2 { // a pair before the last one, and the last one
+				t.Errorf("reader %d has printed %q", i, marks)
+			}
+			t.Logf("reader %d has seen %d pairs, in %s views or more", i, seen, views)
+		}
+		if st := logDB(t, s).Stats(); st.Segments < 3 {
+			t.Errorf("%d segments, want rollovers", st.Segments)
+		}
+	})
+}
+
+// TestCrashAtEnginePoints kills the helper at each point of enginePoints in an Update that puts the pair after the
+// third one, on the log backend in each placement. The store then has the third pair if the helper was killed before
+// the engine wrote the record of the Update (logdb:update:objects: the objects of a placement with files are written
+// before it), and else the fourth one, whose record the page cache has kept, and which Open makes durable; it passes
+// checkIntegrity and checkConsistent.
+func TestCrashAtEnginePoints(t *testing.T) {
+	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+		for _, point := range enginePoints {
+			t.Run(point, func(t *testing.T) {
+				s, dir := newStore(t, tb)
+				for n := 1; n <= 3; n++ {
+					update(t, s, func(tx *Tx) error { return putPair(tx, n) })
+				}
+				if err := s.Close(); err != nil {
+					t.Fatalf("Close() = %v", err)
+				}
+				kill(t, startHelper(t, tb, dir, point, point))
+				want := 4
+				if point == "logdb:update:objects" {
+					want = 3
+				}
+				view(t, reopen(t, tb, dir), func(tx *Tx) error {
+					if n, err := checkPairView(tx); err != nil || n != want {
+						t.Errorf("the pair after the kill = %d, %v; want %d", n, err, want)
+					}
+					return nil
+				})
+			})
+		}
 	})
 }

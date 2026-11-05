@@ -2,247 +2,13 @@ package logdb
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
-
-// errKilled is the error of the operations of a process that killFS has killed.
-var errKilled = errors.New("the process has been killed")
-
-// killFS is the file system of a process that is killed once sim has counted until operations: from then on, its
-// operations fail, and its locks are released, as the kernel releases the flocks of a process that dies; what it has
-// written stays as it is, in the page cache, durable or not. A process that hangs instead blocks there, with its
-// locks and everything else that it holds, until release is closed; then it is dead, and keeps its locks. Sub is not
-// supported.
-type killFS struct {
-	sim     *simfs.FS
-	until   int
-	hang    bool
-	hung    chan struct{} // closed when the process hangs
-	release chan struct{}
-	mu      sync.Mutex
-	dead    bool
-	locks   []func() error // held; nil once released
-}
-
-func newKillFS(sim *simfs.FS, k int, hang bool) *killFS {
-	return &killFS{sim: sim, until: sim.Counted() + k, hang: hang, hung: make(chan struct{}), release: make(chan struct{}),
-		dead: k == 0}
-}
-
-func (k *killFS) begin() error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.dead {
-		return errKilled
-	}
-	return nil
-}
-
-// end kills the process once sim has counted until operations.
-func (k *killFS) end() {
-	if k.sim.Counted() < k.until {
-		return
-	}
-	k.mu.Lock()
-	if k.dead {
-		k.mu.Unlock()
-		return
-	}
-	k.dead = true
-	locks := k.locks
-	k.locks = nil
-	k.mu.Unlock()
-	if k.hang {
-		close(k.hung)
-		<-k.release
-		return
-	}
-	for _, unlock := range locks {
-		if unlock != nil {
-			_ = unlock()
-		}
-	}
-}
-
-func (k *killFS) do(f func() error) error {
-	if err := k.begin(); err != nil {
-		return err
-	}
-	defer k.end()
-	return f()
-}
-
-func (k *killFS) Name() string { return k.sim.Name() }
-
-func (k *killFS) Open(name string) (vfs.File, error) {
-	if err := k.begin(); err != nil {
-		return nil, err
-	}
-	defer k.end()
-	f, err := k.sim.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return &killFile{f: f, k: k}, nil
-}
-
-func (k *killFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
-	if err := k.begin(); err != nil {
-		return nil, err
-	}
-	defer k.end()
-	f, err := k.sim.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &killFile{f: f, k: k}, nil
-}
-
-func (k *killFS) Mkdir(name string, perm fs.FileMode) error {
-	return k.do(func() error { return k.sim.Mkdir(name, perm) })
-}
-
-func (k *killFS) Remove(name string) error {
-	return k.do(func() error { return k.sim.Remove(name) })
-}
-
-func (k *killFS) Rename(oldname, newname string) error {
-	return k.do(func() error { return k.sim.Rename(oldname, newname) })
-}
-
-func (k *killFS) SyncDir(name string) error {
-	return k.do(func() error { return k.sim.SyncDir(name) })
-}
-
-func (k *killFS) Close() error {
-	return k.do(k.sim.Close)
-}
-
-func (k *killFS) Lstat(name string) (fs.FileInfo, error) {
-	if err := k.begin(); err != nil {
-		return nil, err
-	}
-	defer k.end()
-	return k.sim.Lstat(name)
-}
-
-func (k *killFS) ReadDir(name string) ([]fs.DirEntry, error) {
-	if err := k.begin(); err != nil {
-		return nil, err
-	}
-	defer k.end()
-	return k.sim.ReadDir(name)
-}
-
-func (k *killFS) Sub(string) (vfs.FS, error) {
-	return nil, errors.New("killFS: Sub is not supported")
-}
-
-func (k *killFS) Lock(name string, mode vfs.LockMode) (func() error, error) {
-	if err := k.begin(); err != nil {
-		return nil, err
-	}
-	defer k.end()
-	unlock, err := k.sim.Lock(name, mode)
-	if err != nil {
-		return nil, err
-	}
-	k.mu.Lock()
-	i := len(k.locks)
-	k.locks = append(k.locks, unlock)
-	k.mu.Unlock()
-	return func() error {
-		k.mu.Lock()
-		if k.dead {
-			k.mu.Unlock()
-			return errKilled // the kill has released it, or keeps it
-		}
-		u := k.locks[i]
-		k.locks[i] = nil
-		k.mu.Unlock()
-		if u == nil {
-			return fs.ErrClosed
-		}
-		return u()
-	}, nil
-}
-
-// killFile is a file that a process of killFS has open.
-type killFile struct {
-	f vfs.File
-	k *killFS
-}
-
-func (f *killFile) Read(p []byte) (int, error) {
-	if err := f.k.begin(); err != nil {
-		return 0, err
-	}
-	defer f.k.end()
-	return f.f.Read(p)
-}
-
-func (f *killFile) ReadAt(p []byte, off int64) (int, error) {
-	if err := f.k.begin(); err != nil {
-		return 0, err
-	}
-	defer f.k.end()
-	return f.f.ReadAt(p, off)
-}
-
-func (f *killFile) Write(p []byte) (int, error) {
-	if err := f.k.begin(); err != nil {
-		return 0, err
-	}
-	defer f.k.end()
-	return f.f.Write(p)
-}
-
-func (f *killFile) WriteAt(p []byte, off int64) (int, error) {
-	if err := f.k.begin(); err != nil {
-		return 0, err
-	}
-	defer f.k.end()
-	return f.f.WriteAt(p, off)
-}
-
-func (f *killFile) Seek(offset int64, whence int) (int64, error) {
-	if err := f.k.begin(); err != nil {
-		return 0, err
-	}
-	defer f.k.end()
-	return f.f.Seek(offset, whence)
-}
-
-func (f *killFile) Close() error { return f.k.do(f.f.Close) }
-func (f *killFile) Sync() error  { return f.k.do(f.f.Sync) }
-
-func (f *killFile) Truncate(size int64) error {
-	return f.k.do(func() error { return f.f.Truncate(size) })
-}
-
-func (f *killFile) Stat() (fs.FileInfo, error) {
-	if err := f.k.begin(); err != nil {
-		return nil, err
-	}
-	defer f.k.end()
-	return f.f.Stat()
-}
-
-func (f *killFile) ReadDir(n int) ([]fs.DirEntry, error) {
-	if err := f.k.begin(); err != nil {
-		return nil, err
-	}
-	defer f.k.end()
-	return f.f.ReadDir(n)
-}
 
 // The openers of TestKillMatrix, after the kill of the process that ran the steps.
 const (
@@ -253,13 +19,14 @@ const (
 )
 
 // TestKillMatrix runs each scenario of matrixScenarios in each placement in a process that is killed after each of
-// its counted operations (killFS), which leaves the page cache as it is. Then a writer, or a reader, opens the store:
-// it has the steps that returned nil and the step that was running whole or not at all, and everything that it shows
-// is durable: for each crash that simfs can make then (crashModels with 16 subsets; with -race only the one that
+// its counted operations (simfs.FS.KillAt), which leaves the page cache as it is. Then a writer, or a reader, opens the
+// store: it has the steps that returned nil and the step that was running whole or not at all, and everything that it
+// shows is durable: for each crash that simfs can make then (crashModels with 16 subsets; with -race only the one that
 // loses everything that is not durable; 256 in the long mode), Open finds that state; an Update of the writer is
-// durable too. A reader beside the process, which hangs with its locks, shows only what is durable; so does a reader
-// that has opened before the kill when it refreshes after it. The readers are not open during a compaction or a GC,
-// which maintenance runs. A case is TestKillMatrix/<placement>/<scenario>/k=<kill point>/<opener>/<model>.
+// durable too. A reader beside the process, which hangs with its locks (simfs.FS.HangAt), shows only what is durable;
+// so does a reader that has opened before the kill when it refreshes after it. The readers are not open during a
+// compaction or a GC, which maintenance runs. A case is TestKillMatrix/<placement>/<scenario>/k=<kill point>/<opener>/
+// <model>.
 func TestKillMatrix(t *testing.T) {
 	withBaseBytes(t, 400)
 	subsets := matrixSize(16, 0, 256) // with -race, only the crash that loses everything that is not durable
@@ -327,13 +94,16 @@ func killAndOpen(t *testing.T, base *simfs.FS, o Options, steps []step, states [
 	if opener == killHung && k == 0 {
 		t.Skip("no process hangs before it begins")
 	}
-	kfs := newKillFS(sim, k, opener == killHung)
+	proc := sim.KillAt(k)
+	if opener == killHung {
+		proc = sim.HangAt(k)
+	}
 	var res result
 	var berr error
 	running := 0 // the step that the process runs
 	ran := make(chan result, 1)
 	go func() {
-		ran <- runSteps(kfs, o, steps, func(i int) {
+		ran <- runSteps(proc.FS(), o, steps, func(i int) {
 			running = i
 			if opener == killBefore && i == 1 {
 				before, berr = OpenReader(sim, Options{})
@@ -342,13 +112,13 @@ func killAndOpen(t *testing.T, base *simfs.FS, o Options, steps []step, states [
 	}()
 	if opener == killHung {
 		select {
-		case <-kfs.hung:
+		case <-proc.Hung():
 		case res = <-ran:
 			t.Fatalf("the process has ended before operation %d: %v", k, res)
 		}
 		res = result{done: running} // what it returns after it is released does not count
 		defer func() {
-			close(kfs.release)
+			proc.Release()
 			<-ran
 		}()
 	} else {
