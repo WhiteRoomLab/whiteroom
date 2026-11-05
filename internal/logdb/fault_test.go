@@ -198,7 +198,11 @@ func runFault(t *testing.T, sc *scenario, c *cleanRun, base *simfs.FS, o Options
 	err := run(s)
 	switch {
 	case s.kind == stepOpen && err != nil:
-		if op.Kind == simfs.OpSync || op.Kind == simfs.OpSyncDir {
+		synced := op.Kind == simfs.OpSync || op.Kind == simfs.OpSyncDir
+		if errors.Is(err, ErrFailed) != synced {
+			fail("Open returned %v; ErrFailed is the error of a failed sync, and only of that", err)
+		}
+		if synced {
 			// After a failed sync, the machine is restarted before the store is opened again: the page cache may have
 			// what will never be durable (TestReopenAfterFailedSync).
 			fsys = fsys.Crash(keepAll(fsys))
@@ -291,9 +295,12 @@ func TestReopenAfterFailedSync(t *testing.T) {
 			torn := commitFrame(h.salt, 2, 1, "torn", value("torn ", 300))
 			setFile(t, fsys, seg1, slices.Concat(fileData(t, fsys, seg1), torn[:len(torn)/2]))
 			fsys.Inject(simfs.Fault{Match: on(simfs.OpSync, seg1), Err: syscall.EIO, Drop: true, Times: 1})
-			if db, err := Open(fsys, Options{}); err == nil {
+			db, err := Open(fsys, Options{})
+			if err == nil {
 				_ = db.Close()
-				t.Fatal("Open has cut the tail although its sync has failed")
+			}
+			if !errors.Is(err, ErrFailed) {
+				t.Fatalf("Open after its sync of the cut has failed: %v, want ErrFailed", err)
 			}
 			return fsys
 		}, "1/c=" + big + "\n1/k1=value 1.", seg1}, // the torn tail is back, in a segment that is not the last

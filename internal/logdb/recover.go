@@ -647,9 +647,12 @@ func (r *recovery) apply(fsys vfs.FS) error {
 		}
 	}
 	if err := r.seg.f.Sync(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrFailed, err)
 	}
-	return fsys.SyncDir("log")
+	if err := fsys.SyncDir("log"); err != nil {
+		return fmt.Errorf("%w: %w", ErrFailed, err)
+	}
+	return nil
 }
 
 func readFile(fsys vfs.FS, name string) ([]byte, error) {

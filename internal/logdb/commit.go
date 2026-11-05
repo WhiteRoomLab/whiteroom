@@ -34,7 +34,7 @@ func (db *DB) View(ctx context.Context, f func(*Tx) error) error {
 // Update runs f in a transaction that writes, and commits it if f returns nil and ctx has not ended; otherwise nothing
 // that f has written stays. When Update returns nil, the commit is durable. Updates run one at a time: Update waits
 // for the others until ctx ends. f must not call Update of db, which would wait for itself. After a sync of the engine
-// has failed, every Update fails with ErrFailed until the store is opened again.
+// has failed, every Update fails with ErrFailed until the store is opened again, after a restart of the machine.
 func (db *DB) Update(ctx context.Context, f func(*Tx) error) error {
 	switch {
 	case db.closed.Load():

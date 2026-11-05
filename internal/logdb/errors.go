@@ -31,8 +31,10 @@ func (e *VersionError) Error() string {
 }
 
 var (
-	// ErrFailed is the error of every Update after a Sync of the engine failed.
-	ErrFailed   = errors.New("the store has stopped writing after a sync failed; open it again")
+	// ErrFailed is the error of every Update after a Sync of the engine failed, and of Open and OpenReader when one of
+	// their Syncs fails. The page cache may then show changes that never reach the disk, which a store opened again
+	// before a restart of the machine would take as durable.
+	ErrFailed   = errors.New("the store has stopped after a sync failed; restart the machine before opening it again")
 	ErrReadOnly = errors.New("read-only transaction")
 
 	errEnded  = errors.New("the transaction has ended")

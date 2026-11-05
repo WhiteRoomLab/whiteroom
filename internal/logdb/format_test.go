@@ -82,7 +82,7 @@ func TestErrorTexts(t *testing.T) {
 		{&CorruptError{Path: segPath, Offset: 0, Reason: "x"}, segPath + ": corrupt at offset 0: x"},
 		{&CorruptError{Path: segPath, Offset: -1, Reason: "bad header CRC"}, segPath + ": corrupt: bad header CRC"},
 		{&VersionError{Path: segPath, Version: 2, Known: 1}, segPath + ": format version 2, newer than this program knows (1)"},
-		{ErrFailed, "the store has stopped writing after a sync failed; open it again"},
+		{ErrFailed, "the store has stopped after a sync failed; restart the machine before opening it again"},
 		{ErrReadOnly, "read-only transaction"},
 		{errEnded, "the transaction has ended"},
 		{errClosed, "the store is closed"},

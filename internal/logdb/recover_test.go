@@ -453,15 +453,23 @@ func TestReadErrorNoTruncate(t *testing.T) {
 }
 
 func TestRecoverySyncsTail(t *testing.T) {
-	t.Run("sync fails", func(t *testing.T) {
-		base, _ := build(t, Options{}, 2)
-		fsys := copyFS(base)
-		fsys.Inject(simfs.Fault{Match: on(simfs.OpSync, seg1), Err: syscall.EIO, Times: 1})
-		if _, err := Open(fsys, Options{WriterWait: 1}); !errors.Is(err, syscall.EIO) {
-			t.Errorf("Open: %v", err)
-		}
-		reopen(t, fsys, Options{WriterWait: 1}) // the locks were released
-	})
+	for _, c := range []struct {
+		name  string
+		match func(simfs.Op) bool
+	}{
+		{"sync fails", on(simfs.OpSync, seg1)},
+		{"sync of log fails", on(simfs.OpSyncDir, "log")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			base, _ := build(t, Options{}, 2)
+			fsys := copyFS(base)
+			fsys.Inject(simfs.Fault{Match: c.match, Err: syscall.EIO, Times: 1})
+			if _, err := Open(fsys, Options{WriterWait: 1}); !errors.Is(err, ErrFailed) || !errors.Is(err, syscall.EIO) {
+				t.Errorf("Open: %v, want ErrFailed and EIO", err)
+			}
+			reopen(t, fsys, Options{WriterWait: 1}) // the locks were released
+		})
+	}
 	t.Run("a record in the page cache", func(t *testing.T) {
 		// A writer that was killed after it wrote a record and before its Sync.
 		fsys, dumps := build(t, Options{}, 2)
