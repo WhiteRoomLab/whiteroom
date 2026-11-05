@@ -32,7 +32,9 @@
             # For the tests of the server files of internal/build.
             pkgs.nginx
             pkgs.apacheHttpd
-          ];
+          ]
+          # For the dm-log-writes check of internal/store (mke2fs, e2fsck, debugfs); Linux only.
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.e2fsprogs ];
 
           env.GOTOOLCHAIN = "local";
         };
