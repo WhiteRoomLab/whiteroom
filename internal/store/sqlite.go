@@ -240,3 +240,7 @@ func (t *sqliteTx) revisions(entry string) ([]Revision, error) {
 	}
 	return revs, nil
 }
+
+func (t *sqliteTx) addEvent([]byte) error {
+	return errNoEvents
+}

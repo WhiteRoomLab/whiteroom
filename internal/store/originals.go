@@ -28,6 +28,9 @@ type Original struct {
 // to the name of the original, so that the original is whole or missing, even after a crash. It replaces a file of
 // that name, which has the same data unless it is damaged. It checks ctx before each read of r.
 func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) {
+	if s.readOnly {
+		return Original{}, errors.New("the store is opened to read only")
+	}
 	f, tmp, err := s.createTemp()
 	if err != nil {
 		return Original{}, err

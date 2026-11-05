@@ -35,6 +35,7 @@ type backendTx interface {
 	addRevision(id, entry, hash, savedAt, by string) (int64, error)
 	revision(id string) (Revision, bool, error) // with Data
 	revisions(entry string) ([]Revision, error) // in the order of saving, without Data
+	addEvent(data []byte) error                 // an audit event (events.go)
 }
 
 // versionErr is the error of a backend for the saved_at of the version seq, which does not parse.
