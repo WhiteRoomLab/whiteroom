@@ -2,7 +2,6 @@ package store
 
 import (
 	"bytes"
-	"database/sql"
 	"errors"
 	"io/fs"
 	"maps"
@@ -97,163 +96,147 @@ func checkHistory(t *testing.T, tx *Tx, kind content.RefKind, id string, want []
 	}
 }
 
-// savedAts returns the saved_at of the rows of table in s, versions or revisions, in the order of saving, as they are
-// in the table.
-func savedAts(t *testing.T, s *Store, table string) []string {
-	t.Helper()
-	var got []string
-	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(t.Context(), "SELECT saved_at FROM "+table+" ORDER BY seq")
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var at string
-			if err := rows.Scan(&at); err != nil {
-				return err
-			}
-			got = append(got, at)
-		}
-		return rows.Err()
-	}); err != nil {
-		t.Fatalf("saved_at of the versions = %v", err)
-	}
-	return got
-}
-
 func TestDocuments(t *testing.T) {
-	later := testTime.Add(time.Hour)
-	for _, tt := range testDocs {
-		t.Run(string(tt.kind), func(t *testing.T) {
-			s, _ := newStore(t)
-			// The same JSON, but other bytes.
-			first, second := docJSON(tt.kind, tt.id), append(docJSON(tt.kind, tt.id), '\n')
-			checkMissing(t, s, tt.kind, tt.id, tt.file, nil)
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		later := testTime.Add(time.Hour)
+		for _, tt := range testDocs {
+			t.Run(string(tt.kind), func(t *testing.T) {
+				s, _ := newStore(t, tb)
+				// The same JSON, but other bytes.
+				first, second := docJSON(tt.kind, tt.id), append(docJSON(tt.kind, tt.id), '\n')
+				checkMissing(t, s, tt.kind, tt.id, tt.file, nil)
 
-			v1 := Version{Seq: 1, Kind: tt.kind, ID: tt.id, Hash: sum(first), SavedAt: testTime.UTC(), SavedBy: userID}
-			put(t, s, tt.kind, tt.id, first, userID, v1)
-			checkDocument(t, s, Document{v1, first}, []Version{v1})
-			s.now = func() time.Time { return later }
-			put(t, s, tt.kind, tt.id, first, otherUser, v1)
-			checkDocument(t, s, Document{v1, first}, []Version{v1})
-			v2 := Version{Seq: 2, Kind: tt.kind, ID: tt.id, Hash: sum(second), SavedAt: later.UTC(), SavedBy: otherUser}
-			put(t, s, tt.kind, tt.id, second, otherUser, v2)
-			checkDocument(t, s, Document{v2, second}, []Version{v1, v2})
-
-			savedAt := []string{"2026-11-03T08:00:00.120000000Z", "2026-11-03T09:00:00.120000000Z"}
-			if tt.kind == SettingsKind {
-				err := s.Update(t.Context(), func(tx *Tx) error {
-					_, err := tx.Delete(tt.kind, tt.id, userID)
-					return err
-				})
-				if want := "the settings document cannot be deleted"; err == nil || err.Error() != want {
-					t.Errorf("Delete() = %v, want %q", err, want)
-				}
+				v1 := Version{Seq: 1, Kind: tt.kind, ID: tt.id, Hash: sum(first), SavedAt: testTime.UTC(),
+					SavedBy: userID}
+				put(t, s, tt.kind, tt.id, first, userID, v1)
+				checkDocument(t, s, Document{v1, first}, []Version{v1})
+				s.now = func() time.Time { return later }
+				put(t, s, tt.kind, tt.id, first, otherUser, v1)
+				checkDocument(t, s, Document{v1, first}, []Version{v1})
+				v2 := Version{Seq: 2, Kind: tt.kind, ID: tt.id, Hash: sum(second), SavedAt: later.UTC(),
+					SavedBy: otherUser}
+				put(t, s, tt.kind, tt.id, second, otherUser, v2)
 				checkDocument(t, s, Document{v2, second}, []Version{v1, v2})
-			} else {
-				v3 := Version{Seq: 3, Kind: tt.kind, ID: tt.id, SavedAt: later.UTC(), SavedBy: userID}
-				update(t, s, func(tx *Tx) error {
-					v, err := tx.Delete(tt.kind, tt.id, userID)
-					if err == nil && v != v3 {
-						t.Errorf("Delete() = %+v, want %+v", v, v3)
-					}
-					return err
-				})
-				checkMissing(t, s, tt.kind, tt.id, tt.file, []Version{v1, v2, v3})
-				other := tt.id[:len("ent_")] + "01JE0000000000000000000000"
-				for _, id := range []string{tt.id, other} {
-					file := strings.Replace(tt.file, tt.id, id, 1)
+
+				savedAt := []string{"2026-11-03T08:00:00.120000000Z", "2026-11-03T09:00:00.120000000Z"}
+				if tt.kind == SettingsKind {
 					err := s.Update(t.Context(), func(tx *Tx) error {
-						_, err := tx.Delete(tt.kind, id, userID)
+						_, err := tx.Delete(tt.kind, tt.id, userID)
 						return err
 					})
-					if want := file + ": not found"; !errors.Is(err, fs.ErrNotExist) || err.Error() != want {
-						t.Errorf("Delete() of %s = %v, want an error %q that wraps fs.ErrNotExist", file, err, want)
+					if want := "the settings document cannot be deleted"; err == nil || err.Error() != want {
+						t.Errorf("Delete() = %v, want %q", err, want)
 					}
-				}
+					checkDocument(t, s, Document{v2, second}, []Version{v1, v2})
+				} else {
+					v3 := Version{Seq: 3, Kind: tt.kind, ID: tt.id, SavedAt: later.UTC(), SavedBy: userID}
+					update(t, s, func(tx *Tx) error {
+						v, err := tx.Delete(tt.kind, tt.id, userID)
+						if err == nil && v != v3 {
+							t.Errorf("Delete() = %+v, want %+v", v, v3)
+						}
+						return err
+					})
+					checkMissing(t, s, tt.kind, tt.id, tt.file, []Version{v1, v2, v3})
+					other := tt.id[:len("ent_")] + "01JE0000000000000000000000"
+					for _, id := range []string{tt.id, other} {
+						file := strings.Replace(tt.file, tt.id, id, 1)
+						err := s.Update(t.Context(), func(tx *Tx) error {
+							_, err := tx.Delete(tt.kind, id, userID)
+							return err
+						})
+						if want := file + ": not found"; !errors.Is(err, fs.ErrNotExist) || err.Error() != want {
+							t.Errorf("Delete() of %s = %v, want an error %q that wraps fs.ErrNotExist", file, err, want)
+						}
+					}
 
-				v4 := Version{Seq: 4, Kind: tt.kind, ID: tt.id, Hash: sum(first), SavedAt: later.UTC(), SavedBy: userID}
-				put(t, s, tt.kind, tt.id, first, userID, v4)
-				checkDocument(t, s, Document{v4, first}, []Version{v1, v2, v3, v4})
-				savedAt = append(savedAt, savedAt[1], savedAt[1])
-			}
-			if got := savedAts(t, s, "versions"); !slices.Equal(got, savedAt) {
-				t.Errorf("saved_at = %q, want %q", got, savedAt)
-			}
-			if n := count(t, s, "objects"); n != 2 {
-				t.Errorf("objects = %d, want 2", n)
-			}
-			checkConsistent(t, s)
-		})
-	}
+					v4 := Version{Seq: 4, Kind: tt.kind, ID: tt.id, Hash: sum(first), SavedAt: later.UTC(),
+						SavedBy: userID}
+					put(t, s, tt.kind, tt.id, first, userID, v4)
+					checkDocument(t, s, Document{v4, first}, []Version{v1, v2, v3, v4})
+					savedAt = append(savedAt, savedAt[1], savedAt[1])
+				}
+				if got := savedAts(t, s, "versions"); !slices.Equal(got, savedAt) {
+					t.Errorf("saved_at = %q, want %q", got, savedAt)
+				}
+				if n := count(t, s, "objects"); n != 2 {
+					t.Errorf("objects = %d, want 2", n)
+				}
+				checkConsistent(t, s)
+			})
+		}
+	})
 }
 
 // TestSavedAt checks that the versions of an Update have the time when it began, which it takes from s.now once.
 func TestSavedAt(t *testing.T) {
-	s, _ := newStore(t)
-	n := 0
-	s.now = func() time.Time {
-		n++
-		return testTime.Add(time.Duration(n) * time.Nanosecond)
-	}
-	var got []Version
-	add := func(v Version, err error) error {
-		got = append(got, v)
-		return err
-	}
-	update(t, s, func(tx *Tx) error {
-		return errors.Join(
-			add(tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)),
-			add(tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID)),
-			add(tx.Delete(content.RefTerm, termID, userID)),
-		)
-	})
-	update(t, s, func(tx *Tx) error {
-		return add(tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID))
-	})
-	view(t, s, func(*Tx) error { return nil })
-	if n != 2 {
-		t.Errorf("calls of s.now = %d, want 2", n)
-	}
-	for i, v := range got {
-		want := testTime.Add(time.Nanosecond).UTC()
-		if i == len(got)-1 {
-			want = want.Add(time.Nanosecond)
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		n := 0
+		s.now = func() time.Time {
+			n++
+			return testTime.Add(time.Duration(n) * time.Nanosecond)
 		}
-		if v.SavedAt != want {
-			t.Errorf("SavedAt of version %d = %v, want %v", v.Seq, v.SavedAt, want)
+		var got []Version
+		add := func(v Version, err error) error {
+			got = append(got, v)
+			return err
 		}
-	}
-	first, second := "2026-11-03T08:00:00.120000001Z", "2026-11-03T08:00:00.120000002Z"
-	if got, want := savedAts(t, s, "versions"), []string{first, first, first, second}; !slices.Equal(got, want) {
-		t.Errorf("saved_at = %q, want %q", got, want)
-	}
-	checkConsistent(t, s)
+		update(t, s, func(tx *Tx) error {
+			return errors.Join(
+				add(tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)),
+				add(tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID)),
+				add(tx.Delete(content.RefTerm, termID, userID)),
+			)
+		})
+		update(t, s, func(tx *Tx) error {
+			return add(tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID))
+		})
+		view(t, s, func(*Tx) error { return nil })
+		if n != 2 {
+			t.Errorf("calls of s.now = %d, want 2", n)
+		}
+		for i, v := range got {
+			want := testTime.Add(time.Nanosecond).UTC()
+			if i == len(got)-1 {
+				want = want.Add(time.Nanosecond)
+			}
+			if v.SavedAt != want {
+				t.Errorf("SavedAt of version %d = %v, want %v", v.Seq, v.SavedAt, want)
+			}
+		}
+		first, second := "2026-11-03T08:00:00.120000001Z", "2026-11-03T08:00:00.120000002Z"
+		if got, want := savedAts(t, s, "versions"), []string{first, first, first, second}; !slices.Equal(got, want) {
+			t.Errorf("saved_at = %q, want %q", got, want)
+		}
+		checkConsistent(t, s)
+	})
 }
 
 func TestDocumentsOrder(t *testing.T) {
-	s, _ := newStore(t)
-	ids := []string{pageID, entryID, "ent_01JE0000000000000000000000", "ent_01JA0000000000000000000000"}
-	update(t, s, func(tx *Tx) error {
-		for _, id := range ids {
-			if _, err := tx.Put(content.RefEntry, id, docJSON(content.RefEntry, id), userID); err != nil {
-				return err
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		ids := []string{pageID, entryID, "ent_01JE0000000000000000000000", "ent_01JA0000000000000000000000"}
+		update(t, s, func(tx *Tx) error {
+			for _, id := range ids {
+				if _, err := tx.Put(content.RefEntry, id, docJSON(content.RefEntry, id), userID); err != nil {
+					return err
+				}
 			}
-		}
-		_, err := tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID)
-		return err
-	})
-	view(t, s, func(tx *Tx) error {
-		docs, err := tx.Documents(content.RefEntry)
-		var got []string
-		for _, d := range docs {
-			got = append(got, d.ID)
-		}
-		if want := slices.Sorted(slices.Values(ids)); err != nil || !slices.Equal(got, want) {
-			t.Errorf("IDs of Documents() = %q, %v; want %q", got, err, want)
-		}
-		return nil
+			_, err := tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID)
+			return err
+		})
+		view(t, s, func(tx *Tx) error {
+			docs, err := tx.Documents(content.RefEntry)
+			var got []string
+			for _, d := range docs {
+				got = append(got, d.ID)
+			}
+			if want := slices.Sorted(slices.Values(ids)); err != nil || !slices.Equal(got, want) {
+				t.Errorf("IDs of Documents() = %q, %v; want %q", got, err, want)
+			}
+			return nil
+		})
 	})
 }
 
@@ -336,168 +319,172 @@ func TestPutErrors(t *testing.T) {
 				termID + `"`,
 			problem: true},
 	}
-	s, _ := newStore(t)
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var err error
-			update(t, s, func(tx *Tx) error {
-				_, err = tx.Put(tt.kind, tt.id, tt.data, tt.by)
-				return nil
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var err error
+				update(t, s, func(tx *Tx) error {
+					_, err = tx.Put(tt.kind, tt.id, tt.data, tt.by)
+					return nil
+				})
+				var es content.Errors
+				if err == nil || err.Error() != tt.want || errors.As(err, &es) != tt.problem {
+					t.Errorf("Put() = %v (%T), want %q", err, err, tt.want)
+				}
+				checkEmpty(t, s)
 			})
-			var es content.Errors
-			if err == nil || err.Error() != tt.want || errors.As(err, &es) != tt.problem {
-				t.Errorf("Put() = %v (%T), want %q", err, err, tt.want)
-			}
-			checkEmpty(t, s)
-		})
-	}
+		}
+	})
 }
 
 func TestDeleteErrors(t *testing.T) {
-	const use = ` and a ULID (26 characters in upper case)`
-	s, _ := newStore(t)
-	data := docJSON(content.RefEntry, entryID)
-	v := Version{Seq: 1, Kind: content.RefEntry, ID: entryID, Hash: sum(data), SavedAt: testTime.UTC(), SavedBy: userID}
-	put(t, s, content.RefEntry, entryID, data, userID, v)
-	put(t, s, SettingsKind, "", docJSON(SettingsKind, ""), userID, Version{
-		Seq: 2, Kind: SettingsKind, Hash: sum(docJSON(SettingsKind, "")), SavedAt: testTime.UTC(), SavedBy: userID,
-	})
-	for _, tt := range []struct {
-		name     string
-		kind     content.RefKind
-		id, by   string
-		want     string
-		notExist bool
-	}{
-		{"unsupported kind", "page", entryID, userID, `unsupported kind "page"`, false},
-		{"revision", content.RefRevision, revisionID, userID, `unsupported kind "revision"`, false},
-		{"invalid ID", content.RefEntry, "ent_x", userID, `invalid entry ID "ent_x": use "ent_"` + use, false},
-		{"ID of another kind", content.RefTerm, entryID, userID,
-			`invalid term ID "` + entryID + `": use "trm_"` + use, false},
-		{"settings with an ID", SettingsKind, entryID, userID, "the settings document has no ID", false},
-		{"settings", SettingsKind, "", userID, "the settings document cannot be deleted", false},
-		{"invalid user", content.RefEntry, entryID, "usr_x", `invalid user ID "usr_x": use "usr_"` + use, false},
-		{"no user", content.RefEntry, entryID, "", `invalid user ID "": use "usr_"` + use, false},
-		{"missing", content.RefEntry, pageID, userID, "entries/" + pageID + ".json: not found", true},
-		{"missing of another kind", content.RefTerm, termID, userID, "terms/" + termID + ".json: not found", true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			var err error
-			update(t, s, func(tx *Tx) error {
-				_, err = tx.Delete(tt.kind, tt.id, tt.by)
-				return nil
-			})
-			if err == nil || err.Error() != tt.want || errors.Is(err, fs.ErrNotExist) != tt.notExist {
-				t.Errorf("Delete() = %v, want %q", err, tt.want)
-			}
-			checkDocument(t, s, Document{v, data}, []Version{v})
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		const use = ` and a ULID (26 characters in upper case)`
+		s, _ := newStore(t, tb)
+		data := docJSON(content.RefEntry, entryID)
+		v := Version{Seq: 1, Kind: content.RefEntry, ID: entryID, Hash: sum(data), SavedAt: testTime.UTC(),
+			SavedBy: userID}
+		put(t, s, content.RefEntry, entryID, data, userID, v)
+		put(t, s, SettingsKind, "", docJSON(SettingsKind, ""), userID, Version{
+			Seq: 2, Kind: SettingsKind, Hash: sum(docJSON(SettingsKind, "")), SavedAt: testTime.UTC(), SavedBy: userID,
 		})
-	}
-	if n := count(t, s, "versions"); n != 2 {
-		t.Errorf("versions = %d, want 2", n)
-	}
-	checkConsistent(t, s)
+		for _, tt := range []struct {
+			name     string
+			kind     content.RefKind
+			id, by   string
+			want     string
+			notExist bool
+		}{
+			{"unsupported kind", "page", entryID, userID, `unsupported kind "page"`, false},
+			{"revision", content.RefRevision, revisionID, userID, `unsupported kind "revision"`, false},
+			{"invalid ID", content.RefEntry, "ent_x", userID, `invalid entry ID "ent_x": use "ent_"` + use, false},
+			{"ID of another kind", content.RefTerm, entryID, userID,
+				`invalid term ID "` + entryID + `": use "trm_"` + use, false},
+			{"settings with an ID", SettingsKind, entryID, userID, "the settings document has no ID", false},
+			{"settings", SettingsKind, "", userID, "the settings document cannot be deleted", false},
+			{"invalid user", content.RefEntry, entryID, "usr_x", `invalid user ID "usr_x": use "usr_"` + use, false},
+			{"no user", content.RefEntry, entryID, "", `invalid user ID "": use "usr_"` + use, false},
+			{"missing", content.RefEntry, pageID, userID, "entries/" + pageID + ".json: not found", true},
+			{"missing of another kind", content.RefTerm, termID, userID, "terms/" + termID + ".json: not found", true},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				var err error
+				update(t, s, func(tx *Tx) error {
+					_, err = tx.Delete(tt.kind, tt.id, tt.by)
+					return nil
+				})
+				if err == nil || err.Error() != tt.want || errors.Is(err, fs.ErrNotExist) != tt.notExist {
+					t.Errorf("Delete() = %v, want %q", err, tt.want)
+				}
+				checkDocument(t, s, Document{v, data}, []Version{v})
+			})
+		}
+		if n := count(t, s, "versions"); n != 2 {
+			t.Errorf("versions = %d, want 2", n)
+		}
+		checkConsistent(t, s)
+	})
 }
 
-// TestCorruptObject changes the data of the objects of an entry and its revision, which the triggers of the tables keep
-// from changing, and checks that the reads of the data fail.
+// TestCorruptObject changes the data of the objects of an entry and its revision behind the back of the store (on
+// SQLite, past the triggers of the tables that keep it from changing), and checks that the reads of the data fail.
 func TestCorruptObject(t *testing.T) {
-	s, _ := newStore(t)
-	putWithRevision(t, s)
-	bad := docJSON(content.RefEntry, pageID)
-	if err := sqliteDB(t, s).Write(t.Context(), func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(t.Context(), "DROP TRIGGER objects_no_update"); err != nil {
-			return err
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		putWithRevision(t, s)
+		corrupt := corruptObjects(t, s)
+		changed := func(data []byte) string {
+			return "object " + sum(data) + ": the data has the hash " + sum(corrupt(data))
 		}
-		_, err := tx.ExecContext(t.Context(), "UPDATE objects SET data = ?", bad)
-		return err
-	}); err != nil {
-		t.Fatalf("Write() = %v", err)
-	}
-	changed := func(data []byte) string { return "object " + sum(data) + ": the data has the hash " + sum(bad) }
-	entry, rev := changed(docJSON(content.RefEntry, entryID)), changed(revJSON("About"))
-	// History and Revisions read no data.
-	wants := map[string]string{"Document": entry, "Documents": entry, "Object": entry, "Revision": rev}
-	view(t, s, func(tx *Tx) error {
-		for name, call := range calls(tx) {
-			if slices.Contains(writes, name) {
-				continue
+		entry, rev := changed(docJSON(content.RefEntry, entryID)), changed(revJSON("About"))
+		// History and Revisions read no data.
+		wants := map[string]string{"Document": entry, "Documents": entry, "Object": entry, "Revision": rev}
+		view(t, s, func(tx *Tx) error {
+			for name, call := range calls(tx) {
+				if slices.Contains(writes, name) {
+					continue
+				}
+				err := call()
+				if want, ok := wants[name]; ok && (err == nil || err.Error() != want) {
+					t.Errorf("%s() of a changed object = %v, want %q", name, err, want)
+				} else if !ok && err != nil {
+					t.Errorf("%s() = %v", name, err)
+				}
 			}
-			err := call()
-			if want, ok := wants[name]; ok && (err == nil || err.Error() != want) {
-				t.Errorf("%s() of a changed object = %v, want %q", name, err, want)
-			} else if !ok && err != nil {
-				t.Errorf("%s() = %v", name, err)
+			if h, err := tx.History(content.RefEntry, entryID); err != nil || len(h) != 1 {
+				t.Errorf("History() = %+v, %v; want the version", h, err)
 			}
-		}
-		if h, err := tx.History(content.RefEntry, entryID); err != nil || len(h) != 1 {
-			t.Errorf("History() = %+v, %v; want the version", h, err)
-		}
-		if revs, err := tx.Revisions(entryID); err != nil || len(revs) != 1 {
-			t.Errorf("Revisions() = %+v, %v; want the revision", revs, err)
-		}
-		return nil
+			if revs, err := tx.Revisions(entryID); err != nil || len(revs) != 1 {
+				t.Errorf("Revisions() = %+v, %v; want the revision", revs, err)
+			}
+			return nil
+		})
 	})
 }
 
 func TestObjectErrors(t *testing.T) {
-	s, _ := newStore(t)
-	digits := strings.Repeat("0", 64)
-	view(t, s, func(tx *Tx) error {
-		for _, h := range []string{
-			"sha256:" + strings.Repeat("A", 64),
-			digits,
-			"sha256:" + digits[:63],
-			"sha256:" + digits + "0",
-			"sha512:" + digits,
-			"SHA256:" + digits,
-			"",
-		} {
-			data, err := tx.Object(h)
-			if want := `invalid hash "` + h + `": use "sha256:" and 64 lower case hex digits`; data != nil || err == nil ||
-				err.Error() != want {
-				t.Errorf("Object(%q) = %q, %v; want an error %q", h, data, err, want)
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		digits := strings.Repeat("0", 64)
+		view(t, s, func(tx *Tx) error {
+			for _, h := range []string{
+				"sha256:" + strings.Repeat("A", 64),
+				digits,
+				"sha256:" + digits[:63],
+				"sha256:" + digits + "0",
+				"sha512:" + digits,
+				"SHA256:" + digits,
+				"",
+			} {
+				data, err := tx.Object(h)
+				if want := `invalid hash "` + h + `": use "sha256:" and 64 lower case hex digits`; data != nil ||
+					err == nil || err.Error() != want {
+					t.Errorf("Object(%q) = %q, %v; want an error %q", h, data, err, want)
+				}
 			}
-		}
-		data, err := tx.Object("sha256:" + digits)
-		if want := "object sha256:" + digits + ": not found"; data != nil || !errors.Is(err, fs.ErrNotExist) ||
-			err.Error() != want {
-			t.Errorf("Object() of a missing object = %q, %v; want an error %q that wraps fs.ErrNotExist", data, err,
-				want)
-		}
-		return nil
+			data, err := tx.Object("sha256:" + digits)
+			if want := "object sha256:" + digits + ": not found"; data != nil || !errors.Is(err, fs.ErrNotExist) ||
+				err.Error() != want {
+				t.Errorf("Object() of a missing object = %q, %v; want an error %q that wraps fs.ErrNotExist", data, err,
+					want)
+			}
+			return nil
+		})
 	})
 }
 
 func TestReadErrors(t *testing.T) {
-	s, _ := newStore(t)
-	const use = ` and a ULID (26 characters in upper case)`
-	view(t, s, func(tx *Tx) error {
-		for _, tt := range []struct {
-			kind content.RefKind
-			id   string
-			want string
-		}{
-			{"page", entryID, `unsupported kind "page"`},
-			{content.RefRevision, revisionID, `unsupported kind "revision"`},
-			{content.RefEntry, "ent_x", `invalid entry ID "ent_x": use "ent_"` + use},
-			{content.RefEntry, "", `invalid entry ID "": use "ent_"` + use},
-			{SettingsKind, entryID, "the settings document has no ID"},
-		} {
-			if d, err := tx.Document(tt.kind, tt.id); err == nil || err.Error() != tt.want {
-				t.Errorf("Document(%q, %q) = %+v, %v; want an error %q", tt.kind, tt.id, d.Version, err, tt.want)
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		const use = ` and a ULID (26 characters in upper case)`
+		view(t, s, func(tx *Tx) error {
+			for _, tt := range []struct {
+				kind content.RefKind
+				id   string
+				want string
+			}{
+				{"page", entryID, `unsupported kind "page"`},
+				{content.RefRevision, revisionID, `unsupported kind "revision"`},
+				{content.RefEntry, "ent_x", `invalid entry ID "ent_x": use "ent_"` + use},
+				{content.RefEntry, "", `invalid entry ID "": use "ent_"` + use},
+				{SettingsKind, entryID, "the settings document has no ID"},
+			} {
+				if d, err := tx.Document(tt.kind, tt.id); err == nil || err.Error() != tt.want {
+					t.Errorf("Document(%q, %q) = %+v, %v; want an error %q", tt.kind, tt.id, d.Version, err, tt.want)
+				}
+				if h, err := tx.History(tt.kind, tt.id); h != nil || err == nil || err.Error() != tt.want {
+					t.Errorf("History(%q, %q) = %+v, %v; want an error %q", tt.kind, tt.id, h, err, tt.want)
+				}
 			}
-			if h, err := tx.History(tt.kind, tt.id); h != nil || err == nil || err.Error() != tt.want {
-				t.Errorf("History(%q, %q) = %+v, %v; want an error %q", tt.kind, tt.id, h, err, tt.want)
+			for _, kind := range []content.RefKind{"page", content.RefRevision, content.RefUser, ""} {
+				if docs, err := tx.Documents(kind); docs != nil || err == nil ||
+					err.Error() != `unsupported kind "`+string(kind)+`"` {
+					t.Errorf("Documents(%q) = %+v, %v; want an error", kind, docs, err)
+				}
 			}
-		}
-		for _, kind := range []content.RefKind{"page", content.RefRevision, content.RefUser, ""} {
-			if docs, err := tx.Documents(kind); docs != nil || err == nil ||
-				err.Error() != `unsupported kind "`+string(kind)+`"` {
-				t.Errorf("Documents(%q) = %+v, %v; want an error", kind, docs, err)
-			}
-		}
-		return nil
+			return nil
+		})
 	})
 }
 
@@ -525,41 +512,43 @@ func TestSampleSite(t *testing.T) {
 		files[tt.kind] = docs
 	}
 
-	s, _ := newStore(t)
-	n := 0
-	update(t, s, func(tx *Tx) error {
-		for kind, docs := range files {
-			// Backwards, so that Documents has to sort them.
-			for _, id := range slices.Backward(slices.Sorted(maps.Keys(docs))) {
-				if _, err := tx.Put(kind, id, docs[id].Data, userID); err != nil {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		n := 0
+		update(t, s, func(tx *Tx) error {
+			for kind, docs := range files {
+				// Backwards, so that Documents has to sort them.
+				for _, id := range slices.Backward(slices.Sorted(maps.Keys(docs))) {
+					if _, err := tx.Put(kind, id, docs[id].Data, userID); err != nil {
+						return err
+					}
+					n++
+				}
+			}
+			return nil
+		})
+		view(t, s, func(tx *Tx) error {
+			for kind, docs := range files {
+				got, err := tx.Documents(kind)
+				if err != nil {
 					return err
 				}
-				n++
-			}
-		}
-		return nil
-	})
-	view(t, s, func(tx *Tx) error {
-		for kind, docs := range files {
-			got, err := tx.Documents(kind)
-			if err != nil {
-				return err
-			}
-			var ids []string
-			for _, d := range got {
-				ids = append(ids, d.ID)
-				if f := docs[d.ID]; !bytes.Equal(d.Data, f.Data) || d.Hash != sum(f.Data) {
-					t.Errorf("Documents(%q) has %s with %q (%s), want %q", kind, d.ID, d.Data, d.Hash, f.Data)
+				var ids []string
+				for _, d := range got {
+					ids = append(ids, d.ID)
+					if f := docs[d.ID]; !bytes.Equal(d.Data, f.Data) || d.Hash != sum(f.Data) {
+						t.Errorf("Documents(%q) has %s with %q (%s), want %q", kind, d.ID, d.Data, d.Hash, f.Data)
+					}
+				}
+				if want := slices.Sorted(maps.Keys(docs)); !slices.Equal(ids, want) {
+					t.Errorf("IDs of Documents(%q) = %q, want %q", kind, ids, want)
 				}
 			}
-			if want := slices.Sorted(maps.Keys(docs)); !slices.Equal(ids, want) {
-				t.Errorf("IDs of Documents(%q) = %q, want %q", kind, ids, want)
-			}
+			return nil
+		})
+		if got := count(t, s, "versions"); got != n {
+			t.Errorf("versions = %d, want %d", got, n)
 		}
-		return nil
+		checkConsistent(t, s)
 	})
-	if got := count(t, s, "versions"); got != n {
-		t.Errorf("versions = %d, want %d", got, n)
-	}
-	checkConsistent(t, s)
 }

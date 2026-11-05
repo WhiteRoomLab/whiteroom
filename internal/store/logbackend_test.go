@@ -2,11 +2,14 @@ package store
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"math"
@@ -25,17 +28,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
-
-// logPlacements are the placements of objects that the tests of the log backend run on. With a threshold of 50 bytes,
-// hybrid puts the JSON of docJSON in files, and that of revJSON and of the settings document inline.
-var logPlacements = []struct {
-	name string
-	o    logdb.Options
-}{
-	{"inline", logdb.Options{Placement: logdb.Inline}},
-	{"files", logdb.Options{Placement: logdb.Files}},
-	{"hybrid", logdb.Options{Placement: logdb.Hybrid, Threshold: 50}},
-}
 
 // logOpts returns the options of the log backend with o.
 func logOpts(o logdb.Options) options {
@@ -84,6 +76,402 @@ func rawUpdate(t *testing.T, s *Store, f func(tx *logdb.Tx) error) {
 	if err := logDB(t, s).Update(t.Context(), f); err != nil {
 		t.Fatalf("Update() of the engine = %v", err)
 	}
+}
+
+// logTables are the tables of the log backend that hold the rows of the tables of SQLite that the tests count.
+var logTables = map[string]uint32{"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions}
+
+// countLog is count of a store of the log backend: the objects of the engine, or the keys of a table.
+func countLog(t *testing.T, s *Store, table string) int {
+	t.Helper()
+	n := 0
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		if table == "objects" {
+			tx.Objects(func([sha256.Size]byte, int64) bool { n++; return true })
+			return nil
+		}
+		id, ok := logTables[table]
+		if !ok {
+			return fmt.Errorf("no table %s", table)
+		}
+		tx.Scan(id, nil, func(_, _ []byte) bool { n++; return true })
+		return nil
+	}); err != nil {
+		t.Fatalf("count of the rows of %s = %v", table, err)
+	}
+	return n
+}
+
+// checkConsistentLog is checkConsistent of a store of the log backend.
+func checkConsistentLog(t *testing.T, s *Store) {
+	t.Helper()
+	if n, err := inconsistentLog(t, s); err != nil || n != 0 {
+		t.Errorf("documents that are not at their latest versions = %d, %v; want 0", n, err)
+	}
+}
+
+// inconsistentLog returns the number of documents of s, a store of the log backend, whose value in documents is not
+// that of their latest version in history, or that have one although that is a deletion, or that have none although it
+// is not, or that have one without versions.
+func inconsistentLog(t *testing.T, s *Store) (int, error) {
+	t.Helper()
+	n := 0
+	err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		type version struct{ key, value []byte }
+		latest := map[string]version{} // of each document, by its key in documents
+		tx.Scan(tableHistory, nil, func(key, value []byte) bool {
+			// After the key of the document: 0x00 and the seq in 8 bytes, in ascending order.
+			if len(key) < 9 {
+				n++
+				return true
+			}
+			latest[string(key[:len(key)-9])] = version{bytes.Clone(key), value}
+			return true
+		})
+		for doc, last := range latest {
+			v, err := decodeVersion(tableHistory, last.key, last.value, "", "")
+			if err != nil {
+				return err
+			}
+			cur, ok := tx.Get(tableDocuments, []byte(doc))
+			if ok == (v.Hash == "") || ok && !bytes.Equal(cur, last.value) {
+				n++
+			}
+		}
+		tx.Scan(tableDocuments, nil, func(key, _ []byte) bool {
+			if _, ok := latest[string(key)]; !ok {
+				n++ // without versions
+			}
+			return true
+		})
+		return nil
+	})
+	return n, err
+}
+
+// checkIntegrityLog is checkIntegrity of a store of the log backend.
+func checkIntegrityLog(t *testing.T, s *Store) {
+	t.Helper()
+	if verr, changed, err := integrityLog(t, s); verr != nil || err != nil || changed != nil {
+		t.Errorf("Verify() = %v, objects with other data %q, %v; want nil and none", verr, changed, err)
+	}
+}
+
+// integrityLog returns the error of Verify of the engine of s, a store of the log backend, which checks that its state
+// is that of its log and that the data of every object has its hash, and the hashes of the objects whose data has
+// another hash.
+func integrityLog(t *testing.T, s *Store) (verr error, changed []string, err error) {
+	t.Helper()
+	d := logDB(t, s)
+	verr = d.Verify(t.Context())
+	err = d.View(t.Context(), func(tx *logdb.Tx) error {
+		var hashes [][sha256.Size]byte
+		tx.Objects(func(h [sha256.Size]byte, _ int64) bool {
+			hashes = append(hashes, h)
+			return true
+		})
+		for _, h := range hashes {
+			data, err := tx.Object(h)
+			if err != nil {
+				return err
+			}
+			if sha256.Sum256(data) != h {
+				changed = append(changed, hashText(h[:]))
+			}
+		}
+		return nil
+	})
+	return verr, changed, err
+}
+
+// savedAtsLog is savedAts of a store of the log backend: the saved_at of the values of history or revisions, in the
+// order of their seqs.
+func savedAtsLog(t *testing.T, s *Store, table string) []string {
+	t.Helper()
+	type row struct {
+		seq int64
+		at  string
+	}
+	var rows []row
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		id, ok := logTables[table]
+		if !ok || id == tableDocuments {
+			return fmt.Errorf("no saved_at in %s", table)
+		}
+		var err error
+		tx.Scan(id, nil, func(key, value []byte) bool {
+			r := valueReader{b: value}
+			seq := r.seq()
+			if id == tableRevisions {
+				r.field() // the entry
+				r.bytes(sha256.Size)
+			} else {
+				r.field() // the hash
+			}
+			at := r.field()
+			r.field() // the user
+			if !r.done() {
+				err = invalidValue(id, key)
+				return false
+			}
+			rows = append(rows, row{seq, string(at)})
+			return true
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("saved_at of the versions = %v", err)
+	}
+	slices.SortFunc(rows, func(a, b row) int { return cmp.Compare(a.seq, b.seq) })
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.at)
+	}
+	return got
+}
+
+// corruptObjectsLog flips the first byte of the data of every object of s, a store of the log backend, in the files of
+// its engine: that of the object in objects/, or the bytes of an inline one in the record that has put it, which a
+// segment of the log has once. The engine reads the data from the files at each read.
+func corruptObjectsLog(t *testing.T, s *Store) func(original []byte) []byte {
+	t.Helper()
+	b, ok := s.b.(*logBackend)
+	if !ok {
+		t.Fatalf("the backend of the store is %T, want the log backend", s.b)
+	}
+	objects := map[string][]byte{} // the data, by the hex digits of the hash
+	if err := b.db.View(t.Context(), func(tx *logdb.Tx) error {
+		var hashes [][sha256.Size]byte
+		tx.Objects(func(h [sha256.Size]byte, _ int64) bool {
+			hashes = append(hashes, h)
+			return true
+		})
+		for _, h := range hashes {
+			data, err := tx.Object(h)
+			if err != nil {
+				return err
+			}
+			objects[hex.EncodeToString(h[:])] = data
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("the objects of the engine: %v", err)
+	}
+	entries, err := b.fsys.ReadDir("log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := map[string][]byte{} // by name in logdb/
+	for _, e := range entries {
+		segments["log/"+e.Name()] = readLogFile(t, b.fsys, "log/"+e.Name())
+	}
+	for digits, data := range objects {
+		file := "objects/" + digits[:2] + "/" + digits
+		_, err := b.fsys.Lstat(file)
+		if err == nil {
+			// The data after the header of the file.
+			if got := readLogFile(t, b.fsys, file); !bytes.Equal(got[min(16, len(got)):], data) {
+				t.Fatalf("logdb/%s has %q, want the header and %q", file, got, data)
+			}
+			flipByte(t, b.fsys, file, 16)
+			continue
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		var at []string
+		var name string
+		var off int
+		for seg, content := range segments {
+			for i := 0; ; i++ {
+				n := bytes.Index(content[i:], data)
+				if n < 0 {
+					break
+				}
+				i += n
+				at = append(at, fmt.Sprintf("%s at %d", seg, i))
+				name, off = seg, i
+			}
+		}
+		if len(at) != 1 {
+			t.Fatalf("the data of the object %s is in logdb/ %d times (%q), want once", digits, len(at), at)
+		}
+		flipByte(t, b.fsys, name, int64(off))
+	}
+	return func(original []byte) []byte {
+		changed := bytes.Clone(original)
+		changed[0] ^= 1
+		return changed
+	}
+}
+
+// readLogFile returns the data of the file name of fsys, the directory of an engine.
+func readLogFile(t *testing.T, fsys vfs.FS, name string) []byte {
+	t.Helper()
+	f, err := fsys.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// flipByte flips the lowest bit of the byte at off in the file name of fsys, the directory of an engine.
+func flipByte(t *testing.T, fsys vfs.FS, name string, off int64) {
+	t.Helper()
+	f, err := fsys.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 1)
+	_, err = f.ReadAt(b, off)
+	if err == nil {
+		b[0] ^= 1
+		_, err = f.WriteAt(b, off)
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// corruptSavedAtLog sets the saved_at of every revision of s, a store of the log backend, to value, past the backend.
+func corruptSavedAtLog(t *testing.T, s *Store, value string) {
+	t.Helper()
+	rawUpdate(t, s, func(tx *logdb.Tx) error {
+		var revs []Revision
+		var err error
+		tx.Scan(tableRevisions, nil, func(key, v []byte) bool {
+			var r Revision
+			if r, err = decodeRevision(string(key), v); err != nil {
+				return false
+			}
+			revs = append(revs, r)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		for _, r := range revs {
+			sum, err := digest(r.Hash)
+			if err != nil {
+				return err
+			}
+			v := appendRevision(r.Seq, r.Entry, sum, value, r.SavedBy)
+			if err := tx.Put(tableRevisions, []byte(r.ID), v); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// logLayout is the layout of a data directory of the log backend, whatever the placement: logdb/, the directory of the
+// engine, which create makes with its first segment and Close adds its checkpoint to, and files/.
+func logLayout() dataLayout {
+	const dirMode, fileMode = fs.ModeDir | 0o700, fs.FileMode(0o600)
+	created := map[string]fs.FileMode{
+		".": dirMode, "files": dirMode, "logdb": dirMode, "logdb/head": fileMode, "logdb/lock": dirMode,
+		"logdb/lock/entry": fileMode, "logdb/lock/readers": fileMode, "logdb/lock/writer": fileMode,
+		"logdb/log": dirMode, "logdb/" + firstSegment: fileMode, "logdb/objects": dirMode,
+	}
+	closed := maps.Clone(created)
+	closed["logdb/checkpoint"] = fileMode
+	return dataLayout{created: created, closed: closed}
+}
+
+// firstSegment is the first segment of the log of an engine, in its directory.
+const firstSegment = "log/0000000000000001-0000000000000001.log"
+
+// logOpenErrors are the changes of logdb/ after which open and openLogReader fail.
+func logOpenErrors() []openErrorCase {
+	removeLog := func(t *testing.T, path func(string) string) {
+		t.Helper()
+		if err := os.RemoveAll(path("logdb")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return []openErrorCase{
+		{name: "missing logdb", setup: removeLog, file: "logdb", want: "missing directory"},
+		{
+			name: "logdb as a symbolic link",
+			setup: func(t *testing.T, path func(string) string) {
+				rename(t, path("logdb"), path("other"))
+				symlink(t, "other", path("logdb"))
+			},
+			file: "logdb",
+			want: "symbolic links are not allowed",
+		},
+		{
+			name: "logdb as a file",
+			setup: func(t *testing.T, path func(string) string) {
+				removeLog(t, path)
+				if err := os.WriteFile(path("logdb"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			file: "logdb",
+			want: "must be a directory",
+		},
+		{
+			name: "segment of another program",
+			setup: func(t *testing.T, path func(string) string) {
+				// Without the checkpoint, which bounds what open reads, open reads the log from its first segment.
+				remove(t, path("logdb/checkpoint"))
+				f, err := os.OpenFile(path("logdb/"+firstSegment), os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = f.WriteAt([]byte("SQLite format 3\x00"), 0)
+				if err := errors.Join(err, f.Close()); err != nil {
+					t.Fatal(err)
+				}
+			},
+			file: "logdb/" + firstSegment,
+			want: "corrupt: not a segment of whiteroom's log",
+		},
+		{
+			name: "missing logdb and files",
+			setup: func(t *testing.T, path func(string) string) {
+				remove(t, path("files"))
+				removeLog(t, path)
+			},
+			file: "logdb",
+			want: "missing directory",
+		},
+		{
+			name: "empty logdb",
+			setup: func(t *testing.T, path func(string) string) {
+				removeLog(t, path)
+				mkdir(t, path("logdb"))
+			},
+			file: "logdb/lock",
+			want: "missing directory",
+		},
+	}
+}
+
+// logFiles returns the size of each file in logdb/ of the data directory dir, by its path in dir.
+func logFiles(t *testing.T, dir string) map[string]int64 {
+	t.Helper()
+	m := map[string]int64{}
+	if err := filepath.WalkDir(filepath.Join(dir, "logdb"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		m[filepath.ToSlash(rel)] = info.Size()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 // show returns v, a result of a method of Tx, as text, with the hash and the size of the data in place of the data.
@@ -259,7 +647,7 @@ func compareLines(t *testing.T, what string, got, want []string) {
 // TestLogRoundTrip runs the same Updates on SQLite and on the log backend, in each placement, and checks that both
 // return and read the same, also after the store is closed and opened again.
 func TestLogRoundTrip(t *testing.T) {
-	ref, refDir := newStore(t)
+	ref, refDir := newStore(t, sqliteOnly[0])
 	want, wantRead := roundTrip(t, ref), readAll(t, ref)
 	if err := ref.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
@@ -271,19 +659,17 @@ func TestLogRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = ref.Close() })
 	compareLines(t, "the reads of SQLite after Open()", readAll(t, ref), wantRead)
 	wantNext := afterReopen(t, ref)
-	for _, p := range logPlacements {
-		t.Run(p.name, func(t *testing.T) {
-			s, dir := newLogStore(t, p.o)
-			compareLines(t, "the Updates", roundTrip(t, s), want)
-			compareLines(t, "the reads", readAll(t, s), wantRead)
-			if err := s.Close(); err != nil {
-				t.Fatalf("Close() = %v", err)
-			}
-			s = reopenLog(t, dir, p.o)
-			compareLines(t, "the reads after open()", readAll(t, s), wantRead)
-			compareLines(t, "the Update after open()", afterReopen(t, s), wantNext)
-		})
-	}
+	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		compareLines(t, "the Updates", roundTrip(t, s), want)
+		compareLines(t, "the reads", readAll(t, s), wantRead)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		s = reopenLog(t, dir, *tb.log)
+		compareLines(t, "the reads after open()", readAll(t, s), wantRead)
+		compareLines(t, "the Update after open()", afterReopen(t, s), wantNext)
+	})
 }
 
 // rawTable returns the keys and values of table in the engine of s.
@@ -589,47 +975,38 @@ func modes(t *testing.T, dir string) map[string]fs.FileMode {
 	return m
 }
 
-// TestLogLayout checks the files that the log backend makes in a data directory, and the errors of open for files that
-// are not those.
+// TestLogLayout checks the files of the objects and the originals that the log backend adds to a data directory in each
+// placement, that a crash right after create does not lose the data directory, and the errors of open and create that
+// only the log backend has. TestCreate, TestCreateErrors and TestOpenErrors check the files of a new data directory and
+// the errors of each backend.
 func TestLogLayout(t *testing.T) {
 	const dirMode, fileMode = fs.ModeDir | 0o700, fs.FileMode(0o600)
-	s, dir := newLogStore(t, logdb.Options{Placement: logdb.Files})
-	want := map[string]fs.FileMode{
-		".": dirMode, "files": dirMode, "logdb": dirMode, "logdb/head": fileMode, "logdb/lock": dirMode,
-		"logdb/lock/entry": fileMode, "logdb/lock/readers": fileMode, "logdb/lock/writer": fileMode,
-		"logdb/log": dirMode, "logdb/log/0000000000000001-0000000000000001.log": fileMode, "logdb/objects": dirMode,
-	}
-	if got := modes(t, dir); !maps.Equal(got, want) {
-		t.Errorf("the data directory after create() has %v, want %v", got, want)
-	}
-	putWithRevision(t, s)
-	original := []byte("GIF89a")
-	putOriginal(t, s, original)
-	for parent, data := range map[string][][]byte{
-		"logdb/objects": {docJSON(content.RefEntry, entryID), revJSON("About")},
-		"files":         {original},
-	} {
-		for _, d := range data {
-			digits := strings.TrimPrefix(sum(d), "sha256:")
-			want[parent+"/"+digits[:2]], want[parent+"/"+digits[:2]+"/"+digits] = dirMode, fileMode
+	entry, rev := docJSON(content.RefEntry, entryID), revJSON("About")
+	// The objects in files: hybrid has the entry, of 60 bytes, in a file, and the revision, of 38, inline.
+	inFiles := map[string][][]byte{"log-inline": nil, "log-files": {entry, rev}, "log-hybrid": {entry}}
+	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		want := maps.Clone(logLayout().created)
+		putWithRevision(t, s)
+		original := []byte("GIF89a")
+		putOriginal(t, s, original)
+		for parent, data := range map[string][][]byte{"logdb/objects": inFiles[tb.name], "files": {original}} {
+			for _, d := range data {
+				digits := strings.TrimPrefix(sum(d), "sha256:")
+				want[parent+"/"+digits[:2]], want[parent+"/"+digits[:2]+"/"+digits] = dirMode, fileMode
+			}
 		}
-	}
-	if got := modes(t, dir); !maps.Equal(got, want) {
-		t.Errorf("the data directory after the writes has %v, want %v", got, want)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close() = %v", err)
-	}
-	if got, want := names(t, dir), []string{"files", "logdb"}; !slices.Equal(got, want) {
-		t.Errorf("the data directory after Close() has %q, want %q", got, want)
-	}
-	if got, want := names(t, filepath.Join(dir, "logdb")), []string{"checkpoint", "head", "lock", "log",
-		"objects"}; !slices.Equal(got, want) {
-		t.Errorf("logdb/ after Close() has %q, want %q", got, want)
-	}
-	if got := modeOf(t, filepath.Join(dir, "logdb", "checkpoint")); got != fileMode {
-		t.Errorf("mode of the checkpoint = %v, want %v", got, fileMode)
-	}
+		if got := modes(t, dir); !maps.Equal(got, want) {
+			t.Errorf("the data directory after the writes has %v, want %v", got, want)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		want["logdb/checkpoint"] = fileMode
+		if got := modes(t, dir); !maps.Equal(got, want) {
+			t.Errorf("the data directory after Close() has %v, want %v", got, want)
+		}
+	})
 
 	t.Run("durable", func(t *testing.T) {
 		fsys := simfs.New("data")
@@ -649,63 +1026,6 @@ func TestLogLayout(t *testing.T) {
 	})
 
 	t.Run("errors of open", func(t *testing.T) {
-		for _, tt := range []struct {
-			name  string
-			setup func(t *testing.T, path func(name string) string)
-			want  string // after the data directory
-		}{
-			{"missing logdb", func(t *testing.T, path func(string) string) {
-				if err := os.RemoveAll(path("logdb")); err != nil {
-					t.Fatal(err)
-				}
-			}, "/logdb: missing directory"},
-			{"logdb as a file", func(t *testing.T, path func(string) string) {
-				if err := os.RemoveAll(path("logdb")); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path("logdb"), nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}, "/logdb: must be a directory"},
-			{"logdb as a symbolic link", func(t *testing.T, path func(string) string) {
-				rename(t, path("logdb"), path("other"))
-				symlink(t, "other", path("logdb"))
-			}, "/logdb: symbolic links are not allowed"},
-			{"missing files", func(t *testing.T, path func(string) string) { remove(t, path("files")) },
-				"/files: missing directory"},
-			{"missing logdb and files", func(t *testing.T, path func(string) string) {
-				remove(t, path("files"))
-				if err := os.RemoveAll(path("logdb")); err != nil {
-					t.Fatal(err)
-				}
-			}, "/logdb: missing directory"},
-			{"empty logdb", func(t *testing.T, path func(string) string) {
-				if err := os.RemoveAll(path("logdb")); err != nil {
-					t.Fatal(err)
-				}
-				mkdir(t, path("logdb"))
-			}, "/logdb/lock: missing directory"},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				s, dir := newLogStore(t, logdb.Options{})
-				if err := s.Close(); err != nil {
-					t.Fatalf("Close() = %v", err)
-				}
-				tt.setup(t, func(name string) string { return filepath.Join(dir, name) })
-				for name, open := range map[string]func(string, options) (*Store, error){
-					"open": open, "openLogReader": openLogReader,
-				} {
-					s, err := open(dir, logOpts(logdb.Options{}))
-					if err == nil {
-						_ = s.Close()
-					}
-					if want := dir + tt.want; err == nil || err.Error() != want {
-						t.Errorf("%s() = %v, want %q", name, err, want)
-					}
-				}
-			})
-		}
-
 		_, logDir := newLogStore(t, logdb.Options{})
 		if s, err := Open(logDir); err == nil || err.Error() != logDir+"/whiteroom.db: missing file" {
 			if err == nil {
@@ -713,7 +1033,7 @@ func TestLogLayout(t *testing.T) {
 			}
 			t.Errorf("Open() of a data directory of the log backend = %v, want an error", err)
 		}
-		_, sqliteDir := newStore(t)
+		_, sqliteDir := newStore(t, sqliteOnly[0])
 		if s, err := open(sqliteDir, logOpts(logdb.Options{})); err == nil ||
 			err.Error() != sqliteDir+"/logdb: missing directory" {
 			if err == nil {
@@ -724,29 +1044,6 @@ func TestLogLayout(t *testing.T) {
 	})
 
 	t.Run("errors of create", func(t *testing.T) {
-		_, dir := newLogStore(t, logdb.Options{})
-		before := names(t, dir)
-		if s, err := create(dir, logOpts(logdb.Options{})); err == nil ||
-			err.Error() != dir+": not empty; a new data directory needs a missing or empty directory" {
-			if err == nil {
-				_ = s.Close()
-			}
-			t.Errorf("create() in a data directory = %v, want an error", err)
-		}
-		if got := names(t, dir); !slices.Equal(got, before) {
-			t.Errorf("create() has changed the directory: %q, want %q", got, before)
-		}
-		file := filepath.Join(t.TempDir(), "file")
-		if err := os.WriteFile(file, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if s, err := create(file, logOpts(logdb.Options{})); err == nil ||
-			err.Error() != "mkdir "+file+": not a directory" {
-			if err == nil {
-				_ = s.Close()
-			}
-			t.Errorf("create() of a file = %v, want an error", err)
-		}
 		fsys := simfs.New("data")
 		if err := fsys.Mkdir("x", 0o700); err != nil {
 			t.Fatal(err)
@@ -959,7 +1256,7 @@ func TestLogEvents(t *testing.T) {
 		t.Errorf("events() after open() = %v, want %v", got, want)
 	}
 
-	q, _ := newStore(t)
+	q, _ := newStore(t, sqliteOnly[0])
 	if err := q.Update(t.Context(), func(tx *Tx) error { return tx.appendEvent([]byte("x")) }); err == nil ||
 		err.Error() != "audit events need the log backend" {
 		t.Errorf("appendEvent() on SQLite = %v, want an error", err)
@@ -1275,7 +1572,7 @@ func TestBackupLog(t *testing.T) {
 			err.Error() != copied+": not empty; a new data directory needs a missing or empty directory" {
 			t.Errorf("backupLog() to a data directory = %v, want an error", err)
 		}
-		_, sqliteDir := newStore(t)
+		_, sqliteDir := newStore(t, sqliteOnly[0])
 		if err := backupLog(t.Context(), sqliteDir, filepath.Join(t.TempDir(), "copy")); err == nil ||
 			err.Error() != sqliteDir+"/logdb: missing directory" {
 			t.Errorf("backupLog() of a data directory of SQLite = %v, want an error", err)
@@ -1331,5 +1628,65 @@ func TestBackupLog(t *testing.T) {
 				t.Errorf("the original of %d bytes in the copy reads %d bytes, %v", len(data), len(got), err)
 			}
 		}
+	})
+}
+
+// TestLogChecks checks that the checks of the tests that look past the API of a store of the log backend,
+// checkConsistent and checkIntegrity, find what they look for.
+func TestLogChecks(t *testing.T) {
+	data := docJSON(content.RefEntry, entryID)
+	sumData := sha256.Sum256(data)
+	at := testTime.UTC().Format(savedAtLayout)
+	t.Run("consistency", func(t *testing.T) {
+		for _, tt := range []struct {
+			name   string
+			change func(tx *logdb.Tx) error
+		}{
+			{"current version that is not the latest", func(tx *logdb.Tx) error {
+				return tx.Put(tableHistory, historyKey(content.RefEntry, entryID, 2),
+					appendVersion(2, sumData[:], at, otherUser))
+			}},
+			{"current version of a deleted document", func(tx *logdb.Tx) error {
+				return tx.Put(tableHistory, historyKey(content.RefEntry, entryID, 2), appendVersion(2, nil, at, userID))
+			}},
+			{"no current version", func(tx *logdb.Tx) error {
+				return tx.Delete(tableDocuments, docKey(content.RefEntry, entryID))
+			}},
+			{"current version without versions", func(tx *logdb.Tx) error {
+				v, _ := tx.Get(tableDocuments, docKey(content.RefEntry, entryID))
+				return tx.Put(tableDocuments, docKey(content.RefEntry, pageID), v)
+			}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				s, _ := newLogStore(t, logdb.Options{})
+				putWithRevision(t, s)
+				if n, err := inconsistentLog(t, s); n != 0 || err != nil {
+					t.Fatalf("documents that are not at their latest versions before the change = %d, %v; want 0", n,
+						err)
+				}
+				rawUpdate(t, s, tt.change)
+				if n, err := inconsistentLog(t, s); n != 1 || err != nil {
+					t.Errorf("documents that are not at their latest versions = %d, %v; want 1", n, err)
+				}
+			})
+		}
+	})
+	t.Run("integrity", func(t *testing.T) {
+		forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+			s, _ := newStore(t, tb)
+			putWithRevision(t, s)
+			if verr, changed, err := integrityLog(t, s); verr != nil || changed != nil || err != nil {
+				t.Fatalf("before the change: Verify() = %v, objects with other data %q, %v", verr, changed, err)
+			}
+			corruptObjects(t, s)
+			want := []string{sum(data), sum(revJSON("About"))}
+			slices.Sort(want)
+			verr, changed, err := integrityLog(t, s)
+			slices.Sort(changed)
+			if verr == nil || !slices.Equal(changed, want) || err != nil {
+				t.Errorf("Verify() = %v, objects with other data %q, %v; want an error and %q", verr, changed, err,
+					want)
+			}
+		})
 	})
 }
