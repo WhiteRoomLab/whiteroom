@@ -34,12 +34,6 @@ const (
 // marker starts the lines that the helper process prints to stdout to tell where it is.
 const marker = "store-helper: "
 
-// The formats of the IDs of the entries that TestOtherProcess puts from the test and from the helper, with a number.
-const (
-	testEntry   = "ent_01JE%022d"
-	helperEntry = "ent_01JH%022d"
-)
-
 // crashOriginal is the original that the helper puts.
 var crashOriginal = bytes.Repeat([]byte("original "), 100_000)
 
@@ -51,9 +45,9 @@ var enginePoints = []string{"logdb:update:objects", "logdb:update:written", "log
 // TestHelperProcess is the process that the tests below run, with the environment of envMode, envDir and envBackend. In
 // the modes commit, original:synced and original:renamed, it blocks at that point of the hook, where the test kills
 // it, and so it does in the modes of enginePoints in an Update that puts the pair after the one in the store; in loop,
-// it puts the pair until it is killed; in write, it puts 50 entries and ends; in open, it prints the result of opening
-// the store and ends; in hold, it keeps the store open until it is killed; in reader, it opens the store with
-// openLogReader and checks the pair in Views until it is killed (readerLoop). On its own, it does nothing.
+// it puts the pair until it is killed; in open, it prints the result of opening the store and ends; in hold, it keeps
+// the store open until it is killed; in reader, it opens the store with openLogReader and checks the pair in Views
+// until it is killed (readerLoop). On its own, it does nothing.
 func TestHelperProcess(t *testing.T) {
 	mode := os.Getenv(envMode)
 	if mode == "" {
@@ -97,7 +91,7 @@ func TestHelperProcess(t *testing.T) {
 	}
 	switch mode {
 	case "commit":
-		// More than the page cache of SQLite, which writes the rest to the WAL before the commit.
+		// Large data, which the engine writes only after f has returned.
 		big := strings.Repeat("x", 4<<20)
 		err = s.Update(t.Context(), func(tx *Tx) error {
 			data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "type": "` + big + `"}`)
@@ -126,18 +120,6 @@ func TestHelperProcess(t *testing.T) {
 		err = s.Update(t.Context(), func(tx *Tx) error { return putPair(tx, n[0]+1) })
 	case "original:synced", "original:renamed":
 		_, err = s.PutOriginal(t.Context(), bytes.NewReader(crashOriginal))
-	case "write":
-		fmt.Println(marker + "write")
-		for i := range 50 {
-			id := fmt.Sprintf(helperEntry, i)
-			if err := s.Update(t.Context(), func(tx *Tx) error {
-				_, err := tx.Put(content.RefEntry, id, docJSON(content.RefEntry, id), userID)
-				return err
-			}); err != nil {
-				t.Fatalf("Update() of %s = %v", id, err)
-			}
-		}
-		return
 	case "hold":
 		fmt.Println(marker + "hold")
 		time.Sleep(time.Minute)
@@ -264,39 +246,18 @@ func kill(t *testing.T, h *helper) {
 	}
 }
 
-// sizeOf returns the size of the file name, or -1 if it cannot.
-func sizeOf(name string) int64 {
-	info, err := os.Stat(name)
-	if err != nil {
-		return -1
-	}
-	return info.Size()
-}
-
-// TestCrashBeforeCommit kills the helper in an Update that has written more than the page cache of SQLite, before it
-// commits, and checks that the store has nothing of it. The log backend has written nothing of the Update by then:
-// its engine writes an Update when f has returned (TestLogHooks has its points after that).
+// TestCrashBeforeCommit kills the helper in an Update of more than 4 MiB of JSON before it commits, and checks that the
+// store has nothing of it: the engine writes an Update only after f has returned (TestLogHooks has its points after
+// that).
 func TestCrashBeforeCommit(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		dir := newDir(t, tb)
-		var before map[string]int64
-		if tb.log != nil {
-			before = logFiles(t, dir)
-		}
+		before := logFiles(t, dir)
 		h := startHelper(t, tb, dir, "commit", "commit")
-		if tb.log == nil {
-			wal := sizeOf(filepath.Join(dir, "whiteroom.db-wal"))
-			kill(t, h)
-			t.Logf("the WAL had %d bytes when the helper was killed", wal)
-			if wal < 4<<20 {
-				t.Errorf("the WAL had %d bytes when the helper was killed, want at least %d", wal, 4<<20)
-			}
-		} else {
-			files := logFiles(t, dir)
-			kill(t, h)
-			if !maps.Equal(files, before) {
-				t.Errorf("logdb/ had %v when the helper was killed, want %v as before the Update", files, before)
-			}
+		files := logFiles(t, dir)
+		kill(t, h)
+		if !maps.Equal(files, before) {
+			t.Errorf("logdb/ had %v when the helper was killed, want %v as before the Update", files, before)
 		}
 		s := reopen(t, tb, dir)
 		checkEmpty(t, s)
@@ -343,7 +304,7 @@ func TestCrashWhileWriting(t *testing.T) {
 func TestCrashOriginal(t *testing.T) {
 	hash := sum(crashOriginal)
 	digits := strings.TrimPrefix(hash, "sha256:")
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		t.Run("original:synced", func(t *testing.T) {
 			dir := newDir(t, tb)
 			kill(t, startHelper(t, tb, dir, "original:synced", "original:synced"))
@@ -381,49 +342,10 @@ func TestCrashOriginal(t *testing.T) {
 	})
 }
 
-// TestOtherProcess puts entries from the test and from the helper, in another process, to the same data directory at
-// the same time.
-func TestOtherProcess(t *testing.T) {
-	forBackends(t, sqliteOnly, func(t *testing.T, tb testBackend) {
-		s, dir := newStore(t, tb)
-		h := startHelper(t, tb, dir, "write", "write")
-		var want []string
-		for i := range 50 {
-			id := fmt.Sprintf(testEntry, i)
-			update(t, s, func(tx *Tx) error {
-				_, err := tx.Put(content.RefEntry, id, docJSON(content.RefEntry, id), userID)
-				return err
-			})
-			want = append(want, id, fmt.Sprintf(helperEntry, i))
-		}
-		if err := h.wait(); err != nil {
-			t.Fatalf("the helper has ended with %v, want exit status 0", err)
-		}
-		slices.Sort(want)
-		view(t, s, func(tx *Tx) error {
-			docs, err := tx.Documents(content.RefEntry)
-			var ids []string
-			for _, d := range docs {
-				ids = append(ids, d.ID)
-				if want := docJSON(content.RefEntry, d.ID); !bytes.Equal(d.Data, want) {
-					t.Errorf("Documents() has %s with %q, want %q", d.ID, d.Data, want)
-				}
-			}
-			if err != nil || !slices.Equal(ids, want) {
-				t.Errorf("IDs of Documents() = %q, %v; want %q", ids, err, want)
-			}
-			return nil
-		})
-		checkConsistent(t, s)
-		checkIntegrity(t, s)
-	})
-}
-
 // TestOtherWriterRefused checks that a store of the log backend that a process has opened cannot be opened by another
 // one, which waits only briefly for the lock of the writer, whichever of the test and the helper has opened it first.
-// With SQLite, both open it and take their turns (TestOtherProcess).
 func TestOtherWriterRefused(t *testing.T) {
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		t.Run("in the helper", func(t *testing.T) {
 			s, dir := newStore(t, tb)
 			putWithRevision(t, s)
@@ -486,7 +408,7 @@ func isViolation(mark string) bool {
 // last one, and then the last one.
 func TestReadersWhileWriting(t *testing.T) {
 	const updates = 200
-	forBackends(t, logBackends[:2:2], func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends[:2:2], func(t *testing.T, tb testBackend) {
 		o := *tb.log
 		o.SegmentBytes, o.CheckpointBytes = 4096, 8192
 		dir := filepath.Join(t.TempDir(), "data")
@@ -534,7 +456,7 @@ func TestReadersWhileWriting(t *testing.T) {
 // before it), and else the fourth one, whose record the page cache has kept, and which Open makes durable; it passes
 // checkIntegrity and checkConsistent.
 func TestCrashAtEnginePoints(t *testing.T) {
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		for _, point := range enginePoints {
 			t.Run(point, func(t *testing.T) {
 				s, dir := newStore(t, tb)

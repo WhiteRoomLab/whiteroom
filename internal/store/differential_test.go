@@ -350,11 +350,11 @@ type diffRun struct {
 }
 
 // newDiffRun creates the stores of a run: the model, and the log backend in each placement with the options of
-// logBackends changed by change, on simfs if sim is true, else on the OS.
+// allBackends changed by change, on simfs if sim is true, else on the OS.
 func newDiffRun(t *testing.T, change func(o *logdb.Options), sim bool) *diffRun {
 	t.Helper()
 	r := &diffRun{t: t, ref: &diffStore{name: "model"}}
-	for _, tb := range logBackends {
+	for _, tb := range allBackends {
 		o := *tb.log
 		change(&o)
 		d := &diffStore{name: tb.name, log: &o, dir: "data"}

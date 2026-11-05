@@ -933,7 +933,7 @@ func TestStoreCrashMatrix(t *testing.T) {
 	t.Cleanup(func() {
 		t.Logf("%d crash points, %d crashes (subsets of at most %d); recovered: %v", points, cases, subsets, found)
 	})
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		t.Parallel()
 		o := matrixOptions(tb)
 		base := newMatrixBase(t, o)

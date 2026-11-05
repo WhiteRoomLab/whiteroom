@@ -100,6 +100,18 @@ func (b *modelBackend) update(ctx context.Context, f func(backendTx) error) erro
 	return nil
 }
 
+func (b *modelBackend) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for i, data := range b.committed().events {
+		if !fn(uint64(i)+1, data) {
+			break
+		}
+	}
+	return nil
+}
+
 // close keeps the state, so that a new Store on the same model is the store opened again.
 func (b *modelBackend) close() error {
 	return nil

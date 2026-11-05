@@ -12,7 +12,7 @@ import (
 // TestOriginalNamedPipe checks that OpenOriginal reports a named pipe as the file of an original without opening it,
 // which would wait for a writer, and that PutOriginal replaces it.
 func TestOriginalNamedPipe(t *testing.T) {
-	forBackends(t, twoBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		s, dir := newStore(t, tb)
 		data := []byte("GIF89a")
 		hash := sum(data)

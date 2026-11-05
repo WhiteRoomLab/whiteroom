@@ -114,7 +114,7 @@ func symlink(t *testing.T, target, name string) {
 
 func TestCreate(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		l := layout(tb)
+		l := logLayout()
 		parent := filepath.Join(t.TempDir(), "parent")
 		dir := filepath.Join(parent, "data")
 		s, err := tb.create(dir)
@@ -251,11 +251,12 @@ func TestOpen(t *testing.T) {
 
 func TestOpenErrors(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		opens := map[string]func(dir string) (*Store, error){"Open": tb.open}
-		if tb.log != nil {
-			opens["openLogReader"] = func(dir string) (*Store, error) { return openLogReader(dir, tb.options()) }
+		opens := map[string]func(dir string) (*Store, error){
+			"Open":          tb.open,
+			"openLogReader": func(dir string) (*Store, error) { return openLogReader(dir, tb.options()) },
+			"OpenReader":    OpenReader,
 		}
-		for _, tt := range append(openErrorCases(tb), []openErrorCase{
+		for _, tt := range append(logOpenErrors(), []openErrorCase{
 			{
 				name:  "missing files",
 				setup: func(t *testing.T, path func(string) string) { remove(t, path("files")) },
@@ -312,6 +313,84 @@ func TestOpenErrors(t *testing.T) {
 		if _, err := os.Lstat(missing); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("Lstat() of the missing directory after Open() = %v, want fs.ErrNotExist", err)
 		}
+	})
+}
+
+// TestDefaults checks the options of the engine of Create, Open and OpenReader (3.4): objects of 64 KiB or more go in
+// files, and a second Open waits 2 seconds for the writer lock.
+func TestDefaults(t *testing.T) {
+	t.Parallel()
+	// paddedEntry returns the JSON of the entry id with size bytes.
+	paddedEntry := func(id string, size int) []byte {
+		head, tail := `{"schemaVersion": 1, "id": "`+id+`", "type": "`, `"}`
+		return []byte(head + strings.Repeat("x", size-len(head)-len(tail)) + tail)
+	}
+	small, large := paddedEntry(entryID, 64<<10-1), paddedEntry(pageID, 64<<10)
+	dir := filepath.Join(t.TempDir(), "data")
+	s, err := Create(dir)
+	if err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	update(t, s, func(tx *Tx) error {
+		if _, err := tx.Put(content.RefEntry, entryID, small, userID); err != nil {
+			return err
+		}
+		_, err := tx.Put(content.RefEntry, pageID, large, userID)
+		return err
+	})
+	digits := strings.TrimPrefix(sum(large), "sha256:")
+	objects := filepath.Join(dir, "logdb", "objects")
+	if got := names(t, objects); !slices.Equal(got, []string{digits[:2]}) {
+		t.Errorf("logdb/objects/ has %q, want the directory of the larger object alone, %q", got, digits[:2])
+	}
+	if got := names(t, filepath.Join(objects, digits[:2])); !slices.Equal(got, []string{digits}) {
+		t.Errorf("logdb/objects/%s has %q, want %q", digits[:2], got, digits)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	view(t, s, func(tx *Tx) error {
+		for id, want := range map[string][]byte{entryID: small, pageID: large} {
+			if d, err := tx.Document(content.RefEntry, id); err != nil || !bytes.Equal(d.Data, want) {
+				t.Errorf("Document(%q) after Open() = %d bytes, %v; want %d bytes", id, len(d.Data), err, len(want))
+			}
+		}
+		return nil
+	})
+
+	// The writer holds the lock: a second writer gives up after the 2 seconds of the engine, and a reader opens.
+	start := time.Now()
+	second, err := Open(dir)
+	if err == nil {
+		_ = second.Close()
+	}
+	waited := time.Since(start)
+	if want := dir + "/logdb: another process holds the writer lock"; err == nil || err.Error() != want {
+		t.Errorf("a second Open() = %v, want %q", err, want)
+	}
+	if waited < 2*time.Second || waited >= 10*time.Second {
+		t.Errorf("a second Open() has waited %v, want 2 seconds or more, and less than 10", waited)
+	}
+	r, err := OpenReader(dir)
+	if err != nil {
+		t.Fatalf("OpenReader() = %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	view(t, r, func(tx *Tx) error {
+		docs, err := tx.Documents(content.RefEntry)
+		if err != nil || len(docs) != 2 || docs[0].ID != entryID || docs[1].ID != pageID ||
+			!bytes.Equal(docs[0].Data, small) || !bytes.Equal(docs[1].Data, large) {
+			t.Errorf("Documents() of the reader = %d documents, %v; want the entry and the page, with the data put",
+				len(docs), err)
+		}
+		return nil
 	})
 }
 

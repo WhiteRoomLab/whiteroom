@@ -43,7 +43,7 @@ func TestStoreKillMatrix(t *testing.T) {
 		}
 		t.Logf("%d kill points, %d crashes after them (%s)", points, cases, models)
 	})
-	forBackends(t, logBackends, func(t *testing.T, tb testBackend) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		t.Parallel()
 		o := matrixOptions(tb)
 		base := newMatrixBase(t, o)
