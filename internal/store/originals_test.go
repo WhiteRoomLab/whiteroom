@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"testing/iotest"
 
@@ -231,50 +230,31 @@ func TestPutOriginalRenameError(t *testing.T) {
 }
 
 // TestOriginalDirDurable checks that PutOriginal syncs files/ also when the directory of the original is there, but
-// its name may not be durable yet. On simfs, a crash keeps only what has been synced.
+// its name may not be durable yet, as when a process that was killed has made it. On simfs, a crash keeps only what
+// has been synced. After a failed sync, PutOriginal fails (TestOriginalAfterFailedSync).
 func TestOriginalDirDurable(t *testing.T) {
 	data := []byte("GIF89a")
-	for _, tt := range []struct {
-		name   string
-		before func(t *testing.T, fsys *simfs.FS, s *Store)
-	}{
-		{"after a PutOriginal whose sync of files/ failed", func(t *testing.T, fsys *simfs.FS, s *Store) {
-			fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
-				return op.Kind == simfs.OpSyncDir && op.Path == "files"
-			}, Err: syscall.EIO, Times: 1})
-			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, syscall.EIO) {
-				t.Fatalf("PutOriginal() with a failing sync of files/ = %+v, %v; want an error that wraps EIO", o, err)
-			}
-		}},
-		{"made by a process that was killed", func(t *testing.T, fsys *simfs.FS, _ *Store) {
-			if err := fsys.Mkdir(path.Dir(originalName(sum(data))), 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			fsys := simfs.New("data")
-			if err := fsys.Mkdir("files", 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := fsys.SyncDir("."); err != nil {
-				t.Fatal(err)
-			}
-			files, err := fsys.Sub("files")
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := &Store{files: files}
-			tt.before(t, fsys, s)
-			putOriginal(t, s, data)
-			files, err = fsys.Crash(simfs.Model{Name: "lose-all"}).Sub("files")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, err := readOriginal(t, &Store{files: files}, sum(data)); err != nil || !bytes.Equal(got, data) {
-				t.Errorf("the original after a crash = %q, %v; want %q", got, err, data)
-			}
-		})
+	fsys := simfs.New("data")
+	if err := fsys.Mkdir("files", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.SyncDir("."); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Mkdir(path.Dir(originalName(sum(data))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files, err := fsys.Sub("files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	putOriginal(t, &Store{files: files}, data)
+	files, err = fsys.Crash(simfs.Model{Name: "lose-all"}).Sub("files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readOriginal(t, &Store{files: files}, sum(data)); err != nil || !bytes.Equal(got, data) {
+		t.Errorf("the original after a crash = %q, %v; want %q", got, err, data)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
@@ -69,57 +70,114 @@ func tempNames(fsys *simfs.FS) []string {
 	return names
 }
 
-// TestOriginalAfterFailedSync shows why the store must be opened again after a restart of the machine also when a sync
-// of PutOriginal has failed (finding F2 of phase 12), as after ErrFailed of the engine: the sync of files/ after the
-// Mkdir of the directory of an original fails and drops the new name, which the page cache still has. A PutOriginal of
-// the same original in the same boot finds the directory, syncs files/ again, which succeeds without the name, and
-// returns nil; every crash then loses the original. After a restart, which a crash models, PutOriginal makes the
-// directory again, and the original stays.
+// TestOriginalAfterFailedSync checks that a failed sync of PutOriginal stops saving originals (finding F2 of phase 12):
+// the sync may drop the names that it would have made durable, which the page cache still has, and which later syncs
+// do not write. Without the stop, a PutOriginal in the same boot found the directory whose name a failed sync of
+// files/ had dropped, synced files/ again, which succeeded without the name, and returned nil for an original that
+// every crash then lost. Every PutOriginal after the failed sync fails, also one that runs at the same time, and
+// Updates go on; after a restart of the machine, which a crash models, PutOriginal saves the original again.
 func TestOriginalAfterFailedSync(t *testing.T) {
-	data := []byte("GIF89a")
-	fsys := simfs.New("data")
-	if err := fsys.Mkdir("files", 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsys.SyncDir("."); err != nil {
-		t.Fatal(err)
-	}
-	files, err := fsys.Sub("files")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpSyncDir && op.Path == "files" },
-		Err: syscall.EIO, Drop: true, Times: 1})
-	s := &Store{files: files}
-	if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, syscall.EIO) {
-		t.Fatalf("PutOriginal() with a sync of files/ that fails = %+v, %v; want an error that wraps EIO", o, err)
-	}
-	// putAndCrash puts the original again with s, a store of files/ of fsys, and reports whether it is there after a
-	// crash that keeps every change that is pending.
-	putAndCrash := func(fsys *simfs.FS, s *Store) bool {
+	data, other := []byte("GIF89a"), []byte("GIF87a")
+	isTemp := func(op simfs.Op) bool { return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, "files/.tmp-") }
+	// newLog makes a store of the log backend in a new world.
+	newLog := func(t *testing.T) (*simfs.FS, *Store) {
 		t.Helper()
-		putOriginal(t, s, data)
-		files, err := fsys.Crash(keepAll(fsys)).Sub("files")
+		fsys := simfs.New("data")
+		s, err := create("data", options{log: &logdb.Options{}, fs: fsys})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("create() = %v", err)
 		}
-		ok, err := hasOriginal(&Store{files: files}, data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return ok
+		t.Cleanup(func() { _ = s.Close() })
+		return fsys, s
 	}
-	restarted := fsys.Crash(keepAll(fsys))
-	files, err = restarted.Sub("files")
-	if err != nil {
-		t.Fatal(err)
+	for _, tt := range []struct {
+		name  string
+		match func(op simfs.Op) bool
+	}{
+		{"of the temporary file", isTemp},
+		{"of files/", func(op simfs.Op) bool { return op.Kind == simfs.OpSyncDir && op.Path == "files" }},
+		{"of the directory", func(op simfs.Op) bool {
+			return op.Kind == simfs.OpSyncDir && strings.HasPrefix(op.Path, "files/")
+		}},
+	} {
+		t.Run("the sync "+tt.name, func(t *testing.T) {
+			fsys, s := newLog(t)
+			fsys.Inject(simfs.Fault{Match: tt.match, Err: syscall.EIO, Drop: true, Times: 1})
+			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, errOriginalsStopped) ||
+				!errors.Is(err, syscall.EIO) {
+				t.Fatalf("PutOriginal() with a sync that fails = %+v, %v; want an error that wraps %q and EIO", o, err,
+					errOriginalsStopped)
+			}
+			before := fsys.Counted()
+			for _, d := range [][]byte{data, other} {
+				if o, err := s.PutOriginal(t.Context(), bytes.NewReader(d)); !errors.Is(err, errOriginalsStopped) ||
+					errors.Is(err, syscall.EIO) {
+					t.Errorf("PutOriginal() after the failed sync = %+v, %v; want %q", o, err, errOriginalsStopped)
+				}
+			}
+			if n := fsys.Counted() - before; n != 0 {
+				t.Errorf("PutOriginal() after the failed sync has made %d operations, want none", n)
+			}
+			update(t, s, putDoc(content.RefEntry, entryID, docJSON(content.RefEntry, entryID)))
+			restarted := fsys.Crash(keepAll(fsys))
+			r, err := open("data", options{log: &logdb.Options{}, fs: restarted})
+			if err != nil {
+				t.Fatalf("open() after a restart = %v", err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+			putOriginal(t, r, data)
+			files, err := restarted.Crash(loseAll).Sub("files")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := hasOriginal(&Store{files: files}, data); !ok || err != nil {
+				t.Errorf("after a restart, the original that PutOriginal has saved is not there after a crash: %v, %v",
+					ok, err)
+			}
+		})
 	}
-	if !putAndCrash(restarted, &Store{files: files}) {
-		t.Error("after a restart, the original that PutOriginal has put again is missing after a crash")
-	}
-	if putAndCrash(fsys, s) {
-		t.Error("without a restart, the original that PutOriginal has put again is there after a crash: F2 is fixed, " +
-			"and TestStoreFaultMatrix may go on without a restart after a failed sync of PutOriginal")
+	for _, point := range []string{"original:synced", "original:renamed"} {
+		t.Run("at the same time, at "+point, func(t *testing.T) {
+			fsys, s := newLog(t)
+			var first atomic.Bool
+			waiting, release := make(chan struct{}), make(chan struct{})
+			s.hook = func(p string) error {
+				if p == point && first.CompareAndSwap(false, true) {
+					close(waiting)
+					<-release
+				}
+				return nil
+			}
+			errc := make(chan error, 1)
+			go func() {
+				_, err := s.PutOriginal(t.Context(), bytes.NewReader(other))
+				errc <- err
+			}()
+			<-waiting
+			fsys.Inject(simfs.Fault{Match: isTemp, Err: syscall.EIO, Drop: true, Times: 1})
+			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, syscall.EIO) {
+				t.Fatalf("PutOriginal() with a sync of its temporary file that fails = %+v, %v; want an error that "+
+					"wraps EIO", o, err)
+			}
+			var syncs atomic.Int64
+			fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+				if op.Kind == simfs.OpSync || op.Kind == simfs.OpSyncDir {
+					syncs.Add(1)
+				}
+				return false
+			}, Err: syscall.EIO})
+			close(release)
+			if err := <-errc; !errors.Is(err, errOriginalsStopped) || errors.Is(err, syscall.EIO) {
+				t.Errorf("the PutOriginal that ran at the same time = %v, want %q", err, errOriginalsStopped)
+			}
+			if n := syncs.Load(); n != 0 {
+				t.Errorf("the PutOriginal that ran at the same time has synced %d times after the failed sync, want never",
+					n)
+			}
+			if temps := tempNames(fsys); temps != nil {
+				t.Errorf("the PutOriginals have left %q", temps)
+			}
+		})
 	}
 }
 
@@ -127,8 +185,10 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 // fault (storeFaults) at one of their counted operations, for each operation and fault. A PutOriginal or an Update
 // that the fault fails leaves no temporary file and is not seen, and the store goes on: the same step again succeeds.
 // An Update fails with ErrFailed if the fault must stop the store (stopsStore), and only then; a stopped store fails
-// every Update and its Close writes nothing. After a failed sync, of an Update, an open or a PutOriginal (finding F2 of
-// phase 12), the machine is restarted before the store goes on, as ErrFailed asks: a crash that keeps what is pending.
+// every Update and its Close writes nothing. A PutOriginal fails with errOriginalsStopped if the fault is of a sync,
+// and only then, and so does the same step again, with no operation (TestOriginalAfterFailedSync). After a failed sync,
+// of an Update, an open or a PutOriginal, the machine is restarted before the store goes on, as the errors ask: a crash
+// that keeps what is pending.
 // Every crash that simfs can make in the end (crashModels with 4 subsets; long: 64), and before each restart, after
 // the step of the fault and after each later step (the same, but with -race only the one that loses everything that
 // is not durable), opens to what SQLite has after the steps that have succeeded, with the failed step whole or not at
@@ -264,9 +324,15 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		if _, herr := hasOriginal(r.s, step.original); herr != nil {
 			fail("PutOriginal returned %v; after it: %v", err, herr)
 		}
+		if errors.Is(err, errOriginalsStopped) != synced {
+			fail("PutOriginal returned %v; errOriginalsStopped is the error of a failed sync, and only of that", err)
+		}
 		if synced {
-			// F2: the page cache may have a directory whose name never becomes durable, which PutOriginal would
-			// take as durable after it has synced files/ again (TestOriginalAfterFailedSync).
+			before := fsys.Counted()
+			if err2 := r.do(ctx, step); !errors.Is(err2, errOriginalsStopped) || fsys.Counted() != before {
+				fail("PutOriginal returned %v, and then %v after %d operations; want %q after none", err, err2,
+					fsys.Counted()-before, errOriginalsStopped)
+			}
 			crashes("after the failed PutOriginal", false, stateAt(refs, at, at))
 			restart("after the failed PutOriginal")
 		}

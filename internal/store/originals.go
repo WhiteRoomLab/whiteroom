@@ -23,13 +23,23 @@ type Original struct {
 	Size int64  // in bytes
 }
 
+// errOriginalsStopped is the error of PutOriginal after a sync of a PutOriginal of the store has failed: the page cache
+// may then show names that never reach the disk, which later syncs do not write.
+var errOriginalsStopped = errors.New("saving originals has stopped after a sync failed; " +
+	"restart the machine before opening the store again")
+
 // PutOriginal saves what r reads, to its end, as an original, and returns it. The data must not be empty, and may have
 // at most content.MaxMediaBytes. PutOriginal writes it to a temporary file in files/, which it syncs and then renames
 // to the name of the original, so that the original is whole or missing, even after a crash. It replaces a file of
-// that name, which has the same data unless it is damaged. It checks ctx before each read of r.
+// that name, which has the same data unless it is damaged. It checks ctx before each read of r. Once a sync of a
+// PutOriginal has failed, every PutOriginal fails, also one that runs at the same time, until the store is opened
+// again, after a restart of the machine.
 func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) {
 	if s.readOnly {
 		return Original{}, errors.New("the store is opened to read only")
+	}
+	if s.originalsStopped.Load() {
+		return Original{}, errOriginalsStopped
 	}
 	f, tmp, err := s.createTemp()
 	if err != nil {
@@ -41,7 +51,7 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 			_ = s.files.Remove(tmp)
 		}
 	}()
-	o, err := writeTemp(ctx, f, r)
+	o, err := s.writeTemp(ctx, f, r)
 	if err != nil {
 		return Original{}, err
 	}
@@ -57,13 +67,34 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 		return Original{}, err
 	}
 	renamed = true
-	if err := s.files.SyncDir(dir); err != nil {
+	if err := s.syncOriginal(func() error { return s.files.SyncDir(dir) }); err != nil {
 		return Original{}, err
 	}
 	if err := s.call("original:renamed"); err != nil {
 		return Original{}, err
 	}
+	// Waits for the syncs that run: a failed one may have dropped names that the syncs above took as written.
+	s.syncs.Lock()
+	stopped := s.originalsStopped.Load()
+	s.syncs.Unlock()
+	if stopped {
+		return Original{}, errOriginalsStopped
+	}
 	return o, nil
+}
+
+// syncOriginal runs sync, a sync of PutOriginal, unless one has failed, and stops saving originals if it fails.
+func (s *Store) syncOriginal(sync func() error) error {
+	s.syncs.RLock()
+	defer s.syncs.RUnlock()
+	if s.originalsStopped.Load() {
+		return errOriginalsStopped
+	}
+	if err := sync(); err != nil {
+		s.originalsStopped.Store(true)
+		return fmt.Errorf("%w: %w", errOriginalsStopped, err)
+	}
+	return nil
 }
 
 // createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, and returns it with its name.
@@ -83,7 +114,7 @@ func (s *Store) createTemp() (vfs.File, string, error) {
 
 // writeTemp writes what r reads, to its end, to f, a new temporary file, which it syncs and closes. It returns the
 // original that the data is, and checks ctx before each read.
-func writeTemp(ctx context.Context, f vfs.File, r io.Reader) (o Original, err error) {
+func (s *Store) writeTemp(ctx context.Context, f vfs.File, r io.Reader) (o Original, err error) {
 	defer func() {
 		if cerr := f.Close(); err == nil {
 			err = cerr
@@ -113,7 +144,7 @@ func writeTemp(ctx context.Context, f vfs.File, r io.Reader) (o Original, err er
 	if o.Size == 0 {
 		return Original{}, errors.New("the original is empty")
 	}
-	if err := f.Sync(); err != nil {
+	if err := s.syncOriginal(f.Sync); err != nil {
 		return Original{}, err
 	}
 	o.Hash = "sha256:" + hex.EncodeToString(digest.Sum(nil))
@@ -132,7 +163,7 @@ func (s *Store) mkdir(dir string) error {
 	case err != nil:
 		return err
 	}
-	if err := s.files.SyncDir("."); err != nil {
+	if err := s.syncOriginal(func() error { return s.files.SyncDir(".") }); err != nil {
 		return err
 	}
 	s.dirs.Store(dir, true)
