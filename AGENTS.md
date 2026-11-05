@@ -32,8 +32,8 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 
 保存の層（構想書の 3.5）の長いテストとベンチマークは、CI では動かさない。
 
-- `WHITEROOM_LONG_TESTS=1`：`internal/logdb` と `internal/store` の、クラッシュ・強制終了・失敗の差し込みの行列（試すクラッシュの型を増やす）と、差分テスト（`TestDifferential`。200の種で、500回ずつの `Update`）を長くし、`TestKillWriter` の強制終了を20回にする。開発のマシン（16の CPU）で、`-race` なしで、エンジンの行列は約6秒、保存先の行列は約9秒、差分テストは約137秒（行列は、`-race` では約30秒と約45秒）。
-- `WHITEROOM_BENCH`：保存の層のベンチマーク（`TestBenchmarks`）。`WHITEROOM_BENCH=<結果のディレクトリ> WHITEROOM_BENCH_DIR=<作業のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/store` で動かし、開発のマシンで約2時間かかる。作業のディレクトリは、実際のディスクに置き、`-race` は付けない（付けると、失敗する）。`WHITEROOM_BENCH_SMOKE=1` で、仕組みだけを確かめる小さな試しになる。条件と結果は、構想書の 3.5。
+- `WHITEROOM_LONG_TESTS=1`：`internal/logdb` と `internal/store` の、クラッシュ・強制終了・失敗の差し込みの行列（試すクラッシュの型を増やす）と、差分テスト（`TestDifferential`。200の種で、500回ずつの `Update`）を長くし、`TestKillWriter` の強制終了を20回にする。開発のマシン（16の CPU）で、`-race` なしで、エンジンの行列は約6.5秒、保存先の行列は約10秒、差分テストは約137秒（行列は、`-race` では約27秒と約45秒）。
+- `WHITEROOM_BENCH`：保存の層のベンチマーク（`TestBenchmarks`。自作の層の3つの置き場所を測る）。`WHITEROOM_BENCH=<結果のディレクトリ> WHITEROOM_BENCH_DIR=<作業のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/store` で動かし、開発のマシンで約2時間かかる。作業のディレクトリは、実際のディスクに置き、`-race` は付けない（付けると、失敗する）。`WHITEROOM_BENCH_SMOKE=1` で、仕組みだけを確かめる小さな試しになる。条件と結果は、構想書の 3.5。
 - dm-log-writes：記録（root が要る。`internal/logdb/dmlog/record.sh`）と、記録の確かめ（root は要らない。`WHITEROOM_DMLOG=<結果のディレクトリ> go test -count=1 -v -run '^TestDMLogCheck$' ./internal/store`）の手順は、構想書の 3.5 の「テスト」。記録は、まだ動かしていない（構想書の 6.12 の 130）。
 
 見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。ページの `<head>` の正規 URL・アイコン・OGP などは、サイトの URL（`https://example.com/`）を指したまま（構想書の 9.4）。
