@@ -44,3 +44,7 @@ jobs:
 
       - name: test
         run: nix develop -c go test -race ./...
+
+      # The storage engine of the PoC (docs 3.5) must not need cgo.
+      - name: test without cgo
+        run: nix develop -c env CGO_ENABLED=0 go test ./internal/logdb/...

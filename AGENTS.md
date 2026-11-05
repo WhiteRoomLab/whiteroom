@@ -12,8 +12,10 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `nix develop` で入る（direnv を使うなら、最初に一度 `direnv allow`）。
 - ツールの版は flake で決まる。Go のマイナー版は `flake.nix` の `go_1_27` で、それ以外は `flake.lock`（更新は `nix flake update`）。CI も `nix develop -c` で同じ版を使うので、`actions/setup-go` などで版を足さない。
 - `go.mod` の `go` 行は言語の最低版（いまは `1.27.0`）で、パッチ版に合わせて上げない。`toolchain` 行は書かない（`GOTOOLCHAIN=local` なので使われない）。
-- 外部の Go のモジュールは、足す前に、そのたびに、理由を添えてメンテナーに確かめる（決まった条件は無く、一度認められたモジュールがあっても、ほかのモジュールは改めて確かめる）。いまは `github.com/mattn/go-sqlite3`（SQLite のドライバー。構想書の 3.4）だけで、cgo を使う。開発シェルの C コンパイラーで SQLite をコンパイルするので、初めのビルドは約40秒かかる（後はキャッシュを使う）。`CGO_ENABLED=0` ではビルドはできるが、データベースを開けない（`internal/db` と `internal/store` のテストは失敗する）。
+- 外部のサードパーティの Go のモジュールは使わない（構想書の 1.2）。`golang.org/x/...` と、仕様から作った第三者のデータ（`internal/nfc`・`internal/html` の表と、テストのデータ。下記の「生成するファイル」）と、開発・テスト・CI の道具は、依存に数えない。それでも、モジュールを足す前には、そのたびに、理由を添えてメンテナーに確かめる（`golang.org/x/...` も。一度認められたモジュールがあっても、ほかのモジュールは改めて確かめる）。標準ライブラリで安全に作れないものは、自分で作る・仕様を変える・機能をやめることと比べてから、メンテナーが理由とともに認めた例外にし、構想書に書く。
+- いまの例外は `github.com/mattn/go-sqlite3`（SQLite のドライバー。構想書の 3.4）だけで、保存の層を自作の層に替えるまで使う（構想書の 3.5 の「判断」）。cgo を使い、開発シェルの C コンパイラーで SQLite をコンパイルするので、初めのビルドは約40秒かかる（後はキャッシュを使う）。`CGO_ENABLED=0` ではビルドはできるが、データベースを開けない（`internal/db` と `internal/store` のテストは失敗する。`internal/logdb` とその下のパッケージは、cgo が要らない）。
 - `internal/build` のサーバーの設定のテスト（`TestNginx`・`TestApache`）のために、開発シェルに Nginx と Apache（flake の `pkgs.nginx`・`pkgs.apacheHttpd`）を入れている。テストは、書き出した設定で実際のサーバーを動かして確かめ、サーバーが無いとき（開発シェルの外など）は飛ばす（Apache は、root で動かしたときと、要るモジュールが無いときも飛ばす）。同じサイトとリクエストで内蔵サーバー（`internal/serve`）を確かめる `TestBuiltinServer` は、ほかのプログラムが要らないので、いつも動く。
+- `internal/store` の dm-log-writes のテスト（構想書の 3.5 の「テスト」）のために、Linux の開発シェルに e2fsprogs（flake の `pkgs.e2fsprogs`。`mke2fs`・`e2fsck`・`debugfs`）を入れている。無いときは、`TestExt4Extraction` を飛ばす（記録を確かめる `TestDMLogCheck` は、失敗する）。
 
 ## よく使うコマンド
 
@@ -24,8 +26,15 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `golangci-lint config verify`：`.golangci.yml` を変えたとき（`run` は未知の項目を黙って無視する）
 - `golangci-lint fmt`：整形（gofmt・goimports）
 - `go mod tidy`
+- `CGO_ENABLED=0 go test ./internal/logdb/...`：自作の保存の層のエンジン（構想書の 3.5）が cgo なしでビルドでき、テストが通ること（CI の `test without cgo`）。`-race` を付けないので、クラッシュ・強制終了・失敗の差し込みの行列を、減らさずに動かす
 
 `flake.nix` や `flake.lock` を変えたら、`nix fmt` と `nix flake check --all-systems` も実行する。
+
+保存の層（構想書の 3.5）の長いテストとベンチマークは、CI では動かさない。
+
+- `WHITEROOM_LONG_TESTS=1`：`internal/logdb` と `internal/store` の、クラッシュ・強制終了・失敗の差し込みの行列（試すクラッシュの型を増やす）と、差分テスト（`TestDifferential`。200の種で、500回ずつの `Update`）を長くし、`TestKillWriter` の強制終了を20回にする。開発のマシン（16の CPU）で、`-race` なしで、エンジンの行列は約6秒、保存先の行列は約9秒、差分テストは約228秒（行列は、`-race` では約30秒と約45秒）。
+- `WHITEROOM_BENCH`：保存の層のベンチマーク（`TestBenchmarks`）。`WHITEROOM_BENCH=<結果のディレクトリ> WHITEROOM_BENCH_DIR=<作業のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/store` で動かし、開発のマシンで約2時間かかる。作業のディレクトリは、実際のディスクに置き、`-race` は付けない（付けると、失敗する）。`WHITEROOM_BENCH_SMOKE=1` で、仕組みだけを確かめる小さな試しになる。条件と結果は、構想書の 3.5。
+- dm-log-writes：記録（root が要る。`internal/logdb/dmlog/record.sh`）と、記録の確かめ（root は要らない。`WHITEROOM_DMLOG=<結果のディレクトリ> go test -count=1 -v -run '^TestDMLogCheck$' ./internal/store`）の手順は、構想書の 3.5 の「テスト」。記録は、まだ動かしていない（構想書の 6.12 の 130）。
 
 見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。ページの `<head>` の正規 URL・アイコン・OGP などは、サイトの URL（`https://example.com/`）を指したまま（構想書の 9.4）。
 
@@ -37,7 +46,10 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `html`・`legacy` ブロックの HTML のサニタイズ（構想書の 6.5.4）は `internal/sanitize`。
 - 公開する画像と派生ファイル（構想書の 6.6.2。原本を調べること、ファイルの大きさ・名前・版を決めること、ファイルを作ること、キャッシュ）は `internal/imaging`。作るファイルか、原本を調べた結果が変わる変更をしたら、`internal/imaging/imaging.go` の `processingVersion` を上げる（キャッシュのキーとページの `?v=` に入るので、上げないと、キャッシュの古いファイルが使われる）。
 - 静的ビルド（構想書の 4.3）は `internal/build`。保存先からのビルドができるまでサイトを置くディレクトリ（構想書の 4.3）を読み、ビルドの読み込みの口（`build.Source`）を実装する処理は `internal/sitedir`。ビルドが公開したリリースを、その `server.json` のとおりに配信する、公開用の内蔵サーバー（構想書の 9.5）は `internal/serve`。依存の向きは `build` → `render`・`imaging`・`theme`・`mediafile`・`content`、`sitedir` → `content`、`serve` → `content`、`render` → `theme` → `content`、`render` → `sanitize` → `html`、`sanitize` → `content`、`imaging` → `webp`・`mediafile`・`content`（`html`・`webp` は、ほかの `internal` のパッケージを使わない）。`sitedir` と `serve` は `build` を使わない（`build` のテストが `sitedir` と `serve` を使うので、使うと循環する）。`render` は `imaging` を使わず、画像のファイルを照会の関数（`Resolver` の `Image`）から受け取る（`build` が `imaging` で作る）。
-- 管理の側の保存先（構想書の 3.4）のうち、SQLite のファイルを作って開き、表の定義を最新の版にし、トランザクションを動かす処理は `internal/db`、文書・リビジョン・メディアの原本を保存して読む Content Store は `internal/store`。表の定義は `internal/db/schema.go` の `migrations` に、版ごとの変更として足すだけで、`main` ブランチに入った変更は書き換えない（その版の表を持つファイルがあるため）。依存の向きは `store` → `db`・`content`、`db` → `github.com/mattn/go-sqlite3`（ドライバーを import するのは `internal/db` だけ）。`build` は、まだ `store` を使わない（保存先からのビルドは、まだ無い。構想書の 4.3）。
+- 管理の側の保存先（構想書の 3.4）のうち、文書・リビジョン・メディアの原本を保存して読む Content Store は `internal/store`。その中に、保存の層が2つある：SQLite の保存の層（`sqlite.go`。`Create`・`Open` が使う）と、自作の層（`logbackend.go`・`events.go`。構想書の 3.5。いまは `internal/store` のテストだけが選ぶ）。口・確かめ・メッセージ・原本のコードは、2つで共通。SQLite のファイルを作って開き、表の定義を最新の版にし、トランザクションを動かす処理は `internal/db`。
+- 保存の層は、SQLite（`internal/db` とドライバー）から自作の層に替える（構想書の 3.5 の「判断」。替えるのは別の作業）。替えるまでは、SQL を書くのは `internal/db` と `internal/store` だけで、ほかのパッケージは、`internal/store` の Go の口を使う。SQLite の表の定義（`internal/db/schema.go` の `migrations`）には、新しい表を足さない（#43・#45 は、自作の層の表の上に作る）。表の定義を変えるときは、`migrations` に、版ごとの変更として足すだけで、`main` ブランチに入った変更は書き換えない（その版の表を持つファイルがあるため）。
+- 自作の層のエンジン（構想書の 3.5）は `internal/logdb`。ファイルシステムの口（ファイル・ディレクトリ・同期・名前の変更・`flock(2)` のロック。Go の `os.Root` の上の実装と、書き込みと同期を数える `vfs.Count` も）は `internal/logdb/vfs` で、`internal/store` の原本のコードも使う。テストの模擬のファイルシステム（同期したものだけがクラッシュの後に残る。失敗の差し込みとプロセスの強制終了も）は `internal/logdb/simfs`、dm-log-writes の記録を読んで再生する処理は `internal/logdb/dmlog` で、どちらもテストだけが使う（`dmlog` は、`internal/store` のテストだけ）。エンジンのファイルの形を変えるときは `internal/logdb/format.go` の `formatVersion` を、自作の層の表を変えるときは `internal/store/logbackend.go` の `logSchemaVersion` を上げ、`main` ブランチに入った版の形と表は書き換えない（その版で書いたファイルを、後の版でも読むため。構想書の 3.5 の「移行・バックアップ・リストアの条件」）。
+- 依存の向きは `store` → `db`・`logdb`・`vfs`・`content`、`logdb` → `vfs`、`simfs` → `vfs`、`db` → `github.com/mattn/go-sqlite3`（ドライバーを import するのは `internal/db` だけ）。テストでは、ほかに `store` → `simfs`・`dmlog`・`sitedir`、`logdb` → `simfs`。`logdb`・`vfs`・`simfs`・`dmlog` は、標準ライブラリと、この向きのもののほかを使わない（ほかの `internal` のパッケージも、外部のモジュールも使わない）。`CGO_ENABLED=0` でもビルドでき、テストが通ることを保つ（CI の `test without cgo`）。`build` は、まだ `store` を使わない（保存先からのビルドは、まだ無い。構想書の 4.3）。
 - コマンド `whiteroom`（構想書の 9.4）は `cmd/whiteroom/`。構想書の 9.2 のコマンドは、どれもそのサブコマンドにする（いまは `build` と `serve public`）。依存の向きは `cmd/whiteroom` → `build`・`sitedir`・`serve`・`content`。
 
 ## 生成するファイル

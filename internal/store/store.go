@@ -12,16 +12,19 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/db"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // SettingsKind is the kind of the settings document (6.6.8) in the store; its ID is "".
@@ -29,69 +32,192 @@ const SettingsKind content.RefKind = "settings"
 
 // Store is the Content Store of a data directory. Its methods may be called concurrently.
 type Store struct {
-	db    *db.DB
-	files *os.Root // files/
-	now   func() time.Time
-	hook  func(point string) error // nil outside the tests, which make it fail at points such as "commit"
+	b                backend
+	files            vfs.FS       // files/
+	dirs             sync.Map     // the directories of files/ whose names are durable, as keys
+	syncs            sync.RWMutex // read-locked by each sync of PutOriginal, and locked before PutOriginal returns nil
+	originalsStopped atomic.Bool  // a sync of PutOriginal has failed: errOriginalsStopped
+	now              func() time.Time
+	hook             func(point string) error // nil outside the tests, which make it fail at points such as "commit"
+	readOnly         bool                     // opened by openLogReader
+}
+
+// options are those of the stores that the tests make with create, open and openLogReader. If log is nil, the backend
+// is SQLite, as with Create and Open. Else it is the engine of internal/logdb with *log, whose Hook and Accept are
+// those of the store (logbackend.go), and the data directory is fs if it is not nil, in place of dir on the OS: dir
+// then only names it in errors. now is the clock of the versions; nil: time.Now.
+type options struct {
+	log *logdb.Options
+	fs  vfs.FS
+	now func() time.Time
+}
+
+var errSQLiteFS = errors.New("the SQLite backend needs its data directory on the OS")
+
+func (o options) clock() func() time.Time {
+	if o.now != nil {
+		return o.now
+	}
+	return time.Now
 }
 
 // Create makes a data directory at dir, which must be missing or an empty directory, and opens its store. If it fails
 // after making something in dir, Create needs dir emptied before it can try again.
 func Create(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	return create(dir, options{})
+}
+
+func create(dir string, o options) (*Store, error) {
+	if o.fs != nil && o.log == nil {
+		return nil, errSQLiteFS
+	}
+	if err := newDataDir(dir, o.fs); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	s := &Store{now: o.clock()}
+	if o.log == nil {
+		files := filepath.Join(dir, "files")
+		if err := os.Mkdir(files, 0o700); err != nil {
+			return nil, err
+		}
+		d, err := db.Create(filepath.Join(dir, "whiteroom.db"))
+		if err != nil {
+			return nil, err
+		}
+		root, err := vfs.OpenRoot(files)
+		if err != nil {
+			_ = d.Close()
+			return nil, err
+		}
+		s.b, s.files = &sqliteBackend{db: d}, root
+		return s, nil
+	}
+	root, done, err := dataRoot(dir, o.fs)
 	if err != nil {
 		return nil, err
+	}
+	defer done()
+	for _, name := range []string{"files", "logdb"} {
+		if err := root.Mkdir(name, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	if err := root.SyncDir("."); err != nil {
+		return nil, err
+	}
+	b, err := createLog(root, s.logOptions(o.log, nil))
+	if err != nil {
+		return nil, err
+	}
+	return s.withFiles(root, b)
+}
+
+// newDataDir checks that dir, a new data directory, is empty: fsys if it is not nil, else the directory on the OS,
+// which it makes if it is missing.
+func newDataDir(dir string, fsys vfs.FS) error {
+	var entries []fs.DirEntry
+	var err error
+	if fsys != nil {
+		entries, err = fsys.ReadDir(".")
+	} else if err = os.MkdirAll(dir, 0o700); err == nil {
+		entries, err = os.ReadDir(dir)
+	}
+	if err != nil {
+		return err
 	}
 	if len(entries) > 0 {
-		return nil, fmt.Errorf("%s: not empty; a new data directory needs a missing or empty directory", dir)
+		return fmt.Errorf("%s: not empty; a new data directory needs a missing or empty directory", dir)
 	}
-	files := filepath.Join(dir, "files")
-	if err := os.Mkdir(files, 0o700); err != nil {
-		return nil, err
+	return nil
+}
+
+// dataRoot returns fsys, or if it is nil, the directory dir on the OS; done closes what dataRoot has opened.
+func dataRoot(dir string, fsys vfs.FS) (root vfs.FS, done func(), err error) {
+	if fsys != nil {
+		return fsys, func() {}, nil
 	}
-	d, err := db.Create(filepath.Join(dir, "whiteroom.db"))
+	if root, err = vfs.OpenRoot(dir); err != nil {
+		return nil, nil, err
+	}
+	return root, func() { _ = root.Close() }, nil
+}
+
+// logOptions returns *o with accept, and with the hook of s, which the engine calls with "logdb:" before its points.
+func (s *Store) logOptions(o *logdb.Options, accept func(*logdb.Tx) error) logdb.Options {
+	lo := *o
+	lo.Hook = func(point string) error { return s.call("logdb:" + point) }
+	lo.Accept = accept
+	return lo
+}
+
+// withFiles gives s the backend b and files/ of root, its data directory. If it fails, it closes b.
+func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
+	files, err := root.Sub("files")
 	if err != nil {
+		_ = b.close()
 		return nil, err
 	}
-	root, err := os.OpenRoot(files)
-	if err != nil {
-		_ = d.Close()
-		return nil, err
-	}
-	return &Store{db: d, files: root, now: time.Now}, nil
+	s.b, s.files = b, files
+	return s, nil
 }
 
 // Open opens the store of the data directory dir, which Create has made.
 func Open(dir string) (*Store, error) {
-	root, err := os.OpenRoot(dir)
+	return open(dir, options{})
+}
+
+func open(dir string, o options) (*Store, error) {
+	return openDir(dir, o, false)
+}
+
+// openLogReader opens the store of the log backend in the data directory dir to read it, in a process other than its
+// writer, which may run or not. Its Views see the commits that are durable when they begin. It changes no file of the
+// store: Update fails with ErrReadOnly of internal/logdb, and PutOriginal fails too.
+func openLogReader(dir string, o options) (*Store, error) {
+	if o.log == nil {
+		o.log = &logdb.Options{}
+	}
+	return openDir(dir, o, true)
+}
+
+// openDir is open, or openLogReader if reader is true.
+func openDir(dir string, o options, reader bool) (*Store, error) {
+	if o.fs != nil && o.log == nil {
+		return nil, errSQLiteFS
+	}
+	root, done, err := dataRoot(dir, o.fs)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = root.Close() }()
-	if err := checkEntry(root, dir, "whiteroom.db", false); err != nil {
+	defer done()
+	main, isDir := "whiteroom.db", false
+	if o.log != nil {
+		main, isDir = "logdb", true
+	}
+	if err := checkEntry(root, dir, main, isDir); err != nil {
 		return nil, err
 	}
 	if err := checkEntry(root, dir, "files", true); err != nil {
 		return nil, err
 	}
+	s := &Store{now: o.clock(), readOnly: reader}
+	if o.log != nil {
+		b, err := openLog(root, s.logOptions(o.log, checkSchema(filepath.Join(dir, "logdb"))), reader)
+		if err != nil {
+			return nil, err
+		}
+		return s.withFiles(root, b)
+	}
 	d, err := db.Open(filepath.Join(dir, "whiteroom.db"))
 	if err != nil {
 		return nil, err
 	}
-	files, err := root.OpenRoot("files")
-	if err != nil {
-		_ = d.Close()
-		return nil, err
-	}
-	return &Store{db: d, files: files, now: time.Now}, nil
+	return s.withFiles(root, &sqliteBackend{db: d})
 }
 
 // checkEntry checks that name in root, the data directory dir, is a directory if isDir is true, and a regular file if
 // not, without following a symbolic link.
-func checkEntry(root *os.Root, dir, name string, isDir bool) error {
+func checkEntry(root vfs.FS, dir, name string, isDir bool) error {
 	path := filepath.Join(dir, name)
 	info, err := root.Lstat(name)
 	var pe *fs.PathError
@@ -115,7 +241,7 @@ func checkEntry(root *os.Root, dir, name string, isDir bool) error {
 }
 
 func (s *Store) Close() error {
-	return errors.Join(s.db.Close(), s.files.Close())
+	return errors.Join(s.b.close(), s.files.Close())
 }
 
 // call calls the hook of the tests at point.
@@ -129,8 +255,7 @@ func (s *Store) call(point string) error {
 // Tx is a transaction of View or Update. It is valid only inside the function that they call with it, and not for
 // concurrent use.
 type Tx struct {
-	tx             *sql.Tx
-	ctx            context.Context
+	b              backendTx
 	readOnly, done bool
 	savedAt        string // the time of the versions that the Update saves, as saved_at has it
 }
@@ -141,8 +266,8 @@ const savedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // View runs f in a transaction that only reads, and that sees the store as it was when f first read it.
 func (s *Store) View(ctx context.Context, f func(*Tx) error) error {
-	return s.db.Read(ctx, func(tx *sql.Tx) error {
-		return (&Tx{tx: tx, ctx: ctx, readOnly: true}).run(f)
+	return s.b.view(ctx, func(b backendTx) error {
+		return (&Tx{b: b, readOnly: true}).run(f)
 	})
 }
 
@@ -151,8 +276,8 @@ func (s *Store) View(ctx context.Context, f func(*Tx) error) error {
 // for the others of s until ctx ends, and for those of other processes up to 5 seconds. f must not call Update of s,
 // which would wait for itself.
 func (s *Store) Update(ctx context.Context, f func(*Tx) error) error {
-	return s.db.Write(ctx, func(tx *sql.Tx) error {
-		t := &Tx{tx: tx, ctx: ctx, savedAt: s.now().UTC().Format(savedAtLayout)}
+	return s.b.update(ctx, func(b backendTx) error {
+		t := &Tx{b: b, savedAt: s.now().UTC().Format(savedAtLayout)}
 		if err := t.run(f); err != nil {
 			return err
 		}
