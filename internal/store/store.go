@@ -12,7 +12,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/db"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // SettingsKind is the kind of the settings document (6.6.8) in the store; its ID is "".
@@ -29,8 +29,8 @@ const SettingsKind content.RefKind = "settings"
 
 // Store is the Content Store of a data directory. Its methods may be called concurrently.
 type Store struct {
-	db    *db.DB
-	files *os.Root // files/
+	b     backend
+	files vfs.FS // files/
 	now   func() time.Time
 	hook  func(point string) error // nil outside the tests, which make it fail at points such as "commit"
 }
@@ -56,17 +56,17 @@ func Create(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(files)
+	root, err := vfs.OpenRoot(files)
 	if err != nil {
 		_ = d.Close()
 		return nil, err
 	}
-	return &Store{db: d, files: root, now: time.Now}, nil
+	return &Store{b: &sqliteBackend{db: d}, files: root, now: time.Now}, nil
 }
 
 // Open opens the store of the data directory dir, which Create has made.
 func Open(dir string) (*Store, error) {
-	root, err := os.OpenRoot(dir)
+	root, err := vfs.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -81,17 +81,17 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	files, err := root.OpenRoot("files")
+	files, err := root.Sub("files")
 	if err != nil {
 		_ = d.Close()
 		return nil, err
 	}
-	return &Store{db: d, files: files, now: time.Now}, nil
+	return &Store{b: &sqliteBackend{db: d}, files: files, now: time.Now}, nil
 }
 
 // checkEntry checks that name in root, the data directory dir, is a directory if isDir is true, and a regular file if
 // not, without following a symbolic link.
-func checkEntry(root *os.Root, dir, name string, isDir bool) error {
+func checkEntry(root vfs.FS, dir, name string, isDir bool) error {
 	path := filepath.Join(dir, name)
 	info, err := root.Lstat(name)
 	var pe *fs.PathError
@@ -115,7 +115,7 @@ func checkEntry(root *os.Root, dir, name string, isDir bool) error {
 }
 
 func (s *Store) Close() error {
-	return errors.Join(s.db.Close(), s.files.Close())
+	return errors.Join(s.b.close(), s.files.Close())
 }
 
 // call calls the hook of the tests at point.
@@ -129,8 +129,7 @@ func (s *Store) call(point string) error {
 // Tx is a transaction of View or Update. It is valid only inside the function that they call with it, and not for
 // concurrent use.
 type Tx struct {
-	tx             *sql.Tx
-	ctx            context.Context
+	b              backendTx
 	readOnly, done bool
 	savedAt        string // the time of the versions that the Update saves, as saved_at has it
 }
@@ -141,8 +140,8 @@ const savedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // View runs f in a transaction that only reads, and that sees the store as it was when f first read it.
 func (s *Store) View(ctx context.Context, f func(*Tx) error) error {
-	return s.db.Read(ctx, func(tx *sql.Tx) error {
-		return (&Tx{tx: tx, ctx: ctx, readOnly: true}).run(f)
+	return s.b.view(ctx, func(b backendTx) error {
+		return (&Tx{b: b, readOnly: true}).run(f)
 	})
 }
 
@@ -151,8 +150,8 @@ func (s *Store) View(ctx context.Context, f func(*Tx) error) error {
 // for the others of s until ctx ends, and for those of other processes up to 5 seconds. f must not call Update of s,
 // which would wait for itself.
 func (s *Store) Update(ctx context.Context, f func(*Tx) error) error {
-	return s.db.Write(ctx, func(tx *sql.Tx) error {
-		t := &Tx{tx: tx, ctx: ctx, savedAt: s.now().UTC().Format(savedAtLayout)}
+	return s.b.update(ctx, func(b backendTx) error {
+		t := &Tx{b: b, savedAt: s.now().UTC().Format(savedAtLayout)}
 		if err := t.run(f); err != nil {
 			return err
 		}

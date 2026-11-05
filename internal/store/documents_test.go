@@ -102,7 +102,7 @@ func checkHistory(t *testing.T, tx *Tx, kind content.RefKind, id string, want []
 func savedAts(t *testing.T, s *Store, table string) []string {
 	t.Helper()
 	var got []string
-	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(t.Context(), "SELECT saved_at FROM "+table+" ORDER BY seq")
 		if err != nil {
 			return err
@@ -405,7 +405,7 @@ func TestCorruptObject(t *testing.T) {
 	s, _ := newStore(t)
 	putWithRevision(t, s)
 	bad := docJSON(content.RefEntry, pageID)
-	if err := s.db.Write(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Write(t.Context(), func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(t.Context(), "DROP TRIGGER objects_no_update"); err != nil {
 			return err
 		}

@@ -2,7 +2,6 @@ package store
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -138,16 +137,14 @@ func (t *Tx) Put(kind content.RefKind, id string, data []byte, by string) (Versi
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return Version{}, err
 	}
-	if err := t.addObject(hash, data); err != nil {
+	if err := t.b.addObject(hash, data); err != nil {
 		return Version{}, err
 	}
 	v, err := t.addVersion(kind, id, hash, by)
 	if err != nil {
 		return Version{}, err
 	}
-	const q = "INSERT INTO documents (kind, id, version) VALUES (?, ?, ?) " +
-		"ON CONFLICT (kind, id) DO UPDATE SET version = excluded.version"
-	if _, err := t.tx.ExecContext(t.ctx, q, kind, id, v.Seq); err != nil {
+	if err := t.b.setCurrent(kind, id, v.Seq); err != nil {
 		return Version{}, err
 	}
 	return v, nil
@@ -176,27 +173,16 @@ func (t *Tx) Delete(kind content.RefKind, id, by string) (Version, error) {
 	if err != nil {
 		return Version{}, err
 	}
-	if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM documents WHERE kind = ? AND id = ?", kind, id); err != nil {
+	if err := t.b.deleteCurrent(kind, id); err != nil {
 		return Version{}, err
 	}
 	return v, nil
 }
 
-// addObject saves data, whose hash is hash, unless the store has it.
-func (t *Tx) addObject(hash string, data []byte) error {
-	_, err := t.tx.ExecContext(t.ctx, "INSERT OR IGNORE INTO objects (hash, data) VALUES (?, ?)", hash, data)
-	return err
-}
-
 // addVersion saves a version of the document of kind with id by the user by: that of the object hash, or a deletion if
 // hash is "".
 func (t *Tx) addVersion(kind content.RefKind, id, hash, by string) (Version, error) {
-	const q = "INSERT INTO versions (kind, id, object, saved_at, saved_by) VALUES (?, ?, ?, ?, ?)"
-	res, err := t.tx.ExecContext(t.ctx, q, kind, id, sql.NullString{String: hash, Valid: hash != ""}, t.savedAt, by)
-	if err != nil {
-		return Version{}, err
-	}
-	seq, err := res.LastInsertId()
+	seq, err := t.b.addVersion(kind, id, hash, t.savedAt, by)
 	if err != nil {
 		return Version{}, err
 	}
@@ -207,47 +193,6 @@ func (t *Tx) addVersion(kind content.RefKind, id, hash, by string) (Version, err
 	return Version{Seq: seq, Kind: kind, ID: id, Hash: hash, SavedAt: savedAt, SavedBy: by}, nil
 }
 
-// versionColumns are the columns of a version, v, that scanVersion reads.
-const versionColumns = "v.id, v.seq, v.object, v.saved_at, v.saved_by"
-
-// documentQuery selects the current versions of the documents, d, with their JSON, for scanDocument.
-const documentQuery = "SELECT " + versionColumns + ", o.data FROM documents AS d " +
-	"JOIN versions AS v ON v.seq = d.version JOIN objects AS o ON o.hash = v.object"
-
-// scanner is a *sql.Row or *sql.Rows.
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-// scanVersion reads a version of kind from the columns of versionColumns of row, and the columns after them into more.
-func scanVersion(row scanner, kind content.RefKind, more ...any) (Version, error) {
-	v := Version{Kind: kind}
-	var object sql.NullString
-	var savedAt string
-	if err := row.Scan(append([]any{&v.ID, &v.Seq, &object, &savedAt, &v.SavedBy}, more...)...); err != nil {
-		return Version{}, err
-	}
-	var err error
-	if v.SavedAt, err = parseSavedAt(savedAt); err != nil {
-		return Version{}, fmt.Errorf("version %d: %w", v.Seq, err)
-	}
-	v.Hash = object.String
-	return v, nil
-}
-
-// scanDocument reads a document of kind from a row of documentQuery, and checks its JSON against its hash.
-func scanDocument(row scanner, kind content.RefKind) (Document, error) {
-	var d Document
-	var err error
-	if d.Version, err = scanVersion(row, kind, &d.Data); err != nil {
-		return Document{}, err
-	}
-	if err := verify(d.Hash, d.Data); err != nil {
-		return Document{}, err
-	}
-	return d, nil
-}
-
 func parseSavedAt(s string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	return t.UTC(), err
@@ -256,13 +201,14 @@ func parseSavedAt(s string) (time.Time, error) {
 // current returns the current version of the document of kind with id. If there is none, the error wraps
 // fs.ErrNotExist.
 func (t *Tx) current(kind content.RefKind, id string) (Version, error) {
-	const q = "SELECT " + versionColumns + " FROM documents AS d JOIN versions AS v ON v.seq = d.version " +
-		"WHERE d.kind = ? AND d.id = ?"
-	v, err := scanVersion(t.tx.QueryRowContext(t.ctx, q, kind, id), kind)
-	if errors.Is(err, sql.ErrNoRows) {
+	v, ok, err := t.b.current(kind, id)
+	switch {
+	case err != nil:
+		return Version{}, err
+	case !ok:
 		return Version{}, notFoundError(name(kind, id))
 	}
-	return v, err
+	return v, nil
 }
 
 // Document returns the current version of the document of kind with id. If the document does not exist, the error
@@ -274,12 +220,17 @@ func (t *Tx) Document(kind content.RefKind, id string) (Document, error) {
 	if err := checkKey(kind, id); err != nil {
 		return Document{}, err
 	}
-	row := t.tx.QueryRowContext(t.ctx, documentQuery+" WHERE d.kind = ? AND d.id = ?", kind, id)
-	d, err := scanDocument(row, kind)
-	if errors.Is(err, sql.ErrNoRows) {
+	d, ok, err := t.b.document(kind, id)
+	switch {
+	case err != nil:
+		return Document{}, err
+	case !ok:
 		return Document{}, notFoundError(name(kind, id))
 	}
-	return d, err
+	if err := verify(d.Hash, d.Data); err != nil {
+		return Document{}, err
+	}
+	return d, nil
 }
 
 // Documents returns the current versions of the documents of kind, in the order of their IDs.
@@ -290,20 +241,14 @@ func (t *Tx) Documents(kind content.RefKind) ([]Document, error) {
 	if err := checkKind(kind); err != nil {
 		return nil, err
 	}
-	rows, err := t.tx.QueryContext(t.ctx, documentQuery+" WHERE d.kind = ? ORDER BY d.id", kind)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var docs []Document
-	for rows.Next() {
-		d, err := scanDocument(rows, kind)
-		if err != nil {
-			return nil, err
+	docs, err := t.b.documents(kind)
+	// Checked before err, which comes after them in the order of IDs.
+	for _, d := range docs {
+		if verr := verify(d.Hash, d.Data); verr != nil {
+			return nil, verr
 		}
-		docs = append(docs, d)
 	}
-	if err := rows.Err(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	return docs, nil
@@ -318,21 +263,8 @@ func (t *Tx) History(kind content.RefKind, id string) ([]Version, error) {
 	if err := checkKey(kind, id); err != nil {
 		return nil, err
 	}
-	const q = "SELECT " + versionColumns + " FROM versions AS v WHERE v.kind = ? AND v.id = ? ORDER BY v.seq"
-	rows, err := t.tx.QueryContext(t.ctx, q, kind, id)
+	versions, err := t.b.history(kind, id)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var versions []Version
-	for rows.Next() {
-		v, err := scanVersion(rows, kind)
-		if err != nil {
-			return nil, err
-		}
-		versions = append(versions, v)
-	}
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return versions, nil
@@ -347,13 +279,12 @@ func (t *Tx) Object(hash string) ([]byte, error) {
 	if err := checkHash(hash); err != nil {
 		return nil, err
 	}
-	var data []byte
-	err := t.tx.QueryRowContext(t.ctx, "SELECT data FROM objects WHERE hash = ?", hash).Scan(&data)
+	data, ok, err := t.b.object(hash)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil, notFoundError("object " + hash)
 	case err != nil:
 		return nil, err
+	case !ok:
+		return nil, notFoundError("object " + hash)
 	}
 	if err := verify(hash, data); err != nil {
 		return nil, err

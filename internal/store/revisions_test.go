@@ -254,7 +254,7 @@ func TestRevisionReadErrors(t *testing.T) {
 func TestCorruptSavedAt(t *testing.T) {
 	s, _ := newStore(t)
 	putWithRevision(t, s)
-	if err := s.db.Write(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Write(t.Context(), func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(t.Context(), "DROP TRIGGER revisions_no_update"); err != nil {
 			return err
 		}

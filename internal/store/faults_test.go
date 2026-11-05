@@ -151,7 +151,7 @@ func TestUpdateCanceled(t *testing.T) {
 					return nil
 				}
 				for {
-					_, err := tx.tx.ExecContext(context.Background(), "SELECT 1")
+					_, err := tx.b.(*sqliteTx).tx.ExecContext(context.Background(), "SELECT 1")
 					switch {
 					case errors.Is(err, sql.ErrTxDone):
 						return nil

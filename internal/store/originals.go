@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // Original is an original of a medium in the store.
@@ -53,7 +54,7 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 		return Original{}, err
 	}
 	renamed = true
-	if err := syncDir(s.files, dir); err != nil {
+	if err := s.files.SyncDir(dir); err != nil {
 		return Original{}, err
 	}
 	if err := s.call("original:renamed"); err != nil {
@@ -63,13 +64,13 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 }
 
 // createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, and returns it with its name.
-func (s *Store) createTemp() (*os.File, string, error) {
+func (s *Store) createTemp() (vfs.File, string, error) {
 	var err error
 	for range 10 {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
 		tmp := ".tmp-" + hex.EncodeToString(b[:])
-		var f *os.File
+		var f vfs.File
 		if f, err = s.files.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
 			return f, tmp, err
 		}
@@ -79,7 +80,7 @@ func (s *Store) createTemp() (*os.File, string, error) {
 
 // writeTemp writes what r reads, to its end, to f, a new temporary file, which it syncs and closes. It returns the
 // original that the data is, and checks ctx before each read.
-func writeTemp(ctx context.Context, f *os.File, r io.Reader) (o Original, err error) {
+func writeTemp(ctx context.Context, f vfs.File, r io.Reader) (o Original, err error) {
 	defer func() {
 		if cerr := f.Close(); err == nil {
 			err = cerr
@@ -124,16 +125,7 @@ func (s *Store) mkdir(dir string) error {
 	case err != nil:
 		return err
 	}
-	return syncDir(s.files, ".")
-}
-
-// syncDir syncs the directory name in root, so that what has been made or renamed in it stays after a crash.
-func syncDir(root *os.Root, name string) error {
-	d, err := root.Open(name)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return s.files.SyncDir(".")
 }
 
 // OpenOriginal opens the original whose hash is hash. If there is none, the error wraps fs.ErrNotExist. The file checks
@@ -181,7 +173,7 @@ func readError(path string, err error) error {
 // originalFile is an original that OpenOriginal has opened. It has the methods of fs.File alone, so that every read
 // goes through Read, which checks the data.
 type originalFile struct {
-	f      *os.File
+	f      vfs.File
 	path   string    // in errors
 	want   string    // the hash of the data
 	digest hash.Hash // of the data read so far

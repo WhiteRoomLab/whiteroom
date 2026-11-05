@@ -86,7 +86,7 @@ func sum(data []byte) string {
 func count(t *testing.T, s *Store, table string) int {
 	t.Helper()
 	var n int
-	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n)
 	}); err != nil {
 		t.Fatalf("count of the rows of %s = %v", table, err)
@@ -115,7 +115,7 @@ WHERE (v.object IS NULL) != (d.version IS NULL) OR d.version != latest.seq`
 func checkConsistent(t *testing.T, s *Store) {
 	t.Helper()
 	var n int
-	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(t.Context(), consistency).Scan(&n)
 	}); err != nil || n != 0 {
 		t.Errorf("documents that are not at their latest versions = %d, %v; want 0", n, err)
@@ -127,7 +127,7 @@ func checkIntegrity(t *testing.T, s *Store) {
 	t.Helper()
 	var result string
 	var changed []string
-	if err := s.db.Read(t.Context(), func(tx *sql.Tx) error {
+	if err := sqliteDB(t, s).Read(t.Context(), func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&result); err != nil {
 			return err
 		}
