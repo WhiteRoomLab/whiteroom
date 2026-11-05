@@ -191,10 +191,18 @@ type helper struct {
 // test has failed.
 func startHelper(t *testing.T, tb testBackend, dir, mode, want string) *helper {
 	t.Helper()
-	h := &helper{cmd: exec.Command(os.Args[0], "-test.run=^TestHelperProcess$"), markers: make(chan string, 1)}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
 	// With -race, a process sleeps for a second before it exits unless atexit_sleep_ms is 0.
-	h.cmd.Env = append(os.Environ(), envMode+"="+mode, envDir+"="+dir, envBackend+"="+tb.name,
+	cmd.Env = append(os.Environ(), envMode+"="+mode, envDir+"="+dir, envBackend+"="+tb.name,
 		"GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
+	return startProcess(t, cmd, mode, want, 30*time.Second)
+}
+
+// startProcess starts cmd, which runs a test of the test binary in the mode, and returns it once it has printed want
+// after marker, as startHelper does. It kills the process after limit.
+func startProcess(t *testing.T, cmd *exec.Cmd, mode, want string, limit time.Duration) *helper {
+	t.Helper()
+	h := &helper{cmd: cmd, markers: make(chan string, 1)}
 	h.cmd.Stderr = &h.stderr
 	out, err := h.cmd.StdoutPipe()
 	if err != nil {
@@ -214,7 +222,7 @@ func startHelper(t *testing.T, tb testBackend, dir, mode, want string) *helper {
 			}
 		}
 	}()
-	timer := time.AfterFunc(30*time.Second, func() { _ = h.cmd.Process.Kill() })
+	timer := time.AfterFunc(limit, func() { _ = h.cmd.Process.Kill() })
 	h.wait = sync.OnceValue(func() error {
 		for range h.markers {
 		}
