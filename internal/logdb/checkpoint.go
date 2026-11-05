@@ -187,6 +187,12 @@ func (d *decoder) ckpObjects(h ckpHeader, own *owner) pmap[objLoc] {
 // Checkpoint writes a checkpoint of the state that Views see now, unless the last checkpoint has it. It waits for the
 // Update that runs and for a checkpoint that runs. Its errors leave the store as it was.
 func (db *DB) Checkpoint() error {
+	if db.rd != nil {
+		if db.closed.Load() {
+			return errClosed
+		}
+		return ErrReadOnly
+	}
 	db.sem <- struct{}{}
 	closed, failed, st := db.closed.Load(), db.failed, db.cur.Load()
 	if !closed && failed == nil {

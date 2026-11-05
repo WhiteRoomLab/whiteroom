@@ -25,7 +25,7 @@ func (tx *Tx) AppendEvent(data []byte) error {
 
 // Events calls fn with each event of the store that Views see now, in order, until fn returns false. It reads them
 // from the log of the generation, those of its base first: the engine keeps only their number in memory. Like a View,
-// it can go on when Close is called.
+// it can go on when Close is called. A reader first reads the commits that have become durable, as a View does.
 func (db *DB) Events(ctx context.Context, fn func(Event) bool) error {
 	if !db.handles.enter() {
 		return errClosed
@@ -33,6 +33,11 @@ func (db *DB) Events(ctx context.Context, fn func(Event) bool) error {
 	defer db.handles.leave()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if db.rd != nil {
+		if err := db.rd.refresh(ctx, db); err != nil {
+			return err
+		}
 	}
 	return readLog(ctx, db.handles, db.cur.Load(), func(r logRecord) (bool, error) {
 		for _, p := range r.rec.ops {

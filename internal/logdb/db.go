@@ -65,7 +65,8 @@ type RecoveryInfo struct {
 	IgnoredGenerations []uint64 // newer than Generation and incomplete, as a crash during a compaction leaves them
 }
 
-// DB is a store of the engine, opened by its writer. Its methods may be called concurrently.
+// DB is a store of the engine, opened by its writer, or by a reader in another process. Its methods may be called
+// concurrently.
 type DB struct {
 	fsys       vfs.FS
 	o          Options
@@ -75,6 +76,7 @@ type DB struct {
 	info       RecoveryInfo
 	headErrors atomic.Int64
 	handles    *handles
+	rd         *reader // of OpenReader, or nil
 
 	// Checkpoints: one is written at a time, with ckptMu. ckptRuns is set while an automatic one runs, which ckptWG
 	// waits for.
@@ -176,6 +178,11 @@ func Open(fsys vfs.FS, o Options) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	return open(fsys, o, unlock)
+}
+
+// open is Open once it holds the locks, which unlock releases: at Close, or before open returns an error.
+func open(fsys vfs.FS, o Options, unlock func() error) (*DB, error) {
 	var r *recovery
 	var h *handles
 	opened := false
@@ -192,7 +199,7 @@ func Open(fsys vfs.FS, o Options) (*DB, error) {
 		}
 		_ = unlock()
 	}()
-	r, err = recoverLog(fsys)
+	r, err := recoverLog(fsys)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +225,9 @@ func Open(fsys vfs.FS, o Options) (*DB, error) {
 // if the last one does not have the state, and writes and syncs head. Then View and Update fail; the Views that run go
 // on until they end.
 func (db *DB) Close() error {
+	if db.rd != nil {
+		return db.rd.close(db)
+	}
 	db.sem <- struct{}{}
 	defer func() { <-db.sem }()
 	if db.closed.Load() {

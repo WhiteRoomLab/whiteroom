@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -55,6 +56,45 @@ func acquireWriter(fsys vfs.FS, wait time.Duration) (func() error, error) {
 		return nil, err
 	}
 	return func() error { return errors.Join(writer(), readers()) }, nil
+}
+
+// acquireReader takes the locks of a reader: lock/entry shared while it takes lock/readers shared. It never waits. It
+// returns the function that releases lock/readers.
+func acquireReader(fsys vfs.FS) (func() error, error) {
+	dir := fsys.Name()
+	entry, err := fsys.Lock("lock/entry", vfs.Shared)
+	if err != nil {
+		return nil, lockErr(dir, err)
+	}
+	defer func() { _ = entry() }()
+	readers, err := fsys.Lock("lock/readers", vfs.Shared)
+	if err != nil {
+		return nil, lockErr(dir, err)
+	}
+	return readers, nil
+}
+
+// acquireMaintenance takes every lock exclusively, in turn, each once the processes that hold it have released it,
+// until ctx ends. Holding lock/entry, it keeps new openers away while it waits for the others. It returns the function
+// that releases them in the reverse order.
+func acquireMaintenance(ctx context.Context, fsys vfs.FS) (func() error, error) {
+	var held []func() error
+	release := func() error {
+		var errs []error
+		for _, unlock := range slices.Backward(held) {
+			errs = append(errs, unlock())
+		}
+		return errors.Join(errs...)
+	}
+	for _, name := range []string{"lock/entry", "lock/readers", "lock/writer"} {
+		unlock, err := lockPoll(ctx, fsys, name, vfs.Exclusive, 100*time.Millisecond)
+		if err != nil {
+			_ = release()
+			return nil, err
+		}
+		held = append(held, unlock)
+	}
+	return release, nil
 }
 
 // lockErr is the error of a shared lock that an opener does not wait for: only maintenance holds it exclusively.

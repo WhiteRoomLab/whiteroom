@@ -9,8 +9,9 @@ import (
 	"path"
 )
 
-// View runs f in a transaction that only reads, and that sees the store as it was when f first read it. A View that
-// runs when Close is called can go on reading until it ends.
+// View runs f in a transaction that only reads, and that sees the store as it was when f first read it. A View of a
+// reader first reads the commits that have become durable; if that fails, View returns the error and does not call f.
+// A View that runs when Close is called can go on reading until it ends.
 func (db *DB) View(ctx context.Context, f func(*Tx) error) error {
 	if !db.handles.enter() {
 		return errClosed
@@ -18,6 +19,11 @@ func (db *DB) View(ctx context.Context, f func(*Tx) error) error {
 	defer db.handles.leave()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if db.rd != nil {
+		if err := db.rd.refresh(ctx, db); err != nil {
+			return err
+		}
 	}
 	if err := (&Tx{db: db}).run(f); err != nil {
 		return err
@@ -30,8 +36,11 @@ func (db *DB) View(ctx context.Context, f func(*Tx) error) error {
 // for the others until ctx ends. f must not call Update of db, which would wait for itself. After a sync of the engine
 // has failed, every Update fails with ErrFailed until the store is opened again.
 func (db *DB) Update(ctx context.Context, f func(*Tx) error) error {
-	if db.closed.Load() {
+	switch {
+	case db.closed.Load():
 		return errClosed
+	case db.rd != nil:
+		return ErrReadOnly
 	}
 	if err := ctx.Err(); err != nil {
 		return err

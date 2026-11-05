@@ -3,6 +3,8 @@ package logdb
 import (
 	"errors"
 	"fmt"
+	"path"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -53,4 +55,27 @@ func readHead(f vfs.File, path string) (headSlot, error) {
 		return headSlot{}, corruptFile(path, fmt.Sprintf("has %d bytes, want %d", info.Size(), headSize))
 	}
 	return s, err
+}
+
+// readHeadAgain is readHead for a reader, while a writer may write f: if neither slot is valid, as when the writer
+// writes the file again whole, it tries 3 times more, 1 ms apart.
+func readHeadAgain(f vfs.File, p string) (headSlot, error) {
+	for i := 0; ; i++ {
+		s, err := readHead(f, p)
+		var ce *CorruptError
+		if i == 3 || !errors.As(err, &ce) {
+			return s, err
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// atHead reports whether the last record of st is the one that the slot h of head names.
+func atHead(st *state, h headSlot) bool {
+	return st.gen == h.gen && st.seq == h.seq && st.seg == h.seg && st.end == h.end && st.lastCRC == h.crc
+}
+
+// headMismatch is the error of a reader that does not find in the log the record that head names.
+func headMismatch(fsys vfs.FS) error {
+	return corruptFile(path.Join(fsys.Name(), "head"), "the log does not match head")
 }

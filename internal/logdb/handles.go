@@ -69,6 +69,17 @@ func (h *handles) file(gen, index uint64) (vfs.File, error) {
 	return f, nil
 }
 
+// drop closes the file of the segment index of generation gen, if the handles have it, and forgets it.
+func (h *handles) drop(gen, index uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	id := segID{gen, index}
+	if f := h.files[id]; f != nil {
+		_ = f.Close()
+		delete(h.files, id)
+	}
+}
+
 // enter counts a View that begins, unless Close has been called.
 func (h *handles) enter() bool {
 	h.mu.Lock()
