@@ -69,6 +69,13 @@ var docKinds = map[content.RefKind]func() document{
 	content.RefRedirect: newDocument(func(r *content.Redirect) *string { return &r.ID }),
 }
 
+// handledKinds are the kinds that the operations that documentKind serves handle, for its error.
+var handledKinds = map[string]string{
+	"Create": "terms, authors, menus, forms and redirects",
+	"Save":   "terms, media, authors, menus, forms and redirects",
+	"Delete": "entries, terms, media, authors, menus, forms and redirects",
+}
+
 // documentKind returns what makes the documents of kind for the operation op, or the error that says why op does not
 // handle them.
 func documentKind(kind content.RefKind, op string) (func() document, error) {
@@ -81,7 +88,7 @@ func documentKind(kind content.RefKind, op string) (func() document, error) {
 	if kind == content.RefEntry {
 		return nil, errors.New("entries change through CreateEntry, SaveRevision, CreateTranslation and Delete")
 	}
-	return nil, fmt.Errorf("unsupported kind %q: %s handles terms, authors, menus, forms and redirects", kind, op)
+	return nil, fmt.Errorf("unsupported kind %q: %s handles %s", kind, op, handledKinds[op])
 }
 
 // decodeFile decodes f, a document, with decode, as the store and the build do: the problems, located in f and sorted,

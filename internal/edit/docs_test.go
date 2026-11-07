@@ -425,6 +425,9 @@ func TestSaveErrors(t *testing.T) {
 		{"the settings", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Save(t.Context(), user, store.SettingsKind, "", 1, []byte(orig))
 		}, "site/settings.json: it is saved with SaveSettings"},
+		{"a revision", func(ed *Editor, seq int64) (Result, error) {
+			return ed.Save(t.Context(), user, content.RefRevision, aboutRev, 1, []byte(orig))
+		}, `unsupported kind "revision": Save handles terms, media, authors, menus, forms and redirects`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ed, s := newSample(t)
@@ -569,7 +572,7 @@ func TestDeleteErrors(t *testing.T) {
 		{"a revision", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Delete(t.Context(), user, content.RefRevision, aboutRev, 1)
 		}, func(int64) string {
-			return `unsupported kind "revision": Delete handles terms, authors, menus, forms and redirects`
+			return `unsupported kind "revision": Delete handles entries, terms, media, authors, menus, forms and redirects`
 		}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
