@@ -236,8 +236,7 @@ func TestCreateErrors(t *testing.T) {
 			`invalid user ID "usr_x": use "usr_" and a ULID (26 characters in upper case)`},
 		{"an entry", user, content.RefEntry, []byte(valid),
 			"entries change through CreateEntry, SaveRevision, CreateTranslation and Delete"},
-		{"a medium", user, content.RefMedia, []byte(valid),
-			`unsupported kind "media": Create handles terms, authors, menus, forms and redirects`},
+		{"a medium", user, content.RefMedia, []byte(valid), "media are added with AddMedia"},
 		{"the settings", user, store.SettingsKind, []byte(valid), "site/settings.json: it is saved with SaveSettings"},
 		{"a kind that does not exist", user, "page", []byte(valid),
 			`unsupported kind "page": Create handles terms, authors, menus, forms and redirects`},
@@ -567,10 +566,10 @@ func TestDeleteErrors(t *testing.T) {
 		{"a malformed user ID", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Delete(t.Context(), Op{By: "x"}, content.RefRedirect, id, seq)
 		}, func(int64) string { return `invalid user ID "x": use "usr_" and a ULID (26 characters in upper case)` }, nil},
-		{"a medium", func(ed *Editor, seq int64) (Result, error) {
-			return ed.Delete(t.Context(), user, content.RefMedia, "med_01JBG3N6V3X6Z9C2E5G8J1K4M7", 1)
+		{"a revision", func(ed *Editor, seq int64) (Result, error) {
+			return ed.Delete(t.Context(), user, content.RefRevision, aboutRev, 1)
 		}, func(int64) string {
-			return `unsupported kind "media": Delete handles terms, authors, menus, forms and redirects`
+			return `unsupported kind "revision": Delete handles terms, authors, menus, forms and redirects`
 		}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -58,9 +58,11 @@ func newDocument[T any, P docPtr[T]](idOf func(*T) *string) func() document {
 	return func() document { return &typed[T, P]{idOf: idOf} }
 }
 
-// docKinds make the documents of the kinds that Create, Save and Delete handle.
+// docKinds make the documents of the kinds that Create, Save and Delete handle; Create does not make media, which AddMedia
+// does with their files.
 var docKinds = map[content.RefKind]func() document{
 	content.RefTerm:     newDocument(func(t *content.Term) *string { return &t.ID }),
+	content.RefMedia:    func() document { return new(mediaDoc) },
 	content.RefAuthor:   newDocument(func(a *content.AuthorProfile) *string { return &a.ID }),
 	content.RefMenu:     newDocument(func(m *content.Menu) *string { return &m.ID }),
 	content.RefForm:     newDocument(func(f *content.Form) *string { return &f.ID }),
@@ -157,10 +159,14 @@ func conflict(name string, current, base int64) error {
 }
 
 // Create makes a document of kind (a term, an author, a menu, a form or a redirect) from data, its JSON without an id,
-// which the store assigns. A term without a translationGroup gets a group of its own.
+// which the store assigns. A term without a translationGroup gets a group of its own. A medium is added with AddMedia, with
+// its file.
 func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
+	}
+	if kind == content.RefMedia {
+		return Result{}, errors.New("media are added with AddMedia")
 	}
 	newDoc, err := documentKind(kind, "Create")
 	if err != nil {
@@ -214,7 +220,9 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 
 // Save saves data, the JSON of the document of kind with id, as its next version. base is the Seq of the version that
 // the caller has read, which the store must still have as the current one: else the error wraps ErrConflict, and
-// nothing is saved. Saving what the store has saves nothing.
+// nothing is saved. Saving what the store has saves nothing. The save of a medium is that of its metadata, its alt, caption
+// and fileName: a change of what comes from its file and its upload (hash, mimeType, size, width, height, uploadedAt and
+// uploadedBy) is a problem, as ReplaceMedia replaces the file.
 //
 // If the save changes what the validation of other documents reads of this one (a term's taxonomy or language), what
 // refers to it is validated again as the build validates it (Q16-A). A problem that this brings to a document, or to a
@@ -243,6 +251,9 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 		given := content.SiteFile{Name: docName(kind, id), Data: data}
 		r.given[given.Name] = data
 		d := newDoc()
+		if c, ok := d.(replacer); ok {
+			c.replaces(cur.Data)
+		}
 		if err := decodeFile(given, d.unmarshal); err != nil {
 			return Result{}, err
 		}
@@ -340,7 +351,8 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 // that published content uses: another document, or the published revision of an entry; the error names the first
 // maxListed files that use it. One that only drafts use (the last revision of an entry that is not published) it
 // deletes, with a warning for each. The settings document cannot be deleted. Nor can an entry that is published or
-// scheduled; the revisions of an entry that is deleted stay.
+// scheduled; the revisions of an entry that is deleted stay, and so does the original of a medium that is deleted, which
+// the store has no way to remove.
 func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id string, base int64) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
