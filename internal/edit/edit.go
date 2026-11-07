@@ -52,7 +52,7 @@ type Op struct {
 type Result struct {
 	Kind     content.RefKind
 	ID       string         // of the document that the operation made, changed or deleted; "" for the settings
-	Version  store.Version  // that it saved; the current one if it saved nothing
+	Version  store.Version  // that it saved; the current one if it saved nothing, as when it added a revision to an entry
 	Revision string         // the revision that it added to an entry
 	Number   int            // the number of the entry that it made
 	Warnings content.Errors // problems that do not stop it, located as the build locates its own

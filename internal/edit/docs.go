@@ -76,6 +76,9 @@ func documentKind(kind content.RefKind, op string) (func() document, error) {
 	if kind == store.SettingsKind {
 		return nil, fmt.Errorf("%s: it is saved with SaveSettings", settingsName)
 	}
+	if kind == content.RefEntry {
+		return nil, errors.New("entries change through CreateEntry, SaveRevision, CreateTranslation and Delete")
+	}
 	return nil, fmt.Errorf("unsupported kind %q: %s handles terms, authors, menus, forms and redirects", kind, op)
 }
 
@@ -330,7 +333,8 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 // Delete deletes the document of kind with id, which must be at the version base (as in Save). It refuses a document
 // that published content uses: another document, or the published revision of an entry; the error names the first
 // maxListed files that use it. One that only drafts use (the last revision of an entry that is not published) it
-// deletes, with a warning for each. The settings document cannot be deleted.
+// deletes, with a warning for each. The settings document cannot be deleted. Nor can an entry that is published or
+// scheduled; the revisions of an entry that is deleted stay.
 func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id string, base int64) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -338,16 +342,24 @@ func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id str
 	if kind == store.SettingsKind {
 		return Result{}, fmt.Errorf("%s: cannot be deleted", settingsName)
 	}
-	if _, err := documentKind(kind, "Delete"); err != nil {
-		return Result{}, err
+	if kind != content.RefEntry {
+		if _, err := documentKind(kind, "Delete"); err != nil {
+			return Result{}, err
+		}
 	}
 	if err := content.CheckID(kind, id); err != nil {
 		return Result{}, err
 	}
 	q := request{name: "delete", params: []string{string(kind), id, strconv.FormatInt(base, 10)}}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
-		if _, err := r.current(kind, id, base); err != nil {
+		cur, err := r.current(kind, id, base)
+		if err != nil {
 			return Result{}, err
+		}
+		if kind == content.RefEntry {
+			if err := checkDeletable(id, cur.Data); err != nil {
+				return Result{}, err
+			}
 		}
 		warnings, err := r.uses(kind, id)
 		if err != nil {

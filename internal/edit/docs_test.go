@@ -235,7 +235,7 @@ func TestCreateErrors(t *testing.T) {
 		{"a malformed user ID before the kind", Op{By: "usr_x"}, content.RefEntry, []byte(valid),
 			`invalid user ID "usr_x": use "usr_" and a ULID (26 characters in upper case)`},
 		{"an entry", user, content.RefEntry, []byte(valid),
-			`unsupported kind "entry": Create handles terms, authors, menus, forms and redirects`},
+			"entries change through CreateEntry, SaveRevision, CreateTranslation and Delete"},
 		{"a medium", user, content.RefMedia, []byte(valid),
 			`unsupported kind "media": Create handles terms, authors, menus, forms and redirects`},
 		{"the settings", user, store.SettingsKind, []byte(valid), "site/settings.json: it is saved with SaveSettings"},
@@ -422,7 +422,7 @@ func TestSaveErrors(t *testing.T) {
 		}, `invalid user ID "usr_x": use "usr_" and a ULID (26 characters in upper case)`},
 		{"an entry", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Save(t.Context(), user, content.RefEntry, "ent_01JB8W2N5KD3F6H9J1M4P7R2T5", 1, []byte(orig))
-		}, `unsupported kind "entry": Save handles terms, authors, menus, forms and redirects`},
+		}, "entries change through CreateEntry, SaveRevision, CreateTranslation and Delete"},
 		{"the settings", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Save(t.Context(), user, store.SettingsKind, "", 1, []byte(orig))
 		}, "site/settings.json: it is saved with SaveSettings"},
@@ -567,10 +567,10 @@ func TestDeleteErrors(t *testing.T) {
 		{"a malformed user ID", func(ed *Editor, seq int64) (Result, error) {
 			return ed.Delete(t.Context(), Op{By: "x"}, content.RefRedirect, id, seq)
 		}, func(int64) string { return `invalid user ID "x": use "usr_" and a ULID (26 characters in upper case)` }, nil},
-		{"an entry", func(ed *Editor, seq int64) (Result, error) {
-			return ed.Delete(t.Context(), user, content.RefEntry, "ent_01JB8W2N5KD3F6H9J1M4P7R2T5", 1)
+		{"a medium", func(ed *Editor, seq int64) (Result, error) {
+			return ed.Delete(t.Context(), user, content.RefMedia, "med_01JBG3N6V3X6Z9C2E5G8J1K4M7", 1)
 		}, func(int64) string {
-			return `unsupported kind "entry": Delete handles terms, authors, menus, forms and redirects`
+			return `unsupported kind "media": Delete handles terms, authors, menus, forms and redirects`
 		}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
