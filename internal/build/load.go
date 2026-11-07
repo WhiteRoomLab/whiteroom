@@ -60,8 +60,7 @@ type builder struct {
 	serverRedirects []redirect
 	// The resolver of the media and the other entities that content refers to, which records the media to publish.
 	res *resolver
-	// What pageData makes once for all the pages that show it: the entries in lists, and the HTML of the posts pages.
-	summaries   onceMap[renderKey, *Entry]
+	// The HTML of the posts pages, which pageData makes once for all the pages of their lists.
 	postsBodies onceMap[renderKey, renderedEntry]
 
 	warnings problems

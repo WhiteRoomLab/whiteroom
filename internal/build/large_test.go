@@ -170,7 +170,7 @@ var buildStages = []string{
 }
 
 // maxRetainedPerPost is the most that the live heap may grow for each post of a site, at the end of any stage.
-const maxRetainedPerPost = 8 << 10
+const maxRetainedPerPost = 4 << 10
 
 // TestBuildMemory builds the sample site with 100 and with 400 more posts, and checks that the live heap at the end of
 // each stage grows by at most maxRetainedPerPost for each post between them, for posts that do not warn and for posts

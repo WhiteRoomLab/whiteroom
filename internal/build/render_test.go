@@ -921,9 +921,9 @@ func TestPageData(t *testing.T) {
 		}
 	}
 
-	// The entries of lists are made once for every page, and the posts page is rendered once for its list.
-	if data("/news/").Entries[1] != data("/category/news/").Entries[1] {
-		t.Error("two lists have their own data of the same entry")
+	// Two lists make the same data of an entry, and the posts page is rendered once for its list.
+	if a, c := data("/news/").Entries[1], data("/category/news/").Entries[1]; !reflect.DeepEqual(a, c) {
+		t.Errorf("two lists have different data of the same entry:\n%+v\n%+v", a, c)
 	}
 	data("/about/")
 	if keys := slices.Collect(maps.Keys(b.postsBodies.m)); len(keys) != 1 || keys[0] != (renderKey{newsID, ja}) {
