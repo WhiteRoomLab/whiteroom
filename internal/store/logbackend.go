@@ -36,8 +36,11 @@ import (
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 2 (upgradeLog).
-const logSchemaVersion = 2
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 3 (upgradeLog). The
+// schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
+// summaries, which the schema 3 adds; Open sets the schema 3 in a store of the schema 2 with the same index, since no
+// program of the schema 2 could save an entry with them.
+const logSchemaVersion = 3
 
 // indexSchema is the first schema that has the index tables.
 const indexSchema = 2
@@ -138,27 +141,27 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion: a store of the
-// schema 1 gets its index, and the schema 2, in one Update, so that a failure leaves the store as it was. name is that
-// of its logdb/ in errors.
+// schema 1 gets its index, and the schema 3, and one of the schema 2 gets the schema 3, in one Update, so that a failure
+// leaves the store as it was. name is that of its logdb/ in errors.
 func upgradeLog(b *logBackend, name string) error {
 	upgrade := false
 	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
 		v, _ := tx.Get(tableMeta, []byte(metaSchema))
 		version, ok := decodeUint(v)
-		upgrade = ok && version < indexSchema
+		upgrade = ok && version < logSchemaVersion
 		return nil
 	}); err != nil || !upgrade {
 		return err
 	}
 	if err := b.db.Update(context.Background(), func(tx *logdb.Tx) error {
 		// The schema first, so that the index methods find the schema that they need.
-		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, indexSchema)); err != nil {
+		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
 		return (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() })
 	}); err != nil {
-		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name, indexSchema,
-			err)
+		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name,
+			logSchemaVersion, err)
 	}
 	return nil
 }

@@ -749,7 +749,7 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x02"}, {"versions", "\x02"}},
+		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x03"}, {"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
 			{"term\x00" + termID, termVersion},
@@ -793,6 +793,39 @@ func TestLogTables(t *testing.T) {
 	want[tableSummaries] = want[tableSummaries][1:]
 	want[tableReferences] = want[tableReferences][3:]
 	check("after the Delete")
+}
+
+// TestLogTablesScheduled checks the rows that the schema 3 keeps in summaries and references for an entry that schedules
+// its last revision, which refers to a medium.
+func TestLogTablesScheduled(t *testing.T) {
+	s, _ := newLogStore(t, logdb.Options{})
+	data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "number": 3, "status": "scheduled", ` +
+		`"scheduledRevision": "` + revisionID + `", "scheduledAt": "2026-11-10T09:00:00+09:00"}`)
+	rev := []byte(`{"schemaVersion": 1, "title": "About", "slug": "about", "featuredImage": "` + mediaID + `"}`)
+	update(t, s, func(tx *Tx) error {
+		if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
+			return err
+		}
+		_, err := tx.AddRevision(entryID, revisionID, rev, userID)
+		return err
+	})
+	summary := `{"entry":{"schemaVersion":1,"id":"` + entryID + `","number":3,"status":"scheduled",` +
+		`"scheduledRevision":"` + revisionID + `","scheduledAt":"2026-11-10T09:00:00+09:00"},` +
+		`"latest":"` + revisionID + `","refs":{"latest":["` + mediaID + `"],"publishes":["` + revisionID + `"],` +
+		`"scheduled":["` + mediaID + `"]}}`
+	wantSummaries := [][2]string{{"entry\x00" + entryID, summary}}
+	wantReferences := [][2]string{
+		{mediaID + "\x00entry\x00" + entryID + "\x00latest", ""},
+		{mediaID + "\x00entry\x00" + entryID + "\x00scheduled", ""},
+		{revisionID + "\x00entry\x00" + entryID + "\x00publishes", ""},
+	}
+	if got := rawTable(t, s, tableSummaries); !slices.Equal(got, wantSummaries) {
+		t.Errorf("summaries = %q, want %q", got, wantSummaries)
+	}
+	if got := rawTable(t, s, tableReferences); !slices.Equal(got, wantReferences) {
+		t.Errorf("references = %q, want %q", got, wantReferences)
+	}
+	checkConsistent(t, s)
 }
 
 // TestLogDamage checks the errors of the reads of values that the log backend cannot read, or that name what the store
@@ -1156,9 +1189,9 @@ func TestLogSchemaVersion(t *testing.T) {
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{3}, "the store schema is of version 3, newer than this program knows (2)"},
+		{"newer", []byte{4}, "the store schema is of version 4, newer than this program knows (3)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (2)"},
+			"the store schema is of version 300, newer than this program knows (3)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},

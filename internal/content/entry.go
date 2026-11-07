@@ -26,6 +26,8 @@ type Entry struct {
 	TranslationGroup  string
 	Status            Status
 	PublishedRevision string // the revision on the public site; only when Status is StatusPublished
+	ScheduledRevision string // the revision to publish at ScheduledAt; only when Status is StatusScheduled
+	ScheduledAt       string // RFC 3339, as checkDatetime accepts; only when Status is StatusScheduled
 	CreatedAt         string // RFC 3339, as checkDatetime accepts
 	CreatedBy         string // ID of the user
 }
@@ -57,6 +59,10 @@ func (x *Entry) decode(d *decoder) error {
 			v.Status = Status(s)
 		case "publishedRevision":
 			v.PublishedRevision, err = d.string()
+		case "scheduledRevision":
+			v.ScheduledRevision, err = d.string()
+		case "scheduledAt":
+			v.ScheduledAt, err = d.string()
 		case "createdAt":
 			v.CreatedAt, err = d.string()
 		case "createdBy":
@@ -98,6 +104,8 @@ func (x Entry) MarshalJSON() ([]byte, error) {
 		TranslationGroup  string `json:"translationGroup,omitempty"`
 		Status            Status `json:"status,omitempty"`
 		PublishedRevision string `json:"publishedRevision,omitempty"`
+		ScheduledRevision string `json:"scheduledRevision,omitempty"`
+		ScheduledAt       string `json:"scheduledAt,omitempty"`
 		CreatedAt         string `json:"createdAt,omitempty"`
 		CreatedBy         string `json:"createdBy,omitempty"`
 	}{
@@ -109,12 +117,15 @@ func (x Entry) MarshalJSON() ([]byte, error) {
 		TranslationGroup:  x.TranslationGroup,
 		Status:            x.Status,
 		PublishedRevision: x.PublishedRevision,
+		ScheduledRevision: x.ScheduledRevision,
+		ScheduledAt:       x.ScheduledAt,
 		CreatedAt:         x.CreatedAt,
 		CreatedBy:         x.CreatedBy,
 	})
 }
 
-// Validate checks x in site. Every item of an entry is required, apart from PublishedRevision.
+// Validate checks x in site. Every item of an entry is required, apart from those that only some statuses have:
+// PublishedRevision, ScheduledRevision and ScheduledAt.
 func (x Entry) Validate(site *Site) error {
 	var c checker
 	x.check(&c, site)
@@ -147,6 +158,24 @@ func (x Entry) check(c *checker, site *Site) {
 		c.add("/publishedRevision", checkID(RefRevision, x.PublishedRevision))
 	case x.Status == StatusPublished:
 		c.addf("/publishedRevision", "missing publishedRevision of a published entry")
+	}
+	switch {
+	case x.ScheduledRevision != "":
+		if x.Status != StatusScheduled {
+			c.addf("/scheduledRevision", "not allowed unless the status is scheduled")
+		}
+		c.add("/scheduledRevision", checkID(RefRevision, x.ScheduledRevision))
+	case x.Status == StatusScheduled:
+		c.addf("/scheduledRevision", "missing scheduledRevision of a scheduled entry")
+	}
+	switch {
+	case x.ScheduledAt != "":
+		if x.Status != StatusScheduled {
+			c.addf("/scheduledAt", "not allowed unless the status is scheduled")
+		}
+		c.add("/scheduledAt", checkDatetime(x.ScheduledAt))
+	case x.Status == StatusScheduled:
+		c.addf("/scheduledAt", "missing scheduledAt of a scheduled entry")
 	}
 	c.required("createdAt", x.CreatedAt, checkDatetime)
 	c.required("createdBy", x.CreatedBy, func(s string) error { return checkID(RefUser, s) })

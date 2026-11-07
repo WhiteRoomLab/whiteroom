@@ -13,10 +13,10 @@ import (
 )
 
 // The index is derived from the documents, the revisions of the entries and nothing else: the summary of each current
-// document, and a reference from each document, and from the published and the last revision of each entry, to every
-// ID that its JSON holds; an entry also refers to the revision that it publishes. Put, Delete and AddRevision update it
-// in their own transaction, and RebuildIndex makes it again with the same result. The shared code makes every decision
-// of it; a backend only keeps the rows (backend.go).
+// document, and a reference from each document, and from the published, the scheduled and the last revision of each
+// entry, to every ID that its JSON holds; an entry also refers to the revisions that it publishes and schedules. Put,
+// Delete and AddRevision update it in their own transaction, and RebuildIndex makes it again with the same result. The
+// shared code makes every decision of it; a backend only keeps the rows (backend.go).
 
 // ErrNoIndex is the error of the reads of the index in a store of the table schema 1, which has none: opening it as
 // its writer once builds it.
@@ -27,9 +27,10 @@ var ErrNoIndex = errors.New(
 // the checks across the documents, the paths of the pages and the lookups of references read. Kind and ID name the
 // document ("" for the settings document), and only the pointer of its kind is set, with the fields that follow of the
 // JSON of the document; the other fields are zero:
-//   - Entry has every field. Published has Slug, Parent, Date, Author, Sticky and Terms of the published revision, and
-//     is set only if the store has the revision that Entry.PublishedRevision names, of any entry as the build reads any
-//     revision by its ID, and it decodes. Latest is the ID of the last revision of the entry, "" if it has none;
+//   - Entry has every field, ScheduledRevision and ScheduledAt too. Published has Slug, Parent, Date, Author, Sticky
+//     and Terms of the published revision, and is set only if the store has the revision that Entry.PublishedRevision
+//     names, of any entry as the build reads any revision by its ID, and it decodes. Latest is the ID of the last
+//     revision of the entry, "" if it has none;
 //   - Term has ID, Taxonomy, Language, TranslationGroup, Slug and Parent;
 //   - Media has ID, Hash and MIMEType;
 //   - Author has ID and Slug;
@@ -60,10 +61,11 @@ const (
 	RoleDocument  Role = "document"  // the JSON of the document holds it
 	RolePublished Role = "published" // the JSON of the published revision of an entry holds it
 	RoleLatest    Role = "latest"    // the JSON of the last revision of an entry holds it
+	RoleScheduled Role = "scheduled" // the JSON of the scheduled revision of an entry holds it
 
-	// rolePublishes is that of the revision that an entry names as its published one, whether the store has it or not,
-	// so that AddRevision finds the entries to which the revision gives a published revision. Referrers does not take
-	// the ID of a revision.
+	// rolePublishes is that of the revisions that an entry names as its published and its scheduled one, whether the
+	// store has them or not, so that AddRevision finds the entries to which the revision gives a published or a scheduled
+	// revision. Referrers does not take the ID of a revision.
 	rolePublishes Role = "publishes"
 )
 
@@ -113,7 +115,7 @@ func invalidKey(table indexTable, key []byte) error {
 }
 
 // fits reports whether r can be the row of a document of kind: it has the pointer of kind and no other pointer, and
-// only an entry has a published revision, a last revision, and the roles published, latest and publishes.
+// only an entry has a published revision, a last revision, and the roles published, latest, scheduled and publishes.
 func (r *summaryRow) fits(kind content.RefKind) bool {
 	for _, p := range []struct {
 		kind content.RefKind
@@ -133,7 +135,7 @@ func (r *summaryRow) fits(kind content.RefKind) bool {
 	for role := range r.Refs {
 		switch role {
 		case RoleDocument:
-		case RolePublished, RoleLatest, rolePublishes:
+		case RolePublished, RoleLatest, RoleScheduled, rolePublishes:
 			if kind != content.RefEntry {
 				return false
 			}
@@ -236,6 +238,19 @@ func isRefID(s string) bool {
 	return content.CheckID(kind, s) == nil
 }
 
+// publishes returns the IDs of the revisions that e names as its published and its scheduled one, sorted and without
+// duplicates. Only an ID can name a revision of the store, and a key must not be made of any other string.
+func publishes(e *content.Entry) []string {
+	var ids []string
+	for _, id := range []string{e.PublishedRevision, e.ScheduledRevision} {
+		if content.CheckID(content.RefRevision, id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
+}
+
 // docRow makes the row of the document id, whose JSON is data and which decoders have decoded as doc. The row of an
 // entry still lacks what its revisions give it.
 func docRow(id string, doc any, data []byte) summaryRow {
@@ -244,10 +259,7 @@ func docRow(id string, doc any, data []byte) summaryRow {
 	case *content.Entry:
 		e := *x
 		r.Entry = &e
-		// Only an ID can name a revision of the store, and a key must not be made of any other string.
-		if content.CheckID(content.RefRevision, e.PublishedRevision) == nil {
-			r.setRefs(rolePublishes, []string{e.PublishedRevision})
-		}
+		r.setRefs(rolePublishes, publishes(&e))
 	case *content.Term:
 		r.Term = &content.Term{
 			ID: x.ID, Taxonomy: x.Taxonomy, Language: x.Language, TranslationGroup: x.TranslationGroup, Slug: x.Slug,
@@ -296,32 +308,63 @@ func (t *Tx) readRevision(id string) (Revision, bool, error) {
 	return r, true, nil
 }
 
-// publish sets in row, that of the entry entry, what the revision id, which the entry publishes, gives it, if the store
-// has it, of any entry, and it decodes. It returns the data of the revision if it has set them.
-func (t *Tx) publish(row *summaryRow, entry, id string) ([]byte, error) {
+// readDecoded returns the revision id and its data if the store has it, of any entry, and it decodes; else nil.
+func (t *Tx) readDecoded(id string) (*content.Revision, []byte, error) {
 	r, ok, err := t.readRevision(id)
 	if err != nil || !ok {
-		return nil, err
+		return nil, nil, err
 	}
 	rev, err := decodeRevisionData(id, r.Data)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	row.Published = projection(rev)
-	row.setRefs(RolePublished, refsOf(r.Data, entry))
-	return r.Data, nil
+	return rev, r.Data, nil
 }
 
-// latest sets in row, that of the entry entry, the last revision of the entry. If it is the revision that publish has
-// read, whose data are published, it does not read it again.
-func (t *Tx) latest(row *summaryRow, entry, published string, publishedData []byte) error {
+// revisionData is the data of the revision id, which publish or schedule has read.
+type revisionData struct {
+	id   string
+	data []byte
+}
+
+// publish sets in row, that of the entry entry, what the revision id, which the entry publishes, gives it, if the store
+// has it, of any entry, and it decodes. It returns the data of the revision if it has set them.
+func (t *Tx) publish(row *summaryRow, entry, id string) ([]byte, error) {
+	rev, data, err := t.readDecoded(id)
+	if rev == nil {
+		return nil, err
+	}
+	row.Published = projection(rev)
+	row.setRefs(RolePublished, refsOf(data, entry))
+	return data, nil
+}
+
+// schedule sets in row, that of the entry entry, the references of the revision id, which the entry schedules, if the
+// store has it, of any entry, and it decodes. It returns the data of the revision if it has set them.
+func (t *Tx) schedule(row *summaryRow, entry, id string) ([]byte, error) {
+	rev, data, err := t.readDecoded(id)
+	if rev == nil {
+		return nil, err
+	}
+	row.setRefs(RoleScheduled, refsOf(data, entry))
+	return data, nil
+}
+
+// latest sets in row, that of the entry entry, the last revision of the entry. If it is one of the revisions in read,
+// whose data are set in the row, it does not read it again.
+func (t *Tx) latest(row *summaryRow, entry string, read ...revisionData) error {
 	revs, err := t.b.revisions(entry)
 	if err != nil || len(revs) == 0 {
 		return err
 	}
 	last := revs[len(revs)-1].ID
-	data := publishedData
-	if last != published || data == nil {
+	var data []byte
+	for _, r := range read {
+		if r.id == last && r.data != nil {
+			data = r.data
+		}
+	}
+	if data == nil {
 		r, ok, err := t.readRevision(last)
 		if err != nil {
 			return err
@@ -427,18 +470,30 @@ func (t *Tx) indexDocument(kind content.RefKind, id string, doc any, data []byte
 }
 
 // entryRow adds to row, that of the entry id whose document is e, what its revisions give it, as the row old, which it
-// had if hadOld, has them if they are still those: the published revision, and the last one.
+// had if hadOld, has them if they are still those: the published revision, the scheduled one, and the last one.
 func (t *Tx) entryRow(row *summaryRow, id string, e *content.Entry, old summaryRow, hadOld bool) error {
-	var published []byte
+	var read []revisionData
 	if e.PublishedRevision != "" {
 		if hadOld && old.Entry != nil && old.Entry.PublishedRevision == e.PublishedRevision && old.Published != nil {
 			row.Published = old.Published
 			row.setRefs(RolePublished, old.Refs[RolePublished])
 		} else {
-			var err error
-			if published, err = t.publish(row, id, e.PublishedRevision); err != nil {
+			data, err := t.publish(row, id, e.PublishedRevision)
+			if err != nil {
 				return err
 			}
+			read = append(read, revisionData{e.PublishedRevision, data})
+		}
+	}
+	if e.ScheduledRevision != "" {
+		if hadOld && old.Entry != nil && old.Entry.ScheduledRevision == e.ScheduledRevision && len(old.Refs[RoleScheduled]) > 0 {
+			row.setRefs(RoleScheduled, old.Refs[RoleScheduled])
+		} else {
+			data, err := t.schedule(row, id, e.ScheduledRevision)
+			if err != nil {
+				return err
+			}
+			read = append(read, revisionData{e.ScheduledRevision, data})
 		}
 	}
 	if hadOld {
@@ -446,12 +501,12 @@ func (t *Tx) entryRow(row *summaryRow, id string, e *content.Entry, old summaryR
 		row.setRefs(RoleLatest, old.Refs[RoleLatest])
 		return nil
 	}
-	return t.latest(row, id, e.PublishedRevision, published)
+	return t.latest(row, id, read...)
 }
 
 // indexRevision updates the index after AddRevision has added the revision id of the entry entry, whose JSON is data,
-// which has decoded as rev: it is the last revision of entry, and the published revision of the entries that name it,
-// of which the references to it say.
+// which has decoded as rev: it is the last revision of entry, and the published or the scheduled revision of the
+// entries that name it, of which the references to it say.
 func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte) error {
 	entries := []string{entry}
 	prefix := append([]byte(id), 0)
@@ -462,7 +517,7 @@ func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte)
 			rerr = invalidKey(indexReferences, key)
 			return false
 		}
-		// Under the ID of a revision, a key is that of the entry that publishes it.
+		// Under the ID of a revision, a key is that of the entry that publishes or schedules it.
 		if r.ID != entry {
 			entries = append(entries, r.ID)
 		}
@@ -492,6 +547,9 @@ func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte)
 			row.Published = projection(rev)
 			row.setRefs(RolePublished, refs)
 		}
+		if row.Entry != nil && row.Entry.ScheduledRevision == id {
+			row.setRefs(RoleScheduled, refs)
+		}
 		if err := t.saveRow(content.RefEntry, e, row, old, oldValue); err != nil {
 			return err
 		}
@@ -501,7 +559,8 @@ func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte)
 
 // splitRefKey splits key, a key of references, into the document that refers and the role. It reports false for a key
 // that the index cannot make: a document that has no summary, a role that its kind does not have (only an entry has
-// published, latest and publishes), or a target that the role does not take (only publishes takes a revision).
+// published, latest, scheduled and publishes), or a target that the role does not take (only publishes takes a
+// revision).
 func splitRefKey(key []byte) (Referrer, bool) {
 	target, rest, ok1 := bytes.Cut(key, []byte{0})
 	kind, rest, ok2 := bytes.Cut(rest, []byte{0})
@@ -514,7 +573,7 @@ func splitRefKey(key []byte) (Referrer, bool) {
 	switch r.Role {
 	case RoleDocument:
 		ok = isRefID(string(target))
-	case RolePublished, RoleLatest:
+	case RolePublished, RoleLatest, RoleScheduled:
 		ok = r.Kind == content.RefEntry && isRefID(string(target))
 	case rolePublishes:
 		ok = r.Kind == content.RefEntry && content.CheckID(content.RefRevision, string(target)) == nil
@@ -606,8 +665,8 @@ func (t *Tx) Summaries(kind content.RefKind) ([]Summary, error) {
 
 // Referrers returns the current documents that refer to the document of kind with id, with how, in the order of their
 // kinds, IDs and roles: the IDs that the JSON of a document holds, and, of an entry, those that the JSON of its
-// published and of its last revision hold. Only entries, terms, media, authors and forms are referred to; nothing
-// refers to the settings document. A key that the index cannot have fails it.
+// published, of its scheduled and of its last revision hold. Only entries, terms, media, authors and forms are referred
+// to; nothing refers to the settings document. A key that the index cannot have fails it.
 func (t *Tx) Referrers(kind content.RefKind, id string) ([]Referrer, error) {
 	if err := t.check(false); err != nil {
 		return nil, err
@@ -675,13 +734,7 @@ func (t *Tx) computeIndex(emit func(table indexTable, key, value []byte) error) 
 			row := docRow(d.ID, doc, d.Data)
 			if e, ok := doc.(*content.Entry); ok {
 				largest = max(largest, int64(e.Number))
-				var published []byte
-				if e.PublishedRevision != "" {
-					if published, err = t.publish(&row, d.ID, e.PublishedRevision); err != nil {
-						return 0, err
-					}
-				}
-				if err := t.latest(&row, d.ID, e.PublishedRevision, published); err != nil {
+				if err := t.entryRow(&row, d.ID, e, summaryRow{}, false); err != nil {
 					return 0, err
 				}
 			}
