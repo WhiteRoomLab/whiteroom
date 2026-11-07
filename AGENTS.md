@@ -36,6 +36,11 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `WHITEROOM_BENCH`：保存の層のベンチマーク（`TestBenchmarks`。自作の層の3つの置き場所を測る）。`WHITEROOM_BENCH=<結果のディレクトリ> WHITEROOM_BENCH_DIR=<作業のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/store` で動かし、開発のマシンで約2時間かかる。作業のディレクトリは、実際のディスクに置き、`-race` は付けない（付けると、失敗する）。`WHITEROOM_BENCH_SMOKE=1` で、仕組みだけを確かめる小さな試しになる。条件と結果は、構想書の 3.5。
 - dm-log-writes：記録（root が要る。`internal/logdb/dmlog/record.sh`）と、記録の確かめ（root は要らない。`WHITEROOM_DMLOG=<結果のディレクトリ> go test -count=1 -v -run '^TestDMLogCheck$' ./internal/store`）の手順は、構想書の 3.5 の「テスト」。記録は、まだ動かしていない（構想書の 6.12 の 130）。
 
+ビルド（構想書の 4.3）のメモリのテストは CI で動くが、ベンチマークは CI では動かさない。
+
+- `TestBuildMemory`（`internal/build/large_test.go`）は、CI で動く（約2秒。`-race` では約7秒）。見本のサイトに投稿を100件と400件足してビルドし、段階の終わりに残るヒープが、投稿1件あたり4KiB（`maxRetainedPerPost`）以内であることを確かめる。投稿ごとに描画の警告が1つあるサイトと、無いサイトの両方で確かめる（`-race` では、あるサイトだけ）。本文やリビジョンのファイルを持ち続けるように戻すと、上限を大きく超え、一覧のエントリーのデータを使い回すように戻すと、わずかに超える。ビルドが持ち続けるものを変えたら、この上限と構想書の 4.3 の「メモリ」の値を見直す。
+- `WHITEROOM_BUILD_BENCH`：ビルドのベンチマーク（`TestBenchmarks`。0・1000・5000・20000件の投稿を足した見本のサイトを、別のプロセスでビルドして、時間と最大RSSを測る）。`WHITEROOM_BUILD_BENCH=<結果のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/build` で動かし、開発のマシンで約75秒かかる（Linux だけ）。`-race` は付けない（付けると、失敗する）。サイトのファイルを `TMPDIR` に作るので、`TMPDIR` は実際のディスクに置く。結果のディレクトリに、`results.md`・`raw.jsonl`・段階ごとのヒーププロファイル（`heap-<件数>/<段階>.pb.gz`）を書く。`GOGC`・`GOMEMLIMIT`・`GODEBUG` は、ビルドのプロセスに渡り、`results.md` に残る（`GOMAXPROCS` は4に決まる）。条件と結果は、構想書の 4.3 の「メモリ」。
+
 見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。ページの `<head>` の正規 URL・アイコン・OGP などは、サイトの URL（`https://example.com/`）を指したまま（構想書の 9.4）。
 
 ## パッケージの置き場所
