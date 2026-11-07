@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 var null = Value{Kind: Null}
@@ -37,14 +38,28 @@ func ps(s string) string {
 	return fmt.Sprintf("s:%d:\"%s\";", len(s), s)
 }
 
+// psCRLF is ps for a string that had CRLF where it has LF now, as an XML parser turns them: PHP wrote its length with
+// two bytes for each of the line breaks.
+func psCRLF(s string) string {
+	return fmt.Sprintf("s:%d:\"%s\";", len(s)+strings.Count(s, "\n"), s)
+}
+
 // serialize writes v as PHP's serialize() does, for the values that Unserialize reads.
 func serialize(v Value) string {
 	var b strings.Builder
-	write(&b, v)
+	write(&b, v, ps)
 	return b.String()
 }
 
-func write(b *strings.Builder, v Value) {
+// serializeCRLF is serialize for a value whose strings had CRLF where they have LF now: the length of a string counts
+// two bytes for each LF.
+func serializeCRLF(v Value) string {
+	var b strings.Builder
+	write(&b, v, psCRLF)
+	return b.String()
+}
+
+func write(b *strings.Builder, v Value, writeStr func(string) string) {
 	switch v.Kind {
 	case Null:
 		b.WriteString("N;")
@@ -59,12 +74,12 @@ func write(b *strings.Builder, v Value) {
 	case Float:
 		fmt.Fprintf(b, "d:%s;", formatFloat(v.Float))
 	case String:
-		b.WriteString(ps(v.Str))
+		b.WriteString(writeStr(v.Str))
 	case Array:
 		fmt.Fprintf(b, "a:%d:{", len(v.Array))
 		for _, e := range v.Array {
-			write(b, e.Key)
-			write(b, e.Value)
+			write(b, e.Key, writeStr)
+			write(b, e.Value, writeStr)
 		}
 		b.WriteByte('}')
 	}
@@ -706,5 +721,376 @@ func TestErrorString(t *testing.T) {
 	err := &Error{Offset: 3, Msg: "unexpected end of the value"}
 	if got, want := err.Error(), "byte 3: unexpected end of the value"; got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestSerializeCRLF(t *testing.T) {
+	v := array(field("a\nb", str("c\nd\n")), field("e", list(str("f"), integer(1))))
+	want := "a:2:{s:4:\"a\nb\";s:6:\"c\nd\n\";s:1:\"e\";a:2:{i:0;s:1:\"f\";i:1;i:1;}}"
+	if got := serializeCRLF(v); got != want {
+		t.Errorf("serializeCRLF() = %q, want %q", got, want)
+	}
+	if got := serialize(v); got == want {
+		t.Errorf("serialize() = %q, want the lengths that do not count the LF twice", got)
+	}
+}
+
+// mail returns the value that Contact Form 7 stores for the mail of a form, with body as its body.
+func mail(body string) Value {
+	return array(
+		field("active", boolean(true)),
+		field("subject", str(mailSubject)),
+		field("sender", str(mailSender)),
+		field("recipient", str("[_site_admin_email]")),
+		field("body", str(body)),
+		field("additional_headers", str("Reply-To: [your-email]")),
+		field("attachments", str("")),
+		field("use_html", boolean(false)),
+		field("exclude_blank", boolean(false)),
+	)
+}
+
+// body26 is a body with 26 LF. Written for CRLF, its length is 26 more than its bytes, so it reaches to where the next
+// key, additional_headers, ends.
+var body26 = strings.Repeat("あ\n", 26)
+
+// bodyHidden is a text with 32 LF. Written for CRLF, its length reaches 32 bytes past its end, to where key24 ends in
+// the entry after it.
+var bodyHidden = strings.Repeat("\n", 32)
+
+var key24 = strings.Repeat("k", 24)
+
+const (
+	// lfOnly is a text with LF that were not CRLF, so its written length counts them once.
+	lfOnly = "Hello\nWorld\n"
+	// lfQuote is one too, so its written length is its 4 bytes. Its two LF counted twice also make 4, and a quote and a
+	// semicolon follow them, so the counted length ends the string too.
+	lfQuote = "\n\n\";"
+)
+
+// unserializeCRLFTests are the values that UnserializeCRLF reads, with the number of the strings that it counts.
+var unserializeCRLFTests = []struct {
+	name string
+	in   string
+	want Value
+	n    int
+}{
+	{name: "a string", in: serializeCRLF(str("a\nb")), want: str("a\nb"), n: 1},
+	{name: "line breaks only", in: serializeCRLF(str("\n\n\n")), want: str("\n\n\n"), n: 1},
+	// The written length, 40, is more than the whole of the input.
+	{name: "many line breaks only", in: serializeCRLF(str(strings.Repeat("\n", 20))), want: str(strings.Repeat("\n", 20)), n: 1},
+	{name: "line breaks at the ends", in: serializeCRLF(str("\nabc\n")), want: str("\nabc\n"), n: 1},
+	{name: "Japanese", in: serializeCRLF(str("日本語\nです\n")), want: str("日本語\nです\n"), n: 1},
+	{name: "a string with no line break", in: serializeCRLF(str("abc")), want: str("abc"), n: 0},
+	{
+		name: "some strings",
+		in:   serializeCRLF(list(str("a\nb"), str("c"), str("d\ne\nf"))),
+		want: list(str("a\nb"), str("c"), str("d\ne\nf")),
+		n:    2,
+	},
+	{
+		name: "keys",
+		in:   serializeCRLF(array(Entry{Key: str("a\nb"), Value: integer(1)}, Entry{Key: str("c\nd"), Value: str("x\ny")})),
+		want: array(Entry{Key: str("a\nb"), Value: integer(1)}, Entry{Key: str("c\nd"), Value: str("x\ny")}),
+		n:    3,
+	},
+	{
+		name: "three levels",
+		in: serializeCRLF(array(
+			field("a", array(field("b", array(field("c\nd", str("e\nf")), field("g", integer(1)))), field("h", str("i\nj")))),
+			field("k", str("l")),
+		)),
+		want: array(
+			field("a", array(field("b", array(field("c\nd", str("e\nf")), field("g", integer(1)))), field("h", str("i\nj")))),
+			field("k", str("l")),
+		),
+		n: 3,
+	},
+	{name: "Contact Form 7 mail", in: serializeCRLF(mail(mailBody)), want: mail(mailBody), n: 1},
+	{
+		name: "strings of LF only and strings of CRLF",
+		in: "a:4:{" + ps("template") + ps(lfOnly) + ps("body") + psCRLF(mailBody) + ps("footer") + ps("A\nB\n") +
+			ps("note") + psCRLF("x\ny") + "}",
+		want: array(
+			field("template", str(lfOnly)), field("body", str(mailBody)), field("footer", str("A\nB\n")), field("note", str("x\ny")),
+		),
+		n: 2,
+	},
+	{
+		name: "the written length ends the body where the next key ends",
+		in:   serializeCRLF(mail(body26)),
+		want: mail(body26),
+		n:    1,
+	},
+	{
+		name: "the written length ends the body where the next value ends",
+		in:   serializeCRLF(mail(strings.Repeat("\n", 56))),
+		want: mail(strings.Repeat("\n", 56)),
+		n:    1,
+	},
+	{
+		name: "the counted length ends a string of LF only too",
+		in:   "a:1:{" + ps("k") + ps(lfQuote) + "}",
+		want: array(field("k", str(lfQuote))),
+		n:    0,
+	},
+	{
+		name: "a string of LF only that both lengths end, then a mail that needs the counted length",
+		in:   "a:2:{" + ps("a") + ps(lfQuote) + ps("m") + serializeCRLF(mail(body26)) + "}",
+		want: array(field("a", str(lfQuote)), field("m", mail(body26))),
+		n:    1,
+	},
+	{
+		name: "a mail that needs the counted length, then a string of LF only that both lengths end",
+		in:   "a:2:{" + ps("m") + serializeCRLF(mail(body26)) + ps("a") + ps(lfQuote) + "}",
+		want: array(field("m", mail(body26)), field("a", str(lfQuote))),
+		n:    1,
+	},
+	{
+		name: "a string that needs the counted length, then one that both lengths end, in one array",
+		in:   "a:4:{" + ps("a") + psCRLF(bodyHidden) + ps(key24) + "i:1;" + ps("c") + ps(lfQuote) + ps("d") + ps("z") + "}",
+		want: array(
+			field("a", str(bodyHidden)), field(key24, integer(1)), field("c", str(lfQuote)), field("d", str("z")),
+		),
+		n: 1,
+	},
+}
+
+func TestUnserializeCRLF(t *testing.T) {
+	for _, tt := range unserializeTests {
+		t.Run("same as Unserialize/"+tt.name, func(t *testing.T) {
+			got, n, err := UnserializeCRLF(tt.in)
+			if err != nil {
+				t.Fatalf("UnserializeCRLF(%q) = %v", tt.in, err)
+			}
+			if !wellFormed(got) || !equalValue(got, tt.want) || n != 0 {
+				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, 0", tt.in, serialize(got), n, serialize(tt.want))
+			}
+		})
+	}
+	for _, tt := range unserializeCRLFTests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, n, err := UnserializeCRLF(tt.in)
+			if err != nil {
+				t.Fatalf("UnserializeCRLF(%q) = %v", tt.in, err)
+			}
+			if !wellFormed(got) || !equalValue(got, tt.want) || n != tt.n {
+				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, %d", tt.in, serialize(got), n, serialize(tt.want), tt.n)
+			}
+		})
+	}
+}
+
+func TestUnserializeCRLFMail(t *testing.T) {
+	for _, body := range []string{mailBody, body26} {
+		v, n, err := UnserializeCRLF(serializeCRLF(mail(body)))
+		if err != nil || n != 1 {
+			t.Fatalf("UnserializeCRLF(a mail) = %v, %d, %v; want a value and 1", v, n, err)
+		}
+		recipient, ok := v.Lookup("recipient")
+		if !ok || recipient.Str != "[_site_admin_email]" {
+			t.Errorf("recipient = %q, %v; want [_site_admin_email]", recipient.Str, ok)
+		}
+		got, _ := v.Lookup("body")
+		if got.Str != body || strings.Contains(got.Str, "\r") {
+			t.Errorf("body = %q, want %q, with the line breaks as LF", got.Str, body)
+		}
+	}
+}
+
+var unserializeCRLFErrorTests = []struct {
+	name string
+	in   string
+	off  int
+	msg  string
+	same bool // the error is that of Unserialize
+}{
+	{name: "CRLF and LF in a string", in: "s:6:\"a\nb\nc\";", off: 11, msg: `expected '"', found ';'`, same: true},
+	{name: "the length ends between the CRLF", in: "s:2:\"a\nb\";", off: 7, msg: `expected '"', found 'b'`, same: true},
+	{name: "no length ends the string", in: "s:5:\"a\n\";b\nc\";", off: 10, msg: `expected '"', found '\n'`, same: true},
+	{name: "a wrong length of a string that has no LF", in: `s:2:"abc";`, off: 7, msg: `expected '"', found 'c'`, same: true},
+	{name: "a length beyond the input", in: "s:9:\"a\nb\";", off: 2, msg: msgLen, same: true},
+	{name: "a length beyond the input and a counted one", in: "s:99:\"a\nb\";", off: 2, msg: msgLen, same: true},
+	{name: "a quote without a semicolon", in: "s:3:\"a\nb\"x", off: 9, msg: "expected ';', found 'x'", same: true},
+	{name: "a quote without a semicolon after a counted length", in: "s:4:\"a\nb\"x", off: 9, msg: `expected '"', found 'x'`, same: true},
+	{name: "the end after a counted string", in: "a:1:{" + psCRLF("a\nb") + "i:1;", off: 5 + 10 + 4, msg: msgEOF},
+	{name: "data after a counted string", in: psCRLF("a\nb") + "x", off: 10, msg: msgExtra},
+	{name: "an array that has fewer elements after a counted key", in: "a:2:{" + psCRLF("a\nb") + "i:1;}", off: 5 + 10 + 4, msg: "array has fewer elements than declared"},
+}
+
+func TestUnserializeCRLFErrors(t *testing.T) {
+	for _, tt := range unserializeCRLFErrorTests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, n, err := UnserializeCRLF(tt.in)
+			var e *Error
+			if !errors.As(err, &e) {
+				t.Fatalf("UnserializeCRLF(%q) = %s, %d, %v; want *Error", tt.in, serialize(got), n, err)
+			}
+			if e.Offset != tt.off || e.Msg != tt.msg {
+				t.Errorf("UnserializeCRLF(%q) = %v; want byte %d: %s", tt.in, err, tt.off, tt.msg)
+			}
+			if got.Kind != Null || !wellFormed(got) || n != 0 {
+				t.Errorf("UnserializeCRLF(%q) = %+v, %d with an error; want the zero Value and 0", tt.in, got, n)
+			}
+			if tt.same {
+				_, want := Unserialize(tt.in)
+				var w *Error
+				if !errors.As(want, &w) || *w != *e {
+					t.Errorf("UnserializeCRLF(%q) = %v; want the error of Unserialize, %v", tt.in, err, want)
+				}
+			}
+		})
+	}
+	// The strings of the tests of Unserialize have no LF, so they have the same errors.
+	for _, tt := range unserializeErrorTests {
+		t.Run("same as Unserialize/"+tt.name, func(t *testing.T) {
+			_, n, err := UnserializeCRLF(tt.in)
+			var e *Error
+			if !errors.As(err, &e) || e.Offset != tt.off || e.Msg != tt.msg || n != 0 {
+				t.Errorf("UnserializeCRLF(%q) = %d, %v; want 0, byte %d: %s", tt.in, n, err, tt.off, tt.msg)
+			}
+		})
+	}
+}
+
+func TestUnserializeCRLFLimits(t *testing.T) {
+	same := func(t *testing.T, in string) {
+		t.Helper()
+		_, n, err := UnserializeCRLF(in)
+		_, want := Unserialize(in)
+		var e, w *Error
+		if !errors.As(err, &e) || !errors.As(want, &w) || *e != *w || n != 0 {
+			t.Errorf("UnserializeCRLF(%d bytes) = %d, %v; want 0, %v", len(in), n, err, want)
+		}
+	}
+	t.Run("depth", func(t *testing.T) {
+		v, n, err := UnserializeCRLF(nested(MaxDepth))
+		if err != nil || n != 0 || depth(v) != MaxDepth {
+			t.Fatalf("UnserializeCRLF(%d levels) = %d levels, %d, %v", MaxDepth, depth(v), n, err)
+		}
+		same(t, nested(MaxDepth+1))
+		// A string that is counted does not make the levels fewer.
+		deep := strings.Repeat("a:1:{i:0;", MaxDepth) + psCRLF("a\nb") + strings.Repeat("}", MaxDepth)
+		v, n, err = UnserializeCRLF(deep)
+		if err != nil || n != 1 || depth(v) != MaxDepth {
+			t.Fatalf("UnserializeCRLF(%d levels with a counted string) = %d levels, %d, %v", MaxDepth, depth(v), n, err)
+		}
+		_, _, err = UnserializeCRLF(strings.Repeat("a:1:{i:0;", MaxDepth+1) + psCRLF("a\nb") + strings.Repeat("}", MaxDepth+1))
+		var e *Error
+		if !errors.As(err, &e) || e.Offset != MaxDepth*len("a:1:{i:0;") {
+			t.Errorf("UnserializeCRLF(%d levels with a counted string) = %v; want an error at the level %d", MaxDepth+1, err, MaxDepth+1)
+		}
+	})
+	t.Run("length", func(t *testing.T) {
+		const n = MaxBytes - 13
+		v, count, err := UnserializeCRLF(ps(strings.Repeat("a", n)))
+		if err != nil || len(v.Str) != n || count != 0 {
+			t.Fatalf("UnserializeCRLF(%d bytes) = %d bytes, %d, %v", MaxBytes, len(v.Str), count, err)
+		}
+		same(t, ps(strings.Repeat("a", n+1)))
+	})
+}
+
+func TestUnserializeCRLFTruncated(t *testing.T) {
+	for _, tt := range unserializeCRLFTests {
+		t.Run(tt.name, func(t *testing.T) {
+			for i := range len(tt.in) {
+				prefix := tt.in[:i]
+				v, n, err := UnserializeCRLF(prefix)
+				var e *Error
+				if !errors.As(err, &e) || e.Offset < 0 || e.Offset > len(prefix) || v.Kind != Null || n != 0 {
+					t.Errorf("UnserializeCRLF(%q) = %v, %d, %v; want an *Error in the input", prefix, v, n, err)
+				}
+			}
+			// Data after the value fails every read, so the error is that of the first, which need not be at the data.
+			v, n, err := UnserializeCRLF(tt.in + "x")
+			var e *Error
+			if !errors.As(err, &e) || e.Offset < 0 || e.Offset > len(tt.in)+1 || v.Kind != Null || n != 0 {
+				t.Errorf("UnserializeCRLF(%q) = %v, %d, %v; want an *Error in the input", tt.in+"x", v, n, err)
+			}
+		})
+	}
+}
+
+// TestUnserializeCRLFRereads reads lists of mails with a body that both lengths end. Each mail needs the counted length,
+// and a read with the written one fails inside the mail, so a list of k mails takes k re-reads.
+func TestUnserializeCRLFRereads(t *testing.T) {
+	m := mail(body26)
+	in := serializeCRLF(list(m, m, m))
+	want := list(m, m, m)
+	for _, tt := range []struct {
+		rereads int
+		ok      bool
+	}{{0, false}, {1, false}, {2, false}, {3, true}, {16, true}} {
+		v, n, err := unserializeCRLF(in, tt.rereads)
+		if tt.ok {
+			if err != nil || n != 3 || !equalValue(v, want) {
+				t.Errorf("unserializeCRLF(three mails, %d) = %v, %d, %v; want the value and 3", tt.rereads, v, n, err)
+			}
+			continue
+		}
+		_, wantErr := Unserialize(in)
+		var e, w *Error
+		if !errors.As(err, &e) || !errors.As(wantErr, &w) || *e != *w || n != 0 || v.Kind != Null {
+			t.Errorf("unserializeCRLF(three mails, %d) = %v, %d, %v; want the error of the first read, %v", tt.rereads, v, n, err, wantErr)
+		}
+	}
+	// With the limit of the package, a value that needs more re-reads than that is an error.
+	const many = maxRereads + 1
+	mails := make([]Value, many)
+	for i := range mails {
+		mails[i] = m
+	}
+	if _, _, err := UnserializeCRLF(serializeCRLF(list(mails...))); err == nil {
+		t.Errorf("UnserializeCRLF(%d mails) succeeded, want an error after %d re-reads", many, maxRereads)
+	}
+	if v, n, err := UnserializeCRLF(serializeCRLF(list(mails[:maxRereads]...))); err != nil || n != maxRereads || len(v.Array) != maxRereads {
+		t.Errorf("UnserializeCRLF(%d mails) = %d, %v; want %d", maxRereads, n, err, maxRereads)
+	}
+}
+
+// TestUnserializeCRLFTime reads values of about 1 MiB that make the reads long, and checks that the time grows with the
+// input and the number of reads, not with the square of the input.
+func TestUnserializeCRLFTime(t *testing.T) {
+	const bound = 10 * time.Second
+	// entries returns the entries with the keys 0, 1, and so on, that have value, in about size bytes, and their number.
+	entries := func(size int, value string) (string, int) {
+		var b strings.Builder
+		n := 0
+		for ; b.Len() < size; n++ {
+			fmt.Fprintf(&b, "i:%d;%s", n, value)
+		}
+		return b.String(), n
+	}
+	counted, nCounted := entries(MaxBytes-100, psCRLF(strings.Repeat("ab\n", 8)))
+	branches, nBranches := entries(MaxBytes-100, ps(lfQuote))
+
+	for _, tt := range []struct {
+		name  string
+		in    string
+		count int
+		fails bool
+	}{
+		{"many counted strings", fmt.Sprintf("a:%d:{%s}", nCounted, counted), nCounted, false},
+		// Every read fails at the end, and the last 16 branch points are taken in turn.
+		{"many branch points and a failure at the end", fmt.Sprintf("a:%d:{%s}", nBranches+1, branches), 0, true},
+		{"one string of line breaks", psCRLF(strings.Repeat("\n", MaxBytes/2-100)), 1, false},
+		{"a length that is not the end of the string", "s:" + strconv.Itoa(MaxBytes) + ":\"" + strings.Repeat("\n", MaxBytes-100) + "\";", 0, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if len(tt.in) > MaxBytes {
+				t.Fatalf("the input has %d bytes, want at most %d", len(tt.in), MaxBytes)
+			}
+			start := time.Now()
+			_, count, err := UnserializeCRLF(tt.in)
+			d := time.Since(start)
+			t.Logf("%d bytes, %v", len(tt.in), d)
+			if (err != nil) != tt.fails || count != tt.count {
+				t.Errorf("UnserializeCRLF(%d bytes) = %d, %v; want %d, failure %v", len(tt.in), count, err, tt.count, tt.fails)
+			}
+			if d > bound {
+				t.Errorf("UnserializeCRLF(%d bytes) took %v, want at most %v", len(tt.in), d, bound)
+			}
+		})
 	}
 }

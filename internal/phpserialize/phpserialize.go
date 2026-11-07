@@ -62,18 +62,47 @@ func (e *Error) Error() string {
 // canonical form of an int64, such as "5", is the same key as that integer, and a repeated key is an error.
 // Errors are *Error.
 func Unserialize(s string) (Value, error) {
-	if len(s) > MaxBytes {
-		return Value{}, errorAt(MaxBytes, "too long: %d bytes (max %d)", len(s), MaxBytes)
+	return (&parser{s: s}).whole()
+}
+
+// maxRereads is how many times UnserializeCRLF reads a value again, after the first read, with other lengths.
+const maxRereads = 16
+
+// UnserializeCRLF reads s as Unserialize does, except that it also reads a string whose written length does not end it
+// with a quote and a semicolon, by counting each LF in it as CRLF, two bytes. An XML parser turns the CRLF of a value
+// of a WXR into LF, which makes PHP's length of such a string too long. The strings keep their LF. It also returns the
+// number of the strings that it read so. Errors are *Error.
+//
+// When both lengths end a string, the read goes on with the written one, and if the value then fails, UnserializeCRLF
+// reads it again from the start, taking the counted length at the last such string that still has the written one, and
+// so on, up to maxRereads times. If no read succeeds, the error is that of the first.
+func UnserializeCRLF(s string) (Value, int, error) {
+	return unserializeCRLF(s, maxRereads)
+}
+
+func unserializeCRLF(s string, rereads int) (Value, int, error) {
+	var choices []bool
+	var first error
+	for read := 0; ; read++ {
+		p := &parser{s: s, crlf: true, choices: choices}
+		v, err := p.whole()
+		if err == nil {
+			return v, p.recounted, nil
+		}
+		if read == 0 {
+			first = err
+		}
+		// Go back to the last branch point that has the written length, and take the counted one there.
+		choices = p.choices
+		i := len(choices) - 1
+		for i >= 0 && choices[i] {
+			i--
+		}
+		if i < 0 || read == rereads {
+			return Value{}, 0, first
+		}
+		choices = append(choices[:i], true)
 	}
-	p := &parser{s: s}
-	v, err := p.value(0)
-	if err != nil {
-		return Value{}, err
-	}
-	if p.pos < len(s) {
-		return Value{}, errorAt(p.pos, "unexpected data after the value")
-	}
-	return v, nil
 }
 
 // LooksSerialized reports whether WordPress's is_serialized (strict) takes s for a serialized value. It checks only
@@ -166,6 +195,29 @@ func quote(c byte) string {
 type parser struct {
 	s   string
 	pos int
+
+	// For UnserializeCRLF. A branch point is a string that both lengths end, and choices[i] is whether the read takes
+	// the counted length at the ith one it meets. A read adds the written length to choices for the points it meets
+	// that choices does not have yet.
+	crlf      bool
+	choices   []bool
+	branches  int
+	recounted int // the strings read with the counted length
+}
+
+// whole reads p.s as one value.
+func (p *parser) whole() (Value, error) {
+	if len(p.s) > MaxBytes {
+		return Value{}, errorAt(MaxBytes, "too long: %d bytes (max %d)", len(p.s), MaxBytes)
+	}
+	v, err := p.value(0)
+	if err != nil {
+		return Value{}, err
+	}
+	if p.pos < len(p.s) {
+		return Value{}, errorAt(p.pos, "unexpected data after the value")
+	}
+	return v, nil
 }
 
 func (p *parser) eof() error {
@@ -211,18 +263,20 @@ func (p *parser) digits() error {
 	return nil
 }
 
-// count reads the unsigned decimal number of a string length or an array size. A number beyond the input is returned
-// as len(p.s)+1, which cannot overflow.
+// count reads the unsigned decimal number of a string length or an array size. A number beyond twice the length of the
+// input, which no length of a string with its LF counted as two bytes reaches, is returned as that plus 1, which cannot
+// overflow.
 func (p *parser) count() (int, error) {
 	start := p.pos
 	if err := p.digits(); err != nil {
 		return 0, err
 	}
+	limit := 2 * len(p.s)
 	n := 0
 	for i := start; i < p.pos; i++ {
 		n = n*10 + int(p.s[i]-'0')
-		if n > len(p.s) {
-			return len(p.s) + 1, nil
+		if n > limit {
+			return limit + 1, nil
 		}
 	}
 	return n, nil
@@ -371,6 +425,11 @@ func (p *parser) str() (Value, error) {
 	if err := p.expect('"'); err != nil {
 		return Value{}, err
 	}
+	if p.crlf {
+		if s, ok := p.recountedString(n); ok {
+			return Value{Kind: String, Str: s}, nil
+		}
+	}
 	if n > len(p.s)-p.pos {
 		return Value{}, errorAt(lenAt, "string is longer than the rest of the input")
 	}
@@ -383,6 +442,57 @@ func (p *parser) str() (Value, error) {
 		return Value{}, err
 	}
 	return Value{Kind: String, Str: s}, nil
+}
+
+// recountedString reads the string at p.pos, whose written length is n, with the length that counts each LF in it as
+// two bytes, if that length ends the string and the written one does not, or the read takes the counted one.
+func (p *parser) recountedString(n int) (string, bool) {
+	m := p.recount(n)
+	if m < 0 || m == n || !p.closedAfter(m) {
+		return "", false
+	}
+	if p.closedAfter(n) && !p.choose() {
+		return "", false
+	}
+	s := p.s[p.pos : p.pos+m]
+	p.pos += m + len(`";`)
+	p.recounted++
+	return s, true
+}
+
+// recount returns the number of bytes from p.pos that are n bytes long when each LF counts as two, or -1 if there is
+// no such number. It looks at no more than n bytes.
+func (p *parser) recount(n int) int {
+	sum := 0
+	for i := p.pos; i < len(p.s); i++ {
+		sum++
+		if p.s[i] == '\n' {
+			sum++
+		}
+		if sum >= n {
+			if sum == n {
+				return i + 1 - p.pos
+			}
+			break
+		}
+	}
+	return -1
+}
+
+// closedAfter reports whether `";` follows the n bytes from p.pos.
+func (p *parser) closedAfter(n int) bool {
+	end := p.pos + n
+	return end+2 <= len(p.s) && p.s[end] == '"' && p.s[end+1] == ';'
+}
+
+// choose says whether the read takes the counted length at the branch point that it meets now.
+func (p *parser) choose() bool {
+	i := p.branches
+	p.branches++
+	if i == len(p.choices) {
+		p.choices = append(p.choices, false)
+	}
+	return p.choices[i]
 }
 
 // mapKey is an array key after PHP's normalization: a string that is the canonical form of an int64 becomes the int64.
