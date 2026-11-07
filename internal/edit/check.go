@@ -113,10 +113,22 @@ func (r *run) checkSite(after *siteplan.Site, before func() (*siteplan.Site, err
 	return problems, warnings, nil
 }
 
+// plannedPath returns the path of the page of the entry id in the plan of m, or "" if the entry has none. The problems of
+// the plan are not reported: the checks of the site report them.
+func plannedPath(m *siteplan.Site, id string) string {
+	return m.Plan(func(content.SiteFile, string, string) {}).EntryPaths[id]
+}
+
 // finish checks the site with the change that the Update has made, whose model is after: the operation fails with the
 // new problems, or else res gets the new warnings.
 func (r *run) finish(res *Result, after *siteplan.Site) error {
-	problems, warnings, err := r.checkSite(after, r.before)
+	return r.finishWith(res, after, r.before)
+}
+
+// finishWith is finish with the function that makes the model of the site before the change given, so that a caller that
+// needs the model too can share it with the checks (sync.OnceValues of r.before).
+func (r *run) finishWith(res *Result, after *siteplan.Site, before func() (*siteplan.Site, error)) error {
+	problems, warnings, err := r.checkSite(after, before)
 	if err != nil {
 		return err
 	}

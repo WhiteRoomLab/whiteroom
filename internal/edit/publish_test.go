@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -1128,11 +1133,12 @@ func TestPublishLookupFailure(t *testing.T) {
 	}
 }
 
-// TestRecordResult checks the record of a result: it keeps Publishes and Status, and the record of an operation that has
-// neither is what it was before they existed, so that the records that a store has still read.
+// TestRecordResult checks the record of a result: it keeps Publishes, Status and Redirect, and the record of an operation
+// that has none of them is what it was before they existed, so that the records that a store has still read.
 func TestRecordResult(t *testing.T) {
 	res := Result{
-		Kind: content.RefEntry, ID: draftEN, Revision: testID(content.RefRevision, 1), Publishes: true, Status: content.StatusArchived,
+		Kind: content.RefEntry, ID: draftEN, Revision: testID(content.RefRevision, 1), Redirect: testID(content.RefRedirect, 1),
+		Publishes: true, Status: content.StatusArchived,
 		Version: store.Version{Seq: 7, Kind: content.RefEntry, ID: draftEN, Hash: "sha256:ab", SavedAt: testNow, SavedBy: userID},
 	}
 	if got := newRecordResult(res).result(); !reflect.DeepEqual(got, res) {
@@ -1140,13 +1146,13 @@ func TestRecordResult(t *testing.T) {
 	}
 
 	plain := res
-	plain.Publishes, plain.Status = false, ""
+	plain.Publishes, plain.Status, plain.Redirect = false, "", ""
 	data, err := json.Marshal(record{Request: "sha256:00", Result: newRecordResult(plain)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text := string(data); strings.Contains(text, "publishes") || strings.Contains(text, "status") {
-		t.Errorf("the record of a result without them is %s, want neither", text)
+	if text := string(data); strings.Contains(text, "publishes") || strings.Contains(text, "status") || strings.Contains(text, "redirect") {
+		t.Errorf("the record of a result without them is %s, want none", text)
 	}
 	rec, err := decodeRecord("op_x", data)
 	if err != nil || !reflect.DeepEqual(rec.Result.result(), plain) {
@@ -1327,5 +1333,827 @@ func TestPublishNoSettings(t *testing.T) {
 	}
 	if _, err := ed.Archive(t.Context(), Op{By: userID}, id, seq); !errors.Is(err, fs.ErrNotExist) || err == nil || err.Error() != want {
 		t.Errorf("Archive() = %v, want %q", err, want)
+	}
+}
+
+// Documents of the sample site that the tests of the redirects use.
+const (
+	postJARev   = "rev_01JBG3N6R0T3W6Y9C2E5G8J1K4" // the published revision of postJA, in the slug 新サービス
+	postJAPath  = "/2026/10/26/新サービス/"             // the path of postJA
+	postSlug    = `"slug": "新サービス"`
+	encodedSlug = "%E6%96%B0%E3%82%B5%E3%83%BC%E3%83%93%E3%82%B9" // 新サービス as a server sends it
+	postJAURL   = "/2026/10/26/" + encodedSlug + "/"              // postJAPath as a server sends it
+	newsPageID  = "ent_01JBG3N6T2W5Y8B1D4F7H0K3M6"                // the posts page of ja, in the slug news
+	newsPageRev = "rev_01JBG3N6T2W5Y8B1D4F7H0K3M6"
+	launchPath  = "/2026/10/26/launch/"
+)
+
+// ideographicSpace is U+3000, which a slug can have and the canonical form of a from encodes.
+var ideographicSpace = string(rune(0x3000))
+
+// postRevision returns the revision of postJA that the sample site has, with old replaced by new.
+func postRevision(t *testing.T, old, new string) string {
+	t.Helper()
+	return replaceOnce(t, string(sampleFile(t, revisionName(postJARev))), old, new)
+}
+
+// publishNext saves data as the next revision of the entry and publishes it.
+func publishNext(t *testing.T, ed *Editor, s *store.Store, op Op, entry, data string) (Result, error) {
+	t.Helper()
+	saved := saveRevision(t, ed, s, entry, data)
+	return ed.Publish(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision)
+}
+
+// redirectDoc returns the JSON of the redirect rd as MarshalJSON writes it.
+func redirectDoc(t *testing.T, rd content.Redirect) string {
+	t.Helper()
+	data, err := rd.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// storedRedirects returns the redirects that s has, by ID.
+func storedRedirects(t *testing.T, s *store.Store) map[string]content.Redirect {
+	t.Helper()
+	out := make(map[string]content.Redirect)
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		docs, err := tx.Documents(content.RefRedirect)
+		if err != nil {
+			return err
+		}
+		for _, d := range docs {
+			var rd content.Redirect
+			if err := rd.UnmarshalJSON(d.Data); err != nil {
+				return fmt.Errorf("%s: %w", d.ID, err)
+			}
+			rd.ID = d.ID
+			out[d.ID] = rd
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// lastSeq returns the version number of the last version of the document of kind with id, which is its deletion if it
+// has been deleted.
+func lastSeq(t *testing.T, s *store.Store, kind content.RefKind, id string) int64 {
+	t.Helper()
+	var seq int64
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		versions, err := tx.History(kind, id)
+		if err == nil && len(versions) > 0 {
+			seq = versions[len(versions)-1].Seq
+		}
+		return err
+	})
+	if err != nil || seq == 0 {
+		t.Fatalf("History(%q, %q) = %d, %v; want versions", kind, id, seq, err)
+	}
+	return seq
+}
+
+// wantRedirects fails the test unless the redirects of s are those of before, without the IDs in removed and with those
+// in added, which are in the store as MarshalJSON writes them and in its index.
+func wantRedirects(t *testing.T, s *store.Store, before map[string]content.Redirect, added []content.Redirect, removed ...string) {
+	t.Helper()
+	want := make(map[string]content.Redirect)
+	maps.Copy(want, before)
+	for _, id := range removed {
+		delete(want, id)
+	}
+	for _, rd := range added {
+		want[rd.ID] = rd
+		if got := read(t, s, content.RefRedirect, rd.ID); string(got.Data) != redirectDoc(t, rd) || got.SavedBy != userID {
+			t.Errorf("the redirect %s is %s by %s, want %s by %s", rd.ID, got.Data, got.SavedBy, redirectDoc(t, rd), userID)
+		}
+	}
+	if got := storedRedirects(t, s); !reflect.DeepEqual(got, want) {
+		t.Errorf("the redirects are\n%+v\nwant\n%+v", got, want)
+	}
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		sums, err := tx.Summaries(content.RefRedirect)
+		if err != nil {
+			return err
+		}
+		got := make(map[string]content.Redirect, len(sums))
+		for _, sum := range sums {
+			rd := *sum.Redirect
+			rd.ID = sum.ID
+			got[sum.ID] = rd
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("the index has the redirects\n%+v\nwant\n%+v", got, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// exportSite returns a copy of the sample site directory that has the entries, the redirects and the published revisions
+// of s, so that a build reads what s has.
+func exportSite(t *testing.T, s *store.Store) string {
+	t.Helper()
+	dir := copySite(t)
+	for _, sub := range []string{"entries", "redirects", "revisions"} {
+		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		for _, kind := range []content.RefKind{content.RefEntry, content.RefRedirect} {
+			docs, err := tx.Documents(kind)
+			if err != nil {
+				return err
+			}
+			for _, d := range docs {
+				writeSite(t, dir, docName(kind, d.ID), string(d.Data))
+			}
+		}
+		sums, err := tx.Summaries(content.RefEntry)
+		if err != nil {
+			return err
+		}
+		for _, sum := range sums {
+			if sum.Entry == nil || sum.Entry.PublishedRevision == "" {
+				continue
+			}
+			rev, err := tx.Revision(sum.Entry.PublishedRevision)
+			if err != nil {
+				return err
+			}
+			writeSite(t, dir, revisionName(rev.ID), string(rev.Data))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// builtRedirect is a redirect in the server.json of a release.
+type builtRedirect struct {
+	From   string `json:"from"`
+	To     string `json:"to"` // as a server sends it
+	Status int    `json:"status"`
+}
+
+// builtRedirects builds the site directory dir, which the build must accept, and returns the redirects of the server.json
+// of its release by their froms.
+func builtRedirects(t *testing.T, dir string) map[string]builtRedirect {
+	t.Helper()
+	d, err := sitedir.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	out := t.TempDir()
+	_, err = build.Build(t.Context(), build.Options{
+		Source: source{Dir: d, theme: os.DirFS(themeDir)}, Out: out, CacheDir: t.TempDir(), Workers: 2,
+	})
+	if err != nil {
+		t.Fatalf("the build refuses the site: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "current", "server.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Redirects []builtRedirect `json:"redirects"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		t.Fatal(err)
+	}
+	m := make(map[string]builtRedirect, len(list.Redirects))
+	for _, r := range list.Redirects {
+		m[r.From] = r
+	}
+	return m
+}
+
+// wantBuilt fails the test unless the build has the redirect from from to to with the status 301.
+func wantBuilt(t *testing.T, built map[string]builtRedirect, from, to string) {
+	t.Helper()
+	if got, want := built[from], (builtRedirect{From: from, To: to, Status: 301}); got != want {
+		t.Errorf("the build has the redirect %+v from %q, want %+v", got, from, want)
+	}
+}
+
+// TestPublishRedirect checks the redirects that Publish registers from the old URL of a published entry whose URL it
+// changes, and those from the new URL that it deletes: what the store and its index have, the warnings, and what the
+// build does with the documents that the store has.
+func TestPublishRedirect(t *testing.T) {
+	op := Op{By: userID}
+
+	// A new revision that changes the path of a published entry gets the old path a redirect to the entry.
+	for _, tt := range []struct {
+		name  string
+		entry string
+		data  string
+		dated bool   // Publish adds a revision with the date, which makes an ID before the redirect's
+		from  string // of the redirect
+		path  string // of the page after
+		to    string // as a server sends it, if a build of the documents is to have the redirect
+	}{
+		{"a changed slug", postJA, postRevision(t, postSlug, `"slug": "launch"`), false, postJAPath, launchPath, launchPath},
+		{"a changed date", postJA, postRevision(t, `"date": "2026-10-26T00:30:00+09:00"`, `"date": "2026-10-27T00:30:00+09:00"`), false,
+			postJAPath, "/2026/10/27/新サービス/", ""},
+		{"a post that gets the date of the operation", postJA, postRevision(t, "  \"date\": \"2026-10-26T00:30:00+09:00\",\n", ""), true,
+			postJAPath, "/2026/11/07/新サービス/", ""},
+		{"a changed parent", servicesJA, replaceOnce(t, string(sampleFile(t, revisionName(servicesRev))),
+			`"slug": "services",`, `"slug": "services",`+"\n  "+`"parent": "`+aboutJA+`",`), false,
+			"/services/", "/about/services/", "/about/services/"},
+		{"a changed slug of the posts page", newsPageID, replaceOnce(t, string(sampleFile(t, revisionName(newsPageRev))),
+			`"slug": "news",`, `"slug": "blog",`), false, "/news/", "/blog/", "/blog/"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ed, s := newSample(t)
+			kinds := []content.RefKind{content.RefRevision, content.RefRedirect}
+			if tt.dated {
+				kinds = []content.RefKind{content.RefRevision, content.RefRevision, content.RefRedirect}
+			}
+			ids := predictIDs(t, kinds...)
+			before := storedRedirects(t, s)
+			res, err := publishNext(t, ed, s, op, tt.entry, tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := content.Redirect{ID: ids[len(ids)-1], From: tt.from, To: tt.entry, Status: 301}
+			if res.Revision != ids[len(ids)-2] || res.Redirect != want.ID || res.Status != content.StatusPublished || !res.Publishes ||
+				len(res.Warnings) != 0 {
+				t.Errorf("Publish() = %+v, want the revision %s published and the redirect %s registered, without warnings",
+					res, ids[len(ids)-2], want.ID)
+			}
+			wantRedirects(t, s, before, []content.Redirect{want})
+			if got := entryPath(t, ed, s, tt.entry); got != tt.path {
+				t.Errorf("the page of the entry is %q, want %q", got, tt.path)
+			}
+			if tt.to == "" {
+				return
+			}
+			built := builtRedirects(t, exportSite(t, s))
+			wantBuilt(t, built, tt.from, tt.to)
+			if tt.entry == postJA {
+				// The redirect of the sample site to the post follows it too.
+				wantBuilt(t, built, "/?p=123", tt.to)
+			}
+		})
+	}
+
+	t.Run("a path that stays", func(t *testing.T) {
+		ed, s := newSample(t)
+		before := storedRedirects(t, s)
+		res, err := publishNext(t, ed, s, op, postJA, postRevision(t, `"title": "新サービスを始めました"`, `"title": "新サービスを開始しました"`))
+		if err != nil || res.Redirect != "" || !res.Publishes || len(res.Warnings) != 0 {
+			t.Errorf("Publish() = %+v, %v; want a new revision published without a redirect", res, err)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	// The path of the front page is that of its language, whatever its slug is.
+	t.Run("the front page", func(t *testing.T) {
+		ed, s := newSample(t)
+		before := storedRedirects(t, s)
+		res, err := publishNext(t, ed, s, op, homeJA, replaceOnce(t, string(sampleFile(t, revisionName(homeRev))), `"slug": "home",`, `"slug": "start",`))
+		if err != nil || res.Redirect != "" || !res.Publishes || len(res.Warnings) != 0 {
+			t.Errorf("Publish() = %+v, %v; want the revision published without a redirect", res, err)
+		}
+		wantRedirects(t, s, before, nil)
+		built := builtRedirects(t, exportSite(t, s))
+		wantBuilt(t, built, "/start/", "/")
+		if got, ok := built["/home/"]; ok {
+			t.Errorf("the build has the redirect %+v from /home/, which the front page has left", got)
+		}
+	})
+
+	// Going back to the old path takes the redirect from it away, and the path that it leaves gets one.
+	t.Run("back to the old slug", func(t *testing.T) {
+		ed, s := newSample(t)
+		ids := predictIDs(t, content.RefRevision, content.RefRedirect, content.RefRevision, content.RefRedirect)
+		before := storedRedirects(t, s)
+		first := must(t)(publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, `"slug": "launch"`)))
+		firstRedirect := content.Redirect{ID: ids[1], From: postJAPath, To: postJA, Status: 301}
+		if first.Redirect != firstRedirect.ID {
+			t.Fatalf("Publish() = %+v, want the redirect %s", first, firstRedirect.ID)
+		}
+
+		second, err := publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, postSlug))
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondRedirect := content.Redirect{ID: ids[3], From: launchPath, To: postJA, Status: 301}
+		wantWarning := docName(content.RefRedirect, firstRedirect.ID) + `: deleted: its from is the new path "` + postJAPath + `" of ` + docName(content.RefEntry, postJA)
+		if second.Redirect != secondRedirect.ID || !second.Publishes || !slices.Equal(lines(second.Warnings), []string{wantWarning}) {
+			t.Errorf("Publish() = %+v, want the redirect %s and the warning %q", second, secondRedirect.ID, wantWarning)
+		}
+		wantRedirects(t, s, before, []content.Redirect{secondRedirect})
+		if got := entryPath(t, ed, s, postJA); got != postJAPath {
+			t.Errorf("the page of the entry is %q, want %q", got, postJAPath)
+		}
+		built := builtRedirects(t, exportSite(t, s))
+		wantBuilt(t, built, launchPath, postJAURL)
+		if got, ok := built[postJAPath]; ok {
+			t.Errorf("the build has the redirect %+v from the path of the page", got)
+		}
+	})
+
+	// The from is the canonical form of the path, which encodes the ideographic space of a slug, and the redirect that a slug
+	// that goes back makes useless is found by it.
+	t.Run("a slug with an ideographic space", func(t *testing.T) {
+		ed, s := newSample(t)
+		ids := predictIDs(t, content.RefRevision, content.RefRedirect, content.RefRevision, content.RefRedirect, content.RefRevision, content.RefRedirect)
+		before := storedRedirects(t, s)
+		slug := "新サービス" + ideographicSpace + "旧"
+		spaced := postRevision(t, postSlug, `"slug": "`+slug+`"`)
+		must(t)(publishNext(t, ed, s, op, postJA, spaced))
+		second := must(t)(publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, `"slug": "launch"`)))
+
+		canonical := "/2026/10/26/新サービス%E3%80%80旧/"
+		spacedRedirect := content.Redirect{ID: ids[3], From: canonical, To: postJA, Status: 301}
+		if second.Redirect != spacedRedirect.ID || len(second.Warnings) != 0 {
+			t.Fatalf("Publish() = %+v, want the redirect %s from %q", second, spacedRedirect.ID, canonical)
+		}
+
+		third, err := publishNext(t, ed, s, op, postJA, spaced)
+		if err != nil {
+			t.Fatal(err)
+		}
+		launchRedirect := content.Redirect{ID: ids[5], From: launchPath, To: postJA, Status: 301}
+		wantWarning := docName(content.RefRedirect, spacedRedirect.ID) + `: deleted: its from is the new path "` + canonical + `" of ` + docName(content.RefEntry, postJA)
+		if third.Redirect != launchRedirect.ID || !slices.Equal(lines(third.Warnings), []string{wantWarning}) {
+			t.Errorf("Publish() = %+v, want the redirect %s and the warning %q", third, launchRedirect.ID, wantWarning)
+		}
+		first := content.Redirect{ID: ids[1], From: postJAPath, To: postJA, Status: 301}
+		wantRedirects(t, s, before, []content.Redirect{first, launchRedirect})
+		built := builtRedirects(t, exportSite(t, s))
+		spacedURL := "/2026/10/26/" + encodedSlug + "%E3%80%80%E6%97%A7/"
+		wantBuilt(t, built, postJAPath, spacedURL)
+		wantBuilt(t, built, launchPath, spacedURL)
+	})
+
+	// Only the new revision of the entry registers a redirect: a term whose slug changes moves its list page and gives the
+	// pages that use it other paths, and registers none.
+	t.Run("other changes of URLs", func(t *testing.T) {
+		ed, s := newSample(t)
+		before := storedRedirects(t, s)
+		news := read(t, s, content.RefTerm, newsID)
+		data := replaceOnce(t, string(news.Data), `"slug": "news"`, `"slug": "headlines"`)
+		res, err := ed.Save(t.Context(), op, content.RefTerm, newsID, news.Seq, []byte(data))
+		if err != nil || res.Redirect != "" || !res.Publishes {
+			t.Errorf("Save() = %+v, %v; want the term saved without a redirect", res, err)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	// Only the entry that was published gets one: the old path of an entry that is not published is not its path.
+	t.Run("an entry that was not published", func(t *testing.T) {
+		for _, tt := range []struct {
+			name  string
+			setup func(t *testing.T, ed *Editor, s *store.Store) string // returns the entry
+		}{
+			{"a draft", func(t *testing.T, ed *Editor, s *store.Store) string {
+				must(t)(ed.Unpublish(t.Context(), op, contactJA, entrySeq(t, s, contactJA)))
+				return contactJA
+			}},
+			{"an archived entry", func(t *testing.T, ed *Editor, s *store.Store) string {
+				must(t)(ed.Archive(t.Context(), op, contactJA, entrySeq(t, s, contactJA)))
+				return contactJA
+			}},
+			{"a scheduled entry", func(t *testing.T, ed *Editor, s *store.Store) string {
+				id, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+				put(t, s, content.RefEntry, id, storedScheduled(t, id, maxNumber(t, s)+1, testID(content.RefTranslationGroup, 1), rev))
+				addStoredRevision(t, s, id, rev, `{"schemaVersion":1,"title":"Soon","slug":"soon"}`)
+				return id
+			}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				ed, s := newSample(t)
+				entry := tt.setup(t, ed, s)
+				before := storedRedirects(t, s)
+				res, err := publishNext(t, ed, s, op, entry, `{"schemaVersion":1,"title":"Reach us","slug":"reach-us"}`)
+				if err != nil || res.Redirect != "" || !res.Publishes || res.Status != content.StatusPublished || len(res.Warnings) != 0 {
+					t.Errorf("Publish() = %+v, %v; want the entry published without a redirect", res, err)
+				}
+				wantRedirects(t, s, before, nil)
+				if got := entryPath(t, ed, s, entry); got != "/reach-us/" {
+					t.Errorf("the page of the entry is %q, want /reach-us/", got)
+				}
+			})
+		}
+	})
+}
+
+// jobsRevision gives the draft page draftEN of the sample site, in en, the slug jobs, which is the path /en/jobs/ that a
+// redirect of the sample site is from.
+const jobsRevision = `{"schemaVersion":1,"title":"Jobs","slug":"jobs"}`
+
+// jobsSite returns an Editor and a store of the sample site that has, besides its redirect from /en/jobs/ to draftEN, five
+// more to it from that path or without the slash at the end, and one from it with a query. removed are the redirects that
+// the publish of jobsRevision deletes, in the order of their IDs.
+func jobsSite(t *testing.T) (ed *Editor, s *store.Store, removed []string) {
+	t.Helper()
+	ed, s = newSample(t)
+	removed = []string{"rdr_01JC0000000000000000000006"}
+	for n := 1; n <= 5; n++ {
+		id, from := testID(content.RefRedirect, n), "/en/jobs/"
+		if n%2 == 1 {
+			from = "/en/jobs"
+		}
+		put(t, s, content.RefRedirect, id, redirectDoc(t, content.Redirect{ID: id, From: from, To: draftEN, Status: 302}))
+		removed = append(removed, id)
+	}
+	withQuery := testID(content.RefRedirect, 6)
+	put(t, s, content.RefRedirect, withQuery, redirectDoc(t, content.Redirect{ID: withQuery, From: "/en/jobs/?ref=a", To: draftEN, Status: 301}))
+	if _, ok := storedRedirects(t, s)[removed[0]]; !ok {
+		t.Fatalf("the sample site has no redirect %s", removed[0])
+	}
+	return ed, s, removed
+}
+
+// TestPublishRedirectExisting checks Publish when redirects already have the froms that it would register or delete.
+func TestPublishRedirectExisting(t *testing.T) {
+	op := Op{By: userID}
+	const elsewhere = "https://recruit.example.com/"
+	other := testID(content.RefRedirect, 1)
+
+	// A redirect from the path of a page duplicates its output path, which a save refuses, so it can only be an old problem
+	// of the site. Moving the page takes the problem away; the redirect then stays, and the old path is not registered.
+	t.Run("a redirect from the old path to elsewhere", func(t *testing.T) {
+		ed, s := newSample(t)
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: postJAPath, To: elsewhere, Status: 301}))
+		old := buildErrors(t, exportSite(t, s))
+		if len(old) != 1 || !strings.Contains(old[0], `/from: from "`+postJAPath+`" is the output path "`+postJAPath+`"`) {
+			t.Fatalf("the build of the site as it is gives\n%s\nwant the duplicate of the output path", strings.Join(old, "\n"))
+		}
+		before := storedRedirects(t, s)
+		saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		res, err := ed.Publish(t.Context(), op, postJA, entrySeq(t, s, postJA), saved.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := where(t, revisionName(saved.Revision), string(revisionData(t, s, saved.Revision)), `"slug"`) +
+			`/slug: the redirect from "` + postJAPath + `" is not registered: ` + docName(content.RefRedirect, other) + ` has the same from`
+		if res.Redirect != "" || !res.Publishes || !slices.Equal(lines(res.Warnings), []string{want}) {
+			t.Errorf("Publish() = %+v, want no redirect and the warning %q", res, want)
+		}
+		wantRedirects(t, s, before, nil)
+		wantBuilt(t, builtRedirects(t, exportSite(t, s)), postJAPath, elsewhere)
+	})
+
+	// Of the redirects that have the from, which differ in the slash at the end, the warning names the first by ID.
+	t.Run("two redirects from the old path", func(t *testing.T) {
+		ed, s := newSample(t)
+		second := testID(content.RefRedirect, 2)
+		put(t, s, content.RefRedirect, second, redirectDoc(t, content.Redirect{ID: second, From: strings.TrimSuffix(postJAPath, "/"), To: elsewhere, Status: 301}))
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: postJAPath, To: elsewhere, Status: 301}))
+		before := storedRedirects(t, s)
+		saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		res, err := ed.Publish(t.Context(), op, postJA, entrySeq(t, s, postJA), saved.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := where(t, revisionName(saved.Revision), string(revisionData(t, s, saved.Revision)), `"slug"`) +
+			`/slug: the redirect from "` + postJAPath + `" is not registered: ` + docName(content.RefRedirect, other) + ` has the same from`
+		if res.Redirect != "" || !slices.Equal(lines(res.Warnings), []string{want}) {
+			t.Errorf("Publish() = %+v, want no redirect and the warning %q", res, want)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	// The warning names the from as the redirect has it, in the canonical form, which encodes the ideographic space of a slug.
+	t.Run("a redirect from the old path with an ideographic space", func(t *testing.T) {
+		ed, s := newSample(t)
+		spaced := postRevision(t, postSlug, `"slug": "新サービス`+ideographicSpace+`旧"`)
+		must(t)(publishNext(t, ed, s, op, postJA, spaced))
+		canonical := "/2026/10/26/新サービス%E3%80%80旧/"
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: canonical, To: elsewhere, Status: 301}))
+		before := storedRedirects(t, s)
+		saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		res, err := ed.Publish(t.Context(), op, postJA, entrySeq(t, s, postJA), saved.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := where(t, revisionName(saved.Revision), string(revisionData(t, s, saved.Revision)), `"slug"`) +
+			`/slug: the redirect from "` + canonical + `" is not registered: ` + docName(content.RefRedirect, other) + ` has the same from`
+		if res.Redirect != "" || !slices.Equal(lines(res.Warnings), []string{want}) {
+			t.Errorf("Publish() = %+v, want no redirect and the warning %q", res, want)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	// The revision that is published is the copy with the date that Publish makes, whose bytes are those that the warning is
+	// located in.
+	t.Run("a redirect from the old path of a post that gets the date", func(t *testing.T) {
+		ed, s := newSample(t)
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: postJAPath, To: elsewhere, Status: 301}))
+		before := storedRedirects(t, s)
+		res, err := publishNext(t, ed, s, op, postJA, postRevision(t, "  \"date\": \"2026-10-26T00:30:00+09:00\",\n", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		copied := string(revisionData(t, s, res.Revision))
+		want := where(t, revisionName(res.Revision), copied, `"slug"`) +
+			`/slug: the redirect from "` + postJAPath + `" is not registered: ` + docName(content.RefRedirect, other) + ` has the same from`
+		if line, _ := at(t, copied, `"slug"`); line != 1 || res.Redirect != "" || !slices.Equal(lines(res.Warnings), []string{want}) {
+			t.Errorf("Publish() = %+v, want no redirect and the warning %q, in the first line of the revision it made", res, want)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	t.Run("a redirect from the old path to the entry", func(t *testing.T) {
+		ed, s := newSample(t)
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: postJAPath, To: postJA, Status: 301}))
+		before := storedRedirects(t, s)
+		res, err := publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		if err != nil || res.Redirect != "" || !res.Publishes || len(res.Warnings) != 0 {
+			t.Errorf("Publish() = %+v, %v; want the revision published without a redirect or a warning", res, err)
+		}
+		wantRedirects(t, s, before, nil)
+	})
+
+	// A from with a query matches other requests than the old path does, so it neither stops the redirect nor goes with it.
+	t.Run("a redirect from the old path with a query", func(t *testing.T) {
+		ed, s := newSample(t)
+		ids := predictIDs(t, content.RefRevision, content.RefRedirect, content.RefRevision, content.RefRedirect)
+		withQuery := content.Redirect{ID: other, From: postJAPath + "?x=1", To: elsewhere, Status: 301}
+		put(t, s, content.RefRedirect, other, redirectDoc(t, withQuery))
+		before := storedRedirects(t, s)
+
+		first := must(t)(publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, `"slug": "launch"`)))
+		oldPath := content.Redirect{ID: ids[1], From: postJAPath, To: postJA, Status: 301}
+		if first.Redirect != oldPath.ID || len(first.Warnings) != 0 {
+			t.Fatalf("Publish() = %+v, want the redirect %s without warnings", first, oldPath.ID)
+		}
+		wantRedirects(t, s, before, []content.Redirect{oldPath})
+		built := builtRedirects(t, exportSite(t, s))
+		wantBuilt(t, built, postJAPath, launchPath)
+		wantBuilt(t, built, postJAPath+"?x=1", elsewhere)
+
+		second := must(t)(publishNext(t, ed, s, op, postJA, postRevision(t, postSlug, postSlug)))
+		launch := content.Redirect{ID: ids[3], From: launchPath, To: postJA, Status: 301}
+		wantWarning := docName(content.RefRedirect, oldPath.ID) + `: deleted: its from is the new path "` + postJAPath + `" of ` + docName(content.RefEntry, postJA)
+		if second.Redirect != launch.ID || !slices.Equal(lines(second.Warnings), []string{wantWarning}) {
+			t.Errorf("Publish() = %+v, want the redirect %s and the warning %q", second, launch.ID, wantWarning)
+		}
+		wantRedirects(t, s, before, []content.Redirect{launch})
+	})
+
+	// The redirect of the sample site from /en/jobs/ goes to a draft page. The page gets the path when it is published for
+	// the first time, which the redirects would duplicate; they go, also those that only differ in the slash at the end, and
+	// the one with a query stays.
+	t.Run("redirects from the new path to the entry", func(t *testing.T) {
+		ed, s, removed := jobsSite(t)
+		before := storedRedirects(t, s)
+		res, err := publishNext(t, ed, s, op, draftEN, jobsRevision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []string
+		for _, id := range removed {
+			want = append(want, docName(content.RefRedirect, id)+`: deleted: its from is the new path "/en/jobs/" of `+docName(content.RefEntry, draftEN))
+		}
+		if res.Redirect != "" || !res.Publishes || !slices.Equal(lines(res.Warnings), want) {
+			t.Errorf("Publish() = %+v, want no redirect and the warnings\n%s", res, strings.Join(want, "\n"))
+		}
+		wantRedirects(t, s, before, nil, removed...)
+		wantBuilt(t, builtRedirects(t, exportSite(t, s)), "/en/jobs/?ref=a", "/en/jobs/")
+	})
+
+	// They are deleted in the order of their IDs, so that the same documents give the same store. The order of a map is
+	// only partly random for a map this small (a wrong order passes now and then), so the publish is tried again and again.
+	t.Run("the order of the deletions", func(t *testing.T) {
+		for range 10 {
+			ed, s, removed := jobsSite(t)
+			must(t)(publishNext(t, ed, s, op, draftEN, jobsRevision))
+			for i := 1; i < len(removed); i++ {
+				if a, b := lastSeq(t, s, content.RefRedirect, removed[i-1]), lastSeq(t, s, content.RefRedirect, removed[i]); a >= b {
+					t.Fatalf("the redirect %s was deleted at %d and %s at %d, want them in the order of their IDs", removed[i-1], a, removed[i], b)
+				}
+			}
+		}
+	})
+
+	// A redirect from the new path to another entry duplicates the output path of the page: the publish fails as the build
+	// does, and the redirect stays.
+	t.Run("a redirect to another entry from the new path", func(t *testing.T) {
+		ed, s := newSample(t)
+		put(t, s, content.RefRedirect, other, redirectDoc(t, content.Redirect{ID: other, From: "/en/careers/", To: aboutEN, Status: 301}))
+		saved := saveRevision(t, ed, s, draftEN, careersRevision)
+		snap, index := snapshot(t, s), indexOf(t, s)
+		_, err := ed.Publish(t.Context(), op, draftEN, entrySeq(t, s, draftEN), saved.Revision)
+		got := problemLines(t, err)
+
+		dir := exportSite(t, s)
+		writeSite(t, dir, docName(content.RefEntry, draftEN), published(t, read(t, s, content.RefEntry, draftEN).Data, saved.Revision))
+		writeSite(t, dir, revisionName(saved.Revision), string(revisionData(t, s, saved.Revision)))
+		want := buildErrors(t, dir)
+		if len(want) != 1 || !slices.Equal(got, want) || !strings.Contains(got[0], `/from: from "/en/careers/" is the output path "/en/careers/" of `+revisionName(saved.Revision)) {
+			t.Errorf("the problems of Publish():\n%s\nthe problems of the build:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		sameStore(t, s, snap, index, "Publish()")
+	})
+
+	// The redirect to the old path is in the model that the checks see: another page that has the path makes it a duplicate.
+	t.Run("a page at the old path", func(t *testing.T) {
+		ed, s := newSample(t)
+		page, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+		put(t, s, content.RefEntry, page,
+			storedEntry(page, maxNumber(t, s)+1, content.TypePost, "ja", testID(content.RefTranslationGroup, 1), content.StatusPublished, rev))
+		addStoredRevision(t, s, page, rev, string(sampleFile(t, revisionName(postJARev))))
+		ids := predictIDs(t, content.RefRevision, content.RefRedirect)
+		saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		snap, index := snapshot(t, s), indexOf(t, s)
+		_, err := ed.Publish(t.Context(), op, postJA, entrySeq(t, s, postJA), saved.Revision)
+		got := problemLines(t, err)
+
+		dir := exportSite(t, s)
+		writeSite(t, dir, docName(content.RefEntry, postJA), published(t, read(t, s, content.RefEntry, postJA).Data, saved.Revision))
+		writeSite(t, dir, revisionName(saved.Revision), string(revisionData(t, s, saved.Revision)))
+		writeSite(t, dir, docName(content.RefRedirect, ids[1]), redirectDoc(t, content.Redirect{ID: ids[1], From: postJAPath, To: postJA, Status: 301}))
+		want := buildErrors(t, dir)
+		if len(want) != 1 || !slices.Equal(got, want) || !strings.HasPrefix(got[0], docName(content.RefRedirect, ids[1])+":1:") ||
+			!strings.Contains(got[0], `/from: from "`+postJAPath+`" is the output path "`+postJAPath+`" of `+revisionName(rev)) {
+			t.Errorf("the problems of Publish():\n%s\nthe problems of the build:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		sameStore(t, s, snap, index, "Publish()")
+	})
+
+	// A publish that fails does not delete the redirect that it was to delete.
+	t.Run("a failure that keeps the redirect", func(t *testing.T) {
+		const jobs = "rdr_01JC0000000000000000000006"
+		ed, s := newSample(t)
+		page, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+		put(t, s, content.RefEntry, page,
+			storedEntry(page, maxNumber(t, s)+1, content.TypePage, "en", testID(content.RefTranslationGroup, 1), content.StatusPublished, rev))
+		addStoredRevision(t, s, page, rev, `{"schemaVersion":1,"title":"Jobs","slug":"jobs"}`)
+		saved := saveRevision(t, ed, s, draftEN, `{"schemaVersion":1,"title":"Jobs again","slug":"jobs"}`)
+		snap, index := snapshot(t, s), indexOf(t, s)
+		_, err := ed.Publish(t.Context(), op, draftEN, entrySeq(t, s, draftEN), saved.Revision)
+		got := problemLines(t, err)
+		if !strings.Contains(strings.Join(got, "\n"), `slug "jobs" is also used by`) {
+			t.Errorf("the problems of Publish():\n%s\nwant the slug that two pages have", strings.Join(got, "\n"))
+		}
+		sameStore(t, s, snap, index, "Publish()")
+		if _, ok := storedRedirects(t, s)[jobs]; !ok {
+			t.Errorf("the redirect %s is gone after the publish that failed", jobs)
+		}
+	})
+}
+
+// TestPublishRedirectOperationID checks that a retry of a publish with an operation ID returns the redirect of the first
+// call, and that the record of the operation keeps it.
+func TestPublishRedirectOperationID(t *testing.T) {
+	ed, s := newSample(t)
+	saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+	op := Op{By: userID, ID: testOpID(21)}
+	seq := entrySeq(t, s, postJA)
+	before := storedRedirects(t, s)
+	first, err := ed.Publish(t.Context(), op, postJA, seq, saved.Revision)
+	if err != nil || !strings.HasPrefix(first.Redirect, "rdr_") {
+		t.Fatalf("Publish() = %+v, %v; want a redirect", first, err)
+	}
+	after, index := snapshot(t, s), indexOf(t, s)
+
+	// The base is stale now: the retry gets the recorded result, and nothing is done.
+	again, err := ed.Publish(t.Context(), op, postJA, seq, saved.Revision)
+	if err != nil || !reflect.DeepEqual(first, again) {
+		t.Errorf("a retry of Publish() = %+v, %v; want the first result %+v", again, err, first)
+	}
+	sameStore(t, s, after, index, "a retry of Publish()")
+	wantRedirects(t, s, before, []content.Redirect{{ID: first.Redirect, From: postJAPath, To: postJA, Status: 301}})
+
+	err = s.View(t.Context(), func(tx *store.Tx) error {
+		data, ok, err := tx.Operation(op.ID)
+		if want := `"redirect":"` + first.Redirect + `"`; err != nil || !ok || !strings.Contains(string(data), want) {
+			t.Errorf("Operation() = %s, %t, %v; want the record with %s", data, ok, err, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPublishRedirectCategory checks the redirect for an entry whose path changes with its first category, in a site whose
+// posts have the category in their paths.
+func TestPublishRedirectCategory(t *testing.T) {
+	op := Op{By: userID}
+	s := newStore(t)
+	ed := testEditor(t, s)
+	ed.schema = content.SiteFile{Name: "site/schema.yaml", Data: []byte("schemaVersion: 1\ntypes:\n  post:\n    url: /{category}/{slug}/\n")}
+	const settings = `{
+  "schemaVersion": 1,
+  "name": { "ja": "サイト" },
+  "url": "https://example.com",
+  "timeZone": "Asia/Tokyo",
+  "languages": ["ja"],
+  "defaultLanguage": "ja"
+}`
+	must(t)(ed.SaveSettings(t.Context(), op, 0, []byte(settings)))
+	news := must(t)(ed.Create(t.Context(), op, content.RefTerm, []byte(termJSON("category", "ja", "", "ニュース", "news"))))
+	press := must(t)(ed.Create(t.Context(), op, content.RefTerm, []byte(termJSON("category", "ja", "", "プレス", "press"))))
+	entry := newDraft(t, ed, content.TypePost, "ja")
+	post := func(category string) string {
+		return `{"schemaVersion":1,"title":"a","slug":"p","date":"2026-10-30T09:00:00+09:00","terms":{"category":["` + category + `"]}}`
+	}
+	first := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(post(news.ID))))
+	firstPublish := must(t)(ed.Publish(t.Context(), op, entry, entrySeq(t, s, entry), first.Revision))
+	if got := entryPath(t, ed, s, entry); got != "/news/p/" || firstPublish.Redirect != "" {
+		t.Fatalf("the page is %q after Publish() = %+v, want /news/p/ without a redirect", got, firstPublish)
+	}
+
+	res, err := publishNext(t, ed, s, op, entry, post(press.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entryPath(t, ed, s, entry); got != "/press/p/" {
+		t.Errorf("the page of the entry is %q, want /press/p/", got)
+	}
+	want := content.Redirect{ID: res.Redirect, From: "/news/p/", To: entry, Status: 301}
+	if !strings.HasPrefix(res.Redirect, "rdr_") || len(res.Warnings) != 0 {
+		t.Fatalf("Publish() = %+v, want a redirect without warnings", res)
+	}
+	wantRedirects(t, s, nil, []content.Redirect{want})
+}
+
+// TestPublishBeforeOnce checks that Publish makes the model of the site before the change once for the old path of the
+// entry and for the checks, which both need it: the sample site has an old warning, so the checks need it too.
+func TestPublishBeforeOnce(t *testing.T) {
+	ed, s := newSample(t)
+	saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+	runs := 0
+	ed.wrap = func(r reader) reader {
+		runs++
+		return r
+	}
+	res, err := ed.Publish(t.Context(), Op{By: userID}, postJA, entrySeq(t, s, postJA), saved.Revision)
+	if err != nil || res.Redirect == "" {
+		t.Fatalf("Publish() = %+v, %v; want a redirect", res, err)
+	}
+	// The Update, and the View of the site before the change.
+	if runs != 2 {
+		t.Errorf("Publish() made %d runs of reads, want 2", runs)
+	}
+}
+
+// failingSummaryFrom wraps a reader so that the reads of the summary of the entry fail with err from the call number from
+// on, counting the calls in *calls; a from of 0 never fails.
+type failingSummaryFrom struct {
+	reader
+	entry string
+	from  int
+	calls *int
+	err   error
+}
+
+func (f failingSummaryFrom) Summary(kind content.RefKind, id string) (store.Summary, error) {
+	if kind == content.RefEntry && id == f.entry {
+		*f.calls++
+		if f.from > 0 && *f.calls >= f.from {
+			return store.Summary{}, f.err
+		}
+	}
+	return f.reader.Summary(kind, id)
+}
+
+// TestPublishRedirectLookupFailure checks that a failure to read the summary of the entry for the redirect, the last read
+// of it, fails Publish with that error, not with problems of the redirect, and saves nothing.
+func TestPublishRedirectLookupFailure(t *testing.T) {
+	errRead := errors.New("the index cannot be read")
+	// publish publishes a new slug of postJA in a new sample site, with the reads of the summary of the entry in the Update
+	// failing from the call number from on, and returns the number of calls.
+	publish := func(t *testing.T, from int) (calls int, err error) {
+		ed, s := newSample(t)
+		saved := saveRevision(t, ed, s, postJA, postRevision(t, postSlug, `"slug": "launch"`))
+		first := true
+		ed.wrap = func(r reader) reader {
+			if !first {
+				return r
+			}
+			first = false
+			return failingSummaryFrom{reader: r, entry: postJA, from: from, calls: &calls, err: errRead}
+		}
+		before, index := snapshot(t, s), indexOf(t, s)
+		_, err = ed.Publish(t.Context(), Op{By: userID}, postJA, entrySeq(t, s, postJA), saved.Revision)
+		if err != nil {
+			sameStore(t, s, before, index, "Publish()")
+		}
+		return calls, err
+	}
+	calls, err := publish(t, 0)
+	if err != nil || calls < 2 {
+		t.Fatalf("Publish() made %d reads of the summary of the entry, with the error %v; want at least 2, and no error", calls, err)
+	}
+	_, err = publish(t, calls)
+	var problems content.Errors
+	if !errors.Is(err, errRead) || errors.As(err, &problems) {
+		t.Errorf("Publish() = %v, want the error of the read, not problems", err)
 	}
 }

@@ -2,9 +2,9 @@
 // them, validates again the documents that a change makes invalid without changing them, checks them across the site as
 // the build does (internal/siteplan), and updates the store and its index in one Update. The files of media are saved as
 // originals before their documents, and their formats and sizes are read from their contents (internal/mediafile). Publish,
-// Unpublish and Archive change the state of an entry with the same checks, and a Result says whether an operation has
-// changed what a build of the site publishes. Import imports a whole site that a Source reads, such as a site directory,
-// into a store that has no documents.
+// Unpublish and Archive change the state of an entry with the same checks, and Publish redirects the old URL of an entry
+// whose URL it changes. A Result says whether an operation has changed what a build of the site publishes. Import imports
+// a whole site that a Source reads, such as a site directory, into a store that has no documents.
 package edit
 
 import (
@@ -70,6 +70,7 @@ type Result struct {
 	ID        string         // of the document that the operation made, changed or deleted; "" for the settings
 	Version   store.Version  // that it saved; the current one if it saved nothing, as when it added a revision to an entry
 	Revision  string         // the revision that it added to an entry, or published
+	Redirect  string         // the redirect that a publish has registered from the old URL of the entry
 	Number    int            // the number of the entry that it made
 	Warnings  content.Errors // problems that do not stop it, located as the build locates its own
 	Publishes bool           // it has changed what a build of the site publishes, so that a new build is due
@@ -173,6 +174,7 @@ type recordResult struct {
 	ID        string          `json:"id,omitempty"`
 	Version   recordVersion   `json:"version"`
 	Revision  string          `json:"revision,omitempty"`
+	Redirect  string          `json:"redirect,omitempty"`
 	Number    int             `json:"number,omitzero"`
 	Publishes bool            `json:"publishes,omitzero"`
 	Status    content.Status  `json:"status,omitempty"`
@@ -199,7 +201,7 @@ type recordProblem struct {
 func newRecordResult(r Result) recordResult {
 	v := r.Version
 	rec := recordResult{
-		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
+		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Redirect: r.Redirect, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
 		Version: recordVersion{Seq: v.Seq, Kind: v.Kind, ID: v.ID, Hash: v.Hash, SavedAt: v.SavedAt, SavedBy: v.SavedBy},
 	}
 	for _, w := range r.Warnings {
@@ -211,7 +213,7 @@ func newRecordResult(r Result) recordResult {
 func (r recordResult) result() Result {
 	v := r.Version
 	res := Result{
-		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
+		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Redirect: r.Redirect, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
 		Version: store.Version{Seq: v.Seq, Kind: v.Kind, ID: v.ID, Hash: v.Hash, SavedAt: v.SavedAt, SavedBy: v.SavedBy},
 	}
 	for _, w := range r.Warnings {
