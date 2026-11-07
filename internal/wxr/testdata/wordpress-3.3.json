@@ -1,0 +1,186 @@
+{
+  "Version": "1.1",
+  "WordPress": "3.3.1",
+  "Channel": {
+    "Line": 12,
+    "Column": 1,
+    "Title": "古いブログ",
+    "Link": "http://blog.example.com",
+    "Description": "昔のメモ",
+    "PubDate": "Sun, 15 Jan 2012 06:30:00 +0000",
+    "Language": "ja",
+    "Generator": "http://wordpress.org/?v=3.3.1",
+    "BaseSiteURL": "http://blog.example.com",
+    "BaseBlogURL": "http://blog.example.com"
+  },
+  "Authors": [
+    {
+      "Line": 23,
+      "Column": 2,
+      "ID": 2,
+      "Login": "admin",
+      "Email": "admin@example.com",
+      "DisplayName": "管理者",
+      "FirstName": "",
+      "LastName": ""
+    }
+  ],
+  "Terms": [
+    {
+      "Line": 25,
+      "Column": 2,
+      "ID": 1,
+      "Taxonomy": "category",
+      "Slug": "uncategorized",
+      "Parent": "",
+      "Name": "Uncategorized",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 26,
+      "Column": 2,
+      "ID": 2,
+      "Taxonomy": "category",
+      "Slug": "%e3%83%8b%e3%83%a5%e3%83%bc%e3%82%b9",
+      "Parent": "",
+      "Name": "ニュース",
+      "Description": "ニュースの一覧",
+      "Meta": []
+    },
+    {
+      "Line": 27,
+      "Column": 2,
+      "ID": 3,
+      "Taxonomy": "post_tag",
+      "Slug": "memo",
+      "Parent": "",
+      "Name": "メモ",
+      "Description": "",
+      "Meta": []
+    }
+  ],
+  "Items": [
+    {
+      "Line": 29,
+      "Column": 2,
+      "Title": "[告知] ",
+      "Link": "http://blog.example.com/2012/01/announcement/",
+      "PubDate": "Sat, 14 Jan 2012 01:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "http://blog.example.com/?p=11",
+      "Description": "",
+      "Content": "大切なお知らせです。",
+      "Excerpt": "",
+      "ID": 11,
+      "Date": "2012-01-14 10:00:00",
+      "DateGMT": "2012-01-14 01:00:00",
+      "Modified": "",
+      "ModifiedGMT": "",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "announcement",
+      "Status": "publish",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": true,
+      "Terms": [
+        {
+          "Line": 50,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "%e3%83%8b%e3%83%a5%e3%83%bc%e3%82%b9",
+          "Name": "ニュース"
+        },
+        {
+          "Line": 51,
+          "Column": 3,
+          "Taxonomy": "post_tag",
+          "Slug": "memo",
+          "Name": "メモ"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 52,
+          "Column": 3,
+          "Key": "_edit_last",
+          "Value": "2"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 57,
+      "Column": 2,
+      "Title": "二つ目の投稿",
+      "Link": "http://blog.example.com/2012/01/second/",
+      "PubDate": "Sun, 15 Jan 2012 02:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "http://blog.example.com/?p=12",
+      "Description": "",
+      "Content": "本文です。",
+      "Excerpt": "",
+      "ID": 12,
+      "Date": "2012-01-15 11:00:00",
+      "DateGMT": "2012-01-15 02:00:00",
+      "Modified": "",
+      "ModifiedGMT": "",
+      "CommentStatus": "closed",
+      "PingStatus": "closed",
+      "Name": "second",
+      "Status": "draft",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 78,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "Uncategorized"
+        }
+      ],
+      "Meta": [],
+      "Comments": 0
+    },
+    {
+      "Line": 80,
+      "Column": 2,
+      "Title": "連絡先",
+      "Link": "http://blog.example.com/contact/",
+      "PubDate": "Sun, 15 Jan 2012 03:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "http://blog.example.com/?page_id=13",
+      "Description": "",
+      "Content": "連絡先のページです。",
+      "Excerpt": "",
+      "ID": 13,
+      "Date": "2012-01-15 12:00:00",
+      "DateGMT": "2012-01-15 03:00:00",
+      "Modified": "",
+      "ModifiedGMT": "",
+      "CommentStatus": "closed",
+      "PingStatus": "closed",
+      "Name": "contact",
+      "Status": "publish",
+      "Type": "page",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 1,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [],
+      "Comments": 0
+    }
+  ],
+  "Notes": []
+}

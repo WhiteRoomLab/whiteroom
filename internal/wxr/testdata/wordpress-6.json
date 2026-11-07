@@ -1,0 +1,871 @@
+{
+  "Version": "1.2",
+  "WordPress": "6.8.3",
+  "Channel": {
+    "Line": 12,
+    "Column": 1,
+    "Title": "テストサイト & ブログ",
+    "Link": "https://example.com",
+    "Description": "もうひとつの WordPress サイト",
+    "PubDate": "Sun, 01 Nov 2026 00:00:00 +0000",
+    "Language": "ja",
+    "Generator": "https://wordpress.org/?v=6.8.3",
+    "BaseSiteURL": "https://example.com",
+    "BaseBlogURL": "https://example.com"
+  },
+  "Authors": [
+    {
+      "Line": 22,
+      "Column": 2,
+      "ID": 1,
+      "Login": "admin",
+      "Email": "admin@example.com",
+      "DisplayName": "admin",
+      "FirstName": "",
+      "LastName": ""
+    },
+    {
+      "Line": 23,
+      "Column": 2,
+      "ID": 2,
+      "Login": "editor",
+      "Email": "editor@example.com",
+      "DisplayName": "編集者",
+      "FirstName": "太郎",
+      "LastName": "山田"
+    }
+  ],
+  "Terms": [
+    {
+      "Line": 25,
+      "Column": 2,
+      "ID": 1,
+      "Taxonomy": "category",
+      "Slug": "uncategorized",
+      "Parent": "",
+      "Name": "未分類",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 31,
+      "Column": 2,
+      "ID": 3,
+      "Taxonomy": "category",
+      "Slug": "%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b",
+      "Parent": "",
+      "Name": "お知らせ",
+      "Description": "<a href=\"https://example.com/\">サイト</a>のお知らせ",
+      "Meta": []
+    },
+    {
+      "Line": 38,
+      "Column": 2,
+      "ID": 4,
+      "Taxonomy": "category",
+      "Slug": "%e6%8a%80%e8%a1%93",
+      "Parent": "%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b",
+      "Name": "技術",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 44,
+      "Column": 2,
+      "ID": 5,
+      "Taxonomy": "post_tag",
+      "Slug": "wordpress",
+      "Parent": "",
+      "Name": "WordPress",
+      "Description": "",
+      "Meta": [
+        {
+          "Line": 48,
+          "Column": 3,
+          "Key": "accent_color",
+          "Value": "#ff0000"
+        }
+      ]
+    },
+    {
+      "Line": 53,
+      "Column": 2,
+      "ID": 6,
+      "Taxonomy": "post_tag",
+      "Slug": "%e6%97%a5%e8%a8%98",
+      "Parent": "",
+      "Name": "日記",
+      "Description": "日々の記録",
+      "Meta": []
+    },
+    {
+      "Line": 59,
+      "Column": 2,
+      "ID": 7,
+      "Taxonomy": "genre",
+      "Slug": "fiction",
+      "Parent": "",
+      "Name": "フィクション",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 66,
+      "Column": 2,
+      "ID": 8,
+      "Taxonomy": "genre",
+      "Slug": "sf",
+      "Parent": "fiction",
+      "Name": "SF",
+      "Description": "",
+      "Meta": [
+        {
+          "Line": 72,
+          "Column": 3,
+          "Key": "sort_key",
+          "Value": "10"
+        },
+        {
+          "Line": 76,
+          "Column": 3,
+          "Key": "sort_key",
+          "Value": "20"
+        }
+      ]
+    },
+    {
+      "Line": 81,
+      "Column": 2,
+      "ID": 9,
+      "Taxonomy": "nav_menu",
+      "Slug": "main-menu",
+      "Parent": "",
+      "Name": "メインメニュー",
+      "Description": "",
+      "Meta": []
+    }
+  ],
+  "Items": [
+    {
+      "Line": 91,
+      "Column": 2,
+      "Title": "こんにちは、世界！",
+      "Link": "https://example.com/2026/10/05/%e3%81%93%e3%82%93%e3%81%ab%e3%81%a1%e3%81%af/",
+      "PubDate": "Mon, 05 Oct 2026 00:30:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=10",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>配列の添字 a[b[0]]> を書くと、CDATA が分かれます。</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:more -->\n<!--more-->\n<!-- /wp:more -->\n\n<!-- wp:paragraph -->\n<p>続きです。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "最初の投稿の抜粋です。",
+      "ID": 10,
+      "Date": "2026-10-05 09:30:00",
+      "DateGMT": "2026-10-05 00:30:00",
+      "Modified": "2026-10-06 18:00:00",
+      "ModifiedGMT": "2026-10-06 09:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "%e3%81%93%e3%82%93%e3%81%ab%e3%81%a1%e3%81%af",
+      "Status": "publish",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": true,
+      "Terms": [
+        {
+          "Line": 124,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b",
+          "Name": "お知らせ"
+        },
+        {
+          "Line": 125,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "未分類"
+        },
+        {
+          "Line": 126,
+          "Column": 3,
+          "Taxonomy": "post_tag",
+          "Slug": "wordpress",
+          "Name": "WordPress"
+        },
+        {
+          "Line": 127,
+          "Column": 3,
+          "Taxonomy": "post_format",
+          "Slug": "post-format-aside",
+          "Name": "アサイド"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 128,
+          "Column": 3,
+          "Key": "_thumbnail_id",
+          "Value": "14"
+        },
+        {
+          "Line": 132,
+          "Column": 3,
+          "Key": "_wp_old_slug",
+          "Value": "hello-world"
+        },
+        {
+          "Line": 136,
+          "Column": 3,
+          "Key": "_wp_old_slug",
+          "Value": "%e3%82%b9%e3%83%a9%e3%83%83%e3%82%b0"
+        },
+        {
+          "Line": 140,
+          "Column": 3,
+          "Key": "_wp_old_date",
+          "Value": "2026-10-04"
+        },
+        {
+          "Line": 144,
+          "Column": 3,
+          "Key": "_edit_last",
+          "Value": "2"
+        }
+      ],
+      "Comments": 2
+    },
+    {
+      "Line": 181,
+      "Column": 2,
+      "Title": "会社概要",
+      "Link": "https://example.com/%e4%bc%9a%e7%a4%be%e6%a6%82%e8%a6%81/",
+      "PubDate": "Tue, 06 Oct 2026 01:00:00 +0000",
+      "Creator": "editor",
+      "GUID": "https://example.com/?page_id=11",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>会社の概要です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 11,
+      "Date": "2026-10-06 10:00:00",
+      "DateGMT": "2026-10-06 01:00:00",
+      "Modified": "2026-10-06 10:00:00",
+      "ModifiedGMT": "2026-10-06 01:00:00",
+      "CommentStatus": "closed",
+      "PingStatus": "closed",
+      "Name": "%e4%bc%9a%e7%a4%be%e6%a6%82%e8%a6%81",
+      "Status": "publish",
+      "Type": "page",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 2,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [
+        {
+          "Line": 206,
+          "Column": 3,
+          "Key": "_wp_page_template",
+          "Value": "default"
+        },
+        {
+          "Line": 210,
+          "Column": 3,
+          "Key": "_edit_last",
+          "Value": "2"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 215,
+      "Column": 2,
+      "Title": "沿革",
+      "Link": "https://example.com/%e4%bc%9a%e7%a4%be%e6%a6%82%e8%a6%81/history/",
+      "PubDate": "Tue, 06 Oct 2026 01:10:00 +0000",
+      "Creator": "editor",
+      "GUID": "https://example.com/?page_id=12",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>沿革です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 12,
+      "Date": "2026-10-06 10:10:00",
+      "DateGMT": "2026-10-06 01:10:00",
+      "Modified": "2026-10-06 10:10:00",
+      "ModifiedGMT": "2026-10-06 01:10:00",
+      "CommentStatus": "closed",
+      "PingStatus": "closed",
+      "Name": "history",
+      "Status": "publish",
+      "Type": "page",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 11,
+      "MenuOrder": 1,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [
+        {
+          "Line": 240,
+          "Column": 3,
+          "Key": "_wp_page_template",
+          "Value": "default"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 245,
+      "Column": 2,
+      "Title": "作品1",
+      "Link": "https://example.com/works/work-1/",
+      "PubDate": "Wed, 07 Oct 2026 03:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?post_type=works&p=13",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>作品の説明です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "作品の抜粋",
+      "ID": 13,
+      "Date": "2026-10-07 12:00:00",
+      "DateGMT": "2026-10-07 03:00:00",
+      "Modified": "2026-10-07 12:00:00",
+      "ModifiedGMT": "2026-10-07 03:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "work-1",
+      "Status": "publish",
+      "Type": "works",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 270,
+          "Column": 3,
+          "Taxonomy": "genre",
+          "Slug": "sf",
+          "Name": "SF"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 271,
+          "Column": 3,
+          "Key": "price",
+          "Value": "1200"
+        },
+        {
+          "Line": 275,
+          "Column": 3,
+          "Key": "_price",
+          "Value": "field_6543210abcdef"
+        },
+        {
+          "Line": 279,
+          "Column": 3,
+          "Key": "_edit_last",
+          "Value": "1"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 284,
+      "Column": 2,
+      "Title": "photo",
+      "Link": "https://example.com/2026/10/05/%e3%81%93%e3%82%93%e3%81%ab%e3%81%a1%e3%81%af/photo/",
+      "PubDate": "Mon, 05 Oct 2026 00:35:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/wp-content/uploads/2026/10/photo.jpg",
+      "Description": "",
+      "Content": "",
+      "Excerpt": "夕方に撮影した空の写真",
+      "ID": 14,
+      "Date": "2026-10-05 09:35:00",
+      "DateGMT": "2026-10-05 00:35:00",
+      "Modified": "2026-10-05 09:35:00",
+      "ModifiedGMT": "2026-10-05 00:35:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "photo",
+      "Status": "inherit",
+      "Type": "attachment",
+      "Password": "",
+      "AttachmentURL": "https://example.com/wp-content/uploads/2026/10/photo.jpg",
+      "Parent": 10,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [
+        {
+          "Line": 308,
+          "Column": 3,
+          "Key": "_wp_attached_file",
+          "Value": "2026/10/photo-scaled.jpg"
+        },
+        {
+          "Line": 312,
+          "Column": 3,
+          "Key": "_wp_attachment_metadata",
+          "Value": "a:7:{s:5:\"width\";i:2560;s:6:\"height\";i:1440;s:4:\"file\";s:24:\"2026/10/photo-scaled.jpg\";s:8:\"filesize\";i:512345;s:5:\"sizes\";a:2:{s:9:\"thumbnail\";a:5:{s:4:\"file\";s:17:\"photo-150x150.jpg\";s:5:\"width\";i:150;s:6:\"height\";i:150;s:9:\"mime-type\";s:10:\"image/jpeg\";s:8:\"filesize\";i:9876;}s:6:\"medium\";a:5:{s:4:\"file\";s:17:\"photo-300x169.jpg\";s:5:\"width\";i:300;s:6:\"height\";i:169;s:9:\"mime-type\";s:10:\"image/jpeg\";s:8:\"filesize\";i:21034;}}s:10:\"image_meta\";a:6:{s:8:\"aperture\";s:1:\"0\";s:6:\"credit\";s:0:\"\";s:6:\"camera\";s:0:\"\";s:7:\"caption\";s:0:\"\";s:17:\"created_timestamp\";s:1:\"0\";s:8:\"keywords\";a:0:{}}s:14:\"original_image\";s:9:\"photo.jpg\";}"
+        },
+        {
+          "Line": 316,
+          "Column": 3,
+          "Key": "_wp_attachment_image_alt",
+          "Value": "夕焼けの空"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 321,
+      "Column": 2,
+      "Title": "会社概要",
+      "Link": "https://example.com/?p=15",
+      "PubDate": "Thu, 08 Oct 2026 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=15",
+      "Description": "",
+      "Content": "",
+      "Excerpt": "",
+      "ID": 15,
+      "Date": "2026-10-08 09:00:00",
+      "DateGMT": "2026-10-08 00:00:00",
+      "Modified": "2026-10-08 09:00:00",
+      "ModifiedGMT": "2026-10-08 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "15",
+      "Status": "publish",
+      "Type": "nav_menu_item",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 1,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 344,
+          "Column": 3,
+          "Taxonomy": "nav_menu",
+          "Slug": "main-menu",
+          "Name": "メインメニュー"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 345,
+          "Column": 3,
+          "Key": "_menu_item_type",
+          "Value": "post_type"
+        },
+        {
+          "Line": 349,
+          "Column": 3,
+          "Key": "_menu_item_menu_item_parent",
+          "Value": "0"
+        },
+        {
+          "Line": 353,
+          "Column": 3,
+          "Key": "_menu_item_object_id",
+          "Value": "11"
+        },
+        {
+          "Line": 357,
+          "Column": 3,
+          "Key": "_menu_item_object",
+          "Value": "page"
+        },
+        {
+          "Line": 361,
+          "Column": 3,
+          "Key": "_menu_item_target",
+          "Value": ""
+        },
+        {
+          "Line": 365,
+          "Column": 3,
+          "Key": "_menu_item_classes",
+          "Value": "a:1:{i:0;s:0:\"\";}"
+        },
+        {
+          "Line": 369,
+          "Column": 3,
+          "Key": "_menu_item_xfn",
+          "Value": ""
+        },
+        {
+          "Line": 373,
+          "Column": 3,
+          "Key": "_menu_item_url",
+          "Value": ""
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 378,
+      "Column": 2,
+      "Title": "採用情報",
+      "Link": "https://example.com/?p=16",
+      "PubDate": "Thu, 08 Oct 2026 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=16",
+      "Description": "",
+      "Content": "",
+      "Excerpt": "",
+      "ID": 16,
+      "Date": "2026-10-08 09:00:00",
+      "DateGMT": "2026-10-08 00:00:00",
+      "Modified": "2026-10-08 09:00:00",
+      "ModifiedGMT": "2026-10-08 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "16",
+      "Status": "publish",
+      "Type": "nav_menu_item",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 2,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 401,
+          "Column": 3,
+          "Taxonomy": "nav_menu",
+          "Slug": "main-menu",
+          "Name": "メインメニュー"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 402,
+          "Column": 3,
+          "Key": "_menu_item_type",
+          "Value": "custom"
+        },
+        {
+          "Line": 406,
+          "Column": 3,
+          "Key": "_menu_item_menu_item_parent",
+          "Value": "0"
+        },
+        {
+          "Line": 410,
+          "Column": 3,
+          "Key": "_menu_item_object_id",
+          "Value": "16"
+        },
+        {
+          "Line": 414,
+          "Column": 3,
+          "Key": "_menu_item_object",
+          "Value": "custom"
+        },
+        {
+          "Line": 418,
+          "Column": 3,
+          "Key": "_menu_item_target",
+          "Value": "_blank"
+        },
+        {
+          "Line": 422,
+          "Column": 3,
+          "Key": "_menu_item_classes",
+          "Value": "a:1:{i:0;s:0:\"\";}"
+        },
+        {
+          "Line": 426,
+          "Column": 3,
+          "Key": "_menu_item_xfn",
+          "Value": ""
+        },
+        {
+          "Line": 430,
+          "Column": 3,
+          "Key": "_menu_item_url",
+          "Value": "https://recruit.example.com/"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 435,
+      "Column": 2,
+      "Title": "お問い合わせ",
+      "Link": "https://example.com/?post_type=wpcf7_contact_form&p=17",
+      "PubDate": "Fri, 09 Oct 2026 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?post_type=wpcf7_contact_form&p=17",
+      "Description": "",
+      "Content": "",
+      "Excerpt": "",
+      "ID": 17,
+      "Date": "2026-10-09 09:00:00",
+      "DateGMT": "2026-10-09 00:00:00",
+      "Modified": "2026-10-09 09:00:00",
+      "ModifiedGMT": "2026-10-09 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "contact-form-1",
+      "Status": "publish",
+      "Type": "wpcf7_contact_form",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [
+        {
+          "Line": 458,
+          "Column": 3,
+          "Key": "_form",
+          "Value": "<label> お名前 [text* your-name] </label>\n\n<label> メールアドレス [email* your-email] </label>\n\n<label> 件名 [text* your-subject] </label>\n\n<label> メッセージ本文 [textarea your-message] </label>\n\n[submit \"送信\"]"
+        },
+        {
+          "Line": 470,
+          "Column": 3,
+          "Key": "_mail",
+          "Value": "a:8:{s:7:\"subject\";s:34:\"お問い合わせ: [your-subject]\";s:6:\"sender\";s:37:\"[_site_title] <wordpress@example.com>\";s:4:\"body\";s:198:\"差出人: [your-name] <[your-email]>\n件名: [your-subject]\n\nメッセージ本文:\n[your-message]\n\n-- \nこのメールは [_site_title] のお問い合わせフォームから送信されました\";s:9:\"recipient\";s:19:\"[_site_admin_email]\";s:18:\"additional_headers\";s:22:\"Reply-To: [your-email]\";s:11:\"attachments\";s:0:\"\";s:8:\"use_html\";i:0;s:13:\"exclude_blank\";i:0;}"
+        },
+        {
+          "Line": 481,
+          "Column": 3,
+          "Key": "_messages",
+          "Value": "a:2:{s:12:\"mail_sent_ok\";s:75:\"メッセージを送信しました。ありがとうございました。\";s:12:\"mail_sent_ng\";s:87:\"メッセージの送信に失敗しました。後ほどまたお試しください。\";}"
+        },
+        {
+          "Line": 485,
+          "Column": 3,
+          "Key": "_additional_settings",
+          "Value": ""
+        },
+        {
+          "Line": 489,
+          "Column": 3,
+          "Key": "_locale",
+          "Value": "ja"
+        },
+        {
+          "Line": 493,
+          "Column": 3,
+          "Key": "_hash",
+          "Value": "d3b2c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 498,
+      "Column": 2,
+      "Title": "書きかけの記事",
+      "Link": "https://example.com/?p=18",
+      "PubDate": "Sat, 10 Oct 2026 00:00:00 +0000",
+      "Creator": "editor",
+      "GUID": "https://example.com/?p=18",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>下書きです。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 18,
+      "Date": "2026-10-10 09:00:00",
+      "DateGMT": "0000-00-00 00:00:00",
+      "Modified": "2026-10-10 09:05:00",
+      "ModifiedGMT": "2026-10-10 00:05:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "",
+      "Status": "draft",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 523,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "未分類"
+        }
+      ],
+      "Meta": [],
+      "Comments": 0
+    },
+    {
+      "Line": 525,
+      "Column": 2,
+      "Title": "非公開の記事",
+      "Link": "https://example.com/?p=19",
+      "PubDate": "Sun, 11 Oct 2026 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=19",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>非公開です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 19,
+      "Date": "2026-10-11 09:00:00",
+      "DateGMT": "2026-10-11 00:00:00",
+      "Modified": "2026-10-11 09:00:00",
+      "ModifiedGMT": "2026-10-11 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "private-post",
+      "Status": "private",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 550,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "未分類"
+        }
+      ],
+      "Meta": [],
+      "Comments": 0
+    },
+    {
+      "Line": 552,
+      "Column": 2,
+      "Title": "削除した記事",
+      "Link": "https://example.com/?p=20",
+      "PubDate": "Mon, 12 Oct 2026 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=20",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>ゴミ箱です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 20,
+      "Date": "2026-10-12 09:00:00",
+      "DateGMT": "2026-10-12 00:00:00",
+      "Modified": "2026-10-13 09:00:00",
+      "ModifiedGMT": "2026-10-13 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "deleted-post__trashed",
+      "Status": "trash",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 577,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "未分類"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 578,
+          "Column": 3,
+          "Key": "_wp_trash_meta_status",
+          "Value": "publish"
+        },
+        {
+          "Line": 582,
+          "Column": 3,
+          "Key": "_wp_trash_meta_time",
+          "Value": "1791850800"
+        }
+      ],
+      "Comments": 0
+    },
+    {
+      "Line": 587,
+      "Column": 2,
+      "Title": "予約した記事",
+      "Link": "https://example.com/?p=21",
+      "PubDate": "Fri, 01 Jan 2027 00:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "https://example.com/?p=21",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>予約投稿です。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 21,
+      "Date": "2027-01-01 09:00:00",
+      "DateGMT": "2027-01-01 00:00:00",
+      "Modified": "2026-10-14 09:00:00",
+      "ModifiedGMT": "2026-10-14 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "scheduled-post",
+      "Status": "future",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 612,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "uncategorized",
+          "Name": "未分類"
+        }
+      ],
+      "Meta": [],
+      "Comments": 0
+    },
+    {
+      "Line": 614,
+      "Column": 2,
+      "Title": "会員向けの記事",
+      "Link": "https://example.com/members-only/",
+      "PubDate": "Tue, 13 Oct 2026 00:00:00 +0000",
+      "Creator": "editor",
+      "GUID": "https://example.com/?p=22",
+      "Description": "",
+      "Content": "<!-- wp:paragraph -->\n<p>パスワードが要ります。</p>\n<!-- /wp:paragraph -->",
+      "Excerpt": "",
+      "ID": 22,
+      "Date": "2026-10-13 09:00:00",
+      "DateGMT": "2026-10-13 00:00:00",
+      "Modified": "2026-10-13 09:00:00",
+      "ModifiedGMT": "2026-10-13 00:00:00",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "members-only",
+      "Status": "publish",
+      "Type": "post",
+      "Password": "himitsu",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 639,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "%e6%8a%80%e8%a1%93",
+          "Name": "技術"
+        }
+      ],
+      "Meta": [],
+      "Comments": 0
+    }
+  ],
+  "Notes": []
+}

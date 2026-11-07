@@ -1,0 +1,155 @@
+{
+  "Version": "1.0",
+  "WordPress": "3.0",
+  "Channel": {
+    "Line": 12,
+    "Column": 1,
+    "Title": "Old Notes",
+    "Link": "http://notes.example.com",
+    "Description": "Written a long time ago",
+    "PubDate": "Thu, 01 Jul 2010 10:00:00 +0000",
+    "Language": "en",
+    "Generator": "http://wordpress.org/?v=3.0",
+    "BaseSiteURL": "http://notes.example.com",
+    "BaseBlogURL": "http://notes.example.com"
+  },
+  "Authors": [],
+  "Terms": [
+    {
+      "Line": 23,
+      "Column": 2,
+      "ID": 0,
+      "Taxonomy": "category",
+      "Slug": "uncategorized",
+      "Parent": "",
+      "Name": "Uncategorized",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 24,
+      "Column": 2,
+      "ID": 0,
+      "Taxonomy": "category",
+      "Slug": "travel",
+      "Parent": "uncategorized",
+      "Name": "Travel",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 25,
+      "Column": 2,
+      "ID": 0,
+      "Taxonomy": "post_tag",
+      "Slug": "rss",
+      "Parent": "",
+      "Name": "rss",
+      "Description": "",
+      "Meta": []
+    },
+    {
+      "Line": 26,
+      "Column": 2,
+      "ID": 0,
+      "Taxonomy": "post_tag",
+      "Slug": "feeds",
+      "Parent": "",
+      "Name": "feeds",
+      "Description": "",
+      "Meta": []
+    }
+  ],
+  "Items": [
+    {
+      "Line": 28,
+      "Column": 2,
+      "Title": "Notes from the road",
+      "Link": "http://notes.example.com/2010/06/notes-from-the-road/",
+      "PubDate": "Tue, 29 Jun 2010 09:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "http://notes.example.com/?p=5",
+      "Description": "",
+      "Content": "A few words about the trip.",
+      "Excerpt": "",
+      "ID": 5,
+      "Date": "2010-06-29 18:00:00",
+      "DateGMT": "2010-06-29 09:00:00",
+      "Modified": "",
+      "ModifiedGMT": "",
+      "CommentStatus": "open",
+      "PingStatus": "open",
+      "Name": "notes-from-the-road",
+      "Status": "publish",
+      "Type": "post",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 0,
+      "Sticky": false,
+      "Terms": [
+        {
+          "Line": 34,
+          "Column": 3,
+          "Taxonomy": "category",
+          "Slug": "travel",
+          "Name": "Travel"
+        },
+        {
+          "Line": 36,
+          "Column": 3,
+          "Taxonomy": "post_tag",
+          "Slug": "rss",
+          "Name": "rss"
+        },
+        {
+          "Line": 38,
+          "Column": 3,
+          "Taxonomy": "post_tag",
+          "Slug": "feeds",
+          "Name": "feeds"
+        }
+      ],
+      "Meta": [
+        {
+          "Line": 54,
+          "Column": 3,
+          "Key": "_edit_lock",
+          "Value": "1277800000:1"
+        }
+      ],
+      "Comments": 1
+    },
+    {
+      "Line": 73,
+      "Column": 2,
+      "Title": "About",
+      "Link": "http://notes.example.com/about/",
+      "PubDate": "Wed, 30 Jun 2010 01:00:00 +0000",
+      "Creator": "admin",
+      "GUID": "http://notes.example.com/?page_id=6",
+      "Description": "",
+      "Content": "About this site.",
+      "Excerpt": "",
+      "ID": 6,
+      "Date": "2010-06-30 10:00:00",
+      "DateGMT": "2010-06-30 01:00:00",
+      "Modified": "",
+      "ModifiedGMT": "",
+      "CommentStatus": "closed",
+      "PingStatus": "closed",
+      "Name": "about",
+      "Status": "publish",
+      "Type": "page",
+      "Password": "",
+      "AttachmentURL": "",
+      "Parent": 0,
+      "MenuOrder": 3,
+      "Sticky": false,
+      "Terms": [],
+      "Meta": [],
+      "Comments": 0
+    }
+  ],
+  "Notes": []
+}
