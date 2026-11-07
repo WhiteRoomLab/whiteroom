@@ -19,6 +19,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 // resolver is the render.Resolver of the build, which also gives the rest of the build the files of media. It inspects
@@ -73,8 +74,8 @@ func (r *resolver) Entry(id string) (title, path string, ok bool) {
 	if d == nil {
 		return "", "", false
 	}
-	if d.rev != nil {
-		title = d.rev.Title
+	if d.Rev != nil {
+		title = d.Rev.Title
 	}
 	return title, r.b.entryPaths[id], true
 }
@@ -91,7 +92,7 @@ func (r *resolver) Media(id string) (m *content.Media, path string, ok bool) {
 	if err != nil {
 		return nil, "", false
 	}
-	return &d.v, f.versioned(), true
+	return &d.V, f.versioned(), true
 }
 
 // Image returns the files that show the image medium with the ID at size, or at the default size if size is nil, as
@@ -99,7 +100,7 @@ func (r *resolver) Media(id string) (m *content.Media, path string, ok bool) {
 // false if there is no such image or its original cannot be inspected, which publishMedia reports.
 func (r *resolver) Image(id string, size *content.ImageSize) (files render.ImageFiles, ok bool) {
 	d := r.b.media[id]
-	if d == nil || d.v.Kind() != content.MediaImage {
+	if d == nil || d.V.Kind() != content.MediaImage {
 		return render.ImageFiles{}, false
 	}
 	info, err := r.image(id, d)
@@ -109,9 +110,9 @@ func (r *resolver) Image(id string, size *content.ImageSize) (files render.Image
 	set := imaging.ForSize(info, size)
 	r.record(id, set.Src)
 	r.record(id, set.Srcset...)
-	files = render.ImageFiles{Src: imageFile(id, &d.v, info, set.Src).versioned(), Width: set.Width, Height: set.Height}
+	files = render.ImageFiles{Src: imageFile(id, &d.V, info, set.Src).versioned(), Width: set.Width, Height: set.Height}
 	for _, v := range set.Srcset {
-		f := imageFile(id, &d.v, info, v)
+		f := imageFile(id, &d.V, info, v)
 		files.Srcset = append(files.Srcset, render.ImageFile{Path: f.versioned(), Width: f.width})
 	}
 	return files, true
@@ -119,7 +120,7 @@ func (r *resolver) Image(id string, size *content.ImageSize) (files render.Image
 
 func (r *resolver) Form(id string) (f *content.Form, ok bool) {
 	if d := r.b.forms[id]; d != nil {
-		return &d.v, true
+		return &d.V, true
 	}
 	return nil, false
 }
@@ -147,7 +148,7 @@ func (r *resolver) mediaPath(id string) (string, error) {
 // It returns nil if there is no such image or its original cannot be inspected, which publishMedia reports.
 func (r *resolver) icons(id string) []icon {
 	d := r.b.media[id]
-	if d == nil || d.v.Kind() != content.MediaImage {
+	if d == nil || d.V.Kind() != content.MediaImage {
 		return nil
 	}
 	info, err := r.image(id, d)
@@ -158,7 +159,7 @@ func (r *resolver) icons(id string) []icon {
 	for _, n := range imaging.IconSizes() {
 		v := imaging.Icon(info, n)
 		r.record(id, v)
-		f := imageFile(id, &d.v, info, v)
+		f := imageFile(id, &d.V, info, v)
 		icons = append(icons, icon{size: n, path: f.versioned(), width: f.width, height: f.height})
 	}
 	return icons
@@ -166,22 +167,22 @@ func (r *resolver) icons(id string) []icon {
 
 // published returns the published file of d, the medium with the ID id, and records it as asked about.
 func (r *resolver) published(id string, d *doc[content.Media]) (mediaFile, error) {
-	if d.v.Kind() == content.MediaPDF {
+	if d.V.Kind() == content.MediaPDF {
 		r.record(id)
-		path := imaging.Path(id, imaging.PDFName(d.v.FileName))
-		return mediaFile{path: path, version: imaging.PDFVersion(d.v.Hash)}, nil
+		path := imaging.Path(id, imaging.PDFName(d.V.FileName))
+		return mediaFile{path: path, version: imaging.PDFVersion(d.V.Hash)}, nil
 	}
 	info, err := r.image(id, d)
 	if err != nil {
 		return mediaFile{}, err
 	}
-	return imageFile(id, &d.v, info, imaging.Published(info)), nil
+	return imageFile(id, &d.V, info, imaging.Published(info)), nil
 }
 
 // image returns what imaging reads from the original of d, the image medium with the ID id, and records d with its
 // published file as asked about, or only d if the original cannot be inspected.
 func (r *resolver) image(id string, d *doc[content.Media]) (imaging.Info, error) {
-	info, err := r.info(d.v.Hash)
+	info, err := r.info(d.V.Hash)
 	if err != nil {
 		r.record(id)
 		return imaging.Info{}, fmt.Errorf("cannot read the original: %w", err)
@@ -247,7 +248,7 @@ func (b *builder) publishMedia(ctx context.Context, pub *os.Root, workers int, p
 		vs[i] = slices.Collect(maps.Keys(b.res.asked[id]))
 	}
 	b.res.mu.Unlock()
-	outs := make([][]output, len(ids))
+	outs := make([][]siteplan.Output, len(ids))
 	err := forEach(ctx, len(ids), workers, func(i int) error {
 		var err error
 		outs[i], err = b.publishMedium(ctx, pub, ids[i], vs[i], p)
@@ -268,12 +269,12 @@ func (b *builder) publishMedia(ctx context.Context, pub *os.Root, workers int, p
 // imaging reads the original of an image again only to make the files that its cache does not have.
 func (b *builder) publishMedium(
 	ctx context.Context, pub *os.Root, id string, vs []imaging.Variant, p *problems,
-) ([]output, error) {
+) ([]siteplan.Output, error) {
 	d := b.media[id]
-	f, err := b.src.OpenMedia(d.v.Hash)
+	f, err := b.src.OpenMedia(d.V.Hash)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		p.add(d.file, "/hash", "no original with this hash")
+		p.add(d.File, "/hash", "no original with this hash")
 		return nil, nil
 	case err != nil:
 		return nil, err
@@ -283,10 +284,10 @@ func (b *builder) publishMedium(
 	switch {
 	case err != nil:
 		return nil, err
-	case stat.Size() != int64(d.v.Size):
-		p.add(d.file, "/size", "the original has %d bytes, not %d", stat.Size(), d.v.Size)
+	case stat.Size() != int64(d.V.Size):
+		p.add(d.File, "/size", "the original has %d bytes, not %d", stat.Size(), d.V.Size)
 		return nil, nil
-	case d.v.Kind() == content.MediaPDF:
+	case d.V.Kind() == content.MediaPDF:
 		return b.publishPDF(ctx, pub, id, d, f, p)
 	}
 	return b.publishImage(ctx, pub, id, d, vs, p)
@@ -297,16 +298,16 @@ func (b *builder) publishMedium(
 // warnings about the original go to b.warnings.
 func (b *builder) publishImage(
 	ctx context.Context, pub *os.Root, id string, d *doc[content.Media], vs []imaging.Variant, p *problems,
-) ([]output, error) {
-	m := &d.v
+) ([]siteplan.Output, error) {
+	m := &d.V
 	info, err := b.res.info(m.Hash)
 	if err != nil {
-		p.add(d.file, "", "cannot read the original: %v", err)
+		p.add(d.File, "", "cannot read the original: %v", err)
 		return nil, nil
 	}
 	ok := true
 	if info.MIMEType != m.MIMEType {
-		p.add(d.file, "/mimeType", "the original is %s, not %s", info.MIMEType, m.MIMEType)
+		p.add(d.File, "/mimeType", "the original is %s, not %s", info.MIMEType, m.MIMEType)
 		ok = false
 	}
 	if info.Width != m.Width || info.Height != m.Height {
@@ -314,7 +315,7 @@ func (b *builder) publishImage(
 		if info.Width == m.Width {
 			pointer = "/height"
 		}
-		p.add(d.file, pointer, "the original is %dx%d pixels as displayed, not %dx%d",
+		p.add(d.File, pointer, "the original is %dx%d pixels as displayed, not %dx%d",
 			info.Width, info.Height, m.Width, m.Height)
 		ok = false
 	}
@@ -322,7 +323,7 @@ func (b *builder) publishImage(
 		return nil, nil
 	}
 	for _, w := range info.Warnings {
-		b.warnings.add(d.file, "", "%s", w)
+		b.warnings.add(d.File, "", "%s", w)
 	}
 	// By name, which differs for each file of a medium, so that the outputs come in a fixed order.
 	slices.SortFunc(vs, func(x, y imaging.Variant) int {
@@ -333,13 +334,13 @@ func (b *builder) publishImage(
 	case ctx.Err() != nil:
 		return nil, ctx.Err()
 	case err != nil:
-		p.add(d.file, "", "cannot make the files: %v", err)
+		p.add(d.File, "", "cannot make the files: %v", err)
 		return nil, nil
 	}
-	outs := make([]output, len(vs))
+	outs := make([]siteplan.Output, len(vs))
 	for i, v := range vs {
 		outs[i] = mediaOutput(id, d, imaging.Name(m.FileName, info, v))
-		if err := writeFile(pub, outs[i].file, files[i]); err != nil {
+		if err := writeFile(pub, outs[i].File, files[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -350,46 +351,46 @@ func (b *builder) publishImage(
 // reading cap(b.res.sem) originals at once at most. It returns its output, or none if d has problems, which go to p.
 func (b *builder) publishPDF(
 	ctx context.Context, pub *os.Root, id string, d *doc[content.Media], f fs.File, p *problems,
-) ([]output, error) {
+) ([]siteplan.Output, error) {
 	select {
 	case b.res.sem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 	defer func() { <-b.res.sem }()
-	m := &d.v
+	m := &d.V
 	data := make([]byte, m.Size)
 	if _, err := io.ReadFull(f, data); err != nil {
-		return nil, fmt.Errorf("%s: cannot read the original: %w", d.file.Name, err)
+		return nil, fmt.Errorf("%s: cannot read the original: %w", d.File.Name, err)
 	}
 	sum := sha256.Sum256(data)
 	if hash := "sha256:" + hex.EncodeToString(sum[:]); hash != m.Hash {
-		p.add(d.file, "/hash", "the original has the hash %s", hash)
+		p.add(d.File, "/hash", "the original has the hash %s", hash)
 		return nil, nil
 	}
 	info, err := mediafile.Probe(bytes.NewReader(data))
 	switch {
 	case err != nil:
-		p.add(d.file, "/mimeType", "the original is not %s: %v", m.MIMEType, err)
+		p.add(d.File, "/mimeType", "the original is not %s: %v", m.MIMEType, err)
 		return nil, nil
 	case info.MIMEType != m.MIMEType:
-		p.add(d.file, "/mimeType", "the original is %s, not %s", info.MIMEType, m.MIMEType)
+		p.add(d.File, "/mimeType", "the original is %s, not %s", info.MIMEType, m.MIMEType)
 		return nil, nil
 	}
 	o := mediaOutput(id, d, imaging.PDFName(m.FileName))
-	if err := writeFile(pub, o.file, data); err != nil {
+	if err := writeFile(pub, o.File, data); err != nil {
 		return nil, err
 	}
-	return []output{o}, nil
+	return []siteplan.Output{o}, nil
 }
 
 // mediaOutput returns the output of the file name of d, the medium with the ID id.
-func mediaOutput(id string, d *doc[content.Media], name string) output {
+func mediaOutput(id string, d *doc[content.Media], name string) siteplan.Output {
 	path := imaging.Path(id, name)
-	return output{
-		path: path,
-		file: strings.TrimPrefix(path, "/"),
-		src:  source{file: d.file, pointer: "/fileName", what: d.file.Name},
-		rank: rankDocument,
+	return siteplan.Output{
+		Path: path,
+		File: strings.TrimPrefix(path, "/"),
+		Src:  siteplan.Source{File: d.File, Pointer: "/fileName", What: d.File.Name},
+		Rank: siteplan.RankDocument,
 	}
 }

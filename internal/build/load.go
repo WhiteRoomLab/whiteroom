@@ -11,23 +11,19 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
 // doc is a document of a site and its file.
-type doc[T any] struct {
-	file content.SiteFile
-	v    T
-}
+type doc[T any] = siteplan.Doc[T]
 
-// entryDoc is an entry and, if it is published, its published revision.
+// entryDoc is an entry and, if it is published, its published revision. Once the revision is valid, RevFile has its
+// Name alone (revisionFile reads the file again) and Rev has no Body (revisionBody).
 type entryDoc struct {
-	file    content.SiteFile
-	e       content.Entry
-	revFile content.SiteFile  // once the revision is valid, its Name alone; revisionFile reads the file again
+	siteplan.Entry
 	revSum  [sha256.Size]byte // the SHA-256 of the file that was valid
-	rev     *content.Revision // nil unless e is published and the revision is valid; without its Body (revisionBody)
-	excerpt string            // the excerpt of rev (excerpt)
+	excerpt string            // the excerpt of Rev (excerpt)
 }
 
 // builder holds what the build has read of a site and found out about it. The documents are by ID.
@@ -45,6 +41,8 @@ type builder struct {
 	menus     map[string]*doc[content.Menu]
 	forms     map[string]*doc[content.Form]
 	redirects map[string]*doc[content.Redirect]
+	// The documents as siteplan checks and plans them: the maps above, and the entries of entries (Entries).
+	sp *siteplan.Site
 
 	base  string         // the path of the site URL as written, such as "/blog"; "" at the root of its host
 	loc   *time.Location // the time zone of the site
@@ -54,11 +52,11 @@ type builder struct {
 	entryPaths  map[string]string
 	termPaths   map[string]string
 	authorPaths map[string]map[string]string
-	outputs     []output
+	outputs     []siteplan.Output
 	// The IDs of the published entries and of the terms by their translation groups and languages (groupTranslations).
 	entryGroups, termGroups map[groupKey]string
 	// The redirects that the servers serve, sorted by from (resolveRedirects).
-	serverRedirects []redirect
+	serverRedirects []siteplan.Redirect
 	// The resolver of the media and the other entities that content refers to, which records the media to publish.
 	res *resolver
 	// The HTML of the posts pages, which pageData makes once for all the pages of their lists.
@@ -109,7 +107,7 @@ func load(src Source) (*builder, error) {
 		return nil, p.sorted()
 	}
 	stageEnded("validated")
-	b.checkAcross(&p)
+	b.sp.CheckAcross(p.report())
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
@@ -126,8 +124,10 @@ func (b *builder) decode(files map[content.RefKind]map[string]content.SiteFile, 
 	entries := decodeDocs(p, files[content.RefEntry], func(e *content.Entry) string { return e.ID })
 	b.entries = make(map[string]*entryDoc, len(entries))
 	b.revisions = make(map[string]*entryDoc, len(entries))
+	b.sp = &siteplan.Site{Settings: b.settings, Schema: b.schema, Entries: make(map[string]*siteplan.Entry, len(entries))}
 	for id, d := range entries {
-		b.entries[id] = &entryDoc{file: d.file, e: d.v}
+		e := &entryDoc{Entry: siteplan.Entry{File: d.File, E: d.V}}
+		b.entries[id], b.sp.Entries[id] = e, &e.Entry
 	}
 	b.terms = decodeDocs(p, files[content.RefTerm], func(t *content.Term) string { return t.ID })
 	b.media = decodeDocs(p, files[content.RefMedia], func(m *content.Media) string { return m.ID })
@@ -135,6 +135,8 @@ func (b *builder) decode(files map[content.RefKind]map[string]content.SiteFile, 
 	b.menus = decodeDocs(p, files[content.RefMenu], func(m *content.Menu) string { return m.ID })
 	b.forms = decodeDocs(p, files[content.RefForm], func(f *content.Form) string { return f.ID })
 	b.redirects = decodeDocs(p, files[content.RefRedirect], func(r *content.Redirect) string { return r.ID })
+	b.sp.Terms, b.sp.Media, b.sp.Authors, b.sp.Menus = b.terms, b.media, b.authors, b.menus
+	b.sp.Forms, b.sp.Redirects = b.forms, b.redirects
 }
 
 // decodeDocs decodes files, the documents of one kind by ID, in ID order; id returns the id in a document.
@@ -144,14 +146,14 @@ func decodeDocs[T any, P interface {
 }](p *problems, files map[string]content.SiteFile, id func(*T) string) map[string]*doc[T] {
 	docs := make(map[string]*doc[T], len(files))
 	for _, key := range slices.Sorted(maps.Keys(files)) {
-		d := &doc[T]{file: files[key]}
+		d := &doc[T]{File: files[key]}
 		// A Source may return an array larger than the file (sitedir reads with bytes.MinRead more); keep a copy.
-		d.file.Data = bytes.Clone(d.file.Data)
-		if !decodeFile(p, d.file, P(&d.v).UnmarshalJSON) {
+		d.File.Data = bytes.Clone(d.File.Data)
+		if !decodeFile(p, d.File, P(&d.V).UnmarshalJSON) {
 			continue
 		}
-		if v := id(&d.v); v != "" && v != key {
-			p.add(d.file, "/id", "id %q differs from the ID of the document, %q", v, key)
+		if v := id(&d.V); v != "" && v != key {
+			p.add(d.File, "/id", "id %q differs from the ID of the document, %q", v, key)
 		}
 		docs[key] = d
 	}
@@ -178,6 +180,7 @@ func (b *builder) loadSite(fsys fs.FS) error {
 	th, themeErr := theme.Load(fsys)
 	if siteErr == nil && themeErr == nil {
 		b.site, b.theme = site, th
+		b.sp.Site, b.sp.Theme = site, th
 		return nil
 	}
 	var es content.Errors

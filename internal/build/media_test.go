@@ -30,6 +30,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 var _ render.Resolver = (*resolver)(nil)
@@ -219,16 +220,16 @@ func checkMediaOutputs(t *testing.T, b *builder, dir string) {
 	t.Helper()
 	var files []string
 	for _, o := range b.outputs {
-		if !strings.HasPrefix(o.path, "/media/") {
+		if !strings.HasPrefix(o.Path, "/media/") {
 			continue
 		}
-		doc := fileOf(content.RefMedia, strings.Split(o.file, "/")[1])
-		if o.path != "/"+o.file || o.rank != rankDocument || o.src.file.Name != doc || o.src.pointer != "/fileName" ||
-			o.src.what != doc {
+		doc := fileOf(content.RefMedia, strings.Split(o.File, "/")[1])
+		if o.Path != "/"+o.File || o.Rank != siteplan.RankDocument || o.Src.File.Name != doc || o.Src.Pointer != "/fileName" ||
+			o.Src.What != doc {
 			t.Errorf("output %q of the file %q, rank %d, from %s#%s (%s)",
-				o.path, o.file, o.rank, o.src.file.Name, o.src.pointer, o.src.what)
+				o.Path, o.File, o.Rank, o.Src.File.Name, o.Src.Pointer, o.Src.What)
 		}
-		files = append(files, o.file)
+		files = append(files, o.File)
 	}
 	if got := listFiles(t, dir); !slices.Equal(files, got) {
 		t.Errorf("outputs of media:\n%s\nfiles:\n%s", strings.Join(files, "\n"), strings.Join(got, "\n"))
@@ -264,7 +265,7 @@ func TestResolver(t *testing.T) {
 		{pdfID, "/media/" + pdfID + "/会社案内-2026年版.pdf?v=" + imaging.PDFVersion(guide.Hash)},
 		{animationID, at(anim, "loading.gif", animation)},
 	} {
-		if m, path, ok := r.Media(tt.id); m != &b.media[tt.id].v || path != tt.want || !ok {
+		if m, path, ok := r.Media(tt.id); m != &b.media[tt.id].V || path != tt.want || !ok {
 			t.Errorf("Media(%s) = %v, %q, %v, want its document, %q, true", tt.id, m, path, ok, tt.want)
 		}
 	}
@@ -398,7 +399,7 @@ func TestResolver(t *testing.T) {
 			t.Errorf("Entry(%s) = %q, %q, %v, want %q, %q, %v", tt.id, title, path, ok, tt.title, tt.path, tt.ok)
 		}
 	}
-	if f, ok := r.Form(formID); f != &b.forms[formID].v || !ok {
+	if f, ok := r.Form(formID); f != &b.forms[formID].V || !ok {
 		t.Errorf("Form(%s) = %v, %v, want its document", formID, f, ok)
 	}
 	if f, ok := r.Form("frm_01JCZZZZZZZZZZZZZZZZZZZZZZ"); f != nil || ok {
@@ -435,7 +436,7 @@ func TestResolver(t *testing.T) {
 	}
 	checkMediaOutputs(t, b, dir)
 	for _, id := range []string{unusedID, avatarID, logoID, ogImageID} {
-		if n := src.openCount(b.media[id].v.Hash); n != 0 {
+		if n := src.openCount(b.media[id].V.Hash); n != 0 {
 			t.Errorf("the original of %s was opened %d times, want 0", id, n)
 		}
 	}
@@ -918,7 +919,7 @@ func TestRedirectsToMedia(t *testing.T) {
 	if got := redirectTexts(b.serverRedirects); !slices.Equal(got, wantRedirects) {
 		t.Errorf("redirects:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(wantRedirects, "\n"))
 	}
-	logo := b.media[logoID].v.Hash
+	logo := b.media[logoID].V.Hash
 	digits := strings.TrimPrefix(logo, "sha256:")
 	wantErrors := []string{
 		rdr(3) + ":5:3: /to: cannot make the path: cannot read the original: " + logo + ": open " + digits +

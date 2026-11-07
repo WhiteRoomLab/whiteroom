@@ -305,12 +305,18 @@ func (r diffReads) run(tx *Tx, line func(desc string, v any, err error)) {
 	for _, kind := range r.kinds {
 		docs, err := tx.Documents(kind)
 		line(fmt.Sprintf("Documents(%q)", kind), docs, err)
+		sums, err := tx.Summaries(kind)
+		line(fmt.Sprintf("Summaries(%q)", kind), sums, err)
 	}
 	for _, d := range r.docs {
 		doc, err := tx.Document(d.k.kind, d.id)
 		line(fmt.Sprintf("Document(%q, %q)", d.k.kind, d.id), doc, err)
 		versions, err := tx.History(d.k.kind, d.id)
 		line(fmt.Sprintf("History(%q, %q)", d.k.kind, d.id), versions, err)
+		sum, err := tx.Summary(d.k.kind, d.id)
+		line(fmt.Sprintf("Summary(%q, %q)", d.k.kind, d.id), sum, err)
+		refs, err := tx.Referrers(d.k.kind, d.id)
+		line(fmt.Sprintf("Referrers(%q, %q)", d.k.kind, d.id), refs, err)
 	}
 	for _, id := range r.revs {
 		rev, err := tx.Revision(id)
@@ -324,6 +330,12 @@ func (r diffReads) run(tx *Tx, line func(desc string, v any, err error)) {
 		data, err := tx.Object(h)
 		line(fmt.Sprintf("Object(%q)", h), data, err)
 	}
+	for _, id := range r.operations {
+		data, err := operationResult(tx, id)
+		line(fmt.Sprintf("Operation(%q)", id), data, err)
+	}
+	n, err := tx.LastNumber()
+	line("LastNumber()", n, err)
 }
 
 // diffCounts are what a differential run has done in each store: the Updates, and those that returned nil, errAbort or
@@ -432,6 +444,12 @@ func line(lines []string, i int) string {
 func (r *diffRun) update(step string, u diffUpdate) {
 	r.t.Helper()
 	l := r.compare(step, func(d *diffStore) diffLines { return d.update(r.t, u) })
+	for _, d := range r.stores() {
+		if problem, err := indexProblem(r.t, d.s); err != nil || problem != "" {
+			r.t.Fatalf("%s, %s: the index of %s is not the one that its documents give: %q, %v\nrun it alone: %s",
+				r.about, step, d.name, problem, err, reproduce(r.t))
+		}
+	}
 	r.counts.updates++
 	r.counts.ops += len(l.lines) - 1
 	r.counts.opErrors += l.errs

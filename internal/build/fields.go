@@ -114,7 +114,7 @@ func (x fieldData) link(v jsontext.Value, path string) *render.Link {
 	}
 	link, warnings := x.r.Link(&l)
 	for _, w := range warnings {
-		x.b.warnings.add(x.d.revFile, path+w.Path, "%s", w.Msg)
+		x.b.warnings.add(x.d.RevFile, path+w.Path, "%s", w.Msg)
 	}
 	return link
 }

@@ -30,24 +30,24 @@ func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]templ
 		return nil, render.CSS{}, err
 	}
 	f := entryFields{blocks: []content.Blocks{body}, blockPaths: []string{"/body"}}
-	f.fields(b.site.Type(d.e.Type).Fields, d.rev.Fields, "/fields")
+	f.fields(b.site.Type(d.E.Type).Fields, d.Rev.Fields, "/fields")
 	htmls, css, warnings, err := r.Document(f.blocks...)
 	if err != nil {
-		return nil, render.CSS{}, fmt.Errorf("%s: %w", d.revFile.Name, err)
+		return nil, render.CSS{}, fmt.Errorf("%s: %w", d.RevFile.Name, err)
 	}
 	html := make(map[string]template.HTML, len(htmls)+len(f.texts))
 	for i, h := range htmls {
 		html[f.blockPaths[i]] = h
 	}
 	for _, w := range warnings {
-		b.warnings.add(d.revFile, f.blockPaths[w.List]+w.Path, "%s", w.Msg)
+		b.warnings.add(d.RevFile, f.blockPaths[w.List]+w.Path, "%s", w.Msg)
 	}
 	for i, rt := range f.texts {
 		h, c, warnings := r.RichText(rt)
 		html[f.textPaths[i]] = h
 		css.Add(c)
 		for _, w := range warnings {
-			b.warnings.add(d.revFile, f.textPaths[i]+w.Path, "%s", w.Msg)
+			b.warnings.add(d.RevFile, f.textPaths[i]+w.Path, "%s", w.Msg)
 		}
 	}
 	return html, css, nil
@@ -56,12 +56,12 @@ func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]templ
 // revisionFile reads the revision of d, a published entry with a valid revision, again from b.src. The error is that of
 // b.src as it is or, if the file is not the one that validateEntry checked, that it has changed.
 func (b *builder) revisionFile(d *entryDoc) (content.SiteFile, error) {
-	f, err := b.src.Revision(d.e.PublishedRevision)
+	f, err := b.src.Revision(d.E.PublishedRevision)
 	if err != nil {
 		return content.SiteFile{}, err
 	}
 	if sha256.Sum256(f.Data) != d.revSum {
-		return content.SiteFile{}, fmt.Errorf("%s: changed during the build", d.revFile.Name)
+		return content.SiteFile{}, fmt.Errorf("%s: changed during the build", d.RevFile.Name)
 	}
 	return f, nil
 }
@@ -77,7 +77,7 @@ func (b *builder) revisionData(name string) ([]byte, error) {
 	return f.Data, err
 }
 
-// revisionBody decodes the body of f, a revision that revisionFile has read again (entryDoc.rev has none). The error
+// revisionBody decodes the body of f, a revision that revisionFile has read again (entryDoc.Rev has none). The error
 // has the name of f.
 func revisionBody(f content.SiteFile) (content.Blocks, error) {
 	var rev content.Revision

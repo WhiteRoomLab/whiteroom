@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 // problems collects errors or warnings about the files of a site. It is safe for concurrent use.
@@ -28,6 +29,11 @@ type fileProblems struct {
 // add adds a problem at path, a JSON Pointer in f.
 func (p *problems) add(f content.SiteFile, path, format string, args ...any) {
 	p.addErr(f, &content.Error{Path: path, Msg: fmt.Sprintf(format, args...)})
+}
+
+// report returns the function that adds a problem to p, as siteplan reports them.
+func (p *problems) report() siteplan.Report {
+	return func(f content.SiteFile, pointer, msg string) { p.add(f, pointer, "%s", msg) }
 }
 
 // addErr adds the problems in err, if any, which are about f: those of content.Errors or a *content.Error at their

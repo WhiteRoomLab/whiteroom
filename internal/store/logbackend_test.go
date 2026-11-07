@@ -79,7 +79,10 @@ func rawUpdate(t *testing.T, s *Store, f func(tx *logdb.Tx) error) {
 }
 
 // logTables are the tables of the log backend by the names of the tables that the tests count (3.4).
-var logTables = map[string]uint32{"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions}
+var logTables = map[string]uint32{
+	"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions, "summaries": tableSummaries,
+	"references": tableReferences, "operations": tableOperations,
+}
 
 // count returns the number of rows of table in s, of the tables of 3.4 by name: the objects of the engine, or the keys
 // of a table of logTables.
@@ -103,11 +106,17 @@ func count(t *testing.T, s *Store, table string) int {
 	return n
 }
 
-// checkConsistent checks that the current version of every document is its latest one.
+// checkConsistent checks that the current version of every document is its latest one (in a store of the log backend),
+// and that the index is the one that the documents and the revisions give.
 func checkConsistent(t *testing.T, s *Store) {
 	t.Helper()
-	if n, err := inconsistentLog(t, s); err != nil || n != 0 {
-		t.Errorf("documents that are not at their latest versions = %d, %v; want 0", n, err)
+	if _, ok := s.b.(*logBackend); ok {
+		if n, err := inconsistentLog(t, s); err != nil || n != 0 {
+			t.Errorf("documents that are not at their latest versions = %d, %v; want 0", n, err)
+		}
+	}
+	if problem, err := indexProblem(t, s); err != nil || problem != "" {
+		t.Errorf("the index differs from the one that the documents give: %q, %v; want the same", problem, err)
 	}
 }
 
@@ -495,8 +504,29 @@ func show(v any) string {
 		data := v.Data
 		v.Data = nil
 		return fmt.Sprintf("%+v %s", v, show(data))
+	case Summary:
+		return summaryText(v)
+	case []Summary:
+		var sums []string
+		for _, s := range v {
+			sums = append(sums, summaryText(s))
+		}
+		return "[" + strings.Join(sums, "; ") + "]"
 	}
 	return fmt.Sprintf("%+v", v)
+}
+
+// summaryText returns the summary s as text: its kind and ID, and the JSON of what it has.
+func summaryText(s Summary) string {
+	row := summaryRow{
+		Entry: s.Entry, Published: s.Published, Latest: s.Latest, Term: s.Term, Media: s.Media, Author: s.Author,
+		Menu: s.Menu, Form: s.Form, Redirect: s.Redirect,
+	}
+	data, err := row.marshal()
+	if err != nil {
+		return fmt.Sprintf("%s %q error %v", s.Kind, s.ID, err)
+	}
+	return fmt.Sprintf("%s %q %s", s.Kind, s.ID, data)
 }
 
 // recorder returns a function that adds to out a line with what, and what a method returns.
@@ -684,8 +714,24 @@ func rawTable(t *testing.T, s *Store, table uint32) [][2]string {
 // TestLogTables checks the keys and values of the tables of the log backend against its schema.
 func TestLogTables(t *testing.T) {
 	s, _ := newLogStore(t, logdb.Options{})
-	putWithRevision(t, s)
-	data, rev := docJSON(content.RefEntry, entryID), revJSON("About")
+	// An entry that publishes its revision, which refers to a medium, a term that has a parent, and an operation.
+	data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "number": 3, "status": "published", ` +
+		`"publishedRevision": "` + revisionID + `"}`)
+	rev := []byte(`{"schemaVersion": 1, "title": "About", "slug": "about", "featuredImage": "` + mediaID + `"}`)
+	parent := "trm_01JE0000000000000000000000"
+	term := []byte(`{"schemaVersion": 1, "id": "` + termID + `", "parent": "` + parent + `"}`)
+	update(t, s, func(tx *Tx) error {
+		if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
+			return err
+		}
+		if _, err := tx.AddRevision(entryID, revisionID, rev, userID); err != nil {
+			return err
+		}
+		if _, err := tx.Put(content.RefTerm, termID, term, userID); err != nil {
+			return err
+		}
+		return tx.PutOperation("op_1", []byte("done"))
+	})
 	// Fields of fewer than 128 bytes: their lengths are a byte.
 	field := func(b string) string { return string([]byte{byte(len(b))}) + b }
 	hash := func(b []byte) string {
@@ -694,32 +740,58 @@ func TestLogTables(t *testing.T) {
 	}
 	seq := func(n uint64) string { return string(binary.BigEndian.AppendUint64(nil, n)) }
 	tail := field("2026-11-03T08:00:00.120000000Z") + field(userID) // saved_at and the user
-	version := "\x01" + field(hash(data)) + tail
+	entryVersion := "\x01" + field(hash(data)) + tail
+	termVersion := "\x02" + field(hash(term)) + tail
+	summary := `{"entry":{"schemaVersion":1,"id":"` + entryID + `","number":3,"status":"published",` +
+		`"publishedRevision":"` + revisionID + `"},"published":{"schemaVersion":1,"slug":"about"},` +
+		`"latest":"` + revisionID + `","refs":{"latest":["` + mediaID + `"],"published":["` + mediaID + `"],` +
+		`"publishes":["` + revisionID + `"]}}`
+	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
+		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta:           {{"revisions", "\x01"}, {"schema", "\x01"}, {"versions", "\x01"}},
-		tableDocuments:      {{"entry\x00" + entryID, version}},
-		tableHistory:        {{"entry\x00" + entryID + "\x00" + seq(1), version}},
+		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x02"}, {"versions", "\x02"}},
+		tableDocuments: {
+			{"entry\x00" + entryID, entryVersion},
+			{"term\x00" + termID, termVersion},
+		},
+		tableHistory: {
+			{"entry\x00" + entryID + "\x00" + seq(1), entryVersion},
+			{"term\x00" + termID + "\x00" + seq(2), termVersion},
+		},
 		tableRevisions:      {{revisionID, "\x01" + field(entryID) + hash(rev) + tail}},
 		tableEntryRevisions: {{entryID + "\x00" + seq(1), revisionID}},
+		tableSummaries: {
+			{"entry\x00" + entryID, summary},
+			{"term\x00" + termID, termSummary},
+		},
+		tableReferences: {
+			{mediaID + "\x00entry\x00" + entryID + "\x00latest", ""},
+			{mediaID + "\x00entry\x00" + entryID + "\x00published", ""},
+			{revisionID + "\x00entry\x00" + entryID + "\x00publishes", ""},
+			{parent + "\x00term\x00" + termID + "\x00document", ""},
+		},
+		tableOperations: {{"op_1", "done"}},
 	}
 	check := func(when string) {
 		t.Helper()
-		for table := range uint32(7) {
+		for table := range uint32(9) {
 			if got := rawTable(t, s, table); !slices.Equal(got, want[table]) {
 				t.Errorf("table %d %s = %q, want %q", table, when, got, want[table])
 			}
 		}
 	}
-	check("after the Put")
+	check("after the Puts")
 
 	update(t, s, func(tx *Tx) error {
 		_, err := tx.Delete(content.RefEntry, entryID, userID)
 		return err
 	})
-	want[tableMeta][2][1] = "\x02"
-	delete(want, tableDocuments)
-	deletion := [2]string{"entry\x00" + entryID + "\x00" + seq(2), "\x02\x00" + tail}
-	want[tableHistory] = append(want[tableHistory], deletion)
+	want[tableMeta][3][1] = "\x03"
+	want[tableDocuments] = want[tableDocuments][1:]
+	deletion := [2]string{"entry\x00" + entryID + "\x00" + seq(3), "\x03\x00" + tail}
+	want[tableHistory] = append([][2]string{want[tableHistory][0], deletion}, want[tableHistory][1:]...)
+	want[tableSummaries] = want[tableSummaries][1:]
+	want[tableReferences] = want[tableReferences][3:]
 	check("after the Delete")
 }
 
@@ -1084,9 +1156,9 @@ func TestLogSchemaVersion(t *testing.T) {
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{2}, "the store schema is of version 2, newer than this program knows (1)"},
+		{"newer", []byte{3}, "the store schema is of version 3, newer than this program knows (2)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (1)"},
+			"the store schema is of version 300, newer than this program knows (2)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},

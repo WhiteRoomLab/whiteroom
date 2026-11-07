@@ -22,6 +22,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
 	"github.com/WhiteRoomLab/whiteroom/internal/serve"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -106,7 +107,7 @@ func oneLanguageSite(base string) func(t *testing.T) *builder {
 			site:    &content.Site{URL: "https://example.com" + base, Languages: []string{"ja"}, DefaultLanguage: "ja"},
 			base:    base,
 			pages:   []*page{{kind: theme.KindNotFound, language: "ja", path: "/404.html", file: "404.html"}},
-			outputs: []output{{path: "/", file: "index.html"}, {path: "/404.html", file: "404.html"}, {path: "/feed/", file: "feed/index.xml"}},
+			outputs: []siteplan.Output{{Path: "/", File: "index.html"}, {Path: "/404.html", File: "404.html"}, {Path: "/feed/", File: "feed/index.xml"}},
 		}
 	}
 }
@@ -141,8 +142,8 @@ func serverRelease(t *testing.T, b *builder) (dir, root string) {
 func writeServerRelease(t *testing.T, b *builder, rel *os.Root) {
 	t.Helper()
 	for _, o := range b.outputs {
-		if o.file != "" && o.file != ".htaccess" {
-			if err := writeFile(rel, "public/"+o.file, []byte(o.path)); err != nil {
+		if o.File != "" && o.File != ".htaccess" {
+			if err := writeFile(rel, "public/"+o.File, []byte(o.Path)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -558,9 +559,9 @@ func checkServer(t *testing.T, server, addr string, b *builder, cases []serverCa
 	if err != nil {
 		t.Fatal(err)
 	}
-	redirects := make(map[string]redirect)
+	redirects := make(map[string]siteplan.Redirect)
 	for _, r := range b.serverRedirects {
-		redirects[r.from] = r
+		redirects[r.From] = r
 	}
 	for _, c := range cases {
 		status, location, body := get(t, addr, base+c.target)
@@ -576,7 +577,7 @@ func checkServer(t *testing.T, server, addr string, b *builder, cases []serverCa
 			if server == "nginx" {
 				loc = strings.ReplaceAll(loc, "$", "%24")
 			}
-			want = fmt.Sprintf("%d %q", r.status, siteLocation(loc))
+			want = fmt.Sprintf("%d %q", r.Status, siteLocation(loc))
 		case c.denied:
 			if status == http.StatusForbidden {
 				got = fmt.Sprintf("%d %q", http.StatusNotFound, siteLocation(location))

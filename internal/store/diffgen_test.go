@@ -45,6 +45,12 @@ var (
 	diffInvalidRevisions = []string{"rev_x", entryID, "rev_/../../site/settings", ""}
 	diffInvalidEntries   = []string{termID, "ent_x", ""}
 
+	// diffOperations are the IDs of the operations; the last has the most bytes that an ID can have, and the invalid
+	// ones are empty, or one byte more.
+	diffOperations        = []string{"op_A", "op_B", "op_" + strings.Repeat("c", 253)}
+	diffInvalidOperations = []string{"", "op_" + strings.Repeat("d", 254)}
+	diffOperationData     = [][]byte{nil, []byte("x"), []byte(strings.Repeat("y", 3000))}
+
 	diffValidDocs, diffInvalidDocs = diffDocs()
 )
 
@@ -177,6 +183,109 @@ var diffRevisionData = []struct {
 	{"empty", 3, false, func(string) []byte { return nil }},
 	{"too large", 1, false, func(string) []byte { return diffLarge() }},
 	{"largest", 1, false, func(string) []byte { return diffLarge()[:content.MaxDocumentBytes] }},
+	{"with references", 12, true, func(string) []byte { return diffRevisionRefs(0) }},
+	{"with other references", 8, true, func(string) []byte { return diffRevisionRefs(1) }},
+}
+
+// diffPublishers is the number of the entries of the pool that publish a revision of their own in the data of
+// diffIndexData: the entry i publishes diffRevisions[i], which AddRevision adds to it, or to another entry.
+const diffPublishers = 3
+
+// diffRevisionRefs returns the JSON of a revision with what the index reads of it, and the IDs of the pools.
+func diffRevisionRefs(variant int) []byte {
+	ent, trm, med, aut := diffKinds[0].ids, diffKinds[1].ids, diffKinds[2].ids, diffKinds[3].ids
+	if variant == 0 {
+		return []byte(`{"schemaVersion": 1, "title": "A", "slug": "a", "date": "2026-11-03T08:00:00+09:00", ` +
+			`"author": "` + aut[0] + `", "featuredImage": "` + med[0] + `", "sticky": true, "parent": "` + ent[0] +
+			`", "terms": {"category": ["` + trm[0] + `"], "tag": ["` + trm[1] + `", "` + trm[0] + `"]}}`)
+	}
+	return []byte(`{"schemaVersion": 1, "title": "B", "slug": "b", "featuredImage": "` + med[1] + `", "parent": "` +
+		ent[1] + `", "seo": {"ogImage": "` + med[0] + `"}}`)
+}
+
+// diffIndexData are valid data of the documents of a kind that the index reads more of: numbers, published revisions,
+// and strings that are the IDs of the pools.
+var diffIndexData = func() map[content.RefKind][]diffVariant {
+	ent, trm, med, aut := diffKinds[0].ids, diffKinds[1].ids, diffKinds[2].ids, diffKinds[3].ids
+	entry := func(id, fields string) []byte {
+		return []byte(`{"schemaVersion": 1, "id": "` + id + `", ` + fields + `}`)
+	}
+	// published returns the data of the entry id that publishes the revision of the entry that is shift after it.
+	published := func(shift int) func(id string) []byte {
+		return func(id string) []byte {
+			i := (max(slices.Index(ent, id), 0) + shift) % diffPublishers
+			return entry(id, `"number": 3, "status": "published", "publishedRevision": "`+diffRevisions[i]+`"`)
+		}
+	}
+	other := func(ids []string, id string) string {
+		if ids[0] == id {
+			return ids[1]
+		}
+		return ids[0]
+	}
+	return map[content.RefKind][]diffVariant{
+		content.RefEntry: {
+			{"numbered 5", 6, func(id string) []byte { return entry(id, `"number": 5, "status": "draft"`) }},
+			{"numbered 9", 5, func(id string) []byte { return entry(id, `"number": 9, "type": "post"`) }},
+			{"publishes its revision", 12, published(0)},
+			{"publishes the revision of another entry", 4, published(1)},
+			{"publishes a revision that is never added", 3, func(id string) []byte {
+				return entry(id, `"number": 4, "status": "published", `+
+					`"publishedRevision": "rev_01JE0000000000000000009999"`)
+			}},
+		},
+		content.RefTerm: {
+			{"with a parent", 10, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "taxonomy": "category", "language": "ja", ` +
+					`"slug": "s", "parent": "` + other(trm, id) + `"}`)
+			}},
+		},
+		content.RefMedia: {
+			{"an image", 8, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "hash": "sha256:` + strings.Repeat("a", 64) +
+					`", "mimeType": "image/jpeg"}`)
+			}},
+		},
+		content.RefAuthor: {
+			{"with an avatar", 8, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "slug": "s", "avatar": "` + med[0] + `"}`)
+			}},
+		},
+		content.RefMenu: {
+			{"with items", 8, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "language": "ja", "location": "header", ` +
+					`"items": [{"entry": "` + ent[0] + `", "children": [{"term": "` + trm[0] + `"}]}, {"href": "/x"}]}`)
+			}},
+		},
+		content.RefForm: {
+			{"with a thanks page", 8, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "thanksPage": {"ja": "` + ent[1] + `"}}`)
+			}},
+		},
+		content.RefRedirect: {
+			{"to an entry", 6, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "from": "/a", "to": "` + ent[0] +
+					`", "status": 301}`)
+			}},
+			{"to a term", 6, func(id string) []byte {
+				return []byte(`{"schemaVersion": 1, "id": "` + id + `", "from": "/b", "to": "` + trm[1] +
+					`", "status": 302}`)
+			}},
+		},
+		SettingsKind: {
+			{"with a logo and a front page", 8, func(string) []byte {
+				return []byte(`{"schemaVersion": 1, "logo": "` + med[0] + `", "frontPage": {"ja": "` + ent[2] + `"}, ` +
+					`"icon": "` + aut[0] + `"}`)
+			}},
+		},
+	}
+}()
+
+// diffVariant is a variant of the valid data of a kind of documents, with its weight.
+type diffVariant struct {
+	name   string
+	weight int
+	data   func(id string) []byte
 }
 
 // diffOp is an operation of an Update: desc names the call in the lines, and run makes it.
@@ -344,6 +453,8 @@ var diffOps = []struct {
 	{9, (*diffGen).object},
 	{6, (*diffGen).getRevision},
 	{6, (*diffGen).revisions},
+	{5, (*diffGen).putOperation},
+	{4, (*diffGen).operation},
 }
 
 // update returns an Update of 1 to 6 operations, a quarter of which end with errAbort, or rarely a bulk one.
@@ -389,6 +500,10 @@ func (g *diffGen) bulk() diffUpdate {
 
 func (g *diffGen) put() diffOp {
 	d, by := g.doc(), g.user()
+	if vs := diffIndexData[d.k.kind]; len(vs) > 0 && g.chance(0.35) {
+		v := vs[weighted(g, len(vs), func(i int) int { return vs[i].weight })]
+		return g.putOp(d, v.name, true, v.data(d.id), by)
+	}
 	v := diffDocData[weighted(g, len(diffDocData), func(i int) int { return diffDocData[i].weight })]
 	return g.putOp(d, v.name, v.valid, v.data(d.k, d.id), by)
 }
@@ -411,6 +526,10 @@ func (g *diffGen) delete() diffOp {
 
 func (g *diffGen) addRevision() diffOp {
 	entry, id, by := g.entry(), g.revision(), g.user()
+	if g.chance(0.3) { // the revision that an entry of the pool publishes in diffIndexData
+		i := g.rng.IntN(diffPublishers)
+		entry, id = diffKinds[0].ids[i], diffRevisions[i]
+	}
 	v := diffRevisionData[weighted(g, len(diffRevisionData), func(i int) int { return diffRevisionData[i].weight })]
 	return g.addRevisionOp(entry, id, v.name, v.valid, v.data(id), by)
 }
@@ -471,14 +590,48 @@ func (g *diffGen) revisions() diffOp {
 	}
 }
 
-// diffReads are the reads of a dump of a store: Documents of each kind, Document and History of each document, Revision
-// of each revision, Revisions of each entry and Object of each hash.
+func (g *diffGen) operationID() string {
+	if g.chance(0.92) {
+		return pick(g, diffOperations)
+	}
+	return pick(g, diffInvalidOperations)
+}
+
+func (g *diffGen) putOperation() diffOp {
+	id, data := g.operationID(), pick(g, diffOperationData)
+	return diffOp{
+		desc: fmt.Sprintf("PutOperation(%q, %d bytes)", id, len(data)),
+		run:  func(tx *Tx) (any, error) { return nil, tx.PutOperation(id, data) },
+	}
+}
+
+func (g *diffGen) operation() diffOp {
+	id := g.operationID()
+	return diffOp{
+		desc: fmt.Sprintf("Operation(%q)", id),
+		run:  func(tx *Tx) (any, error) { return operationResult(tx, id) },
+	}
+}
+
+// operationResult returns the data of the operation id, or nil if there are none.
+func operationResult(tx *Tx, id string) (any, error) {
+	data, ok, err := tx.Operation(id)
+	if !ok {
+		return nil, err
+	}
+	return data, err
+}
+
+// diffReads are the reads of a dump of a store: Documents and Summaries of each kind, Document, History, Summary and
+// Referrers of each document, Revision of each revision, Revisions of each entry, Object of each hash, Operation of
+// each operation, and LastNumber.
 type diffReads struct {
-	kinds   []content.RefKind
-	docs    []diffDoc
-	revs    []string
-	entries []string
-	hashes  []string
+	kinds      []content.RefKind
+	docs       []diffDoc
+	revs       []string
+	entries    []string
+	hashes     []string
+	operations []string
 }
 
 // reads returns the reads of everything that a store can have of what the operations of g name, and if invalid is
@@ -486,10 +639,11 @@ type diffReads struct {
 // the data.
 func (g *diffGen) reads(invalid bool) diffReads {
 	r := diffReads{
-		docs:    diffValidDocs,
-		revs:    diffRevisions,
-		entries: diffKinds[0].ids,
-		hashes:  append(slices.Clone(g.seen), diffMissingHash),
+		docs:       diffValidDocs,
+		revs:       diffRevisions,
+		entries:    diffKinds[0].ids,
+		hashes:     append(slices.Clone(g.seen), diffMissingHash),
+		operations: diffOperations,
 	}
 	kinds := diffKinds
 	if invalid {
@@ -502,6 +656,7 @@ func (g *diffGen) reads(invalid bool) diffReads {
 			}
 		}
 		r.hashes = append(r.hashes, diffInvalidHashes...)
+		r.operations = slices.Concat(diffOperations, diffInvalidOperations)
 		kinds = slices.Concat(diffKinds, diffUnsupported)
 	}
 	for _, k := range kinds {

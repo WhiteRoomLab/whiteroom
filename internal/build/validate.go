@@ -15,7 +15,7 @@ import (
 // that are not published nor reads their revisions. The error is one of b.src other than a missing revision.
 func (b *builder) validate(p *problems) error {
 	for _, id := range slices.Sorted(maps.Keys(b.entries)) {
-		if d := b.entries[id]; d.e.Status == content.StatusPublished {
+		if d := b.entries[id]; d.E.Status == content.StatusPublished {
 			if err := b.validateEntry(d, p); err != nil {
 				return err
 			}
@@ -33,14 +33,14 @@ func (b *builder) validate(p *problems) error {
 // validateEntry checks d, a published entry, and then reads and checks its revision, which d gets if it is valid: with
 // its excerpt, without its body, and with the name and the SHA-256 of its file but not its data.
 func (b *builder) validateEntry(d *entryDoc, p *problems) error {
-	if err := d.e.Validate(b.site); err != nil {
-		p.addErr(d.file, err)
+	if err := d.E.Validate(b.site); err != nil {
+		p.addErr(d.File, err)
 		return nil
 	}
-	f, err := b.src.Revision(d.e.PublishedRevision)
+	f, err := b.src.Revision(d.E.PublishedRevision)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		p.add(d.file, "/publishedRevision", "revision %q does not exist", d.e.PublishedRevision)
+		p.add(d.File, "/publishedRevision", "revision %q does not exist", d.E.PublishedRevision)
 		return nil
 	case err != nil:
 		return err
@@ -50,7 +50,7 @@ func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 		return nil
 	}
 	// Import and no Theme: saving accepted legacy blocks and missing alts, and theme mismatches only warn when rendering.
-	opts := content.RevisionOptions{Site: b.site, Entry: &d.e, Publish: true, Import: true, Lookup: b.ref}
+	opts := content.RevisionOptions{Site: b.site, Entry: &d.E, Publish: true, Import: true, Lookup: b.ref}
 	if err := rev.Validate(opts); err != nil {
 		p.addErr(f, err)
 		return nil
@@ -58,7 +58,7 @@ func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 	d.excerpt = excerpt(&rev)
 	// The files and their bodies are most of what a large site keeps in memory; renderEntry reads the file again.
 	rev.Body = nil
-	d.revSum, d.revFile, d.rev = sha256.Sum256(f.Data), content.SiteFile{Name: f.Name}, &rev
+	d.revSum, d.RevFile, d.Rev = sha256.Sum256(f.Data), content.SiteFile{Name: f.Name}, &rev
 	b.revisions[f.Name] = d
 	return nil
 }
@@ -66,6 +66,6 @@ func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 // validateDocs adds the errors of validate for each of docs to p.
 func validateDocs[T any](p *problems, docs map[string]*doc[T], validate func(T) error) {
 	for _, id := range slices.Sorted(maps.Keys(docs)) {
-		p.addErr(docs[id].file, validate(docs[id].v))
+		p.addErr(docs[id].File, validate(docs[id].V))
 	}
 }

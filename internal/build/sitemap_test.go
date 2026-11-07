@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 // urlSet is a sitemap that is not an index, as encoding/xml reads it.
@@ -293,8 +294,8 @@ func TestSitemapSplit(t *testing.T) {
 					continue
 				}
 				o := b.outputs[outputs+i]
-				if o.path != "/"+name || o.file != name || o.src.file.Name != "" || o.src.pointer != "" ||
-					o.src.what != "the sitemap" || o.rank != rankCore {
+				if o.Path != "/"+name || o.File != name || o.Src.File.Name != "" || o.Src.Pointer != "" ||
+					o.Src.What != "the sitemap" || o.Rank != siteplan.RankCore {
 					t.Errorf("output %d: %+v", i, o)
 				}
 			}

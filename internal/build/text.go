@@ -33,7 +33,7 @@ func formatTitle(format, title, siteName string) string {
 // otherwise heading(p).
 func (b *builder) titleValue(p *page) string {
 	if p.entry != nil {
-		return cmp.Or(p.entry.rev.SEO.Title, p.entry.rev.Title)
+		return cmp.Or(p.entry.Rev.SEO.Title, p.entry.Rev.Title)
 	}
 	return b.heading(p)
 }
@@ -45,14 +45,14 @@ func (b *builder) heading(p *page) string {
 	switch p.kind {
 	case theme.KindEntry, theme.KindPosts:
 		if p.entry != nil {
-			return p.entry.rev.Title
+			return p.entry.Rev.Title
 		}
 	case theme.KindTerm:
-		return p.term.v.Name
+		return p.term.V.Name
 	case theme.KindArchive:
 		return b.typeLabel(p.typeName)
 	case theme.KindAuthor:
-		return p.author.v.Name
+		return p.author.V.Name
 	case theme.KindNotFound:
 	}
 	return ""
@@ -73,14 +73,14 @@ func (b *builder) description(p *page) string {
 		if p.entry == nil {
 			return oneLine(b.site.Tagline[p.language])
 		}
-		if s := p.entry.rev.SEO.Description; s != "" {
+		if s := p.entry.Rev.SEO.Description; s != "" {
 			return oneLine(s)
 		}
 		return oneLine(p.entry.excerpt)
 	case theme.KindTerm:
-		return oneLine(p.term.v.Description)
+		return oneLine(p.term.V.Description)
 	case theme.KindAuthor:
-		return oneLine(p.author.v.Bio[p.language])
+		return oneLine(p.author.V.Bio[p.language])
 	case theme.KindArchive, theme.KindNotFound:
 	}
 	return ""

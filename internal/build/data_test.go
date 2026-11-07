@@ -163,7 +163,7 @@ func TestEntryData(t *testing.T) {
 	newTestResolver(t, b)
 	r := testRenderer(t, b, "ja")
 
-	photo := b.media[imageID].v
+	photo := b.media[imageID].V
 	jpegFile := func(w, h int) imaging.Variant { return imaging.Variant{Width: w, Height: h, Format: mediafile.JPEG} }
 	office := func(suffix string, v imaging.Variant) string {
 		return "/media/" + imageID + "/" + officeName + suffix + ".jpg?v=" + imaging.Version(photo.Hash, v)
@@ -180,7 +180,7 @@ func TestEntryData(t *testing.T) {
 		URL: template.URL(officeSrc), Kind: content.MediaImage, FileName: "会社外観.jpg", MIMEType: "image/jpeg",
 		Size: photo.Size, Image: photoImage,
 	}
-	guide := b.media[pdfID].v
+	guide := b.media[pdfID].V
 	corporate := TermLink{Name: "コーポレートサイト", URL: "/works_category/corporate-site/"}
 
 	html := map[string]template.HTML{
@@ -293,7 +293,7 @@ func TestEntryData(t *testing.T) {
 
 	// Other types: works with a list of media, and a page without terms and fields.
 	works := b.entryData(b.published(worksID), r, nil)
-	avatar := b.media[avatarID].v
+	avatar := b.media[avatarID].V
 	avatarSrc := template.URL("/media/" + avatarID + "/yamada.png?v=" +
 		imaging.Version(avatar.Hash, imaging.Variant{Width: 256, Height: 256, Format: mediafile.PNG}))
 	checkFields(t, works, map[string]any{
@@ -368,13 +368,13 @@ func TestEntryDataInTemplates(t *testing.T) {
 	b := mustLoad(t, src)
 	newTestResolver(t, b)
 	r := testRenderer(t, b, "ja")
-	photo := b.media[imageID].v
+	photo := b.media[imageID].V
 	office := func(suffix string, w, h int) string {
 		return "/media/" + imageID + "/" + officeName + suffix + ".jpg?v=" +
 			imaging.Version(photo.Hash, imaging.Variant{Width: w, Height: h, Format: mediafile.JPEG})
 	}
 	officeSrc := office("", 1200, 800)
-	pdf := "/media/" + pdfID + "/" + guideName + ".pdf?v=" + imaging.PDFVersion(b.media[pdfID].v.Hash)
+	pdf := "/media/" + pdfID + "/" + guideName + ".pdf?v=" + imaging.PDFVersion(b.media[pdfID].V.Hash)
 	for _, tt := range []struct {
 		id   string
 		want string
@@ -430,7 +430,7 @@ func TestEntryDataConcurrent(t *testing.T) {
 	r := testRenderer(t, b, "ja")
 	var ds []*entryDoc
 	for _, id := range slices.Sorted(maps.Keys(b.entries)) {
-		if d := b.published(id); d != nil && d.e.Language == "ja" {
+		if d := b.published(id); d != nil && d.E.Language == "ja" {
 			ds = append(ds, d)
 		}
 	}
@@ -448,7 +448,7 @@ func TestEntryDataConcurrent(t *testing.T) {
 		want := b.entryData(d, r, map[string]template.HTML{"/body": "B"})
 		for _, es := range got {
 			if !reflect.DeepEqual(es[i], want) {
-				t.Errorf("entryData(%s) = %+v, want %+v", d.e.ID, es[i], want)
+				t.Errorf("entryData(%s) = %+v, want %+v", d.E.ID, es[i], want)
 			}
 		}
 	}
@@ -515,7 +515,7 @@ func TestPostData(t *testing.T) {
 			src.editRevision(t, postID, func(r *content.Revision) { r.Sticky = true })
 			b := mustLoad(t, src)
 			newTestResolver(t, b)
-			avatar := b.media[avatarID].v
+			avatar := b.media[avatarID].V
 			avatarImage := &render.PageImage{
 				Src: template.URL(tt.base + "/media/" + avatarID + "/yamada.png?v=" +
 					imaging.Version(avatar.Hash, imaging.Variant{Width: 256, Height: 256, Format: mediafile.PNG})),

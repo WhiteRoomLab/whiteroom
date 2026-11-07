@@ -21,17 +21,26 @@ import (
 // The log backend keeps a store in the engine of internal/logdb (3.5), in logdb/ of its data directory, beside files/.
 // The tables of its schema, logSchemaVersion:
 //
-//	meta (1)            "schema", "versions", "revisions" -> uvarint: the schema; the last seq of a version,
-//	                    of a revision
+//	meta (1)            "schema", "versions", "revisions", "numbers" -> uvarint: the schema; the last seq of a
+//	                    version, of a revision; the largest number that an entry has had (none: 0)
 //	documents (2)       kind 0x00 id -> the current version, as in history
 //	history (3)         kind 0x00 id 0x00 seq (8 bytes, big-endian) -> version
 //	revisions (4)       revision ID -> revision
 //	entryRevisions (5)  entry ID 0x00 seq (8 bytes, big-endian) -> revision ID
+//	summaries (6)       kind 0x00 id -> the JSON of the summary of the current document (index.go)
+//	references (7)      target ID 0x00 kind 0x00 id 0x00 role -> nothing: the document of kind with id refers to
+//	                    the target, as role says
+//	operations (8)      operation ID -> the data that the caller of PutOperation keeps
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
-const logSchemaVersion = 1
+//
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 2 (upgradeLog).
+const logSchemaVersion = 2
+
+// indexSchema is the first schema that has the index tables.
+const indexSchema = 2
 
 const (
 	tableMeta uint32 = iota + 1
@@ -39,11 +48,20 @@ const (
 	tableHistory
 	tableRevisions
 	tableEntryRevisions
+	tableSummaries
+	tableReferences
+	tableOperations
 )
 
 var tableNames = map[uint32]string{
 	tableMeta: "meta", tableDocuments: "documents", tableHistory: "history", tableRevisions: "revisions",
-	tableEntryRevisions: "entryRevisions",
+	tableEntryRevisions: "entryRevisions", tableSummaries: "summaries", tableReferences: "references",
+	tableOperations: "operations",
+}
+
+// indexTableIDs are the tables of the engine that keep the index tables.
+var indexTableIDs = [numIndexTables]uint32{
+	indexSummaries: tableSummaries, indexReferences: tableReferences, indexOperations: tableOperations,
 }
 
 // The keys of meta.
@@ -51,6 +69,7 @@ const (
 	metaSchema    = "schema"
 	metaVersions  = "versions"
 	metaRevisions = "revisions"
+	metaNumbers   = "numbers"
 )
 
 // logBackend is the backend of the engine in logdb/.
@@ -116,6 +135,32 @@ func checkSchema(name string) func(*logdb.Tx) error {
 		}
 		return nil
 	}
+}
+
+// upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion: a store of the
+// schema 1 gets its index, and the schema 2, in one Update, so that a failure leaves the store as it was. name is that
+// of its logdb/ in errors.
+func upgradeLog(b *logBackend, name string) error {
+	upgrade := false
+	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
+		v, _ := tx.Get(tableMeta, []byte(metaSchema))
+		version, ok := decodeUint(v)
+		upgrade = ok && version < indexSchema
+		return nil
+	}); err != nil || !upgrade {
+		return err
+	}
+	if err := b.db.Update(context.Background(), func(tx *logdb.Tx) error {
+		// The schema first, so that the index methods find the schema that they need.
+		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, indexSchema)); err != nil {
+			return err
+		}
+		return (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() })
+	}); err != nil {
+		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name, indexSchema,
+			err)
+	}
+	return nil
 }
 
 func (b *logBackend) view(ctx context.Context, f func(backendTx) error) error {
@@ -340,6 +385,49 @@ func (t *logTx) revisions(entry string) ([]Revision, error) {
 
 func (t *logTx) addEvent(data []byte) error {
 	return t.tx.AppendEvent(data)
+}
+
+func (t *logTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
+	v, ok := t.tx.Get(indexTableIDs[table], key)
+	return v, ok, nil
+}
+
+func (t *logTx) indexPut(table indexTable, key, value []byte) error {
+	return t.tx.Put(indexTableIDs[table], key, value)
+}
+
+func (t *logTx) indexDelete(table indexTable, key []byte) error {
+	return t.tx.Delete(indexTableIDs[table], key)
+}
+
+func (t *logTx) indexScan(table indexTable, prefix []byte, fn func(key, value []byte) bool) error {
+	t.tx.Scan(indexTableIDs[table], prefix, fn)
+	return nil
+}
+
+func (t *logTx) indexReady() (bool, error) {
+	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	version, valid := decodeUint(v)
+	if !ok || !valid {
+		return false, invalidValue(tableMeta, []byte(metaSchema))
+	}
+	return version >= indexSchema, nil
+}
+
+func (t *logTx) lastNumber() (int64, error) {
+	v, ok := t.tx.Get(tableMeta, []byte(metaNumbers))
+	if !ok {
+		return 0, nil
+	}
+	n, valid := decodeUint(v)
+	if !valid || n > math.MaxInt64 {
+		return 0, invalidValue(tableMeta, []byte(metaNumbers))
+	}
+	return int64(n), nil
+}
+
+func (t *logTx) setLastNumber(n int64) error {
+	return t.tx.Put(tableMeta, []byte(metaNumbers), binary.AppendUvarint(nil, uint64(n)))
 }
 
 // next returns the seq of the next version or revision, one more than the last one, whose seq meta has at key, and

@@ -21,6 +21,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 // sidebarID is a menu in ja at a location that the example theme does not have.
@@ -95,10 +96,10 @@ func readFile(t *testing.T, dir, name string) string {
 }
 
 // pageCSSOutputs returns the outputs of b that are page CSS files.
-func pageCSSOutputs(b *builder) []output {
-	var outs []output
+func pageCSSOutputs(b *builder) []siteplan.Output {
+	var outs []siteplan.Output
 	for _, o := range b.outputs {
-		if strings.HasPrefix(o.path, "/css/") && o.path != "/css/site.css" {
+		if strings.HasPrefix(o.Path, "/css/") && o.Path != "/css/site.css" {
 			outs = append(outs, o)
 		}
 	}
@@ -120,7 +121,7 @@ func TestRenderPages(t *testing.T) {
 		want = append(want, "assets/"+a)
 	}
 	for _, o := range sheets {
-		want = append(want, o.file)
+		want = append(want, o.File)
 	}
 	slices.Sort(want)
 	if got := listFiles(t, dir); !slices.Equal(got, want) {
@@ -139,17 +140,17 @@ func TestRenderPages(t *testing.T) {
 	}
 	news, product := sheets[0], sheets[1]
 	newsCSS := ".b-news0002 {\n  color: var(--color-primary) !important;\n}\n"
-	if got := readFile(t, dir, news.file); got != newsCSS {
-		t.Errorf("%s:\n%s\nwant:\n%s", news.file, got, newsCSS)
+	if got := readFile(t, dir, news.File); got != newsCSS {
+		t.Errorf("%s:\n%s\nwant:\n%s", news.File, got, newsCSS)
 	}
 	sum := sha256.Sum256([]byte(newsCSS))
-	if name := "css/" + hex.EncodeToString(sum[:8]) + ".css"; news.file != name || news.path != "/"+name ||
-		news.rank != rankCore || !reflect.DeepEqual(news.src, source{what: "the page CSS of /news/"}) {
+	if name := "css/" + hex.EncodeToString(sum[:8]) + ".css"; news.File != name || news.Path != "/"+name ||
+		news.Rank != siteplan.RankCore || !reflect.DeepEqual(news.Src, siteplan.Source{What: "the page CSS of /news/"}) {
 		t.Errorf("output of the page CSS of /news/: %+v, want the file %s", news, name)
 	}
-	productCSS := readFile(t, dir, product.file)
+	productCSS := readFile(t, dir, product.File)
 	if !regexp.MustCompile(`^\.hl-[0-9a-f]{8} \{\n  color: var\(--color-accent\) !important;\n\}\n$`).MatchString(productCSS) ||
-		product.src.what != "the page CSS of /products/product-a/" {
+		product.Src.What != "the page CSS of /products/product-a/" {
 		t.Errorf("page CSS of /products/product-a/: %+v:\n%s", product, productCSS)
 	}
 
@@ -268,19 +269,19 @@ func TestRenderPages(t *testing.T) {
 		}},
 		// The page CSS of the posts page on both pages of its list.
 		{"/news/", []string{
-			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.path + "\">\n" +
+			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.Path + "\">\n" +
 				headOf("/news/") + "\n</head>\n",
 			"<h1>お知らせ</h1>\n<p>会社からのお知らせです。</p>\n<p class=\"b-news0002\">重要なお知らせ</p>\n<article class=\"card\">",
 			languages("ja", "/news/", "!/en/"),
 		}},
 		{"/news/page/2/", []string{
-			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.path + "\">\n" +
+			"<title>お知らせ｜株式会社〇〇</title>\n" + links + `<link rel="stylesheet" href="` + news.Path + "\">\n" +
 				headOf("/news/page/2/") + "\n</head>\n",
 			"<h1>お知らせ</h1>\n<p>会社からのお知らせです。</p>\n<p class=\"b-news0002\">重要なお知らせ</p>\n<article class=\"card\">",
 			languages("ja", "/news/page/2/", "!/en/"),
 		}},
 		{"/products/product-a/", []string{
-			links + `<link rel="stylesheet" href="` + product.path + "\">\n" + headOf("/products/product-a/") +
+			links + `<link rel="stylesheet" href="` + product.Path + "\">\n" + headOf("/products/product-a/") +
 				"\n</head>\n",
 		}},
 		{"/en/", []string{
@@ -360,7 +361,7 @@ func TestRenderPages(t *testing.T) {
 func TestRenderPagesWorkers(t *testing.T) {
 	type result struct {
 		files    map[string]string
-		outputs  []output
+		outputs  []siteplan.Output
 		warnings []string
 	}
 	var results []result

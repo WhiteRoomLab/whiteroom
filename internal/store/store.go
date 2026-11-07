@@ -149,7 +149,9 @@ func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
 }
 
 // Open opens the store of the data directory dir, which Create has made, as its writer. While it is open, Open in
-// another process fails after 2 seconds, and other processes read the store with OpenReader.
+// another process fails after 2 seconds, and other processes read the store with OpenReader. A store of the table
+// schema 1, which has no index, gets its index and the schema 2 in one Update; if that fails, so does Open, and the
+// store is unchanged.
 func Open(dir string) (*Store, error) {
 	return open(dir, options{})
 }
@@ -160,7 +162,8 @@ func open(dir string, o options) (*Store, error) {
 
 // OpenReader opens the store of the data directory dir to read it, in a process other than its writer, which may run
 // or not. Its Views see the commits that are durable when they begin. It changes no file of the store: Update fails
-// with "read-only transaction", and PutOriginal fails too.
+// with "read-only transaction", and PutOriginal fails too. A store of the table schema 1 has no index until its writer
+// opens it: a reader reads it, but Summary and the other reads of the index fail with ErrNoIndex.
 func OpenReader(dir string) (*Store, error) {
 	return openLogReader(dir, options{})
 }
@@ -183,9 +186,16 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 		}
 	}
 	s := &Store{now: o.clock(), readOnly: reader}
-	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(filepath.Join(dir, "logdb"))), reader)
+	logName := filepath.Join(dir, "logdb")
+	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(logName)), reader)
 	if err != nil {
 		return nil, err
+	}
+	if !reader {
+		if err := upgradeLog(b, logName); err != nil {
+			_ = b.close()
+			return nil, err
+		}
 	}
 	return s.withFiles(root, b)
 }

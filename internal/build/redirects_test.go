@@ -8,17 +8,18 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
 // redirectTexts returns rs as texts such as "/home/ -> / 301 site/settings.json#/frontPage/ja (generated)".
-func redirectTexts(rs []redirect) []string {
+func redirectTexts(rs []siteplan.Redirect) []string {
 	texts := make([]string, len(rs))
 	for i, r := range rs {
-		texts[i] = fmt.Sprintf("%s -> %s %d %s#%s", r.from, r.to, r.status, r.src.file.Name, r.src.pointer)
-		if r.abs {
+		texts[i] = fmt.Sprintf("%s -> %s %d %s#%s", r.From, r.To, r.Status, r.Src.File.Name, r.Src.Pointer)
+		if r.Abs {
 			texts[i] += " (absolute)"
 		}
-		if r.generated {
+		if r.Generated {
 			texts[i] += " (generated)"
 		}
 	}
@@ -90,14 +91,14 @@ func TestResolveRedirects(t *testing.T) {
 		t.Errorf("mediaPath was called with %q, want %q", got, want)
 	}
 	for _, x := range []struct {
-		r    redirect
+		r    siteplan.Redirect
 		want string
 	}{
 		{b.serverRedirects[0], fileOf(content.RefRedirect, redirectID)},
 		{b.serverRedirects[4], "the redirect to the front page in ja"},
 	} {
-		if x.r.src.what != x.want {
-			t.Errorf("the redirect from %q is %q, want %q", x.r.from, x.r.src.what, x.want)
+		if x.r.Src.What != x.want {
+			t.Errorf("the redirect from %q is %q, want %q", x.r.From, x.r.Src.What, x.want)
 		}
 	}
 	wantErrors := []string{rdr(9) + ":5:3: /to: cannot make the path: no original"}

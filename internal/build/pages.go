@@ -61,11 +61,11 @@ func (b *builder) pageData(p *page, r *render.Renderer, menus map[string][]MenuI
 	}
 	switch p.kind {
 	case theme.KindTerm:
-		data.Term = b.termData(p.term.v.ID, r)
+		data.Term = b.termData(p.term.V.ID, r)
 	case theme.KindArchive:
 		data.Type = &Type{Name: p.typeName, Label: b.typeLabel(p.typeName)}
 	case theme.KindAuthor:
-		data.Author = b.authorData(p.author.v.ID, p.language, r)
+		data.Author = b.authorData(p.author.V.ID, p.language, r)
 	case theme.KindEntry, theme.KindPosts, theme.KindNotFound:
 	}
 	data.Head = b.head(p)
@@ -91,7 +91,7 @@ func (b *builder) entryHTML(p *page, r *render.Renderer) (map[string]template.HT
 	if p.kind != theme.KindPosts {
 		return b.renderEntry(p.entry, r)
 	}
-	x := b.postsBodies.get(renderKey{p.entry.e.ID, r}, func() renderedEntry {
+	x := b.postsBodies.get(renderKey{p.entry.E.ID, r}, func() renderedEntry {
 		html, css, err := b.renderEntry(p.entry, r)
 		return renderedEntry{html, css, err}
 	})
