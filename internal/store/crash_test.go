@@ -228,13 +228,19 @@ func updates(us ...func(tx *Tx) error) func(tx *Tx) error {
 	}
 }
 
+// scenarioOperation is the ID of the operation that a step of the scenario puts.
+const scenarioOperation = "op_entry"
+
 // theScenario is the scenario of the matrices.
 var theScenario = sync.OnceValue(func() *matrixScenario {
 	o := matrixOriginals()
 	media := []string{mediaID, "med_01JE0000000000000000000001", "med_01JE0000000000000000000002"}
 	deleted := "trm_01JE0000000000000000000001"
 	rev2 := "rev_01JE0000000000000000000001"
+	// The entry publishes its first revision, which refers to a medium; then it does not.
+	entry1 := publishedEntry(entryID, 7, revisionID)
 	entry2 := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "type": "news"}`)
+	rev1 := revisionJSON(`"title": "first", "slug": "first", "featuredImage": "` + media[1] + `"`)
 	pairUpdate := func(n int) func(tx *Tx) error { return func(tx *Tx) error { return putPair(tx, n) } }
 	addRevision := func(id string, data []byte) func(tx *Tx) error {
 		return func(tx *Tx) error {
@@ -262,9 +268,10 @@ var theScenario = sync.OnceValue(func() *matrixScenario {
 			// In a new directory.
 			{name: "original 2", kind: mOriginal, original: o[2]},
 			{name: "entry", kind: mUpdate, event: "entry", update: updates(
-				putDoc(content.RefEntry, entryID, docJSON(content.RefEntry, entryID)),
-				addRevision(revisionID, revJSON("first")),
-				putDoc(content.RefMedia, media[1], mediaJSON(media[1], o[2])))},
+				putDoc(content.RefEntry, entryID, entry1),
+				addRevision(revisionID, rev1),
+				putDoc(content.RefMedia, media[1], mediaJSON(media[1], o[2])),
+				func(tx *Tx) error { return tx.PutOperation(scenarioOperation, []byte("entry")) })},
 			{name: "pair", kind: mUpdate, event: "pair", update: updates(func(tx *Tx) error {
 				_, err := tx.Delete(content.RefTerm, deleted, userID)
 				return err
@@ -301,12 +308,13 @@ var theScenario = sync.OnceValue(func() *matrixScenario {
 		doc(content.RefTerm, pair[1]), doc(content.RefTerm, deleted))
 	r.revs = []string{revisionID, rev2}
 	r.entries = []string{entryID}
+	r.operations = []string{scenarioOperation}
 	var data [][]byte
 	for i, id := range media {
 		data = append(data, mediaJSON(id, o[i]))
 	}
-	data = append(data, mediaJSON(media[1], o[2]), docJSON(content.RefEntry, entryID), entry2, revJSON("first"),
-		revJSON("second"), docJSON(content.RefTerm, deleted), []byte("missing"))
+	data = append(data, mediaJSON(media[1], o[2]), entry1, entry2, rev1, revJSON("second"),
+		docJSON(content.RefTerm, deleted), []byte("missing"))
 	for n := 1; n <= 4; n++ {
 		for _, id := range pair {
 			data = append(data, []byte(`{"schemaVersion": 1, "id": "`+id+`", "name": "`+fmt.Sprint(n)+`"}`))
@@ -413,7 +421,8 @@ func viewState(s *Store) (text string, named []string, err error) {
 }
 
 // readsText returns what the reads r give in tx, a line for each: the versions and the revisions, with the sizes of
-// their data, which the store checks against their hashes, or the error, with whether it wraps fs.ErrNotExist.
+// their data, which the store checks against their hashes, the summaries, the referrers and the operations, or the
+// error, with whether it wraps fs.ErrNotExist.
 func readsText(tx *Tx, r diffReads) string {
 	var b []byte
 	end := func(err error) {
@@ -439,6 +448,12 @@ func readsText(tx *Tx, r diffReads) string {
 			size(d.Data)
 		}
 		end(err)
+		sums, err := tx.Summaries(kind)
+		b = append(b, "Summaries "+string(kind)...)
+		for _, s := range sums {
+			b = append(append(b, "; "...), summaryText(s)...)
+		}
+		end(err)
 	}
 	for _, d := range r.docs {
 		doc, err := tx.Document(d.k.kind, d.id)
@@ -452,6 +467,18 @@ func readsText(tx *Tx, r diffReads) string {
 		b = append(b, "History "+d.id...)
 		for _, v := range versions {
 			b = textVersion(append(b, "; "...), v)
+		}
+		end(err)
+		sum, err := tx.Summary(d.k.kind, d.id)
+		b = append(b, "Summary "+d.id...)
+		if err == nil {
+			b = append(append(b, ": "...), summaryText(sum)...)
+		}
+		end(err)
+		refs, err := tx.Referrers(d.k.kind, d.id)
+		b = append(b, "Referrers "+d.id...)
+		for _, ref := range refs {
+			b = append(b, fmt.Sprintf("; %s %q %s", ref.Kind, ref.ID, ref.Role)...)
 		}
 		end(err)
 	}
@@ -486,6 +513,20 @@ func readsText(tx *Tx, r diffReads) string {
 		}
 		end(err)
 	}
+	for _, id := range r.operations {
+		data, ok, err := tx.Operation(id)
+		b = append(b, "Operation "+id...)
+		if err == nil && !ok {
+			b = append(b, " missing"...)
+		} else {
+			size(data)
+		}
+		end(err)
+	}
+	n, err := tx.LastNumber()
+	b = append(b, "LastNumber "...)
+	b = strconv.AppendInt(b, int64(n), 10)
+	end(err)
 	return string(b)
 }
 
@@ -766,8 +807,8 @@ func describeWanted(st matrixState, want []wanted) string {
 }
 
 // checkStore checks what the tests look past the API at in s, a store of the log backend: its checkpoint was not
-// damaged, Verify of the engine passes (the state is that of the log, and every object has the data of its hash), and
-// the current version of every document is its latest one.
+// damaged, Verify of the engine passes (the state is that of the log, and every object has the data of its hash), the
+// current version of every document is its latest one, and the index is the one that the documents give.
 func checkStore(t *testing.T, s *Store) error {
 	t.Helper()
 	d := logDB(t, s)
@@ -782,6 +823,12 @@ func checkStore(t *testing.T, s *Store) error {
 		return err
 	case n != 0:
 		return fmt.Errorf("%d documents are not at their latest versions", n)
+	}
+	switch problem, err := indexProblem(t, s); {
+	case err != nil:
+		return fmt.Errorf("the index: %w", err)
+	case problem != "":
+		return fmt.Errorf("the index is not the one that the documents give: %s", problem)
 	}
 	return nil
 }

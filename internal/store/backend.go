@@ -18,6 +18,17 @@ type backend interface {
 	close() error
 }
 
+// indexTable is a table that the store keeps beside those of the documents (index.go): the summaries of the current
+// documents and the references between them, which are derived from the documents, and the operations, which are not.
+type indexTable int
+
+const (
+	indexSummaries indexTable = iota
+	indexReferences
+	indexOperations
+	numIndexTables
+)
+
 // backendTx is a transaction of a backend. Its methods return false for what is missing, and do not check data against
 // its hash.
 type backendTx interface {
@@ -38,6 +49,17 @@ type backendTx interface {
 	revision(id string) (Revision, bool, error) // with Data
 	revisions(entry string) ([]Revision, error) // in the order of saving, without Data
 	addEvent(data []byte) error                 // an audit event (events.go)
+
+	// The rows of the index tables, by key. indexScan calls fn with the keys that start with prefix, and their values,
+	// in ascending order of the keys, until fn returns false; it scans the table as it is when it begins, also if fn
+	// writes. A value that indexGet or indexScan returns must not be changed.
+	indexGet(table indexTable, key []byte) ([]byte, bool, error)
+	indexPut(table indexTable, key, value []byte) error
+	indexDelete(table indexTable, key []byte) error
+	indexScan(table indexTable, prefix []byte, fn func(key, value []byte) bool) error
+	indexReady() (bool, error)  // false only for a store of the table schema 1, which has no index
+	lastNumber() (int64, error) // the largest number that an entry has had; 0 if none
+	setLastNumber(n int64) error
 }
 
 // versionErr is the error of a backend for the saved_at of the version seq, which does not parse.

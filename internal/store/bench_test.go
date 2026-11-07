@@ -781,7 +781,7 @@ func benchFactsOf(t *testing.T, bs benchSet) benchFacts {
 		f.Updates += (len(refs) + bs.batch - 1) / bs.batch
 		for _, ref := range refs {
 			sv := bs.loadSave(ref)
-			if err := checkData(sv.kind, sv.id, sv.doc); err != nil {
+			if _, err := checkData(sv.kind, sv.id, sv.doc); err != nil {
 				t.Fatalf("%s: Put() of %s would fail: %v", bs.name, sv.id, err)
 			}
 			add(string(sv.kind), len(sv.doc))

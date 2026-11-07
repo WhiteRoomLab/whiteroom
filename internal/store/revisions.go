@@ -25,7 +25,7 @@ func revisionName(id string) string {
 
 // AddRevision adds data, the JSON of the revision with id of the entry entry, by the user by, and returns the revision.
 // The entry must exist, and id must be new, even for the same data: revisions never change. data must decode as a
-// revision, but is not validated against the site settings or the entry.
+// revision, but is not validated against the site settings or the entry. It updates the index (Summary).
 func (t *Tx) AddRevision(entry, id string, data []byte, by string) (Revision, error) {
 	if err := t.check(true); err != nil {
 		return Revision{}, err
@@ -40,7 +40,8 @@ func (t *Tx) AddRevision(entry, id string, data []byte, by string) (Revision, er
 		return Revision{}, err
 	}
 	file := revisionName(id)
-	if err := decodeFile(content.SiteFile{Name: file, Data: data}, new(content.Revision).UnmarshalJSON); err != nil {
+	rev := new(content.Revision)
+	if err := decodeFile(content.SiteFile{Name: file, Data: data}, rev.UnmarshalJSON); err != nil {
 		return Revision{}, err
 	}
 	if _, err := t.current(content.RefEntry, entry); err != nil {
@@ -59,6 +60,9 @@ func (t *Tx) AddRevision(entry, id string, data []byte, by string) (Revision, er
 	}
 	seq, err := t.b.addRevision(id, entry, hash, t.savedAt, by)
 	if err != nil {
+		return Revision{}, err
+	}
+	if err := t.indexRevision(entry, id, rev, data); err != nil {
 		return Revision{}, err
 	}
 	savedAt, err := parseSavedAt(t.savedAt)

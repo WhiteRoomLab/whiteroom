@@ -28,8 +28,9 @@ type Document struct {
 	Data []byte
 }
 
-// decoders decode the documents of each kind as the build does, and return the id in a document; "" if it has none.
-var decoders = map[content.RefKind]func(data []byte) (id string, err error){
+// decoders decode the documents of each kind as the build does, and return the id in a document, "" if it has none, and
+// the document: a *content.Entry, *content.Term and so on, or nil for the settings document.
+var decoders = map[content.RefKind]func(data []byte) (id string, doc any, err error){
 	content.RefEntry:    decoder(func(e *content.Entry) string { return e.ID }),
 	content.RefTerm:     decoder(func(t *content.Term) string { return t.ID }),
 	content.RefMedia:    decoder(func(m *content.Media) string { return m.ID }),
@@ -37,20 +38,22 @@ var decoders = map[content.RefKind]func(data []byte) (id string, err error){
 	content.RefMenu:     decoder(func(m *content.Menu) string { return m.ID }),
 	content.RefForm:     decoder(func(f *content.Form) string { return f.ID }),
 	content.RefRedirect: decoder(func(r *content.Redirect) string { return r.ID }),
-	SettingsKind:        func(data []byte) (string, error) { return "", new(content.Site).UnmarshalSettings(data) },
+	SettingsKind: func(data []byte) (string, any, error) {
+		return "", nil, new(content.Site).UnmarshalSettings(data)
+	},
 }
 
 // decoder returns the decoder of the documents of type T, whose id returns the id in a document.
 func decoder[T any, P interface {
 	*T
 	UnmarshalJSON(data []byte) error
-}](id func(*T) string) func([]byte) (string, error) {
-	return func(data []byte) (string, error) {
-		var v T
-		if err := P(&v).UnmarshalJSON(data); err != nil {
-			return "", err
+}](id func(*T) string) func([]byte) (string, any, error) {
+	return func(data []byte) (string, any, error) {
+		v := new(T)
+		if err := P(v).UnmarshalJSON(data); err != nil {
+			return "", nil, err
 		}
-		return id(&v), nil
+		return id(v), v, nil
 	}
 }
 
@@ -96,26 +99,27 @@ func decodeFile(f content.SiteFile, decode func([]byte) error) error {
 }
 
 // checkData checks that data, the JSON of the document of kind with id, decodes as the build decodes it, without
-// validating it against the site settings. The error is content.Errors.
-func checkData(kind content.RefKind, id string, data []byte) error {
+// validating it against the site settings, and returns the document as decoders do. The error is content.Errors.
+func checkData(kind content.RefKind, id string, data []byte) (any, error) {
 	f := content.SiteFile{Name: name(kind, id), Data: data}
 	var got string
+	var doc any
 	if err := decodeFile(f, func(b []byte) (err error) {
-		got, err = decoders[kind](b)
+		got, doc, err = decoders[kind](b)
 		return err
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	if got != "" && got != id {
 		msg := fmt.Sprintf("id %q differs from the ID of the document, %q", got, id)
-		return content.LocateErrors(&content.Error{Path: "/id", Msg: msg}, f)
+		return nil, content.LocateErrors(&content.Error{Path: "/id", Msg: msg}, f)
 	}
-	return nil
+	return doc, nil
 }
 
 // Put saves data, the JSON of the document of kind with id, as its current version by the user by, and returns the
 // version. data must decode as a document of kind, but is not validated against the site settings. If data is that of
-// the current version, Put returns that version, and saves nothing.
+// the current version, Put returns that version, and saves nothing. Otherwise it updates the index (Summary).
 func (t *Tx) Put(kind content.RefKind, id string, data []byte, by string) (Version, error) {
 	if err := t.check(true); err != nil {
 		return Version{}, err
@@ -126,7 +130,8 @@ func (t *Tx) Put(kind content.RefKind, id string, data []byte, by string) (Versi
 	if err := content.CheckID(content.RefUser, by); err != nil {
 		return Version{}, err
 	}
-	if err := checkData(kind, id, data); err != nil {
+	doc, err := checkData(kind, id, data)
+	if err != nil {
 		return Version{}, err
 	}
 	hash := hashOf(data)
@@ -147,12 +152,15 @@ func (t *Tx) Put(kind content.RefKind, id string, data []byte, by string) (Versi
 	if err := t.b.setCurrent(kind, id, v.Seq); err != nil {
 		return Version{}, err
 	}
+	if err := t.indexDocument(kind, id, doc, data); err != nil {
+		return Version{}, err
+	}
 	return v, nil
 }
 
 // Delete deletes the document of kind with id by the user by: it saves a version that marks the deletion, and returns
-// it. History keeps the versions before it. If the document does not exist, the error wraps fs.ErrNotExist. The
-// settings document cannot be deleted.
+// it. History keeps the versions before it, and Revisions the revisions of an entry. If the document does not exist,
+// the error wraps fs.ErrNotExist. The settings document cannot be deleted. The index loses the document.
 func (t *Tx) Delete(kind content.RefKind, id, by string) (Version, error) {
 	if err := t.check(true); err != nil {
 		return Version{}, err
@@ -174,6 +182,9 @@ func (t *Tx) Delete(kind content.RefKind, id, by string) (Version, error) {
 		return Version{}, err
 	}
 	if err := t.b.deleteCurrent(kind, id); err != nil {
+		return Version{}, err
+	}
+	if err := t.indexDocument(kind, id, nil, nil); err != nil {
 		return Version{}, err
 	}
 	return v, nil

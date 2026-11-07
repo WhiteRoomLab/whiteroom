@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,20 +46,29 @@ type modelState struct {
 	revisions []modelRevision
 	revByID   map[string]int64 // the seq of each revision
 	events    [][]byte
+	index     [numIndexTables]map[string][]byte // the rows of the index tables
+	number    int64                             // the last number
 }
 
 // clone returns a copy of s that shares the byte slices, which nothing changes.
 func (s *modelState) clone() *modelState {
-	return &modelState{
+	c := &modelState{
 		objects: maps.Clone(s.objects), versions: slices.Clone(s.versions), current: maps.Clone(s.current),
 		revisions: slices.Clone(s.revisions), revByID: maps.Clone(s.revByID), events: slices.Clone(s.events),
+		number: s.number,
 	}
+	for i, rows := range s.index {
+		c.index[i] = maps.Clone(rows)
+	}
+	return c
 }
 
 func newModelBackend() *modelBackend {
-	return &modelBackend{st: &modelState{
-		objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{},
-	}}
+	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{}}
+	for i := range st.index {
+		st.index[i] = map[string][]byte{}
+	}
+	return &modelBackend{st: st}
 }
 
 // newModelStore returns a store on a new model, with its originals in a world of simfs.
@@ -284,5 +294,53 @@ func (t *modelTx) revisions(entry string) ([]Revision, error) {
 
 func (t *modelTx) addEvent(data []byte) error {
 	t.st.events = append(t.st.events, bytes.Clone(data))
+	return nil
+}
+
+func (t *modelTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
+	v, ok := t.st.index[table][string(key)]
+	return v, ok, nil
+}
+
+func (t *modelTx) indexPut(table indexTable, key, value []byte) error {
+	t.st.index[table][string(key)] = bytes.Clone(value)
+	return nil
+}
+
+func (t *modelTx) indexDelete(table indexTable, key []byte) error {
+	delete(t.st.index[table], string(key))
+	return nil
+}
+
+func (t *modelTx) indexScan(table indexTable, prefix []byte, fn func(key, value []byte) bool) error {
+	type row struct {
+		key   string
+		value []byte
+	}
+	var rows []row
+	for k, v := range t.st.index[table] {
+		if strings.HasPrefix(k, string(prefix)) {
+			rows = append(rows, row{k, v})
+		}
+	}
+	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.key, b.key) }) // byte order, as the engine
+	for _, r := range rows {
+		if !fn([]byte(r.key), r.value) {
+			break
+		}
+	}
+	return nil
+}
+
+func (t *modelTx) indexReady() (bool, error) {
+	return true, nil
+}
+
+func (t *modelTx) lastNumber() (int64, error) {
+	return t.st.number, nil
+}
+
+func (t *modelTx) setLastNumber(n int64) error {
+	t.st.number = n
 	return nil
 }

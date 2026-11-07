@@ -1,0 +1,1414 @@
+package store
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
+	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
+)
+
+// indexRows are the rows of the tables summaries and references, with their keys and values as text, by table.
+type indexRows map[indexTable]map[string]string
+
+// storedIndex returns the rows of summaries and references that tx has.
+func storedIndex(tx *Tx) (indexRows, error) {
+	rows := indexRows{}
+	for _, table := range []indexTable{indexSummaries, indexReferences} {
+		rows[table] = map[string]string{}
+		if err := tx.b.indexScan(table, nil, func(key, value []byte) bool {
+			rows[table][string(key)] = string(value)
+			return true
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
+}
+
+// computedIndex returns the rows of summaries and references that tx must have, from the documents and the revisions
+// alone, and the largest number of the entries.
+func computedIndex(tx *Tx) (indexRows, int64, error) {
+	rows := indexRows{indexSummaries: {}, indexReferences: {}}
+	largest, err := tx.computeIndex(func(table indexTable, key, value []byte) error {
+		if _, ok := rows[table][string(key)]; ok {
+			return fmt.Errorf("the row %q of %s is computed twice", key, indexTableNames[table])
+		}
+		rows[table][string(key)] = string(value)
+		return nil
+	})
+	return rows, largest, err
+}
+
+// diffIndex describes how the rows got differ from those that want, or returns "" if they are the same.
+func diffIndex(got, want indexRows) string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	for _, table := range []indexTable{indexSummaries, indexReferences} {
+		name := indexTableNames[table]
+		for _, key := range slices.Sorted(maps.Keys(want[table])) {
+			g, ok := got[table][key]
+			switch {
+			case !ok:
+				add("%s has no row %q, want %q", name, key, want[table][key])
+			case g != want[table][key]:
+				add("%s has %q at %q, want %q", name, g, key, want[table][key])
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(got[table])) {
+			if _, ok := want[table][key]; !ok {
+				add("%s has the row %q, which nothing gives", name, key)
+			}
+		}
+	}
+	if len(problems) > 3 {
+		problems = append(problems[:3], fmt.Sprintf("and %d more", len(problems)-3))
+	}
+	return strings.Join(problems, "; ")
+}
+
+// indexProblem returns how the index of s differs from what its documents and revisions give: the rows of summaries and
+// references, and a last number that is smaller than the largest of the current entries. It returns "" if there is no
+// difference, and for a store of the table schema 1, which has no index.
+func indexProblem(t *testing.T, s *Store) (string, error) {
+	t.Helper()
+	var problem string
+	err := s.View(t.Context(), func(tx *Tx) error {
+		if ready, err := tx.b.indexReady(); err != nil || !ready {
+			return err
+		}
+		got, err := storedIndex(tx)
+		if err != nil {
+			return err
+		}
+		want, largest, err := computedIndex(tx)
+		if err != nil {
+			return err
+		}
+		if problem = diffIndex(got, want); problem != "" {
+			return nil
+		}
+		if last, err := tx.b.lastNumber(); err != nil || last < largest {
+			problem = fmt.Sprintf("the last number is %d, and the largest of the entries %d (%v)", last, largest, err)
+			return nil
+		}
+		return nil
+	})
+	return problem, err
+}
+
+// eachStore runs f in a subtest for a store of the model, and for one of each backend of allBackends.
+func eachStore(t *testing.T, f func(t *testing.T, s *Store)) {
+	t.Helper()
+	t.Run("model", func(t *testing.T) {
+		s := newModelStore()
+		t.Cleanup(func() { _ = s.Close() })
+		f(t, s)
+	})
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		f(t, s)
+	})
+}
+
+// putAll puts, in one Update of s, the documents data, by their kinds and IDs.
+func putAll(t *testing.T, s *Store, docs ...indexDoc) {
+	t.Helper()
+	update(t, s, func(tx *Tx) error {
+		for _, d := range docs {
+			if _, err := tx.Put(d.kind, d.id, d.data, userID); err != nil {
+				return fmt.Errorf("Put(%q, %q) = %w", d.kind, d.id, err)
+			}
+		}
+		return nil
+	})
+}
+
+type indexDoc struct {
+	kind content.RefKind
+	id   string
+	data []byte
+}
+
+// A few IDs for the tests of the index.
+const (
+	medium2    = "med_01JE0000000000000000000002"
+	term2      = "trm_01JE0000000000000000000002"
+	page2      = "ent_01JE0000000000000000000002"
+	revision2  = "rev_01JE0000000000000000000002"
+	revision3  = "rev_01JE0000000000000000000003"
+	revision4  = "rev_01JE0000000000000000000004"
+	revision5  = "rev_01JE0000000000000000000005"
+	otherEntry = "ent_01JE0000000000000000000009"
+	lateEntry  = "ent_01JE0000000000000000000010"
+	thirdEntry = "ent_01JE0000000000000000000011"
+	page3      = "ent_01JE0000000000000000000012"
+)
+
+// entryJSON returns the JSON of the entry id with the fields that follow its ID.
+func entryJSON(id, fields string) []byte {
+	return []byte(`{"schemaVersion": 1, "id": "` + id + `", ` + fields + `}`)
+}
+
+// publishedEntry returns the JSON of the entry id, which publishes the revision rev, with the number n.
+func publishedEntry(id string, n int, rev string) []byte {
+	return entryJSON(id, fmt.Sprintf(`"number": %d, "status": "published", "publishedRevision": "%s"`, n, rev))
+}
+
+// revisionJSON returns the JSON of a revision with what the index reads of it: the fields that follow its schema
+// version.
+func revisionJSON(fields string) []byte {
+	return []byte(`{"schemaVersion": 1, ` + fields + `}`)
+}
+
+// checkReferrers checks that Referrers of the document of kind with id are want, "kind id role" each.
+func checkReferrers(t *testing.T, tx *Tx, kind content.RefKind, id string, want ...string) {
+	t.Helper()
+	refs, err := tx.Referrers(kind, id)
+	if err != nil {
+		t.Errorf("Referrers(%q, %q) = %v", kind, id, err)
+		return
+	}
+	var got []string
+	for _, r := range refs {
+		got = append(got, fmt.Sprintf("%s %s %s", r.Kind, r.ID, r.Role))
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Referrers(%q, %q) = %q, want %q", kind, id, got, want)
+	}
+}
+
+// checkSummary checks that Summary of the document of kind with id is want, but for Kind and ID.
+func checkSummary(t *testing.T, tx *Tx, kind content.RefKind, id string, want Summary) {
+	t.Helper()
+	got, err := tx.Summary(kind, id)
+	if err != nil {
+		t.Errorf("Summary(%q, %q) = %v", kind, id, err)
+		return
+	}
+	want.Kind, want.ID = kind, id
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Summary(%q, %q) = %s, want %s", kind, id, summaryText(got), summaryText(want))
+	}
+}
+
+// checkNoSummary checks that Summary of the document of kind with id fails with an error that wraps fs.ErrNotExist.
+func checkNoSummary(t *testing.T, tx *Tx, kind content.RefKind, id string) {
+	t.Helper()
+	if sum, err := tx.Summary(kind, id); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Summary(%q, %q) = %s, %v; want an error that wraps fs.ErrNotExist", kind, id, summaryText(sum), err)
+	}
+}
+
+// TestIndexSampleSite puts the sample site of internal/build, its documents and then the revisions that its entries
+// publish, and checks the index against what the files of the site say: the summary of each entry, the referrers of
+// every ID that the files hold (found in their text, not as JSON), the last number and the number of documents; and
+// some summaries exactly.
+func TestIndexSampleSite(t *testing.T) {
+	site := filepath.Join("..", "build", "testdata", "site")
+	dir, err := sitedir.Open(site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dir.Close() })
+	updates, _ := sampleSiteSteps(t)
+
+	// The files of the site: the documents of each kind, and the revisions that its entries publish.
+	docs := map[content.RefKind]map[string]content.SiteFile{}
+	for _, kind := range indexKinds {
+		if kind == SettingsKind {
+			settings, _, err := dir.Settings()
+			if err != nil {
+				t.Fatalf("Settings() of the sample site = %v", err)
+			}
+			docs[kind] = map[string]content.SiteFile{"": settings}
+		} else if docs[kind], err = dir.Documents(kind); err != nil {
+			t.Fatalf("Documents(%q) of the sample site = %v", kind, err)
+		}
+	}
+	entries := map[string]content.Entry{}
+	revisions := map[string]content.Revision{} // by the entries that publish them
+	largest := 0
+	for id, f := range docs[content.RefEntry] {
+		var e content.Entry
+		if err := e.UnmarshalJSON(f.Data); err != nil {
+			t.Fatalf("%s: %v", f.Name, err)
+		}
+		entries[id] = e
+		largest = max(largest, e.Number)
+	}
+
+	// What refers to what, by the IDs among the strings in the text of the files: the documents refer to them, and so
+	// do the published and the last revision, which are one revision, of the entry that publishes it.
+	idPattern := regexp.MustCompile(`"((?:ent|trm|med|aut|frm)_[0-9A-HJKMNP-TV-Z]{26})"`)
+	want := map[string][]string{} // by the IDs referred to, "kind id role" each
+	scan := func(data []byte, self string, kind content.RefKind, id string, roles ...Role) {
+		seen := map[string]bool{}
+		for _, m := range idPattern.FindAllSubmatch(data, -1) {
+			target := string(m[1])
+			if target != self && !seen[target] {
+				seen[target] = true
+				for _, role := range roles {
+					want[target] = append(want[target], fmt.Sprintf("%s %s %s", kind, id, role))
+				}
+			}
+		}
+	}
+	for kind, files := range docs {
+		for id, f := range files {
+			scan(f.Data, id, kind, id, RoleDocument)
+		}
+	}
+	for id, e := range entries {
+		if e.PublishedRevision == "" {
+			continue
+		}
+		f, err := dir.Revision(e.PublishedRevision)
+		if err != nil {
+			t.Fatalf("Revision(%q) of the sample site = %v", e.PublishedRevision, err)
+		}
+		var rev content.Revision
+		if err := rev.UnmarshalJSON(f.Data); err != nil {
+			t.Fatalf("%s: %v", f.Name, err)
+		}
+		revisions[id] = rev
+		scan(f.Data, id, content.RefEntry, id, RolePublished, RoleLatest)
+	}
+	for _, referrers := range want {
+		slices.Sort(referrers)
+	}
+
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		for _, u := range updates {
+			update(t, s, func(tx *Tx) error {
+				for _, op := range u.ops {
+					if _, err := op.run(tx); err != nil {
+						return fmt.Errorf("%s: %w", op.desc, err)
+					}
+				}
+				return nil
+			})
+		}
+		checkConsistent(t, s)
+
+		const (
+			about     = "ent_01JB8W2N5KD3F6H9J1M4P7R2T5"
+			aboutRev  = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W9"
+			news      = "trm_01JBA4C7E2G5J8K1M4P7R2T5W8"
+			childTerm = "trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7"
+			companyRd = "rdr_01JC0000000000000000000001"
+			header    = "mnu_01JBD2A3B4C5D6E7F8G9H0J1K2"
+		)
+		view(t, s, func(tx *Tx) error {
+			checkSummary(t, tx, content.RefEntry, about, Summary{
+				Entry: &content.Entry{
+					ID: about, Number: 2, Type: "page", Language: "ja",
+					TranslationGroup: "tg_01JB8X4M7NB5D8F1H4J7K2M6P9", Status: content.StatusPublished,
+					PublishedRevision: aboutRev, CreatedAt: "2026-10-25T10:00:00+09:00", CreatedBy: userID,
+				},
+				Published: &content.Revision{Slug: "about"},
+				Latest:    aboutRev,
+			})
+			checkSummary(t, tx, content.RefTerm, childTerm, Summary{Term: &content.Term{
+				ID: childTerm, Taxonomy: "category", Language: "ja", TranslationGroup: "tg_01JBA4C7K7N1R4T7W1Z4C7E1G4",
+				Slug: "press-release", Parent: news,
+			}})
+			checkSummary(t, tx, content.RefRedirect, companyRd, Summary{Redirect: &content.Redirect{
+				ID: companyRd, From: "/company/", To: about, Status: 301,
+			}})
+			checkSummary(t, tx, content.RefMedia, mediaID, Summary{Media: &content.Media{
+				ID: mediaID, Hash: "sha256:685d00bf889d89794ae0c30bdfbe8d60e77e60113793348586508867a82795c1",
+				MIMEType: "image/jpeg",
+			}})
+			checkSummary(t, tx, content.RefAuthor, authorID,
+				Summary{Author: &content.AuthorProfile{ID: authorID, Slug: "yamada"}})
+			checkSummary(t, tx, content.RefForm, formID, Summary{Form: &content.Form{ID: formID}})
+			checkSummary(t, tx, content.RefMenu, header, Summary{Menu: &content.Menu{
+				ID: header, Language: "ja", Location: "header",
+			}})
+			checkSummary(t, tx, SettingsKind, "", Summary{})
+			checkNoSummary(t, tx, content.RefEntry, otherEntry)
+
+			// The summary of every entry has its document, and its published revision, which is also its last one.
+			for id, e := range entries {
+				sum, err := tx.Summary(content.RefEntry, id)
+				if err != nil {
+					t.Errorf("Summary(%q) = %v", id, err)
+					continue
+				}
+				var published *content.Revision
+				if rev, ok := revisions[id]; ok {
+					published = &content.Revision{
+						Slug: rev.Slug, Parent: rev.Parent, Date: rev.Date, Author: rev.Author, Sticky: rev.Sticky,
+						Terms: rev.Terms,
+					}
+				}
+				if !reflect.DeepEqual(sum.Entry, &e) || !reflect.DeepEqual(sum.Published, published) ||
+					sum.Latest != e.PublishedRevision {
+					t.Errorf("Summary(%q) = %s, want the entry %+v, published %+v and last %q", id, summaryText(sum), e,
+						published, e.PublishedRevision)
+				}
+			}
+
+			// The referrers of every ID of the sample: those that its files give, and none for the rest.
+			unchecked := maps.Clone(want)
+			for kind, files := range docs {
+				for id := range files {
+					if kind != SettingsKind {
+						checkReferrers(t, tx, kind, id, want[id]...)
+					}
+					delete(unchecked, id)
+				}
+			}
+			for target, referrers := range unchecked {
+				t.Errorf("the sample site refers to %s, which has no document: %q", target, referrers)
+			}
+			checkReferrers(t, tx, SettingsKind, "")
+
+			if n, err := tx.LastNumber(); err != nil || n != largest {
+				t.Errorf("LastNumber() = %d, %v; want %d, the largest number of the entries", n, err, largest)
+			}
+			for kind, files := range docs {
+				sums, err := tx.Summaries(kind)
+				if err != nil || len(sums) != len(files) {
+					t.Errorf("Summaries(%q) = %d summaries, %v; want %d", kind, len(sums), err, len(files))
+				}
+				if !slices.IsSortedFunc(sums, func(a, b Summary) int { return strings.Compare(a.ID, b.ID) }) {
+					t.Errorf("Summaries(%q) are not in the order of their IDs", kind)
+				}
+			}
+			return nil
+		})
+	})
+}
+
+// TestIndexEntryRevisions follows the summary of an entry through the orders in which its document and its revisions
+// are saved: the published revision that is not there yet, that is added, that changes to a newer and to an older one,
+// drafts, the deletion, and the entry again; and entries that publish a revision of another entry.
+func TestIndexEntryRevisions(t *testing.T) {
+	revA := revisionJSON(`"title": "A", "slug": "a", "date": "2026-11-03T08:00:00+09:00", "author": "` + authorID +
+		`", "sticky": true, "parent": "` + pageID + `", "featuredImage": "` + mediaID + `", "terms": {"category": ["` +
+		termID + `"]}`)
+	projectionA := &content.Revision{
+		Slug: "a", Parent: pageID, Date: "2026-11-03T08:00:00+09:00", Author: authorID, Sticky: true,
+		Terms: content.Terms{"category": {termID}},
+	}
+	revB := revisionJSON(`"title": "B", "slug": "b", "featuredImage": "` + medium2 + `"`)
+	revC := revisionJSON(`"title": "C", "slug": "c"`)
+	eachStore(t, func(t *testing.T, s *Store) {
+		entry := func(n int, rev string) *content.Entry {
+			return &content.Entry{ID: entryID, Number: n, Status: content.StatusPublished, PublishedRevision: rev}
+		}
+		addRevision := func(entry, id string, data []byte) {
+			t.Helper()
+			update(t, s, func(tx *Tx) error {
+				_, err := tx.AddRevision(entry, id, data, userID)
+				return err
+			})
+			checkConsistent(t, s)
+		}
+		put := func(id string, data []byte) {
+			t.Helper()
+			putAll(t, s, indexDoc{content.RefEntry, id, data})
+			checkConsistent(t, s)
+		}
+		check := func(f func(tx *Tx)) {
+			t.Helper()
+			view(t, s, func(tx *Tx) error {
+				f(tx)
+				return nil
+			})
+		}
+		by := func(roles ...string) []string {
+			var refs []string
+			for _, role := range roles {
+				refs = append(refs, "entry "+entryID+" "+role)
+			}
+			return refs
+		}
+		checkNumber := func(tx *Tx, want int) {
+			t.Helper()
+			if n, err := tx.LastNumber(); err != nil || n != want {
+				t.Errorf("LastNumber() = %d, %v; want %d", n, err, want)
+			}
+		}
+
+		// The entry publishes a revision that is not there yet.
+		put(entryID, publishedEntry(entryID, 5, revisionID))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{Entry: entry(5, revisionID)})
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+			checkNumber(tx, 5)
+		})
+
+		// The revision is added: it is the published and the last revision.
+		addRevision(entryID, revisionID, revA)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(5, revisionID), Published: projectionA, Latest: revisionID,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by("latest", "published")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID, by("latest", "published")...)
+			checkReferrers(t, tx, content.RefTerm, termID, by("latest", "published")...)
+			checkReferrers(t, tx, content.RefEntry, pageID, by("latest", "published")...)
+		})
+
+		// A draft: the last revision changes, and the published one does not.
+		addRevision(entryID, revision2, revB)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(5, revisionID), Published: projectionA, Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by("published")...)
+			checkReferrers(t, tx, content.RefMedia, medium2, by("latest")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID, by("published")...)
+		})
+
+		// The entry publishes the newer revision.
+		put(entryID, publishedEntry(entryID, 5, revision2))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(5, revision2), Published: &content.Revision{Slug: "b"}, Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+			checkReferrers(t, tx, content.RefMedia, medium2, by("latest", "published")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID)
+		})
+
+		// And the older one again, with a number that is not the largest that the entries have had.
+		put(entryID, publishedEntry(entryID, 2, revisionID))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(2, revisionID), Published: projectionA, Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by("published")...)
+			checkReferrers(t, tx, content.RefMedia, medium2, by("latest")...)
+			checkNumber(tx, 5)
+		})
+
+		// A draft without references takes the place of the last revision.
+		addRevision(entryID, revision3, revC)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(2, revisionID), Published: projectionA, Latest: revision3,
+			})
+			checkReferrers(t, tx, content.RefMedia, medium2)
+		})
+
+		// Deleted, the entry has no summary and no references; its revisions and its number stay.
+		update(t, s, func(tx *Tx) error {
+			_, err := tx.Delete(content.RefEntry, entryID, userID)
+			return err
+		})
+		checkConsistent(t, s)
+		check(func(tx *Tx) {
+			checkNoSummary(t, tx, content.RefEntry, entryID)
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+			checkReferrers(t, tx, content.RefEntry, pageID)
+			if sums, err := tx.Summaries(content.RefEntry); err != nil || len(sums) != 0 {
+				t.Errorf("Summaries() after the Delete = %d summaries, %v; want none", len(sums), err)
+			}
+			if revs, err := tx.Revisions(entryID); err != nil || len(revs) != 3 {
+				t.Errorf("Revisions() after the Delete = %d revisions, %v; want 3", len(revs), err)
+			}
+			checkNumber(tx, 5)
+		})
+
+		// The entry again: its last revision and its published one are found among its revisions.
+		put(entryID, publishedEntry(entryID, 7, revisionID))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: entry(7, revisionID), Published: projectionA, Latest: revision3,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by("published")...)
+			checkNumber(tx, 7)
+		})
+
+		// Entries that publish a revision that is not there yet get it when it is added, to another entry; and an entry
+		// that publishes a revision of another entry that is there gets it at once.
+		put(page2, publishedEntry(page2, 8, revision4))
+		put(thirdEntry, publishedEntry(thirdEntry, 6, revision4))
+		put(otherEntry, entryJSON(otherEntry, `"number": 9`))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, page2, Summary{Entry: &content.Entry{
+				ID: page2, Number: 8, Status: content.StatusPublished, PublishedRevision: revision4,
+			}})
+		})
+		addRevision(otherEntry, revision4, revA)
+		put(page2, publishedEntry(page2, 10, revision4))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, page2, Summary{
+				Entry: &content.Entry{
+					ID: page2, Number: 10, Status: content.StatusPublished, PublishedRevision: revision4,
+				},
+				Published: projectionA,
+			})
+			checkSummary(t, tx, content.RefEntry, thirdEntry, Summary{
+				Entry: &content.Entry{
+					ID: thirdEntry, Number: 6, Status: content.StatusPublished, PublishedRevision: revision4,
+				},
+				Published: projectionA,
+			})
+			checkSummary(t, tx, content.RefEntry, otherEntry, Summary{
+				Entry: &content.Entry{ID: otherEntry, Number: 9}, Latest: revision4,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, "entry "+entryID+" published", "entry "+page2+" published",
+				"entry "+otherEntry+" latest", "entry "+thirdEntry+" published")
+			checkNumber(tx, 10)
+		})
+		put(lateEntry, publishedEntry(lateEntry, 4, revision4))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, lateEntry, Summary{
+				Entry: &content.Entry{
+					ID: lateEntry, Number: 4, Status: content.StatusPublished, PublishedRevision: revision4,
+				},
+				Published: projectionA,
+			})
+		})
+
+		// A revision that is there when its entry publishes it: the summary has it, and keeps the last revision.
+		put(page3, entryJSON(page3, `"number": 11`))
+		addRevision(page3, revision5, revB)
+		put(page3, publishedEntry(page3, 11, revision5))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, page3, Summary{
+				Entry: &content.Entry{
+					ID: page3, Number: 11, Status: content.StatusPublished, PublishedRevision: revision5,
+				},
+				Published: &content.Revision{Slug: "b"}, Latest: revision5,
+			})
+			checkReferrers(t, tx, content.RefMedia, medium2, "entry "+page3+" latest", "entry "+page3+" published")
+			checkNumber(tx, 11)
+		})
+	})
+}
+
+// jsonf returns the JSON that format makes of args, which are IDs that need no escapes.
+func jsonf(format string, args ...any) []byte {
+	return fmt.Appendf(nil, format, args...)
+}
+
+// TestIndexPublishedRevisionIDs checks that only an ID of a revision that an entry publishes makes a row of references,
+// so that no string in a document can make the keys of the rows of other documents unreadable.
+func TestIndexPublishedRevisionIDs(t *testing.T) {
+	nul := string(rune(92)) + "u0000" // the escape of a NUL in JSON
+	odd := []string{
+		"x", "rev_x", strings.ToLower(revisionID), revisionID + "0", entryID + nul + "entry" + nul + page2 + nul + "document",
+	}
+	eachStore(t, func(t *testing.T, s *Store) {
+		var docs []indexDoc
+		for i, rev := range odd {
+			id := fmt.Sprintf("ent_01JE%022d", 100+i)
+			docs = append(docs, indexDoc{content.RefEntry, id, publishedEntry(id, i+1, rev)})
+		}
+		putAll(t, s, docs...)
+		checkConsistent(t, s)
+		view(t, s, func(tx *Tx) error {
+			rows, err := storedIndex(tx)
+			if err != nil {
+				t.Fatalf("the rows of the index = %v", err)
+			}
+			if n := len(rows[indexReferences]); n != 0 {
+				t.Errorf("the rows of references = %d, want none: no entry publishes an ID of a revision", n)
+			}
+			if sums, err := tx.Summaries(content.RefEntry); err != nil || len(sums) != len(odd) {
+				t.Errorf("Summaries() = %d summaries, %v; want %d", len(sums), err, len(odd))
+			}
+			checkReferrers(t, tx, content.RefEntry, entryID)
+			return nil
+		})
+		// An ID that is one makes a row, which AddRevision finds.
+		id := "ent_01JE0000000000000000000200"
+		putAll(t, s, indexDoc{content.RefEntry, id, publishedEntry(id, 9, revisionID)},
+			indexDoc{content.RefEntry, otherEntry, entryJSON(otherEntry, `"number": 1`)})
+		update(t, s, func(tx *Tx) error {
+			_, err := tx.AddRevision(otherEntry, revisionID, revisionJSON(`"slug": "x"`), userID)
+			return err
+		})
+		view(t, s, func(tx *Tx) error {
+			if sum, err := tx.Summary(content.RefEntry, id); err != nil || sum.Published == nil || sum.Published.Slug != "x" {
+				t.Errorf("Summary() = %s, %v; want the published revision", summaryText(sum), err)
+			}
+			return nil
+		})
+		checkConsistent(t, s)
+	})
+}
+
+// fillIndexStore puts a document of every kind that refers to others, revisions of two entries, and operations, in two
+// Updates, the second of which deletes and changes some.
+func fillIndexStore(t *testing.T, s *Store) {
+	t.Helper()
+	revA := jsonf(`{"schemaVersion": 1, "title": "A", "slug": "a", "featuredImage": %q, "terms": {"category": [%q]}}`,
+		mediaID, termID)
+	revB := jsonf(`{"schemaVersion": 1, "title": "B", "slug": "b", "featuredImage": %q}`, medium2)
+	revC := jsonf(`{"schemaVersion": 1, "title": "C", "parent": %q, "body": [{"type": "paragraph", `+
+		`"id": "b_00000001", "content": [{"type": "text", "text": %q}]}]}`, entryID, term2)
+	update(t, s, func(tx *Tx) error {
+		for _, d := range []indexDoc{
+			{content.RefEntry, entryID, publishedEntry(entryID, 5, revisionID)},
+			{content.RefEntry, pageID, entryJSON(pageID, `"number": 8, "status": "draft"`)},
+			{content.RefTerm, termID, jsonf(`{"schemaVersion": 1, "id": %q, "slug": "a", "parent": %q}`, termID,
+				term2)},
+			{content.RefTerm, term2, docJSON(content.RefTerm, term2)},
+			{content.RefMedia, mediaID, jsonf(`{"schemaVersion": 1, "id": %q, "hash": %q, "mimeType": "image/jpeg"}`,
+				mediaID, sum([]byte("x")))},
+			{content.RefMedia, medium2, docJSON(content.RefMedia, medium2)},
+			{content.RefAuthor, authorID, jsonf(`{"schemaVersion": 1, "id": %q, "slug": "a", "avatar": %q}`, authorID,
+				mediaID)},
+			{content.RefMenu, menuID, jsonf(`{"schemaVersion": 1, "id": %q, "language": "ja", "location": "header", `+
+				`"items": [{"entry": %q}, {"term": %q}]}`, menuID, entryID, termID)},
+			{content.RefForm, formID, jsonf(`{"schemaVersion": 1, "id": %q, "thanksPage": {"ja": %q}}`, formID,
+				pageID)},
+			{content.RefRedirect, redirectID, jsonf(`{"schemaVersion": 1, "id": %q, "from": "/old", "to": %q, `+
+				`"status": 301}`, redirectID, entryID)},
+			{SettingsKind, "", jsonf(`{"schemaVersion": 1, "logo": %q, "frontPage": {"ja": %q}}`, mediaID, entryID)},
+		} {
+			if _, err := tx.Put(d.kind, d.id, d.data, userID); err != nil {
+				return fmt.Errorf("Put(%q, %q) = %w", d.kind, d.id, err)
+			}
+		}
+		for _, r := range []struct {
+			entry, id string
+			data      []byte
+		}{{entryID, revisionID, revA}, {entryID, revision2, revB}, {pageID, revision3, revC}} {
+			if _, err := tx.AddRevision(r.entry, r.id, r.data, userID); err != nil {
+				return fmt.Errorf("AddRevision(%q, %q) = %w", r.entry, r.id, err)
+			}
+		}
+		return tx.PutOperation("op_A", []byte("first"))
+	})
+	update(t, s, func(tx *Tx) error {
+		if _, err := tx.Delete(content.RefMedia, medium2, userID); err != nil {
+			return err
+		}
+		term := jsonf(`{"schemaVersion": 1, "id": %q, "slug": "b"}`, termID)
+		if _, err := tx.Put(content.RefTerm, termID, term, otherUser); err != nil {
+			return err
+		}
+		return errors.Join(tx.PutOperation("op_A", []byte("second")), tx.PutOperation("op_B", nil))
+	})
+}
+
+// indexState is what the index of a store has: its rows, the last number, and the data of some operations.
+type indexState struct {
+	rows   indexRows
+	number int
+	ops    map[string]string
+}
+
+// readIndexState reads the index of s, and its operations ops that it has.
+func readIndexState(t *testing.T, s *Store, ops ...string) indexState {
+	t.Helper()
+	st := indexState{ops: map[string]string{}}
+	view(t, s, func(tx *Tx) error {
+		var err error
+		if st.rows, err = storedIndex(tx); err != nil {
+			t.Fatalf("the rows of the index = %v", err)
+		}
+		if st.number, err = tx.LastNumber(); err != nil {
+			t.Fatalf("LastNumber() = %v", err)
+		}
+		for _, id := range ops {
+			data, ok, err := tx.Operation(id)
+			if err != nil {
+				t.Fatalf("Operation(%q) = %v", id, err)
+			}
+			if ok {
+				st.ops[id] = string(data)
+			}
+		}
+		return nil
+	})
+	return st
+}
+
+// checkIndexState checks that s has the index state want, with the operations ops.
+func checkIndexState(t *testing.T, s *Store, want indexState, ops ...string) {
+	t.Helper()
+	got := readIndexState(t, s, ops...)
+	if problem := diffIndex(got.rows, want.rows); problem != "" {
+		t.Errorf("the rows of the index are not those from before: %s", problem)
+	}
+	if got.number != want.number || !maps.Equal(got.ops, want.ops) {
+		t.Errorf("the last number and the operations are %d and %q, want %d and %q", got.number, got.ops, want.number,
+			want.ops)
+	}
+}
+
+// TestIndexRollback checks that an Update that writes to the index and then fails, or is canceled, leaves the index and
+// the operations as they were, and that what it writes can be read in it.
+func TestIndexRollback(t *testing.T) {
+	ops := []string{"op_A", "op_B", "op_C"}
+	eachStore(t, func(t *testing.T, s *Store) {
+		fillIndexStore(t, s)
+		before := readIndexState(t, s, ops...)
+		writes := func(tx *Tx) error {
+			if _, err := tx.Put(content.RefEntry, page2, publishedEntry(page2, 40, revision4), userID); err != nil {
+				return err
+			}
+			withMedium := jsonf(`{"schemaVersion": 1, "title": "P", "featuredImage": %q}`, medium2)
+			if _, err := tx.AddRevision(page2, revision4, withMedium, userID); err != nil {
+				return err
+			}
+			if _, err := tx.AddRevision(entryID, revision5, withMedium, userID); err != nil {
+				return err
+			}
+			if _, err := tx.Delete(content.RefTerm, term2, userID); err != nil {
+				return err
+			}
+			if _, err := tx.Put(SettingsKind, "", docJSON(SettingsKind, ""), userID); err != nil {
+				return err
+			}
+			if err := tx.PutOperation("op_C", []byte("third")); err != nil {
+				return err
+			}
+			// What the Update has written is in the index for the reads in it.
+			sum, err := tx.Summary(content.RefEntry, page2)
+			switch {
+			case err != nil:
+				return err
+			case sum.Latest != revision4 || sum.Published == nil:
+				return fmt.Errorf("Summary() = %s, want the revision published and last", summaryText(sum))
+			}
+			if n, err := tx.LastNumber(); err != nil {
+				return err
+			} else if n != 40 {
+				return fmt.Errorf("LastNumber() = %d, want 40", n)
+			}
+			return nil
+		}
+
+		errTest := errors.New("test")
+		if err := s.Update(t.Context(), func(tx *Tx) error {
+			return errors.Join(writes(tx), errTest)
+		}); !errors.Is(err, errTest) {
+			t.Fatalf("Update() = %v, want the error of f", err)
+		}
+		checkIndexState(t, s, before, ops...)
+		checkConsistent(t, s)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		if err := s.Update(ctx, func(tx *Tx) error {
+			if err := writes(tx); err != nil {
+				return err
+			}
+			cancel()
+			return nil
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Update() that is canceled = %v, want context.Canceled", err)
+		}
+		checkIndexState(t, s, before, ops...)
+		checkConsistent(t, s)
+
+		// The same writes, committed: the state is another one, and it is the one that the documents give.
+		update(t, s, func(tx *Tx) error { return writes(tx) })
+		after := readIndexState(t, s, ops...)
+		if after.number != 40 || after.ops["op_C"] != "third" || reflect.DeepEqual(after.rows, before.rows) {
+			t.Errorf("the state after the committed Update is that before it: number %d, operations %q", after.number,
+				after.ops)
+		}
+		checkConsistent(t, s)
+	})
+}
+
+// TestRebuildIndex checks that RebuildIndex leaves the index and the operations as they are, in a store of every kind
+// of backend, and that it makes the index again, in a store of the log backend whose rows are removed or damaged.
+func TestRebuildIndex(t *testing.T) {
+	ops := []string{"op_A", "op_B"}
+	rebuild := func(t *testing.T, s *Store) {
+		t.Helper()
+		update(t, s, func(tx *Tx) error { return tx.RebuildIndex() })
+	}
+	eachStore(t, func(t *testing.T, s *Store) {
+		fillIndexStore(t, s)
+		checkConsistent(t, s)
+		before := readIndexState(t, s, ops...)
+		// 2 entries, 2 terms, 1 medium (the other is deleted), an author, a menu, a form, a redirect and the settings.
+		if n := len(before.rows[indexSummaries]); n != 10 {
+			t.Fatalf("the index has %d summaries, want 10", n)
+		}
+		if before.number != 8 || before.ops["op_A"] != "second" || len(before.ops) != 2 {
+			t.Fatalf("the last number and the operations are %d and %q, want 8 and the second data of op_A and op_B",
+				before.number, before.ops)
+		}
+		rebuild(t, s)
+		checkIndexState(t, s, before, ops...)
+		checkConsistent(t, s)
+
+		// An Update that rebuilds and then fails changes nothing.
+		errTest := errors.New("test")
+		if err := s.Update(t.Context(), func(tx *Tx) error {
+			return errors.Join(tx.RebuildIndex(), errTest)
+		}); !errors.Is(err, errTest) {
+			t.Errorf("Update() = %v, want the error of f", err)
+		}
+		checkIndexState(t, s, before, ops...)
+	})
+
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		fillIndexStore(t, s)
+		before := readIndexState(t, s, ops...)
+		rawUpdate(t, s, func(tx *logdb.Tx) error {
+			var first []byte
+			tx.Scan(tableReferences, nil, func(key, _ []byte) bool {
+				first = bytes.Clone(key)
+				return false
+			})
+			return errors.Join(
+				tx.Delete(tableSummaries, docKey(content.RefEntry, pageID)),
+				tx.Put(tableSummaries, docKey(content.RefTerm, termID), []byte("not JSON")),
+				tx.Put(tableSummaries, docKey(content.RefForm, formID), []byte(`{"unknown": 1}`)),
+				tx.Delete(tableReferences, first),
+				tx.Put(tableReferences, refKey(medium2, content.RefTerm, termID, RoleDocument), nil),
+				tx.Delete(tableMeta, []byte(metaNumbers)),
+			)
+		})
+		if problem, err := indexProblem(t, s); err != nil || problem == "" {
+			t.Errorf("the problem of the damaged index = %q, %v; want one", problem, err)
+		}
+		view(t, s, func(tx *Tx) error {
+			for _, tt := range []struct {
+				kind content.RefKind
+				id   string
+			}{{content.RefTerm, termID}, {content.RefForm, formID}} {
+				want := fmt.Sprintf("summaries %q: invalid value", docKey(tt.kind, tt.id))
+				_, err := tx.Summary(tt.kind, tt.id)
+				if err == nil || err.Error() != want || errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("Summary(%q, %q) = %v, want an error %q that does not wrap fs.ErrNotExist", tt.kind,
+						tt.id, err, want)
+				}
+				if _, err := tx.Summaries(tt.kind); err == nil || err.Error() != want {
+					t.Errorf("Summaries(%q) = %v, want an error %q", tt.kind, err, want)
+				}
+			}
+			checkNoSummary(t, tx, content.RefEntry, pageID)
+			if n, err := tx.LastNumber(); err != nil || n != 0 {
+				t.Errorf("LastNumber() without the number = %d, %v; want 0", n, err)
+			}
+			return nil
+		})
+		// A Put of a document with a damaged summary fails: the old references are not known.
+		err := s.Update(t.Context(), func(tx *Tx) error {
+			_, err := tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID)
+			return err
+		})
+		want := fmt.Sprintf("summaries %q: invalid value", docKey(content.RefTerm, termID))
+		if err == nil || err.Error() != want {
+			t.Errorf("Put() of a document with a damaged summary = %v, want an error %q", err, want)
+		}
+
+		rebuild(t, s)
+		checkIndexState(t, s, before, ops...)
+		checkConsistent(t, s)
+	})
+}
+
+// injectDocument makes data the current version of the document of kind with id behind the back of the store, past its
+// index, as a document that another version of this program has written.
+func injectDocument(t *testing.T, s *Store, kind content.RefKind, id string, data []byte) {
+	t.Helper()
+	rawUpdate(t, s, func(tx *logdb.Tx) error {
+		sum, err := tx.PutObject(data)
+		if err != nil {
+			return err
+		}
+		last, _ := decodeUint(mustGet(tx, tableMeta, metaVersions))
+		seq := int64(last) + 1
+		version := appendVersion(seq, sum[:], testTime.UTC().Format(savedAtLayout), userID)
+		return errors.Join(
+			tx.Put(tableMeta, []byte(metaVersions), binary.AppendUvarint(nil, uint64(seq))),
+			tx.Put(tableHistory, historyKey(kind, id, seq), version),
+			tx.Put(tableDocuments, docKey(kind, id), version),
+		)
+	})
+}
+
+// injectRevision adds the revision id of the entry entry with data behind the back of the store, past its index.
+func injectRevision(t *testing.T, s *Store, entry, id string, data []byte) {
+	t.Helper()
+	rawUpdate(t, s, func(tx *logdb.Tx) error {
+		sum, err := tx.PutObject(data)
+		if err != nil {
+			return err
+		}
+		last, _ := decodeUint(mustGet(tx, tableMeta, metaRevisions))
+		seq := int64(last) + 1
+		value := appendRevision(seq, entry, sum, testTime.UTC().Format(savedAtLayout), userID)
+		return errors.Join(
+			tx.Put(tableMeta, []byte(metaRevisions), binary.AppendUvarint(nil, uint64(seq))),
+			tx.Put(tableRevisions, []byte(id), value),
+			tx.Put(tableEntryRevisions, entryKey(entry, seq), []byte(id)),
+		)
+	})
+}
+
+// mustGet returns the value of key in table, or nil.
+func mustGet(tx *logdb.Tx, table uint32, key string) []byte {
+	v, _ := tx.Get(table, []byte(key))
+	return v
+}
+
+// TestIndexUndecodable checks that documents and revisions that do not decode, as those that a later version of the
+// program has written, have no summary and no projection, make neither Put nor RebuildIndex fail, and are not in the
+// way of the other documents.
+func TestIndexUndecodable(t *testing.T) {
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		fillIndexStore(t, s)
+		later := `"schemaVersion": 2`
+		// An entry document, and the revision that an entry publishes, which do not decode.
+		injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{`+later+`, "id": "`+otherEntry+`"}`))
+		injectDocument(t, s, content.RefTerm, term2, []byte(`{`+later+`, "id": "`+term2+`", "parent": "`+termID+`"}`))
+		putAll(t, s, indexDoc{content.RefEntry, lateEntry, publishedEntry(lateEntry, 12, revision5)})
+		injectRevision(t, s, lateEntry, revision5, []byte(`{`+later+`, "featuredImage": "`+medium2+`"}`))
+
+		update(t, s, func(tx *Tx) error { return tx.RebuildIndex() })
+		checkConsistent(t, s)
+		view(t, s, func(tx *Tx) error {
+			checkNoSummary(t, tx, content.RefEntry, otherEntry)
+			checkNoSummary(t, tx, content.RefTerm, term2)
+			// The revision does not decode, so it is not projected; the JSON still says what it refers to.
+			checkSummary(t, tx, content.RefEntry, lateEntry, Summary{
+				Entry: &content.Entry{
+					ID: lateEntry, Number: 12, Status: content.StatusPublished, PublishedRevision: revision5,
+				},
+				Latest: revision5,
+			})
+			checkReferrers(t, tx, content.RefMedia, medium2, "entry "+entryID+" latest", "entry "+lateEntry+" latest")
+			// The term that does not decode refers to nothing in the index.
+			checkReferrers(t, tx, content.RefTerm, termID, "entry "+entryID+" published", "menu "+menuID+" document")
+			if docs, err := tx.Documents(content.RefTerm); err != nil || len(docs) != 2 {
+				t.Errorf("Documents() = %d documents, %v; want both terms", len(docs), err)
+			}
+			return nil
+		})
+
+		// Saving documents goes on, also those that have no summary or that publish the revision that does not decode.
+		update(t, s, func(tx *Tx) error {
+			for _, d := range []indexDoc{
+				{content.RefEntry, lateEntry, publishedEntry(lateEntry, 12, revision5)},
+				{content.RefEntry, lateEntry, publishedEntry(lateEntry, 13, revision5)},
+				{content.RefTerm, termID, docJSON(content.RefTerm, termID)},
+			} {
+				if _, err := tx.Put(d.kind, d.id, d.data, userID); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.AddRevision(otherEntry, revision4, revisionJSON(`"slug": "x"`), userID); err != nil {
+				return err
+			}
+			_, err := tx.Delete(content.RefEntry, otherEntry, userID)
+			return err
+		})
+		checkConsistent(t, s)
+		view(t, s, func(tx *Tx) error {
+			checkNoSummary(t, tx, content.RefEntry, otherEntry)
+			if n, err := tx.LastNumber(); err != nil || n != 13 {
+				t.Errorf("LastNumber() = %d, %v; want 13", n, err)
+			}
+			return nil
+		})
+	})
+}
+
+// TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
+// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 2 when its writer
+// opens it, once; and that a failure of that leaves the store as it was.
+func TestIndexUpgrade(t *testing.T) {
+	ops := []string{"op_A", "op_B"}
+	// toSchema1 removes the rows of the tables that the schema 2 has, and the number, and makes the schema 1.
+	toSchema1 := func(t *testing.T, s *Store) {
+		t.Helper()
+		rawUpdate(t, s, func(tx *logdb.Tx) error {
+			for _, table := range []uint32{tableSummaries, tableReferences, tableOperations} {
+				var keys [][]byte
+				tx.Scan(table, nil, func(key, _ []byte) bool {
+					keys = append(keys, bytes.Clone(key))
+					return true
+				})
+				for _, key := range keys {
+					if err := tx.Delete(table, key); err != nil {
+						return err
+					}
+				}
+			}
+			return errors.Join(tx.Delete(tableMeta, []byte(metaNumbers)),
+				tx.Put(tableMeta, []byte(metaSchema), []byte{1}))
+		})
+	}
+	schemaOf := func(t *testing.T, s *Store) uint64 {
+		t.Helper()
+		var version uint64
+		if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+			version, _ = decodeUint(mustGet(tx, tableMeta, metaSchema))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	seqOf := func(t *testing.T, s *Store) uint64 {
+		t.Helper()
+		var seq uint64
+		if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+			seq = tx.Seq()
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return seq
+	}
+
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		fillIndexStore(t, s)
+		// A document that does not decode has no summary in the index that the upgrade makes.
+		injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
+		want := readIndexState(t, s, ops...)
+		toSchema1(t, s)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+
+		// A reader reads everything but the index.
+		r, err := openLogReader(dir, tb.options())
+		if err != nil {
+			t.Fatalf("openLogReader() of a store of the schema 1 = %v", err)
+		}
+		view(t, r, func(tx *Tx) error {
+			if docs, err := tx.Documents(content.RefEntry); err != nil || len(docs) != 3 {
+				t.Errorf("Documents() of a store of the schema 1 = %d documents, %v; want 3", len(docs), err)
+			}
+			if rev, err := tx.Revision(revisionID); err != nil || rev.Entry != entryID {
+				t.Errorf("Revision() of a store of the schema 1 = %+v, %v", rev, err)
+			}
+			for name, err := range map[string]error{
+				"Summary":   func() error { _, err := tx.Summary(content.RefEntry, entryID); return err }(),
+				"Summaries": func() error { _, err := tx.Summaries(content.RefEntry); return err }(),
+				"Referrers": func() error { _, err := tx.Referrers(content.RefMedia, mediaID); return err }(),
+				"LastNumber": func() error {
+					_, err := tx.LastNumber()
+					return err
+				}(),
+			} {
+				if !errors.Is(err, ErrNoIndex) {
+					t.Errorf("%s() of a store of the schema 1 = %v, want ErrNoIndex", name, err)
+				}
+			}
+			return nil
+		})
+		if err := r.Close(); err != nil {
+			t.Fatalf("Close() of the reader = %v", err)
+		}
+
+		// Its writer builds the index in one commit, and sets the schema 2.
+		s = reopenLog(t, dir, *tb.log)
+		if v := schemaOf(t, s); v != 2 {
+			t.Errorf("the schema after Open() = %d, want 2", v)
+		}
+		checkConsistent(t, s)
+		checkIntegrity(t, s)
+		got := readIndexState(t, s, ops...)
+		if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number {
+			t.Errorf("the index after Open() differs from the one that the store had: %s; the last number %d, want %d",
+				problem, got.number, want.number)
+		}
+		if len(got.ops) != 0 {
+			t.Errorf("the operations after Open() = %q, want none: a store of the schema 1 has none", got.ops)
+		}
+		seq := seqOf(t, s)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		first := snapshot(t, dir)
+
+		// A second Open commits nothing, and changes no file but head, which every Open writes.
+		s = reopenLog(t, dir, *tb.log)
+		if v := schemaOf(t, s); v != 2 {
+			t.Errorf("the schema after a second Open() = %d, want 2", v)
+		}
+		if again := seqOf(t, s); again != seq {
+			t.Errorf("the last commit after a second Open() is %d, want %d, that of the first", again, seq)
+		}
+		checkConsistent(t, s)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		second := snapshot(t, dir)
+		delete(first, "logdb/head")
+		delete(second, "logdb/head")
+		if !maps.Equal(first, second) {
+			t.Errorf("a second Open() has changed the files of the store")
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
+		s, dir := newLogStore(t, o)
+		fillIndexStore(t, s)
+		toSchema1(t, s)
+		corruptObjects(t, s)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		var first string
+		for i := range 2 {
+			c, err := open(dir, logOpts(o))
+			if err == nil {
+				_ = c.Close()
+			}
+			// The second failure is the same: the first has released the lock.
+			switch {
+			case err == nil || !strings.HasPrefix(err.Error(), "object sha256:") ||
+				!strings.Contains(err.Error(), ": the data has the hash "):
+				t.Fatalf("open() of a store of the schema 1 with a changed object = %v, want an error of its hash", err)
+			case i == 0:
+				first = err.Error()
+			case err.Error() != first:
+				t.Errorf("the second open() = %v, want the error of the first, %v", err, first)
+			}
+		}
+		r, err := openLogReader(dir, logOpts(o))
+		if err != nil {
+			t.Fatalf("openLogReader() after the failures = %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		if v := schemaOf(t, r); v != 1 {
+			t.Errorf("the schema after the failed Open() = %d, want 1", v)
+		}
+		view(t, r, func(tx *Tx) error {
+			if _, err := tx.Summary(content.RefEntry, entryID); !errors.Is(err, ErrNoIndex) {
+				t.Errorf("Summary() = %v, want ErrNoIndex", err)
+			}
+			return nil
+		})
+	})
+}
+
+// TestRefsOf checks which strings of a JSON document are references.
+func TestRefsOf(t *testing.T) {
+	const tg = "tg_01JB8X4M7NB5D8F1H4J7K2M6P9"
+	quote := func(s string) string { return `"` + s + `"` }
+	array := func(ss ...string) string {
+		quoted := make([]string, len(ss))
+		for i, s := range ss {
+			quoted[i] = quote(s)
+		}
+		return "[" + strings.Join(quoted, ", ") + "]"
+	}
+	// "trm_" and the ULID, with the first letter written as an escape of JSON.
+	escaped := `"` + string(rune(92)) + "u0074" + termID[1:] + `"`
+	notIDs := array("ent_x", strings.ToLower(entryID), entryID+"0", entryID[:len(entryID)-1], "ent_8"+entryID[5:],
+		"ent_01JB8W2N5KD3F6H9J1M4P7R2TU", " "+entryID, "see "+entryID+" here", "", "ent_")
+	for _, tt := range []struct {
+		name string
+		json string
+		self string
+		want []string
+	}{
+		{"a string at the root", quote(termID), "", []string{termID}},
+		{"strings in an array", array(termID, entryID), "", []string{entryID, termID}},
+		{"strings in nested objects and arrays",
+			`{"a": {"b": [{"c": ` + quote(mediaID) + `}], "d": ` + quote(authorID) + `}, "e": ` + quote(formID) + `}`,
+			"", []string{authorID, formID, mediaID}},
+		{"the names of objects are not values", `{` + quote(termID) + `: "x", ` + quote(entryID) + `: 1}`, "", nil},
+		{"the value of a name that is an ID", `{` + quote(entryID) + `: ` + quote(termID) + `}`, "", []string{termID}},
+		{"the ID of the document itself", `{"id": ` + quote(entryID) + `, "parent": ` + quote(pageID) + `}`, entryID,
+			[]string{pageID}},
+		{"IDs of other kinds are not references", array(revisionID, userID, tg, menuID, redirectID, formID), "",
+			[]string{formID}},
+		{"strings that are not IDs", notIDs, "", nil},
+		{"duplicates once", `[` + quote(termID) + `, ` + quote(termID) + `, {"x": ` + quote(termID) + `}]`, "",
+			[]string{termID}},
+		{"values that are not strings", `[1, true, false, null, 1.5, ` + quote(termID) + `]`, "", []string{termID}},
+		{"a string with an escape", escaped, "", []string{termID}},
+		{"nothing", `{}`, "", nil},
+		{"nothing in an array", `[]`, "", nil},
+		{"deep", strings.Repeat("[", 100) + quote(termID) + strings.Repeat("]", 100), "", []string{termID}},
+		{"a revision with the entry as self",
+			`{"schemaVersion": 1, "parent": ` + quote(entryID) + `, "featuredImage": ` + quote(mediaID) + `}`, entryID,
+			[]string{mediaID}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := refsOf([]byte(tt.json), tt.self); !slices.Equal(got, tt.want) {
+				t.Errorf("refsOf(%s, %q) = %q, want %q", tt.json, tt.self, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOperations checks the operations that the store keeps for the save operations.
+func TestOperations(t *testing.T) {
+	long := "op_" + strings.Repeat("x", 253)
+	eachStore(t, func(t *testing.T, s *Store) {
+		view(t, s, func(tx *Tx) error {
+			if data, ok, err := tx.Operation("op_A"); data != nil || ok || err != nil {
+				t.Errorf("Operation() of an operation that is missing = %q, %v, %v; want none", data, ok, err)
+			}
+			return nil
+		})
+		update(t, s, func(tx *Tx) error {
+			for id, data := range map[string][]byte{"op_A": []byte("first"), "op_B": nil, long: []byte("long")} {
+				if err := tx.PutOperation(id, data); err != nil {
+					return err
+				}
+			}
+			// What the Update has put is there for the reads in it, as a copy.
+			data, ok, err := tx.Operation("op_A")
+			if err != nil || !ok || string(data) != "first" {
+				t.Errorf("Operation() in the Update = %q, %v, %v; want first", data, ok, err)
+			}
+			data[0] = 'X'
+			return nil
+		})
+		check := func(want map[string]string) {
+			t.Helper()
+			view(t, s, func(tx *Tx) error {
+				for id, wantData := range want {
+					data, ok, err := tx.Operation(id)
+					if err != nil || ok != (wantData != "-") || ok && string(data) != wantData {
+						t.Errorf("Operation(%.8q) = %q, %v, %v; want %q", id, data, ok, err, wantData)
+					}
+					if ok && data == nil {
+						t.Errorf("Operation(%.8q) has nil data, want data that are not nil", id)
+					}
+				}
+				return nil
+			})
+		}
+		check(map[string]string{"op_A": "first", "op_B": "", long: "long", "op_C": "-"})
+
+		// The data of an operation are replaced.
+		update(t, s, func(tx *Tx) error { return tx.PutOperation("op_A", []byte("second")) })
+		check(map[string]string{"op_A": "second", "op_B": "", long: "long"})
+
+		for _, tt := range []struct{ id, want string }{
+			{"", "invalid operation ID: it is empty"},
+			{long + "x", "invalid operation ID: it has 257 bytes (max 256)"},
+		} {
+			update(t, s, func(tx *Tx) error {
+				if err := tx.PutOperation(tt.id, []byte("x")); err == nil || err.Error() != tt.want {
+					t.Errorf("PutOperation(%.8q) = %v, want %q", tt.id, err, tt.want)
+				}
+				if _, _, err := tx.Operation(tt.id); err == nil || err.Error() != tt.want {
+					t.Errorf("Operation(%.8q) = %v, want %q", tt.id, err, tt.want)
+				}
+				return nil
+			})
+		}
+		view(t, s, func(tx *Tx) error {
+			if err := tx.PutOperation("op_C", nil); err == nil || err.Error() != "read-only transaction" {
+				t.Errorf("PutOperation() in a View = %v, want a read-only transaction", err)
+			}
+			return nil
+		})
+		check(map[string]string{"op_C": "-"})
+	})
+
+	// The operations stay when the store is closed and opened again.
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		update(t, s, func(tx *Tx) error { return tx.PutOperation("op_A", []byte("first")) })
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		s = reopenLog(t, dir, *tb.log)
+		if got := readIndexState(t, s, "op_A"); got.ops["op_A"] != "first" {
+			t.Errorf("the operations after open() = %q, want first", got.ops)
+		}
+	})
+}
+
+// TestIndexErrors checks the errors of the reads of the index for names that no document has.
+func TestIndexErrors(t *testing.T) {
+	const use = ` and a ULID (26 characters in upper case)`
+	eachStore(t, func(t *testing.T, s *Store) {
+		fillIndexStore(t, s)
+		view(t, s, func(tx *Tx) error {
+			for _, tt := range []struct {
+				call func() error
+				want string
+			}{
+				{func() error { _, err := tx.Summary("page", entryID); return err }, `unsupported kind "page"`},
+				{func() error { _, err := tx.Summary(content.RefRevision, revisionID); return err },
+					`unsupported kind "revision"`},
+				{func() error { _, err := tx.Summary(content.RefEntry, "ent_x"); return err },
+					`invalid entry ID "ent_x": use "ent_"` + use},
+				{func() error { _, err := tx.Summary(content.RefEntry, termID); return err },
+					`invalid entry ID "` + termID + `": use "ent_"` + use},
+				{func() error { _, err := tx.Summary(SettingsKind, entryID); return err },
+					`the settings document has no ID`},
+				{func() error { _, err := tx.Summary(content.RefEntry, otherEntry); return err },
+					`entries/` + otherEntry + `.json: not found`},
+				{func() error { _, err := tx.Summary(content.RefMedia, medium2); return err },
+					`media/` + medium2 + `.json: not found`},
+				{func() error { _, err := tx.Summaries("page"); return err }, `unsupported kind "page"`},
+				{func() error { _, err := tx.Summaries(""); return err }, `unsupported kind ""`},
+				{func() error { _, err := tx.Referrers("page", entryID); return err }, `unsupported kind "page"`},
+				{func() error { _, err := tx.Referrers(content.RefTerm, "trm_x"); return err },
+					`invalid term ID "trm_x": use "trm_"` + use},
+				{func() error { _, err := tx.Referrers(SettingsKind, entryID); return err },
+					`the settings document has no ID`},
+			} {
+				if err := tt.call(); err == nil || err.Error() != tt.want {
+					t.Errorf("error = %v, want %q", err, tt.want)
+				}
+			}
+			for _, call := range []func() error{
+				func() error { _, err := tx.Summary(content.RefEntry, otherEntry); return err },
+				func() error { _, err := tx.Summary(content.RefMedia, medium2); return err },
+			} {
+				if err := call(); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("error = %v, want an error that wraps fs.ErrNotExist", err)
+				}
+			}
+			// A medium that is deleted still has what refers to it, and an ID that nothing refers to has none.
+			checkReferrers(t, tx, content.RefMedia, medium2, "entry "+entryID+" latest")
+			checkReferrers(t, tx, content.RefTerm, "trm_01JE0000000000000000000099")
+			return nil
+		})
+	})
+}
+
+// TestDiffVariants checks that the data that the generator of the differential tests means to be valid decode, so that
+// it exercises the index: the data of diffIndexData for each document of their kinds, and those of diffRevisionData.
+func TestDiffVariants(t *testing.T) {
+	for _, k := range diffKinds {
+		for _, v := range diffIndexData[k.kind] {
+			for _, id := range k.ids {
+				if _, err := checkData(k.kind, id, v.data(id)); err != nil {
+					t.Errorf("%s of %q: %v", v.name, id, err)
+				}
+			}
+		}
+	}
+	for kind := range diffIndexData {
+		if !slices.ContainsFunc(diffKinds, func(k diffKind) bool { return k.kind == kind }) {
+			t.Errorf("diffIndexData has the kind %q, which the generator has no documents of", kind)
+		}
+	}
+	for _, v := range diffRevisionData {
+		if !v.valid {
+			continue
+		}
+		if _, err := decodeRevisionData(revisionID, v.data(revisionID)); err != nil {
+			t.Errorf("revision %s: %v", v.name, err)
+		}
+	}
+}
