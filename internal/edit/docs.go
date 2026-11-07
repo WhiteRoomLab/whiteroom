@@ -215,6 +215,14 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 // Save saves data, the JSON of the document of kind with id, as its next version. base is the Seq of the version that
 // the caller has read, which the store must still have as the current one: else the error wraps ErrConflict, and
 // nothing is saved. Saving what the store has saves nothing.
+//
+// If the save changes what the validation of other documents reads of this one (a term's taxonomy or language), what
+// refers to it is validated again as the build validates it (Q16-A). A problem that this brings to a document, or to a
+// published entry or its published revision, which the build validates, fails the save, located in the bytes that the
+// store has; one that it brings only to an entry that is not published, or to the latest revision of one that does not
+// publish it, is a warning. The problems that they had before are neither. A current version that this program cannot
+// decode has no summary, so lookup did not find the document before: its save is not an error, and what refers to it is
+// validated again as for a change of the Ref.
 func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id string, base int64, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -252,6 +260,15 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 		if err := r.validate(d, site, given); err != nil {
 			return Result{}, err
 		}
+		// What lookup tells of the document now, to tell after the save whether it has changed. A current version that this
+		// program cannot decode has no summary: lookup finds none, and the save, which makes one, is not an error.
+		var old *store.Summary
+		tracked := refHasFields(kind) && !bytes.Equal(stored, cur.Data)
+		if tracked {
+			if old, err = r.oldSummary(kind, id); err != nil {
+				return Result{}, err
+			}
+		}
 		v, err := r.tx.Put(kind, id, stored, r.by)
 		if err != nil {
 			return Result{}, err
@@ -259,6 +276,11 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 		res := Result{Kind: kind, ID: id, Version: v}
 		if v.Seq == cur.Seq {
 			return res, nil
+		}
+		if tracked {
+			if res.Warnings, err = r.checkRefChange(site, kind, id, old); err != nil {
+				return Result{}, err
+			}
 		}
 		after, err := r.model(site, settings)
 		if err != nil {
@@ -275,25 +297,9 @@ const maxListed = 10
 // does, the error is that it cannot be deleted, which names their files. Otherwise the warnings are those for the
 // entries whose last revision, which is not published, refers to it.
 func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
-	refs, err := r.rd.Referrers(kind, id)
+	sources, err := r.referrers(kind, id)
 	if err != nil {
 		return nil, err
-	}
-	type source struct {
-		kind content.RefKind
-		id   string
-	}
-	roles := make(map[source][]store.Role)
-	var sources []source
-	for _, ref := range refs {
-		s := source{ref.Kind, ref.ID}
-		if s.kind == kind && s.id == id {
-			continue
-		}
-		if _, ok := roles[s]; !ok {
-			sources = append(sources, s)
-		}
-		roles[s] = append(roles[s], ref.Role)
 	}
 	name := docName(kind, id)
 	var files []string
@@ -306,10 +312,10 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 			}
 		}
 		used := false
-		if slices.Contains(roles[s], store.RoleDocument) {
+		if slices.Contains(s.roles, store.RoleDocument) {
 			files, used = append(files, docName(s.kind, s.id)), true
 		}
-		if slices.Contains(roles[s], store.RolePublished) && entry.Entry != nil {
+		if slices.Contains(s.roles, store.RolePublished) && entry.Entry != nil {
 			files, used = append(files, revisionName(entry.Entry.PublishedRevision)), true
 		}
 		if !used && entry.Entry != nil {
@@ -391,6 +397,11 @@ func (d *settingsDoc) marshal() ([]byte, error) { return d.site.MarshalSettings(
 // SaveSettings saves data, the JSON of the settings document, as its next version, or as its first if the store has
 // none, which base 0 says; else base is the Seq of the version that the caller has read (as in Save). The settings are
 // validated with the schema file and with what the store has.
+//
+// What the build validates of every other document reads the settings, so a save that changes them validates again every
+// document of every kind, every published revision and the latest revision of every entry (Q16-A), which takes a time
+// that grows with the site. The problems that this brings fail the save and the warnings are in the result, as for Save.
+// If the settings that it replaces do not load, every problem is new.
 func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -398,12 +409,13 @@ func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byt
 	q := request{name: "saveSettings", params: []string{strconv.FormatInt(base, 10)}, data: data}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		var cur int64
+		var curData []byte
 		switch d, err := r.tx.Document(store.SettingsKind, ""); {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
 			return Result{}, err
 		default:
-			cur = d.Seq
+			cur, curData = d.Seq, d.Data
 		}
 		if cur != base {
 			return Result{}, conflict(settingsName, cur, base)
@@ -433,6 +445,16 @@ func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byt
 		res := Result{Kind: store.SettingsKind, Version: v}
 		if v.Seq == cur {
 			return res, nil
+		}
+		// The settings that it replaces make the site before the change, which the Put did not change what lookup tells of.
+		var old *content.Site
+		if cur != 0 {
+			if old, err = r.savedSite(curData); err != nil {
+				return Result{}, err
+			}
+		}
+		if res.Warnings, err = r.checkSettingsChange(site, old); err != nil {
+			return Result{}, err
 		}
 		after, err := r.model(site, file)
 		if err != nil {

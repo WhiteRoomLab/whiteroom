@@ -72,15 +72,21 @@ func (r *run) lookup(kind content.RefKind, id string) (content.Ref, bool) {
 		r.err = err
 		return content.Ref{}, false
 	}
+	return refOf(s), true
+}
+
+// refOf returns what lookup tells about the entity whose summary is s: the type and the language of an entry, the
+// taxonomy and the language of a term, the kind of a medium.
+func refOf(s store.Summary) content.Ref {
 	switch {
 	case s.Entry != nil:
-		return content.Ref{Type: s.Entry.Type, Language: s.Entry.Language}, true
+		return content.Ref{Type: s.Entry.Type, Language: s.Entry.Language}
 	case s.Term != nil:
-		return content.Ref{Type: s.Term.Taxonomy, Language: s.Term.Language}, true
+		return content.Ref{Type: s.Term.Taxonomy, Language: s.Term.Language}
 	case s.Media != nil:
-		return content.Ref{Type: content.MediaKind(s.Media.MIMEType)}, true
+		return content.Ref{Type: content.MediaKind(s.Media.MIMEType)}
 	}
-	return content.Ref{}, true
+	return content.Ref{}
 }
 
 // noSettingsError is the error of an operation on a store that has no settings document.

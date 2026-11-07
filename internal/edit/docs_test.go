@@ -907,8 +907,9 @@ func TestCreateLocated(t *testing.T) {
 func TestBrokenSchema(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
-	// With this schema, the URL rule of the pages ends with ".html", which the stored settings do not allow with a posts page.
-	ed.schema.Data = []byte("schemaVersion: 1\ntypes:\n  page:\n    url: /{path}.html\n")
+	// With this schema, which keeps the types and the taxonomies of the sample, the URL rule of the pages ends with ".html",
+	// which the stored settings do not allow with a posts page.
+	ed.schema.Data = []byte(replaceOnce(t, string(ed.schema.Data), "types:\n", "types:\n  page:\n    url: /{path}.html\n"))
 	before := snapshot(t, s)
 	_, err := ed.Create(t.Context(), op, content.RefRedirect, []byte(redirectJSON("/old-contact/", "/contact/")))
 	orig := string(sampleFile(t, settingsName))
@@ -918,8 +919,8 @@ func TestBrokenSchema(t *testing.T) {
 		t.Errorf("Create() = %v, want the error %q and no change", err, want)
 	}
 
-	// The settings are saved with the schema file too. They are valid without the posts page, but the site has a problem
-	// that the settings before them cannot be compared with, so it is new.
+	// The settings are saved with the schema file too. They are valid without the posts page, and so is every document as
+	// it validates under them, but the site has a problem that the settings before them cannot be compared with, so it is new.
 	dup := testID(content.RefTerm, 1)
 	put(t, s, content.RefTerm, dup, `{"schemaVersion": 1, "id": "`+dup+`", "taxonomy": "category", "language": "ja", "translationGroup": "`+
 		testID(content.RefTranslationGroup, 1)+`", "name": "お知らせ2", "slug": "news"}`)

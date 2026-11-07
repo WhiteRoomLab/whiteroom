@@ -92,7 +92,14 @@ func newSample(t *testing.T) (*Editor, *store.Store) {
 // s: the revisions after the entries that publish them.
 func putSample(t *testing.T, s *store.Store) {
 	t.Helper()
-	d, err := sitedir.Open(sampleDir)
+	putSite(t, s, sampleDir)
+}
+
+// putSite puts the site directory dir into s as putSample does: the settings, every document, the revisions that entries
+// publish after their entries, and the originals if it has files/.
+func putSite(t *testing.T, s *store.Store, dir string) {
+	t.Helper()
+	d, err := sitedir.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,12 +148,15 @@ func putSample(t *testing.T, s *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := os.ReadDir(filepath.Join(sampleDir, "files"))
+	files, err := os.ReadDir(filepath.Join(dir, "files"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		r, err := os.Open(filepath.Join(sampleDir, "files", f.Name()))
+		r, err := os.Open(filepath.Join(dir, "files", f.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -1,6 +1,6 @@
 // Package edit saves the documents of a site in a store as the admin screen does (6.7): it normalizes and validates
-// them, checks them across the site as the build does (internal/siteplan), and updates the store and its index in one
-// Update.
+// them, validates again the documents that a change makes invalid without changing them, checks them across the site as
+// the build does (internal/siteplan), and updates the store and its index in one Update.
 package edit
 
 import (
