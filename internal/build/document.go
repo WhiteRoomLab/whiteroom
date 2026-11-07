@@ -15,10 +15,15 @@ import (
 // "/fields/spec/note", as entryData takes them, and the CSS that they need. The body and the blocks fields are one
 // document (6.5.1): the body, then the blocks fields in the order of their definitions, depth first into groups and
 // lists. The CSS has the rules of that document, then those of the richText fields in the same order. The warnings go
-// to b.warnings at their places in the revision. The error is that of executing a block template, after the name of
-// the file of the revision.
+// to b.warnings at their places in the revision. It reads the body again from the file of the revision
+// (revisionBody). The error is that of reading the body, or of executing a block template, after the name of the file
+// of the revision.
 func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]template.HTML, render.CSS, error) {
-	f := entryFields{blocks: []content.Blocks{d.rev.Body}, blockPaths: []string{"/body"}}
+	body, err := revisionBody(d.revFile)
+	if err != nil {
+		return nil, render.CSS{}, err
+	}
+	f := entryFields{blocks: []content.Blocks{body}, blockPaths: []string{"/body"}}
 	f.fields(b.site.Type(d.e.Type).Fields, d.rev.Fields, "/fields")
 	htmls, css, warnings, err := r.Document(f.blocks...)
 	if err != nil {
@@ -40,6 +45,16 @@ func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]templ
 		}
 	}
 	return html, css, nil
+}
+
+// revisionBody returns the body of the revision in f, which validateEntry has decoded without an error and then let go
+// of (entryDoc.rev has no body). The error has the name of f.
+func revisionBody(f content.SiteFile) (content.Blocks, error) {
+	var rev content.Revision
+	if err := rev.UnmarshalJSON(f.Data); err != nil {
+		return nil, fmt.Errorf("%s: %w", f.Name, err)
+	}
+	return rev.Body, nil
 }
 
 // entryFields collects the values of the blocks and the richText fields of a revision with their JSON Pointers, in the

@@ -23,7 +23,8 @@ type entryDoc struct {
 	file    content.SiteFile
 	e       content.Entry
 	revFile content.SiteFile
-	rev     *content.Revision // nil unless e is published and the revision is valid
+	rev     *content.Revision // nil unless e is published and the revision is valid; without its Body (revisionBody)
+	excerpt string            // the excerpt of rev (excerpt)
 }
 
 // builder holds what the build has read of a site and found out about it. The documents are by ID.

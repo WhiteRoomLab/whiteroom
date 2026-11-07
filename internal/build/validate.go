@@ -29,7 +29,8 @@ func (b *builder) validate(p *problems) error {
 	return nil
 }
 
-// validateEntry checks d, a published entry, and then reads and checks its revision, which d gets if it is valid.
+// validateEntry checks d, a published entry, and then reads and checks its revision, which d gets if it is valid, with
+// its excerpt and without its body.
 func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 	if err := d.e.Validate(b.site); err != nil {
 		p.addErr(d.file, err)
@@ -53,6 +54,9 @@ func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 		p.addErr(f, err)
 		return nil
 	}
+	d.excerpt = excerpt(&rev)
+	// The bodies are most of what a large site keeps in memory; renderEntry decodes the body again from f.
+	rev.Body = nil
 	d.revFile, d.rev = f, &rev
 	return nil
 }

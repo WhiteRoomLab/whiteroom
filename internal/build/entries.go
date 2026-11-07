@@ -18,7 +18,7 @@ func (b *builder) entryData(d *entryDoc, r *render.Renderer, html map[string]tem
 		Type:    d.e.Type,
 		Title:   rev.Title,
 		URL:     r.URL(b.entryPaths[d.e.ID]),
-		Excerpt: excerpt(rev),
+		Excerpt: d.excerpt,
 		Terms:   make(map[string][]TermLink, len(t.Taxonomies)),
 		Sticky:  rev.Sticky,
 		Body:    html["/body"],

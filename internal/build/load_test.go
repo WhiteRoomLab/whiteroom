@@ -49,6 +49,7 @@ func TestLoad(t *testing.T) {
 	src := testSource(t)
 	jaPosts := src.addPosts(t, "ja", 11)
 	enPosts := src.addPosts(t, "en", 11)
+	src.editRevision(t, servicesID, func(r *content.Revision) { r.Excerpt = "手書きの抜粋です。" })
 	b := mustLoad(t, src)
 	if n := b.warnings.len(); n != 0 {
 		t.Errorf("load() made %d warnings:\n%v", n, b.warnings.sorted())
@@ -123,6 +124,11 @@ func TestLoad(t *testing.T) {
 		revisions = append(revisions, revisionID(id))
 		if b.published(id) != d || d.rev == nil || d.revFile.Name != "revisions/"+revisionID(id)+".json" {
 			t.Errorf("the published entry %s has the revision %+v in %q", id, d.rev, d.revFile.Name)
+			continue
+		}
+		if body, err := revisionBody(d.revFile); d.rev.Body != nil || len(body) == 0 || err != nil {
+			t.Errorf("the published entry %s keeps %d blocks of its body, and revisionBody() returns %d blocks, %v",
+				id, len(d.rev.Body), len(body), err)
 		}
 	}
 	if got, want := slices.Sorted(slices.Values(src.read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
@@ -133,6 +139,14 @@ func TestLoad(t *testing.T) {
 	}
 	if d := b.published(postID); d == nil || d.rev.Slug != "新サービス" || d.e.Number != 123 {
 		t.Errorf("the post of 6.11.9 has %+v", d)
+	}
+	for _, tt := range []struct{ id, want string }{
+		{postID, "Webサイトの更新と運用をお手伝いするサービスです。"},
+		{servicesID, "手書きの抜粋です。"},
+	} {
+		if got := b.published(tt.id).excerpt; got != tt.want {
+			t.Errorf("the excerpt of %s is %q, want %q", tt.id, got, tt.want)
+		}
 	}
 	media := []string{imageID, pdfID, avatarID, logoID, iconID, ogImageID}
 	if got, want := slices.Sorted(maps.Keys(b.media)), slices.Sorted(slices.Values(media)); !slices.Equal(got, want) {
@@ -286,8 +300,13 @@ func TestLoadImport(t *testing.T) {
 		)
 	})
 	b := mustLoad(t, src)
-	if r := b.published(aboutID).rev; len(r.Body) != 7 || r.Template != "standard" {
-		t.Errorf("the about page has the revision %+v", r)
+	d := b.published(aboutID)
+	body, err := revisionBody(d.revFile)
+	if err != nil {
+		t.Fatalf("revisionBody() of the about page: %v", err)
+	}
+	if r := d.rev; len(body) != 7 || r.Body != nil || r.Template != "standard" {
+		t.Errorf("the about page has the revision %+v and the body of %d blocks read again", r, len(body))
 	}
 }
 
