@@ -13,6 +13,15 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 )
 
+// afterStage, if not nil, is called with the name of each stage of a build when it has ended; for the memory tests.
+var afterStage func(stage string)
+
+func stageEnded(stage string) {
+	if afterStage != nil {
+		afterStage(stage)
+	}
+}
+
 // Options are the options of Build.
 type Options struct {
 	Source Source // the site to build
@@ -121,6 +130,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	stageEnded("checked")
 
 	tmp, rel, err := newRelease(root)
 	if err != nil {
@@ -133,6 +143,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	changed := false
 	if err == nil {
+		stageEnded("named")
 		changed, err = publish(root, tmp, name, l.current)
 	}
 	if err != nil {
@@ -171,18 +182,22 @@ func (b *builder) writeRelease(ctx context.Context, rel *os.Root, workers int, p
 	if err := b.renderPages(ctx, pub, workers); err != nil {
 		return fail("rendering the pages", err)
 	}
+	stageEnded("pages")
 	if err := b.writeFeeds(ctx, pub); err != nil {
 		return fail("writing the feeds", err)
 	}
+	stageEnded("feeds")
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
 	if err := b.writeSitemap(pub); err != nil {
 		return fail("writing the sitemap", err)
 	}
+	stageEnded("sitemap")
 	if err := b.publishMedia(ctx, pub, workers, p); err != nil {
 		return fail("publishing the media", err)
 	}
+	stageEnded("media")
 	if p.len() == 0 {
 		b.checkPaths(p)
 	}
@@ -195,6 +210,7 @@ func (b *builder) writeRelease(ctx context.Context, rel *os.Root, workers int, p
 	if err := b.writeServerFiles(rel); err != nil {
 		return fail("writing the files for the servers", err)
 	}
+	stageEnded("servers")
 	return releaseName(ctx, rel, workers)
 }
 

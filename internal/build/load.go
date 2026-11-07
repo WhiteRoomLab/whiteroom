@@ -103,6 +103,7 @@ func load(src Source) (*builder, error) {
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
+	stageEnded("validated")
 	b.checkAcross(&p)
 	if p.len() > 0 {
 		return nil, p.sorted()
@@ -111,6 +112,7 @@ func load(src Source) (*builder, error) {
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
+	stageEnded("planned")
 	return b, nil
 }
 
