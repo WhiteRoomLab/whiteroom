@@ -1,6 +1,7 @@
 package build
 
 import (
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"maps"
@@ -29,8 +30,8 @@ func (b *builder) validate(p *problems) error {
 	return nil
 }
 
-// validateEntry checks d, a published entry, and then reads and checks its revision, which d gets if it is valid, with
-// its excerpt and without its body.
+// validateEntry checks d, a published entry, and then reads and checks its revision, which d gets if it is valid: with
+// its excerpt, without its body, and with the name and the SHA-256 of its file but not its data.
 func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 	if err := d.e.Validate(b.site); err != nil {
 		p.addErr(d.file, err)
@@ -55,9 +56,10 @@ func (b *builder) validateEntry(d *entryDoc, p *problems) error {
 		return nil
 	}
 	d.excerpt = excerpt(&rev)
-	// The bodies are most of what a large site keeps in memory; renderEntry decodes the body again from f.
+	// The files and their bodies are most of what a large site keeps in memory; renderEntry reads the file again.
 	rev.Body = nil
-	d.revFile, d.rev = f, &rev
+	d.revSum, d.revFile, d.rev = sha256.Sum256(f.Data), content.SiteFile{Name: f.Name}, &rev
+	b.revisions[f.Name] = d
 	return nil
 }
 

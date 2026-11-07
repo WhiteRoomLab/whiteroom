@@ -1,9 +1,11 @@
 package build
 
 import (
+	"crypto/sha256"
 	"encoding/json/jsontext"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"strconv"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -15,11 +17,16 @@ import (
 // "/fields/spec/note", as entryData takes them, and the CSS that they need. The body and the blocks fields are one
 // document (6.5.1): the body, then the blocks fields in the order of their definitions, depth first into groups and
 // lists. The CSS has the rules of that document, then those of the richText fields in the same order. The warnings go
-// to b.warnings at their places in the revision. It reads the body again from the file of the revision
-// (revisionBody). The error is that of reading the body, or of executing a block template, after the name of the file
-// of the revision.
+// to b.warnings at their places in the revision, whose file they have by its name alone (problems.sorted locates
+// them). It reads the file of the revision again (revisionFile) and decodes its body (revisionBody). The error is that
+// of revisionFile, or, after the name of the file of the revision, of decoding the body or of executing a block
+// template.
 func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]template.HTML, render.CSS, error) {
-	body, err := revisionBody(d.revFile)
+	file, err := b.revisionFile(d)
+	if err != nil {
+		return nil, render.CSS{}, err
+	}
+	body, err := revisionBody(file)
 	if err != nil {
 		return nil, render.CSS{}, err
 	}
@@ -47,8 +54,32 @@ func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]templ
 	return html, css, nil
 }
 
+// revisionFile reads the revision of d, a published entry with a valid revision, again from b.src. The error is that of
+// b.src as it is or, if the file is not the one that validateEntry checked, that it has changed.
+func (b *builder) revisionFile(d *entryDoc) (content.SiteFile, error) {
+	f, err := b.src.Revision(d.e.PublishedRevision)
+	if err != nil {
+		return content.SiteFile{}, err
+	}
+	if sha256.Sum256(f.Data) != d.revSum {
+		return content.SiteFile{}, fmt.Errorf("%s: changed during the build", d.revFile.Name)
+	}
+	return f, nil
+}
+
+// revisionData returns the data of the revision file name, as revisionFile reads it again. It is the read of the
+// problems of the build, which locate those in a revision by the name of its file.
+func (b *builder) revisionData(name string) ([]byte, error) {
+	d := b.revisions[name]
+	if d == nil {
+		return nil, fmt.Errorf("%s: %w", name, fs.ErrNotExist)
+	}
+	f, err := b.revisionFile(d)
+	return f.Data, err
+}
+
 // revisionBody returns the body of the revision in f, which validateEntry has decoded without an error and then let go
-// of (entryDoc.rev has no body). The error has the name of f.
+// of (entryDoc.rev has no body), as revisionFile returns it. The error has the name of f.
 func revisionBody(f content.SiteFile) (content.Blocks, error) {
 	var rev content.Revision
 	if err := rev.UnmarshalJSON(f.Data); err != nil {

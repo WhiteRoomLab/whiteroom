@@ -17,7 +17,10 @@ type Source interface {
 	Settings() (settings, schema content.SiteFile, err error)
 	// Documents returns the documents of kind (entries, terms, media, authors, menus, forms or redirects) by ID.
 	Documents(kind content.RefKind) (map[string]content.SiteFile, error)
-	// Revision returns the revision whose ID is id; if there is none, the error wraps fs.ErrNotExist.
+	// Revision returns the revision whose ID is id; if there is none, the error wraps fs.ErrNotExist. The build reads a
+	// revision that it publishes more than once, also at the same time: to validate it, to render its pages and to
+	// locate its problems. A revision does not change, so Revision returns the same file for an id; the build fails if
+	// a revision has changed since it validated it.
 	Revision(id string) (content.SiteFile, error)
 	// OpenMedia opens the original of the medium whose Hash is hash; if there is none, the error wraps fs.ErrNotExist.
 	OpenMedia(hash string) (fs.File, error)

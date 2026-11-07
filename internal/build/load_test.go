@@ -1,6 +1,8 @@
 package build
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -51,6 +53,7 @@ func TestLoad(t *testing.T) {
 	enPosts := src.addPosts(t, "en", 11)
 	src.editRevision(t, servicesID, func(r *content.Revision) { r.Excerpt = "手書きの抜粋です。" })
 	b := mustLoad(t, src)
+	read := slices.Clone(src.read)
 	if n := b.warnings.len(); n != 0 {
 		t.Errorf("load() made %d warnings:\n%v", n, b.warnings.sorted())
 	}
@@ -126,13 +129,28 @@ func TestLoad(t *testing.T) {
 			t.Errorf("the published entry %s has the revision %+v in %q", id, d.rev, d.revFile.Name)
 			continue
 		}
-		if body, err := revisionBody(d.revFile); d.rev.Body != nil || len(body) == 0 || err != nil {
+		want := src.revisions[revisionID(id)].Data
+		if sum := sha256.Sum256(want); d.revFile.Data != nil || d.revSum != sum {
+			t.Errorf("the published entry %s keeps %d bytes of its revision file, with the SHA-256 %x, want none, with %x",
+				id, len(d.revFile.Data), d.revSum, sum)
+		}
+		if b.revisions[d.revFile.Name] != d {
+			t.Errorf("the revision file %s is not that of the published entry %s by name", d.revFile.Name, id)
+		}
+		f, err := b.revisionFile(d)
+		if err != nil || !bytes.Equal(f.Data, want) {
+			t.Errorf("revisionFile() of %s = %q, %v; want the file of the source", id, f.Data, err)
+		}
+		if body, err := revisionBody(f); d.rev.Body != nil || len(body) == 0 || err != nil {
 			t.Errorf("the published entry %s keeps %d blocks of its body, and revisionBody() returns %d blocks, %v",
 				id, len(d.rev.Body), len(body), err)
 		}
 	}
-	if got, want := slices.Sorted(slices.Values(src.read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
+	if got, want := slices.Sorted(slices.Values(read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
 		t.Errorf("load() read the revisions %q, want %q", got, want)
+	}
+	if got := len(b.revisions); got != len(revisions) {
+		t.Errorf("load() has %d revisions by name, want %d", got, len(revisions))
 	}
 	if d := b.published(jaPosts[0]); d == nil || d.rev.Slug != "post-1001" || d.rev.Date != "2026-09-01T09:00:00+09:00" {
 		t.Errorf("the first post added has %+v", d)
@@ -301,7 +319,11 @@ func TestLoadImport(t *testing.T) {
 	})
 	b := mustLoad(t, src)
 	d := b.published(aboutID)
-	body, err := revisionBody(d.revFile)
+	f, err := b.revisionFile(d)
+	if err != nil {
+		t.Fatalf("revisionFile() of the about page: %v", err)
+	}
+	body, err := revisionBody(f)
 	if err != nil {
 		t.Fatalf("revisionBody() of the about page: %v", err)
 	}

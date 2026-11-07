@@ -17,6 +17,7 @@ type problems struct {
 	n       int
 	files   map[string]*fileProblems // the problems to locate, by the name of their file
 	located content.Errors
+	read    func(name string) ([]byte, error) // reads a file that was added by its name alone, to locate its problems
 }
 
 type fileProblems struct {
@@ -30,7 +31,7 @@ func (p *problems) add(f content.SiteFile, path, format string, args ...any) {
 }
 
 // addErr adds the problems in err, if any, which are about f: those of content.Errors or a *content.Error at their
-// paths, or else err at the root.
+// paths, or else err at the root. If f has no Data, they are located with p.read when they are sorted.
 func (p *problems) addErr(f content.SiteFile, err error) {
 	es := errorsOf(err)
 	if len(es) == 0 {
@@ -42,9 +43,12 @@ func (p *problems) addErr(f content.SiteFile, err error) {
 		p.files = make(map[string]*fileProblems)
 	}
 	fp := p.files[f.Name]
-	if fp == nil {
+	switch {
+	case fp == nil:
 		fp = &fileProblems{file: f}
 		p.files[f.Name] = fp
+	case fp.file.Data == nil: // so that a file with its Data is not read again
+		fp.file = f
 	}
 	fp.errs = append(fp.errs, es...)
 	p.n += len(es)
@@ -66,13 +70,20 @@ func (p *problems) len() int {
 }
 
 // sorted returns the problems, located in their files, sorted by file, line, column, path and message, without
-// duplicates.
+// duplicates. The files without Data are read with p.read, one at a time; if that fails, their problems have no
+// position.
 func (p *problems) sorted() content.Errors {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	es := slices.Clone(p.located)
 	for _, fp := range p.files {
-		es = append(es, content.LocateErrors(fp.errs, fp.file)...)
+		f := fp.file
+		if f.Data == nil && p.read != nil {
+			if data, err := p.read(f.Name); err == nil {
+				f.Data = data
+			}
+		}
+		es = append(es, content.LocateErrors(fp.errs, f)...)
 	}
 	slices.SortFunc(es, compareErrors)
 	return slices.CompactFunc(es, func(a, b *content.Error) bool { return *a == *b })

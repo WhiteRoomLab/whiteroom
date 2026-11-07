@@ -324,6 +324,104 @@ func TestBuildErrors(t *testing.T) {
 	}
 }
 
+// TestBuildReadsRevisions checks that a build reads each published revision again to render it, after it has read it to
+// validate it, and no other revision.
+func TestBuildReadsRevisions(t *testing.T) {
+	src := buildSource(t)
+	src.addPosts(t, "ja", 3)
+	mustBuild(t, src, t.TempDir(), t.TempDir(), 4)
+	reads := make(map[string]int)
+	for _, id := range src.read {
+		reads[id]++
+	}
+	published := 0
+	for id, f := range src.docs[content.RefEntry] {
+		var e content.Entry
+		if err := e.UnmarshalJSON(f.Data); err != nil {
+			t.Fatalf("decoding the entry %s: %v", id, err)
+		}
+		if e.Status != content.StatusPublished {
+			continue
+		}
+		published++
+		if n := reads[e.PublishedRevision]; n < 2 {
+			t.Errorf("Build() read the revision %s of the published entry %s %d times, want at least 2",
+				e.PublishedRevision, id, n)
+		}
+	}
+	if len(reads) != published {
+		t.Errorf("Build() read %d revisions, want the %d of the published entries", len(reads), published)
+	}
+}
+
+// rereadSource is a Source that returns, for the revision id, the file that it has from the second time that it is
+// read, or err; the first time, which is that of validating it, it returns the file of Source.
+type rereadSource struct {
+	Source
+	id    string
+	file  content.SiteFile
+	err   error
+	mu    sync.Mutex
+	reads int
+}
+
+func (s *rereadSource) Revision(id string) (content.SiteFile, error) {
+	f, err := s.Source.Revision(id)
+	if err != nil || id != s.id {
+		return f, err
+	}
+	s.mu.Lock()
+	s.reads++
+	again := s.reads > 1
+	s.mu.Unlock()
+	switch {
+	case !again:
+		return f, nil
+	case s.err != nil:
+		return content.SiteFile{}, s.err
+	}
+	return s.file, nil
+}
+
+// TestBuildRevisionChanged checks that a build fails if a revision that it has validated is not the same when it reads
+// it again to render it, or cannot be read, and leaves the output directory as it was, with no temporary directory.
+func TestBuildRevisionChanged(t *testing.T) {
+	failure := errors.New("disk failure")
+	changed := buildSource(t)
+	changed.editRevision(t, aboutID, func(r *content.Revision) { r.Title = "会社案内" })
+	for _, tt := range []struct {
+		what string
+		file content.SiteFile
+		err  error
+		want string
+	}{
+		{
+			what: "a revision that has changed",
+			file: changed.revisions[revisionID(aboutID)],
+			want: "rendering the pages: " + revisionFile(aboutID) + ": changed during the build",
+		},
+		{
+			what: "a revision that cannot be read again",
+			err:  failure,
+			want: "rendering the pages: " + failure.Error(),
+		},
+	} {
+		src := buildSource(t)
+		out, cache := t.TempDir(), t.TempDir()
+		mustBuild(t, src, out, cache, 4)
+		before := tree(t, out)
+		reread := &rereadSource{Source: src, id: revisionID(aboutID), file: tt.file, err: tt.err}
+		res, err := Build(t.Context(), buildOptions(reread, out, cache, 4))
+		switch {
+		case res != nil || err == nil || err.Error() != tt.want:
+			t.Errorf("%s: Build() = %+v, %v\nwant the error:\n%s", tt.what, res, err, tt.want)
+		case tt.err != nil && !errors.Is(err, tt.err):
+			t.Errorf("%s: Build() = %v, want an error that wraps %v", tt.what, err, tt.err)
+		}
+		checkTree(t, tt.what, out, before)
+	}
+}
+
 // TestBuildForeign checks that a build refuses an output directory that holds what the build has not made, and leaves
 // it as it is, without a lock file.
 func TestBuildForeign(t *testing.T) {

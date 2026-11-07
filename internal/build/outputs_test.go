@@ -358,7 +358,7 @@ func TestCheckPaths(t *testing.T) {
 			b := mustLoad(t, src)
 			mustResolve(t, b)
 			outputs := slices.Clone(b.outputs)
-			var p problems
+			p := problems{read: b.revisionData}
 			b.checkPaths(&p)
 			var got []string
 			if p.len() > 0 {

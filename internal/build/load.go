@@ -1,6 +1,7 @@
 package build
 
 import (
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"maps"
@@ -22,7 +23,8 @@ type doc[T any] struct {
 type entryDoc struct {
 	file    content.SiteFile
 	e       content.Entry
-	revFile content.SiteFile
+	revFile content.SiteFile  // once the revision is valid, its Name alone; revisionFile reads the file again
+	revSum  [sha256.Size]byte // the SHA-256 of the file that was valid
 	rev     *content.Revision // nil unless e is published and the revision is valid; without its Body (revisionBody)
 	excerpt string            // the excerpt of rev (excerpt)
 }
@@ -35,6 +37,7 @@ type builder struct {
 	theme            *theme.Theme
 
 	entries   map[string]*entryDoc
+	revisions map[string]*entryDoc // the published entries with a valid revision, by the names of their revision files
 	terms     map[string]*doc[content.Term]
 	media     map[string]*doc[content.Media]
 	authors   map[string]*doc[content.AuthorProfile]
@@ -75,6 +78,7 @@ var kinds = []content.RefKind{
 // the documents; planning the pages and the other outputs. The error is content.Errors, or an error of src as it is.
 func load(src Source) (*builder, error) {
 	b := &builder{src: src}
+	b.warnings.read = b.revisionData
 	var err error
 	if b.settings, b.schema, err = src.Settings(); err != nil {
 		return nil, err
@@ -90,7 +94,7 @@ func load(src Source) (*builder, error) {
 		return nil, err
 	}
 
-	var p problems
+	p := problems{read: b.revisionData}
 	b.decode(files, &p)
 	if p.len() > 0 {
 		return nil, p.sorted()
@@ -121,6 +125,7 @@ func load(src Source) (*builder, error) {
 func (b *builder) decode(files map[content.RefKind]map[string]content.SiteFile, p *problems) {
 	entries := decodeDocs(p, files[content.RefEntry], func(e *content.Entry) string { return e.ID })
 	b.entries = make(map[string]*entryDoc, len(entries))
+	b.revisions = make(map[string]*entryDoc, len(entries))
 	for id, d := range entries {
 		b.entries[id] = &entryDoc{file: d.file, e: d.v}
 	}
