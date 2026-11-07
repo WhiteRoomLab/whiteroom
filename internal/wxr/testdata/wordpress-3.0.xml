@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- A sample in the shape of a WordPress 3.0 export, written by hand for the tests of internal/wxr. -->
+<!-- generator="wordpress/3.0" created="2010-07-01 10:00" -->
+<rss version="2.0"
+	xmlns:excerpt="http://wordpress.org/export/1.0/excerpt/"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:wp="http://wordpress.org/export/1.0/"
+>
+
+<channel>
+	<title>Old Notes</title>
+	<link>http://notes.example.com</link>
+	<description>Written a long time ago</description>
+	<pubDate>Thu, 01 Jul 2010 10:00:00 +0000</pubDate>
+	<generator>http://wordpress.org/?v=3.0</generator>
+	<language>en</language>
+	<wp:wxr_version>1.0</wp:wxr_version>
+	<wp:base_site_url>http://notes.example.com</wp:base_site_url>
+	<wp:base_blog_url>http://notes.example.com</wp:base_blog_url>
+
+	<wp:category><wp:category_nicename>uncategorized</wp:category_nicename><wp:category_parent></wp:category_parent><wp:cat_name><![CDATA[Uncategorized]]></wp:cat_name></wp:category>
+	<wp:category><wp:category_nicename>travel</wp:category_nicename><wp:category_parent>uncategorized</wp:category_parent><wp:cat_name><![CDATA[Travel]]></wp:cat_name></wp:category>
+	<wp:tag><wp:tag_slug>rss</wp:tag_slug><wp:tag_name><![CDATA[rss]]></wp:tag_name></wp:tag>
+	<wp:tag><wp:tag_slug>feeds</wp:tag_slug><wp:tag_name><![CDATA[feeds]]></wp:tag_name></wp:tag>
+	<generator>http://wordpress.org/?v=3.0</generator>
+
+	<item>
+		<title>Notes from the road</title>
+		<link>http://notes.example.com/2010/06/notes-from-the-road/</link>
+		<pubDate>Tue, 29 Jun 2010 09:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<category><![CDATA[Travel]]></category>
+		<category domain="category" nicename="travel"><![CDATA[Travel]]></category>
+		<category domain="tag"><![CDATA[rss]]></category>
+		<category domain="tag" nicename="rss"><![CDATA[rss]]></category>
+		<category domain="tag"><![CDATA[feeds]]></category>
+		<category domain="tag" nicename="feeds"><![CDATA[feeds]]></category>
+		<guid isPermaLink="false">http://notes.example.com/?p=5</guid>
+		<description></description>
+		<content:encoded><![CDATA[A few words about the trip.]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>5</wp:post_id>
+		<wp:post_date>2010-06-29 18:00:00</wp:post_date>
+		<wp:post_date_gmt>2010-06-29 09:00:00</wp:post_date_gmt>
+		<wp:comment_status>open</wp:comment_status>
+		<wp:ping_status>open</wp:ping_status>
+		<wp:post_name>notes-from-the-road</wp:post_name>
+		<wp:status>publish</wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type>post</wp:post_type>
+		<wp:post_password></wp:post_password>
+		<wp:postmeta>
+			<wp:meta_key>_edit_lock</wp:meta_key>
+			<wp:meta_value>1277800000:1</wp:meta_value>
+		</wp:postmeta>
+		<wp:comment>
+			<wp:comment_id>1</wp:comment_id>
+			<wp:comment_author><![CDATA[Reader]]></wp:comment_author>
+			<wp:comment_author_email>reader@example.net</wp:comment_author_email>
+			<wp:comment_author_url></wp:comment_author_url>
+			<wp:comment_author_IP>192.0.2.7</wp:comment_author_IP>
+			<wp:comment_date>2010-06-30 08:00:00</wp:comment_date>
+			<wp:comment_date_gmt>2010-06-29 23:00:00</wp:comment_date_gmt>
+			<wp:comment_content><![CDATA[Nice post.]]></wp:comment_content>
+			<wp:comment_approved>1</wp:comment_approved>
+			<wp:comment_type></wp:comment_type>
+			<wp:comment_parent>0</wp:comment_parent>
+			<wp:comment_user_id>0</wp:comment_user_id>
+		</wp:comment>
+	</item>
+	<item>
+		<title>About</title>
+		<link>http://notes.example.com/about/</link>
+		<pubDate>Wed, 30 Jun 2010 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">http://notes.example.com/?page_id=6</guid>
+		<description></description>
+		<content:encoded><![CDATA[About this site.]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>6</wp:post_id>
+		<wp:post_date>2010-06-30 10:00:00</wp:post_date>
+		<wp:post_date_gmt>2010-06-30 01:00:00</wp:post_date_gmt>
+		<wp:comment_status>closed</wp:comment_status>
+		<wp:ping_status>closed</wp:ping_status>
+		<wp:post_name>about</wp:post_name>
+		<wp:status>publish</wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>3</wp:menu_order>
+		<wp:post_type>page</wp:post_type>
+		<wp:post_password></wp:post_password>
+	</item>
+</channel>
+</rss>

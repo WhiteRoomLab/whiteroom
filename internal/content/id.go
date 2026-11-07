@@ -1,6 +1,7 @@
 package content
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -62,4 +63,21 @@ func checkID(kind RefKind, id string) error {
 		return fmt.Errorf("invalid %s ID %q: use %q and a ULID (26 characters in upper case)", kind, id, prefix)
 	}
 	return nil
+}
+
+// FormatID returns the ID of an entity of kind whose ULID has the bits u, written as ULIDs are. It panics if kind is
+// unknown.
+func FormatID(kind RefKind, u [16]byte) string {
+	prefix, ok := idPrefixes[kind]
+	if !ok {
+		panic(fmt.Sprintf("content: unknown kind %q", kind))
+	}
+	hi, lo := binary.BigEndian.Uint64(u[:8]), binary.BigEndian.Uint64(u[8:])
+	var b [26]byte
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i] = crockford[lo&31]
+		lo = lo>>5 | hi<<59
+		hi >>= 5
+	}
+	return prefix + string(b[:])
 }

@@ -1,6 +1,11 @@
 package content
 
-import "testing"
+import (
+	"encoding/binary"
+	"math/rand/v2"
+	"strings"
+	"testing"
+)
 
 func TestCheckID(t *testing.T) {
 	const ulid = "01JB8Y6T2RG7M4XK9P2D5W8NQ3"
@@ -69,5 +74,128 @@ func TestIDPrefixes(t *testing.T) {
 			t.Errorf("prefix of %s = %q, want one of its own", k, p)
 		}
 		seen[p] = true
+	}
+}
+
+// parseULID returns the 128 bits that the 26 characters of a ULID write.
+func parseULID(t *testing.T, s string) [16]byte {
+	t.Helper()
+	if len(s) != 26 {
+		t.Fatalf("%q has %d characters, want 26", s, len(s))
+	}
+	var hi, lo uint64
+	for i := range len(s) {
+		v := strings.IndexByte(crockford, s[i])
+		if v < 0 {
+			t.Fatalf("%q has %q, which is not in Crockford's Base32", s, s[i])
+		}
+		hi = hi<<5 | lo>>59
+		lo = lo<<5 | uint64(v)
+	}
+	var u [16]byte
+	binary.BigEndian.PutUint64(u[:8], hi)
+	binary.BigEndian.PutUint64(u[8:], lo)
+	return u
+}
+
+func TestFormatID(t *testing.T) {
+	// bit returns the bits with only the nth set, counted from the least significant.
+	bit := func(n int) [16]byte {
+		var u [16]byte
+		u[15-n/8] = 1 << (n % 8)
+		return u
+	}
+	var ones, time, random [16]byte
+	for i := range ones {
+		ones[i] = 0xff
+		if i < 6 {
+			time[i] = 0xff
+		} else {
+			random[i] = 0xff
+		}
+	}
+	tests := []struct {
+		name string
+		u    [16]byte
+		want string
+	}{
+		{"zero", [16]byte{}, "00000000000000000000000000"},
+		{"all ones", ones, "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"},
+		{"lowest bit", bit(0), "00000000000000000000000001"},
+		{"highest bit of the lowest character", bit(4), "0000000000000000000000000G"},
+		{"lowest bit of the second character", bit(5), "00000000000000000000000010"},
+		{"highest bit of the random part", bit(79), "0000000000G000000000000000"},
+		{"lowest bit of the time", bit(80), "00000000010000000000000000"},
+		{"highest bit", bit(127), "40000000000000000000000000"},
+		{"second highest bit", bit(126), "20000000000000000000000000"},
+		{"third highest bit", bit(125), "10000000000000000000000000"},
+		{"time of ones", time, "7ZZZZZZZZZ0000000000000000"},
+		{"random part of ones", random, "0000000000ZZZZZZZZZZZZZZZZ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatID(RefEntry, tt.u)
+			if got != "ent_"+tt.want {
+				t.Errorf("FormatID(entry, %x) = %q, want %q", tt.u, got, "ent_"+tt.want)
+			}
+			if err := CheckID(RefEntry, got); err != nil {
+				t.Error(err)
+			}
+			if back := parseULID(t, tt.want); back != tt.u {
+				t.Errorf("parseULID(%q) = %x, want %x", tt.want, back, tt.u)
+			}
+		})
+	}
+}
+
+func TestFormatIDKinds(t *testing.T) {
+	var ones [16]byte
+	for i := range ones {
+		ones[i] = 0xff
+	}
+	kinds := []RefKind{RefEntry, RefMedia, RefForm, RefTerm, RefAuthor, RefMenu, RefRedirect, RefRevision, RefTranslationGroup, RefUser}
+	for _, kind := range kinds {
+		for _, u := range [][16]byte{{}, ones, {0, 0, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4, 5, 6}} {
+			id := FormatID(kind, u)
+			if err := CheckID(kind, id); err != nil {
+				t.Errorf("FormatID(%s, %x) = %q: %v", kind, u, id, err)
+			}
+			if !strings.HasPrefix(id, idPrefixes[kind]) || len(id) != len(idPrefixes[kind])+26 {
+				t.Errorf("FormatID(%s, %x) = %q, want the prefix %q and 26 characters", kind, u, id, idPrefixes[kind])
+			}
+		}
+	}
+}
+
+func TestFormatIDRoundTrip(t *testing.T) {
+	const ulid = "01JB8Y6T2RG7M4XK9P2D5W8NQ3"
+	if got := FormatID(RefEntry, parseULID(t, ulid)); got != "ent_"+ulid {
+		t.Errorf("FormatID(entry, the bits of %s) = %q, want %q", ulid, got, "ent_"+ulid)
+	}
+	r := rand.New(rand.NewPCG(1, 2))
+	for range 2000 {
+		var u [16]byte
+		binary.BigEndian.PutUint64(u[:8], r.Uint64())
+		binary.BigEndian.PutUint64(u[8:], r.Uint64())
+		id := FormatID(RefMedia, u)
+		if err := CheckID(RefMedia, id); err != nil {
+			t.Fatal(err)
+		}
+		if back := parseULID(t, strings.TrimPrefix(id, "med_")); back != u {
+			t.Fatalf("FormatID(media, %x) = %q, which is the bits %x", u, id, back)
+		}
+	}
+}
+
+func TestFormatIDUnknownKind(t *testing.T) {
+	for _, kind := range []RefKind{"", "unknown", "Entry"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("FormatID(%q) did not panic", kind)
+				}
+			}()
+			FormatID(kind, [16]byte{})
+		}()
 	}
 }
