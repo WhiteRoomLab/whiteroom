@@ -234,7 +234,7 @@ func benchRun(t *testing.T, job benchJob) benchResult {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), benchLimit)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBenchHelper$")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBenchHelper$", "-test.timeout=0")
 	cmd.Env = append(os.Environ(), "GOMAXPROCS="+strconv.Itoa(benchProcs), envBenchHelper+"="+string(spec))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the helper of %+v has ended with %v:\n%s", job, err, out)

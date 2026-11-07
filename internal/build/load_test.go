@@ -406,3 +406,68 @@ func TestLoadSiteDir(t *testing.T) {
 		}
 	}
 }
+
+// paddedSource is a Source whose documents are in arrays with padding bytes to spare, as those of sitedir are (with
+// bytes.MinRead). It keeps the arrays.
+type paddedSource struct {
+	Source
+	arrays [][]byte
+}
+
+const padding = 64 << 10
+
+func (s *paddedSource) Documents(kind content.RefKind) (map[string]content.SiteFile, error) {
+	docs, err := s.Source.Documents(kind)
+	for id, f := range docs {
+		f.Data = append(make([]byte, 0, len(f.Data)+padding), f.Data...)
+		s.arrays = append(s.arrays, f.Data)
+		docs[id] = f
+	}
+	return docs, err
+}
+
+func docFiles[T any](docs map[string]*doc[T]) map[string]content.SiteFile {
+	files := make(map[string]content.SiteFile, len(docs))
+	for id, d := range docs {
+		files[id] = d.file
+	}
+	return files
+}
+
+// TestLoadKeepsExactDocuments checks that the build keeps copies of the files of the documents of every kind, without
+// the room to spare of the arrays that its Source returns.
+func TestLoadKeepsExactDocuments(t *testing.T) {
+	src := testSource(t)
+	padded := &paddedSource{Source: src}
+	b := mustLoad(t, padded)
+	for _, a := range padded.arrays {
+		clear(a[:cap(a)])
+	}
+	entries := make(map[string]content.SiteFile, len(b.entries))
+	for id, d := range b.entries {
+		entries[id] = d.file
+	}
+	for kind, got := range map[content.RefKind]map[string]content.SiteFile{
+		content.RefEntry:    entries,
+		content.RefTerm:     docFiles(b.terms),
+		content.RefMedia:    docFiles(b.media),
+		content.RefAuthor:   docFiles(b.authors),
+		content.RefMenu:     docFiles(b.menus),
+		content.RefForm:     docFiles(b.forms),
+		content.RefRedirect: docFiles(b.redirects),
+	} {
+		want := src.docs[kind]
+		if len(got) == 0 || len(got) != len(want) {
+			t.Errorf("load() keeps %d files of the kind %s, want %d", len(got), kind, len(want))
+		}
+		for id, f := range got {
+			if f.Name != want[id].Name || !bytes.Equal(f.Data, want[id].Data) {
+				t.Errorf("load() keeps the file of %s %s as %q with %d bytes, not %q with %d bytes of the Source; keep a copy",
+					kind, id, f.Name, len(f.Data), want[id].Name, len(want[id].Data))
+			}
+			if cap(f.Data) >= len(f.Data)+padding {
+				t.Errorf("load() keeps the file of %s %s, %d bytes, in an array of %d", kind, id, len(f.Data), cap(f.Data))
+			}
+		}
+	}
+}

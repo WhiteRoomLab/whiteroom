@@ -20,7 +20,8 @@ type Source interface {
 	// Revision returns the revision whose ID is id; if there is none, the error wraps fs.ErrNotExist. The build reads a
 	// revision that it publishes more than once, also at the same time: to validate it, to render its pages and to
 	// locate its problems. A revision does not change, so Revision returns the same file for an id; the build fails if
-	// a revision has changed since it validated it.
+	// a revision has changed since it validated it, unless it reads it only to locate its problems, which are then shown
+	// without a position.
 	Revision(id string) (content.SiteFile, error)
 	// OpenMedia opens the original of the medium whose Hash is hash; if there is none, the error wraps fs.ErrNotExist.
 	OpenMedia(hash string) (fs.File, error)

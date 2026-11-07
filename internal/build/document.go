@@ -17,10 +17,9 @@ import (
 // "/fields/spec/note", as entryData takes them, and the CSS that they need. The body and the blocks fields are one
 // document (6.5.1): the body, then the blocks fields in the order of their definitions, depth first into groups and
 // lists. The CSS has the rules of that document, then those of the richText fields in the same order. The warnings go
-// to b.warnings at their places in the revision, whose file they have by its name alone (problems.sorted locates
-// them). It reads the file of the revision again (revisionFile) and decodes its body (revisionBody). The error is that
-// of revisionFile, or, after the name of the file of the revision, of decoding the body or of executing a block
-// template.
+// to b.warnings at their places in the revision. It reads the revision again (revisionFile) for its body; the warnings
+// have its file by name alone, which problems.sorted reads again. The error is that of revisionFile, or, after the name
+// of the file of the revision, of decoding the body or of executing a block template.
 func (b *builder) renderEntry(d *entryDoc, r *render.Renderer) (map[string]template.HTML, render.CSS, error) {
 	file, err := b.revisionFile(d)
 	if err != nil {
@@ -78,8 +77,8 @@ func (b *builder) revisionData(name string) ([]byte, error) {
 	return f.Data, err
 }
 
-// revisionBody returns the body of the revision in f, which validateEntry has decoded without an error and then let go
-// of (entryDoc.rev has no body), as revisionFile returns it. The error has the name of f.
+// revisionBody decodes the body of f, a revision that revisionFile has read again (entryDoc.rev has none). The error
+// has the name of f.
 func revisionBody(f content.SiteFile) (content.Blocks, error) {
 	var rev content.Revision
 	if err := rev.UnmarshalJSON(f.Data); err != nil {

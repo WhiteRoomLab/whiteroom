@@ -1,6 +1,7 @@
 package build
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"io/fs"
@@ -144,6 +145,8 @@ func decodeDocs[T any, P interface {
 	docs := make(map[string]*doc[T], len(files))
 	for _, key := range slices.Sorted(maps.Keys(files)) {
 		d := &doc[T]{file: files[key]}
+		// A Source may return an array larger than the file (sitedir reads with bytes.MinRead more); keep a copy.
+		d.file.Data = bytes.Clone(d.file.Data)
 		if !decodeFile(p, d.file, P(&d.v).UnmarshalJSON) {
 			continue
 		}

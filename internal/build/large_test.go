@@ -156,8 +156,10 @@ func openLargeSite(t *testing.T, dir string) sampleSource {
 	return sampleSource{Dir: d, theme: openRoot(t, "../theme/testdata/example").FS()}
 }
 
-// liveHeap returns the bytes that the marking of a GC, which it runs, has found live.
+// liveHeap returns the bytes that the marking of a GC, which it runs, has found live. It runs two, so that what a
+// sync.Pool holds does not count: the first GC only moves it to the victim cache of the pool.
 func liveHeap() uint64 {
+	runtime.GC()
 	runtime.GC()
 	s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
 	metrics.Read(s)
@@ -174,7 +176,7 @@ const maxRetainedPerPost = 4 << 10
 
 // TestBuildMemory builds the sample site with 100 and with 400 more posts, and checks that the live heap at the end of
 // each stage grows by at most maxRetainedPerPost for each post between them, for posts that do not warn and for posts
-// that do (what the build keeps for a warning is then for each post too).
+// that do (what the build keeps for a warning is then for each post too). With -race, only for posts that do warn.
 func TestBuildMemory(t *testing.T) {
 	// A first build, so that what a build initializes once is in the live heap at every size.
 	mustBuild(t, largeSource{openSample(t), 1, true}, t.TempDir(), t.TempDir(), 4)
@@ -190,6 +192,9 @@ func TestBuildMemory(t *testing.T) {
 	sizes := [2]int{100, 400}
 	var warnings [2][2]int // by warn and size
 	for w, warn := range []bool{false, true} {
+		if raceEnabled && !warn {
+			continue // the posts that warn keep more, and -race makes each build several times slower
+		}
 		var live [2][]uint64
 		for s, n := range sizes {
 			ended, heap = nil, nil
@@ -211,6 +216,9 @@ func TestBuildMemory(t *testing.T) {
 					warn, stage, perPost, maxRetainedPerPost)
 			}
 		}
+	}
+	if raceEnabled {
+		return
 	}
 	for s, n := range sizes {
 		if got := warnings[1][s] - warnings[0][s]; got != n {
