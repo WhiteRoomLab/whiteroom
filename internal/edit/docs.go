@@ -220,7 +220,7 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 		if err != nil {
 			return Result{}, err
 		}
-		res := Result{Kind: kind, ID: id, Version: v}
+		res := Result{Kind: kind, ID: id, Version: v, Publishes: true}
 		return res, r.finish(&res, after)
 	})
 }
@@ -291,7 +291,7 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 		if err != nil {
 			return Result{}, err
 		}
-		res := Result{Kind: kind, ID: id, Version: v}
+		res := Result{Kind: kind, ID: id, Version: v, Publishes: v.Seq != cur.Seq}
 		if v.Seq == cur.Seq {
 			return res, nil
 		}
@@ -402,7 +402,7 @@ func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id str
 		if err != nil {
 			return Result{}, err
 		}
-		res := Result{Kind: kind, ID: id, Version: v, Warnings: warnings}
+		res := Result{Kind: kind, ID: id, Version: v, Warnings: warnings, Publishes: kind != content.RefEntry}
 		return res, r.finish(&res, after)
 	})
 }
@@ -461,7 +461,7 @@ func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byt
 		if err != nil {
 			return Result{}, err
 		}
-		res := Result{Kind: store.SettingsKind, Version: v}
+		res := Result{Kind: store.SettingsKind, Version: v, Publishes: v.Seq != cur}
 		if v.Seq == cur {
 			return res, nil
 		}
