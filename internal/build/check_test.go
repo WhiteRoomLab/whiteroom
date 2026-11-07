@@ -388,39 +388,3 @@ func TestCheckAcross(t *testing.T) {
 		})
 	}
 }
-
-func TestFromKey(t *testing.T) {
-	const ideographicSpace = string(rune(0x3000))
-	for _, tt := range []struct{ in, want string }{
-		{"/", "/"},
-		{"/old/", "/old"},
-		{"/old", "/old"},
-		{"/old//", "/old/"},
-		{"/?p=123", "/?p=123"},
-		{"/old/?y=2&x=1", "/old?x=1&y=2"},
-		{"/%E4%BC%9A%E7%A4%BE/", "/会社"},
-		{"/tag/a" + ideographicSpace + "b/", "/tag/a%E3%80%80b"},
-		{"/a?", "/a"},
-	} {
-		if got := fromKey(tt.in); got != tt.want {
-			t.Errorf("fromKey(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestCycles(t *testing.T) {
-	next := map[string]string{
-		"a": "c", "c": "b", "b": "a", // a cycle
-		"d": "a",           // into a cycle
-		"z": "y", "y": "z", // another cycle, found first from x
-		"x": "z",
-		"e": "f", // a chain that ends
-	}
-	want := [][]string{{"a", "c", "b"}, {"y", "z"}}
-	if got := cycles(next); !slices.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("cycles(%v) = %q, want %q", next, got, want)
-	}
-	if got, want := cycleText(want[0]), "a -> c -> b -> a"; got != want {
-		t.Errorf("cycleText(%q) = %q, want %q", want[0], got, want)
-	}
-}

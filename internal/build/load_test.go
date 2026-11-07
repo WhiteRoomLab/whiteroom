@@ -119,31 +119,31 @@ func TestLoad(t *testing.T) {
 	var revisions []string
 	for id, d := range b.entries {
 		if id == draftID {
-			if d.rev != nil || b.published(id) != nil {
-				t.Errorf("the draft %s has the revision %+v", id, d.rev)
+			if d.Rev != nil || b.published(id) != nil {
+				t.Errorf("the draft %s has the revision %+v", id, d.Rev)
 			}
 			continue
 		}
 		revisions = append(revisions, revisionID(id))
-		if b.published(id) != d || d.rev == nil || d.revFile.Name != "revisions/"+revisionID(id)+".json" {
-			t.Errorf("the published entry %s has the revision %+v in %q", id, d.rev, d.revFile.Name)
+		if b.published(id) != d || d.Rev == nil || d.RevFile.Name != "revisions/"+revisionID(id)+".json" {
+			t.Errorf("the published entry %s has the revision %+v in %q", id, d.Rev, d.RevFile.Name)
 			continue
 		}
 		want := src.revisions[revisionID(id)].Data
-		if sum := sha256.Sum256(want); d.revFile.Data != nil || d.revSum != sum {
+		if sum := sha256.Sum256(want); d.RevFile.Data != nil || d.revSum != sum {
 			t.Errorf("the published entry %s keeps %d bytes of its revision file, with the SHA-256 %x, want none, with %x",
-				id, len(d.revFile.Data), d.revSum, sum)
+				id, len(d.RevFile.Data), d.revSum, sum)
 		}
-		if b.revisions[d.revFile.Name] != d {
-			t.Errorf("the revision file %s is not that of the published entry %s by name", d.revFile.Name, id)
+		if b.revisions[d.RevFile.Name] != d {
+			t.Errorf("the revision file %s is not that of the published entry %s by name", d.RevFile.Name, id)
 		}
 		f, err := b.revisionFile(d)
 		if err != nil || !bytes.Equal(f.Data, want) {
 			t.Errorf("revisionFile() of %s = %q, %v; want the file of the source", id, f.Data, err)
 		}
-		if body, err := revisionBody(f); d.rev.Body != nil || len(body) == 0 || err != nil {
+		if body, err := revisionBody(f); d.Rev.Body != nil || len(body) == 0 || err != nil {
 			t.Errorf("the published entry %s keeps %d blocks of its body, and revisionBody() returns %d blocks, %v",
-				id, len(d.rev.Body), len(body), err)
+				id, len(d.Rev.Body), len(body), err)
 		}
 	}
 	if got, want := slices.Sorted(slices.Values(read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
@@ -152,10 +152,10 @@ func TestLoad(t *testing.T) {
 	if got := len(b.revisions); got != len(revisions) {
 		t.Errorf("load() has %d revisions by name, want %d", got, len(revisions))
 	}
-	if d := b.published(jaPosts[0]); d == nil || d.rev.Slug != "post-1001" || d.rev.Date != "2026-09-01T09:00:00+09:00" {
+	if d := b.published(jaPosts[0]); d == nil || d.Rev.Slug != "post-1001" || d.Rev.Date != "2026-09-01T09:00:00+09:00" {
 		t.Errorf("the first post added has %+v", d)
 	}
-	if d := b.published(postID); d == nil || d.rev.Slug != "新サービス" || d.e.Number != 123 {
+	if d := b.published(postID); d == nil || d.Rev.Slug != "新サービス" || d.E.Number != 123 {
 		t.Errorf("the post of 6.11.9 has %+v", d)
 	}
 	for _, tt := range []struct{ id, want string }{
@@ -327,7 +327,7 @@ func TestLoadImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("revisionBody() of the about page: %v", err)
 	}
-	if r := d.rev; len(body) != 7 || r.Body != nil || r.Template != "standard" {
+	if r := d.Rev; len(body) != 7 || r.Body != nil || r.Template != "standard" {
 		t.Errorf("the about page has the revision %+v and the body of %d blocks read again", r, len(body))
 	}
 }
@@ -348,12 +348,12 @@ func TestLoadUnpublished(t *testing.T) {
 	}
 	b := mustLoad(t, src)
 	for id, d := range b.entries {
-		if d.e.Status != content.StatusPublished && d.rev != nil {
-			t.Errorf("the entry %s (%s) has a revision", id, d.e.Status)
+		if d.E.Status != content.StatusPublished && d.Rev != nil {
+			t.Errorf("the entry %s (%s) has a revision", id, d.E.Status)
 		}
 	}
 	for _, id := range src.read {
-		if d := b.entries["ent_"+strings.TrimPrefix(id, "rev_")]; d == nil || d.e.Status != content.StatusPublished {
+		if d := b.entries["ent_"+strings.TrimPrefix(id, "rev_")]; d == nil || d.E.Status != content.StatusPublished {
 			t.Errorf("load() read the revision %s", id)
 		}
 	}
@@ -429,7 +429,7 @@ func (s *paddedSource) Documents(kind content.RefKind) (map[string]content.SiteF
 func docFiles[T any](docs map[string]*doc[T]) map[string]content.SiteFile {
 	files := make(map[string]content.SiteFile, len(docs))
 	for id, d := range docs {
-		files[id] = d.file
+		files[id] = d.File
 	}
 	return files
 }
@@ -445,7 +445,7 @@ func TestLoadKeepsExactDocuments(t *testing.T) {
 	}
 	entries := make(map[string]content.SiteFile, len(b.entries))
 	for id, d := range b.entries {
-		entries[id] = d.file
+		entries[id] = d.File
 	}
 	for kind, got := range map[content.RefKind]map[string]content.SiteFile{
 		content.RefEntry:    entries,

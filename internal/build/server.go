@@ -14,6 +14,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -72,7 +73,7 @@ func (b *builder) writeServerFiles(rel *os.Root) error {
 	pages := b.notFoundPages()
 	list := serverList{Base: content.CanonicalFrom(b.base), NotFound: pages, Index: directoryIndex}
 	for _, r := range b.serverRedirects {
-		list.Redirects = append(list.Redirects, serverRedirect{From: r.from, To: b.location(r), Status: r.status})
+		list.Redirects = append(list.Redirects, serverRedirect{From: r.From, To: b.location(r), Status: r.Status})
 	}
 	data, err := json.Marshal(list, jsontext.WithIndent("  "))
 	if err != nil {
@@ -90,11 +91,11 @@ func (b *builder) writeServerFiles(rel *os.Root) error {
 
 // location returns the Location of the responses of r: the URL of its target, percent-encoded, with the path of the
 // site URL before a path.
-func (b *builder) location(r redirect) string {
-	if r.abs {
-		return render.EncodeURL(r.to)
+func (b *builder) location(r siteplan.Redirect) string {
+	if r.Abs {
+		return render.EncodeURL(r.To)
 	}
-	return render.EncodeURL(b.base + r.to)
+	return render.EncodeURL(b.base + r.To)
 }
 
 // notFoundPages returns the 404 pages of the site by the paths of their languages, the longest first; with
@@ -143,27 +144,27 @@ func (b *builder) serverConfig(pages []notFoundPage) *serverConfig {
 // after "/a%2Bb".
 func (b *builder) redirectGroups() []redirectGroup {
 	rs := slices.Clone(b.serverRedirects)
-	slices.SortStableFunc(rs, func(x, y redirect) int { return comparePrecedence(x.from, y.from) })
+	slices.SortStableFunc(rs, func(x, y siteplan.Redirect) int { return siteplan.ComparePrecedence(x.From, y.From) })
 	var groups []redirectGroup
 	index := make(map[string]int) // of the groups by path
-	firsts := make(map[string]redirect)
+	firsts := make(map[string]siteplan.Redirect)
 	for _, r := range rs {
-		path, query, _ := strings.Cut(r.from, "?")
+		path, query, _ := strings.Cut(r.From, "?")
 		path, reason := decodePath(path)
 		if reason != "" {
 			reason = "has " + reason
-		} else if path = trimSlash(path); path == "/.htaccess" {
+		} else if path = siteplan.TrimSlash(path); path == "/.htaccess" {
 			reason = "is that of .htaccess"
 		}
 		if reason != "" {
-			b.warnings.add(r.src.file, r.src.pointer, "the path %s; the redirect is left out of nginx.conf and "+
+			b.warnings.add(r.Src.File, r.Src.Pointer, "the path %s; the redirect is left out of nginx.conf and "+
 				".htaccess, so only the built-in server serves it", reason)
 			continue
 		}
 		if first, taken := claim(firsts, path+"?"+query, r); taken {
-			b.warnings.add(r.src.file, r.src.pointer, "nginx and Apache decode the path as that of the from %q of %s; "+
+			b.warnings.add(r.Src.File, r.Src.Pointer, "nginx and Apache decode the path as that of the from %q of %s; "+
 				"the redirect is left out of nginx.conf and .htaccess, so only the built-in server serves it",
-				first.from, first.src.what)
+				first.From, first.Src.What)
 			continue
 		}
 		var params []string
@@ -178,10 +179,18 @@ func (b *builder) redirectGroups() []redirectGroup {
 			index[path] = i
 			groups = append(groups, redirectGroup{path: path})
 		}
-		groups[i].rules = append(groups[i].rules, redirectRule{params: params, location: b.location(r), status: r.status})
+		groups[i].rules = append(groups[i].rules, redirectRule{params: params, location: b.location(r), status: r.Status})
 	}
 	slices.SortFunc(groups, func(x, y redirectGroup) int { return strings.Compare(x.path, y.path) })
 	return groups
+}
+
+// claim records v as the first with key in firsts, or returns the one recorded for key and true.
+func claim[K comparable, V any](firsts map[K]V, key K, v V) (first V, taken bool) {
+	if first, taken = firsts[key]; !taken {
+		firsts[key] = v
+	}
+	return first, taken
 }
 
 // decodePath returns path, percent-encoded or not, as nginx and Apache decode the paths of requests before they match

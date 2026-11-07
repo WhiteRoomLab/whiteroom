@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -24,7 +25,7 @@ var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // feedPath returns the path of the RSS feed in language: feed/ after the language path, such as "/en/feed/".
 func (b *builder) feedPath(language string) string {
-	return b.site.LanguagePath(language) + "feed/"
+	return siteplan.FeedPath(b.site, language)
 }
 
 // writeFeeds writes the RSS 2.0 feed of each language of the site (feed) into pub, as index.xml at its path
@@ -34,14 +35,14 @@ func (b *builder) feedPath(language string) string {
 // their URLs are absolute; their warnings, the same as those of their pages, go to b.warnings. b.res must be set. The
 // error is ctx.Err() if ctx is done, that of rendering a body, or one of writing.
 func (b *builder) writeFeeds(ctx context.Context, pub *os.Root) error {
-	posts := b.members()
+	posts := b.sp.Members()
 	for _, lang := range b.site.Languages {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		es := posts[listKey{theme.KindPosts, lang, ""}]
-		sortEntries(es, false)
-		data, err := b.feed(ctx, lang, es[:min(len(es), b.postsPerPage())])
+		es := posts[siteplan.ListKey{Kind: theme.KindPosts, Language: lang}]
+		siteplan.SortEntries(es, false)
+		data, err := b.feed(ctx, lang, b.docsOf(es[:min(len(es), b.sp.PostsPerPage())]))
 		if err != nil {
 			return err
 		}
@@ -82,18 +83,18 @@ func (b *builder) feed(ctx context.Context, language string, es []*entryDoc) ([]
 		if err != nil {
 			return nil, err
 		}
-		rev := d.rev
+		rev := d.Rev
 		w.start("item")
 		w.plain("title", rev.Title)
-		w.plain("link", b.absURL(b.entryPaths[d.e.ID]))
-		w.plain("guid", d.e.ID, "isPermaLink", "false")
-		w.plain("pubDate", listTime(d).In(b.loc).Format(time.RFC1123Z))
+		w.plain("link", b.absURL(b.entryPaths[d.E.ID]))
+		w.plain("guid", d.E.ID, "isPermaLink", "false")
+		w.plain("pubDate", siteplan.ListTime(&d.Entry).In(b.loc).Format(time.RFC1123Z))
 		if rev.Author != "" {
-			w.plain("dc:creator", b.authors[rev.Author].v.Name)
+			w.plain("dc:creator", b.authors[rev.Author].V.Name)
 		}
-		for _, taxonomy := range b.site.Type(d.e.Type).Taxonomies {
+		for _, taxonomy := range b.site.Type(d.E.Type).Taxonomies {
 			for _, id := range rev.Terms[taxonomy] {
-				w.plain("category", b.terms[id].v.Name)
+				w.plain("category", b.terms[id].V.Name)
 			}
 		}
 		if s := oneLine(d.excerpt); s != "" {

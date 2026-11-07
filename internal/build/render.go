@@ -14,6 +14,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/render"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -91,7 +92,7 @@ func (b *builder) renderPages(ctx context.Context, pub *os.Root, workers int) er
 		if err := writeFile(pub, file, []byte(sheets[path])); err != nil {
 			return err
 		}
-		b.addOutput(path, file, source{what: "the page CSS of " + b.pages[i].path}, rankCore)
+		b.addOutput(path, file, siteplan.Source{What: "the page CSS of " + b.pages[i].path}, siteplan.RankCore)
 	}
 	return nil
 }
@@ -102,16 +103,16 @@ func (b *builder) pageTemplate(p *page) string {
 	x := theme.Page{Kind: p.kind}
 	switch p.kind {
 	case theme.KindEntry:
-		x.Type, x.Template = p.entry.e.Type, p.entry.rev.Template
+		x.Type, x.Template = p.entry.E.Type, p.entry.Rev.Template
 	case theme.KindTerm:
-		x.Taxonomy = p.term.v.Taxonomy
+		x.Taxonomy = p.term.V.Taxonomy
 	case theme.KindArchive:
 		x.Type = p.typeName
 	case theme.KindPosts, theme.KindAuthor, theme.KindNotFound:
 	}
 	name := b.theme.Template(x)
 	if x.Template != "" && name != "page-"+x.Template+".html" {
-		b.warnings.add(p.entry.revFile, "/template", "the theme has no page template %q; rendered with %s",
+		b.warnings.add(p.entry.RevFile, "/template", "the theme has no page template %q; rendered with %s",
 			x.Template, name)
 	}
 	return name

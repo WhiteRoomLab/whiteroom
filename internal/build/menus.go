@@ -21,14 +21,14 @@ func (b *builder) menusOf(language string, r *render.Renderer) map[string][]Menu
 	}
 	for _, id := range slices.Sorted(maps.Keys(b.menus)) {
 		d := b.menus[id]
-		if d.v.Language != language || d.v.Location == "" {
+		if d.V.Language != language || d.V.Location == "" {
 			continue
 		}
-		if _, ok := menus[d.v.Location]; !ok {
-			b.warnings.add(d.file, "/location", "the theme has no location %q; the menu is left out", d.v.Location)
+		if _, ok := menus[d.V.Location]; !ok {
+			b.warnings.add(d.File, "/location", "the theme has no location %q; the menu is left out", d.V.Location)
 			continue
 		}
-		menus[d.v.Location] = b.menuItems(d, d.v.Items, "/items", r)
+		menus[d.V.Location] = b.menuItems(d, d.V.Items, "/items", r)
 	}
 	return menus
 }
@@ -49,17 +49,17 @@ func (b *builder) menuItems(
 		case x.Entry != "":
 			e := b.published(x.Entry)
 			if e == nil {
-				b.warnings.add(d.file, p, "entry %q is not published; the item and its children are left out", x.Entry)
+				b.warnings.add(d.File, p, "entry %q is not published; the item and its children are left out", x.Entry)
 				continue
 			}
-			item.Label, item.URL = cmp.Or(x.Label, e.rev.Title), r.URL(b.entryPaths[x.Entry])
+			item.Label, item.URL = cmp.Or(x.Label, e.Rev.Title), r.URL(b.entryPaths[x.Entry])
 		case x.Term != "":
 			t := b.termLink(x.Term, r)
 			item.Label, item.URL = cmp.Or(x.Label, t.Name), t.URL
 		case x.Href != "":
 			l, warnings := r.Link(&content.Link{Href: x.Href})
 			for _, w := range warnings {
-				b.warnings.add(d.file, p+"/href", "%s", w.Msg)
+				b.warnings.add(d.File, p+"/href", "%s", w.Msg)
 			}
 			if l != nil {
 				item.URL = l.Href

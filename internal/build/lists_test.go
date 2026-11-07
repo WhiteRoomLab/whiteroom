@@ -166,19 +166,19 @@ func TestPlanDeterministic(t *testing.T) {
 		for _, pg := range b.pages {
 			var entry, term, author string
 			if pg.entry != nil {
-				entry = pg.entry.e.ID
+				entry = pg.entry.E.ID
 			}
 			if pg.term != nil {
-				term = pg.term.v.ID
+				term = pg.term.V.ID
 			}
 			if pg.author != nil {
-				author = pg.author.v.ID
+				author = pg.author.V.ID
 			}
 			fmt.Fprintf(&s, "%d %s %s %s %d/%d %s %t %s %s %s %s %q\n", pg.kind, pg.language, pg.path, pg.file, pg.number,
 				pg.total, pg.first, pg.front, entry, term, author, pg.typeName, entryIDs(pg.entries))
 		}
 		for _, o := range b.outputs {
-			fmt.Fprintf(&s, "%s %s %s %s %q %d\n", o.path, o.file, o.src.file.Name, o.src.pointer, o.src.what, o.rank)
+			fmt.Fprintf(&s, "%s %s %s %s %q %d\n", o.Path, o.File, o.Src.File.Name, o.Src.Pointer, o.Src.What, o.Rank)
 		}
 		fmt.Fprintln(&s, b.base, b.entryPaths, b.termPaths, b.authorPaths)
 		return s.String()

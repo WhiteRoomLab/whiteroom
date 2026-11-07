@@ -55,7 +55,7 @@ func headSource(t *testing.T) *memSource {
 // mediaURL returns the URL of the file name of the medium id of b, whose variant is v, with its version, on the site
 // https://example.com.
 func mediaURL(b *builder, id, name string, v imaging.Variant) string {
-	return "https://example.com/media/" + id + "/" + name + "?v=" + imaging.Version(b.media[id].v.Hash, v)
+	return "https://example.com/media/" + id + "/" + name + "?v=" + imaging.Version(b.media[id].V.Hash, v)
 }
 
 func pngVariant(w, h int) imaging.Variant {

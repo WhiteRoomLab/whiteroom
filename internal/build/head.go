@@ -66,7 +66,7 @@ func (b *builder) head(p *page) template.HTML {
 
 	og := func(property, value string) string { return tag("meta", "property", property, "content", value) }
 	ogType, title := "website", b.titleValue(p)
-	if p.kind == theme.KindEntry && p.entry.e.Type == content.TypePost {
+	if p.kind == theme.KindEntry && p.entry.E.Type == content.TypePost {
 		ogType = "article"
 	}
 	if p.front {
@@ -121,8 +121,8 @@ func (b *builder) canonical(p *page) string {
 	switch {
 	case p.kind == theme.KindNotFound:
 		return ""
-	case p.entry != nil && p.number == 1 && p.entry.rev.SEO.Canonical != "":
-		c := p.entry.rev.SEO.Canonical
+	case p.entry != nil && p.number == 1 && p.entry.Rev.SEO.Canonical != "":
+		c := p.entry.Rev.SEO.Canonical
 		if strings.HasPrefix(c, "/") {
 			return b.absURL(c)
 		}
@@ -134,7 +134,7 @@ func (b *builder) canonical(p *page) string {
 // noindex reports whether p asks search engines not to index it: every page of a site with seo.noindex, the pages of an
 // entry with seo.noindex (every page of a posts page), and the 404 pages.
 func (b *builder) noindex(p *page) bool {
-	return b.site.SEO.NoIndex || p.kind == theme.KindNotFound || p.entry != nil && p.entry.rev.SEO.NoIndex
+	return b.site.SEO.NoIndex || p.kind == theme.KindNotFound || p.entry != nil && p.entry.Rev.SEO.NoIndex
 }
 
 // alternates returns the alternates of p for hreflang: on the first page of a page that has a counterpart in another
@@ -199,7 +199,7 @@ func (b *builder) iconLinks() []string {
 func (b *builder) ogImage(p *page) *headImage {
 	id := ""
 	if p.entry != nil {
-		id = cmp.Or(p.entry.rev.SEO.OGImage, p.entry.rev.FeaturedImage)
+		id = cmp.Or(p.entry.Rev.SEO.OGImage, p.entry.Rev.FeaturedImage)
 	}
 	if id = cmp.Or(id, b.site.SEO.OGImage[p.language]); id == "" {
 		return nil
@@ -212,12 +212,12 @@ func (b *builder) ogImage(p *page) *headImage {
 // publishMedia reports.
 func (b *builder) headImage(id, language string) *headImage {
 	d := b.media[id]
-	if d == nil || d.v.Kind() != content.MediaImage {
+	if d == nil || d.V.Kind() != content.MediaImage {
 		return nil
 	}
 	f, err := b.res.published(id, d)
 	if err != nil {
 		return nil
 	}
-	return &headImage{url: b.absURL(f.versioned()), width: f.width, height: f.height, alt: d.v.Alt[language]}
+	return &headImage{url: b.absURL(f.versioned()), width: f.width, height: f.height, alt: d.V.Alt[language]}
 }

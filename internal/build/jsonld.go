@@ -81,7 +81,7 @@ func (b *builder) structuredData(p *page, url, description string, image *headIm
 	}
 	switch p.kind {
 	case theme.KindEntry:
-		if p.entry.e.Type == content.TypePost {
+		if p.entry.E.Type == content.TypePost {
 			return b.blogPosting(p, url, description, image)
 		}
 		return &webPage{
@@ -94,8 +94,8 @@ func (b *builder) structuredData(p *page, url, description string, image *headIm
 			InLanguage: lang,
 		}
 	case theme.KindAuthor:
-		x := b.person(p.author.v.ID, lang)
-		if id := p.author.v.Avatar; id != "" {
+		x := b.person(p.author.V.ID, lang)
+		if id := p.author.V.Avatar; id != "" {
 			if avatar := b.headImage(id, lang); avatar != nil {
 				x.Image = avatar.url
 			}
@@ -108,7 +108,7 @@ func (b *builder) structuredData(p *page, url, description string, image *headIm
 
 // blogPosting returns the structured data of p, the page of a post, as structuredData does.
 func (b *builder) blogPosting(p *page, url, description string, image *headImage) *blogPosting {
-	rev, lang := p.entry.rev, p.language
+	rev, lang := p.entry.Rev, p.language
 	x := &blogPosting{
 		Context:     schemaOrg,
 		Type:        "BlogPosting",
@@ -138,7 +138,7 @@ func (b *builder) blogPosting(p *page, url, description string, image *headImage
 // person returns the author with the ID as a Person on a page in language, with the URL of their author page in the
 // language.
 func (b *builder) person(id, language string) *person {
-	a := &b.authors[id].v
+	a := &b.authors[id].V
 	x := &person{Type: "Person", Name: a.Name, URL: b.absURL(b.authorPaths[id][language])}
 	for _, l := range a.Links {
 		x.SameAs = append(x.SameAs, render.EncodeURL(l))

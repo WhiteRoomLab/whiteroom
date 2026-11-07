@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -103,14 +104,14 @@ func (b *builder) writeSitemapPart(pub *os.Root, n int, data []byte) error {
 	if err := writeFile(pub, file, data); err != nil {
 		return err
 	}
-	b.addOutput("/"+file, file, source{what: "the sitemap"}, rankCore)
+	b.addOutput("/"+file, file, siteplan.Source{What: "the sitemap"}, siteplan.RankCore)
 	return nil
 }
 
 // sitemapPages returns the pages that the sitemap lists (inSitemap), sorted by their URLs. A page whose URL has more
 // than maxSitemapLoc characters is left out with a warning at where the page comes from.
 func (b *builder) sitemapPages() []sitemapPage {
-	var srcs map[string]source // where the pages come from, by path, made for the first warning
+	var srcs map[string]siteplan.Source // where the pages come from, by path, made for the first warning
 	var xs []sitemapPage
 	for _, p := range b.pages {
 		if !b.inSitemap(p) {
@@ -119,13 +120,13 @@ func (b *builder) sitemapPages() []sitemapPage {
 		loc := b.absURL(p.path)
 		if len(loc) > maxSitemapLoc {
 			if srcs == nil {
-				srcs = make(map[string]source, len(b.outputs))
+				srcs = make(map[string]siteplan.Source, len(b.outputs))
 				for _, o := range b.outputs {
-					srcs[o.path] = o.src
+					srcs[o.Path] = o.Src
 				}
 			}
 			src := srcs[p.path]
-			b.warnings.add(src.file, src.pointer,
+			b.warnings.add(src.File, src.Pointer,
 				"the URL of the page %s has %d characters, more than a sitemap takes (%d); the page is left out of it",
 				p.path, len(loc), maxSitemapLoc)
 			continue

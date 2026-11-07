@@ -11,23 +11,23 @@ import (
 // its richText and blocks fields by their JSON Pointers in its revision, such as "/body" and "/fields/intro"; without
 // it, as in lists, they are "". The warnings about its fields go to b.warnings.
 func (b *builder) entryData(d *entryDoc, r *render.Renderer, html map[string]template.HTML) *Entry {
-	rev := d.rev
-	t := b.site.Type(d.e.Type)
+	rev := d.Rev
+	t := b.site.Type(d.E.Type)
 	e := &Entry{
-		ID:      d.e.ID,
-		Type:    d.e.Type,
+		ID:      d.E.ID,
+		Type:    d.E.Type,
 		Title:   rev.Title,
-		URL:     r.URL(b.entryPaths[d.e.ID]),
+		URL:     r.URL(b.entryPaths[d.E.ID]),
 		Excerpt: d.excerpt,
 		Terms:   make(map[string][]TermLink, len(t.Taxonomies)),
 		Sticky:  rev.Sticky,
 		Body:    html["/body"],
 		Fields:  fieldData{b: b, d: d, r: r, html: html}.fields(t.Fields, rev.Fields, "/fields"),
 	}
-	if d.e.Type == content.TypePost {
+	if d.E.Type == content.TypePost {
 		e.Date = newDate(rev.Date, b.loc)
 		if rev.Author != "" {
-			e.Author = b.authorData(rev.Author, d.e.Language, r)
+			e.Author = b.authorData(rev.Author, d.E.Language, r)
 		}
 	}
 	for _, taxonomy := range t.Taxonomies {
@@ -45,7 +45,7 @@ func (b *builder) entryData(d *entryDoc, r *render.Renderer, html map[string]tem
 
 // authorData returns the data of the author with the ID on a page in language, which r renders.
 func (b *builder) authorData(id, language string, r *render.Renderer) *Author {
-	a := &b.authors[id].v
+	a := &b.authors[id].V
 	x := &Author{Name: a.Name, URL: r.URL(b.authorPaths[id][language]), Bio: a.Bio[language]}
 	if a.Avatar != "" {
 		x.Avatar = r.PageImage(a.Avatar)
@@ -58,7 +58,7 @@ func (b *builder) authorData(id, language string, r *render.Renderer) *Author {
 
 // termData returns the data of the term with the ID on its list, which r renders.
 func (b *builder) termData(id string, r *render.Renderer) *Term {
-	t := &b.terms[id].v
+	t := &b.terms[id].V
 	x := &Term{Name: t.Name, Description: t.Description, URL: r.URL(b.termPaths[id]), Taxonomy: t.Taxonomy}
 	if t.Parent != "" {
 		parent := b.termLink(t.Parent, r)
@@ -69,7 +69,7 @@ func (b *builder) termData(id string, r *render.Renderer) *Term {
 
 // termLink returns the link of the term with the ID on a page that r renders.
 func (b *builder) termLink(id string, r *render.Renderer) TermLink {
-	return TermLink{Name: b.terms[id].v.Name, URL: r.URL(b.termPaths[id])}
+	return TermLink{Name: b.terms[id].V.Name, URL: r.URL(b.termPaths[id])}
 }
 
 // entryLink returns the link of the entry with the ID on a page that r renders, without a title and a URL if it is not
@@ -79,5 +79,5 @@ func (b *builder) entryLink(id string, r *render.Renderer) EntryLink {
 	if d == nil {
 		return EntryLink{}
 	}
-	return EntryLink{Title: d.rev.Title, URL: r.URL(b.entryPaths[id])}
+	return EntryLink{Title: d.Rev.Title, URL: r.URL(b.entryPaths[id])}
 }

@@ -20,13 +20,13 @@ type counterpart struct {
 func (b *builder) groupTranslations() {
 	b.entryGroups = make(map[groupKey]string)
 	for id, d := range b.entries {
-		if d.rev != nil {
-			b.entryGroups[groupKey{d.e.TranslationGroup, d.e.Language}] = id
+		if d.Rev != nil {
+			b.entryGroups[groupKey{d.E.TranslationGroup, d.E.Language}] = id
 		}
 	}
 	b.termGroups = make(map[groupKey]string, len(b.terms))
 	for id, d := range b.terms {
-		b.termGroups[groupKey{d.v.TranslationGroup, d.v.Language}] = id
+		b.termGroups[groupKey{d.V.TranslationGroup, d.V.Language}] = id
 	}
 }
 
@@ -59,16 +59,16 @@ func (b *builder) counterpartPath(p *page, language string) (string, bool) {
 	}
 	switch p.kind {
 	case theme.KindEntry, theme.KindPosts:
-		id, ok := b.entryGroups[groupKey{p.entry.e.TranslationGroup, language}]
+		id, ok := b.entryGroups[groupKey{p.entry.E.TranslationGroup, language}]
 		return b.entryPaths[id], ok
 	case theme.KindTerm:
-		id, ok := b.termGroups[groupKey{p.term.v.TranslationGroup, language}]
+		id, ok := b.termGroups[groupKey{p.term.V.TranslationGroup, language}]
 		return b.termPaths[id], ok
 	case theme.KindArchive:
 		path, err := b.site.ArchivePath(p.typeName, language)
 		return path, err == nil
 	case theme.KindAuthor:
-		path, ok := b.authorPaths[p.author.v.ID][language]
+		path, ok := b.authorPaths[p.author.V.ID][language]
 		return path, ok
 	case theme.KindNotFound:
 		return b.site.LanguagePath(language), true

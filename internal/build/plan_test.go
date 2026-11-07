@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -24,9 +25,9 @@ func pageAt(b *builder, path string) *page {
 }
 
 // outputAt returns the output of b at path, or nil.
-func outputAt(b *builder, path string) *output {
+func outputAt(b *builder, path string) *siteplan.Output {
 	for i := range b.outputs {
-		if b.outputs[i].path == path {
+		if b.outputs[i].Path == path {
 			return &b.outputs[i]
 		}
 	}
@@ -38,10 +39,10 @@ func outputFiles(t *testing.T, b *builder) map[string]string {
 	t.Helper()
 	files := make(map[string]string, len(b.outputs))
 	for _, o := range b.outputs {
-		if _, ok := files[o.path]; ok {
-			t.Errorf("more than one output at %q", o.path)
+		if _, ok := files[o.Path]; ok {
+			t.Errorf("more than one output at %q", o.Path)
 		}
-		files[o.path] = o.file
+		files[o.Path] = o.File
 	}
 	return files
 }
@@ -50,7 +51,7 @@ func outputFiles(t *testing.T, b *builder) map[string]string {
 func entryIDs(es []*entryDoc) []string {
 	ids := make([]string, len(es))
 	for i, d := range es {
-		ids[i] = d.e.ID
+		ids[i] = d.E.ID
 	}
 	return ids
 }
@@ -163,7 +164,7 @@ func TestPlan(t *testing.T) {
 		}
 		var entry string
 		if pg.entry != nil {
-			entry = pg.entry.e.ID
+			entry = pg.entry.E.ID
 		}
 		got := fmt.Sprintf("%d %s %d/%d %t %q %q", pg.kind, pg.language, pg.number, pg.total, pg.front, entry, entryIDs(pg.entries))
 		want := fmt.Sprintf("%d %s %d/%d %t %q %q", tt.kind, tt.language, tt.number, tt.total, tt.front, tt.entry, tt.entries)
@@ -190,9 +191,9 @@ func TestPlan(t *testing.T) {
 		var got string
 		switch {
 		case x.page.term != nil:
-			got = x.page.term.v.ID
+			got = x.page.term.V.ID
 		case x.page.author != nil:
-			got = x.page.author.v.ID
+			got = x.page.author.V.ID
 		default:
 			got = x.page.typeName
 		}
@@ -241,28 +242,28 @@ func TestPlan(t *testing.T) {
 		what          string
 		rank          int
 	}{
-		{"/", "site/settings.json", "/frontPage/ja", "the front page in ja", rankCore},
-		{"/en/", "site/settings.json", "/languages/1", "the front page in en", rankCore},
-		{"/en/page/2/", "site/settings.json", "/languages/1", "the front page in en", rankCore},
-		{"/about/", revisionFile(aboutID), "/slug", revisionFile(aboutID), rankDocument},
-		{"/news/page/2/", revisionFile(newsID), "/slug", revisionFile(newsID), rankDocument},
-		{"/category/news/", fileOf(content.RefTerm, newsCategoryID), "/slug", fileOf(content.RefTerm, newsCategoryID), rankDocument},
-		{"/en/author/yamada/", fileOf(content.RefAuthor, authorID), "/slug", fileOf(content.RefAuthor, authorID), rankDocument},
-		{"/works/", "site/schema.yaml", "/types/works/archive", schema + "ja", rankDeveloper},
-		{"/en/works/", "site/schema.yaml", "/types/works/archive", schema + "en", rankDeveloper},
-		{"/_forms/" + formID, fileOf(content.RefForm, formID), "/id", fileOf(content.RefForm, formID), rankDocument},
-		{"/404.html", "", "", "the 404 page in ja", rankCore},
-		{"/en/feed/", "", "", "the feed in en", rankCore},
-		{"/sitemap.xml", "", "", "the sitemap", rankCore},
-		{"/css/site.css", "", "", "the site CSS", rankCore},
-		{"/.htaccess", "", "", "the .htaccess file for Apache", rankCore},
+		{"/", "site/settings.json", "/frontPage/ja", "the front page in ja", siteplan.RankCore},
+		{"/en/", "site/settings.json", "/languages/1", "the front page in en", siteplan.RankCore},
+		{"/en/page/2/", "site/settings.json", "/languages/1", "the front page in en", siteplan.RankCore},
+		{"/about/", revisionFile(aboutID), "/slug", revisionFile(aboutID), siteplan.RankDocument},
+		{"/news/page/2/", revisionFile(newsID), "/slug", revisionFile(newsID), siteplan.RankDocument},
+		{"/category/news/", fileOf(content.RefTerm, newsCategoryID), "/slug", fileOf(content.RefTerm, newsCategoryID), siteplan.RankDocument},
+		{"/en/author/yamada/", fileOf(content.RefAuthor, authorID), "/slug", fileOf(content.RefAuthor, authorID), siteplan.RankDocument},
+		{"/works/", "site/schema.yaml", "/types/works/archive", schema + "ja", siteplan.RankDeveloper},
+		{"/en/works/", "site/schema.yaml", "/types/works/archive", schema + "en", siteplan.RankDeveloper},
+		{"/_forms/" + formID, fileOf(content.RefForm, formID), "/id", fileOf(content.RefForm, formID), siteplan.RankDocument},
+		{"/404.html", "", "", "the 404 page in ja", siteplan.RankCore},
+		{"/en/feed/", "", "", "the feed in en", siteplan.RankCore},
+		{"/sitemap.xml", "", "", "the sitemap", siteplan.RankCore},
+		{"/css/site.css", "", "", "the site CSS", siteplan.RankCore},
+		{"/.htaccess", "", "", "the .htaccess file for Apache", siteplan.RankCore},
 	} {
 		o := outputAt(b, tt.path)
 		if o == nil {
 			t.Errorf("no output at %q", tt.path)
 			continue
 		}
-		got := fmt.Sprintf("%s %s %q %d", o.src.file.Name, o.src.pointer, o.src.what, o.rank)
+		got := fmt.Sprintf("%s %s %q %d", o.Src.File.Name, o.Src.Pointer, o.Src.What, o.Rank)
 		if want := fmt.Sprintf("%s %s %q %d", tt.file, tt.pointer, tt.what, tt.rank); got != want {
 			t.Errorf("source of %q = %s, want %s", tt.path, got, want)
 		}
@@ -393,8 +394,8 @@ func TestPlanSettings(t *testing.T) {
 			want: map[string]string{"/assets/css/style.css": "assets/css/style.css", "/assets/logo.svg": "assets/logo.svg"},
 			check: func(t *testing.T, b *builder) {
 				o := outputAt(b, "/assets/css/style.css")
-				if got := fmt.Sprintf("%s %q %q %d", o.src.file.Name, o.src.pointer, o.src.what, o.rank); got !=
-					fmt.Sprintf("theme/assets/css/style.css \"\" \"theme/assets/css/style.css\" %d", rankDeveloper) {
+				if got := fmt.Sprintf("%s %q %q %d", o.Src.File.Name, o.Src.Pointer, o.Src.What, o.Rank); got !=
+					fmt.Sprintf("theme/assets/css/style.css \"\" \"theme/assets/css/style.css\" %d", siteplan.RankDeveloper) {
 					t.Errorf("source of the asset = %s", got)
 				}
 			},
@@ -408,7 +409,7 @@ func TestPlanSettings(t *testing.T) {
 			},
 			want: map[string]string{"/en/": "en/index.html", "/en/about/": "-", "/en/page/2/": "-"},
 			check: func(t *testing.T, b *builder) {
-				if pg := pageAt(b, "/en/"); pg.kind != theme.KindEntry || !pg.front || pg.entry.e.ID != enAboutID {
+				if pg := pageAt(b, "/en/"); pg.kind != theme.KindEntry || !pg.front || pg.entry.E.ID != enAboutID {
 					t.Errorf("page at /en/ = %+v", pg)
 				}
 				for _, pg := range b.pages {
@@ -472,19 +473,5 @@ func TestPlanErrors(t *testing.T) {
 	}
 	if got := errorTexts(t, err); !slices.Equal(got, want) {
 		t.Errorf("errors:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-}
-
-func TestBasePath(t *testing.T) {
-	for _, tt := range []struct{ in, want string }{
-		{"https://example.com", ""},
-		{"https://example.com/blog", "/blog"},
-		{"http://localhost:8080/a/b", "/a/b"},
-		{"https://example.com/ブログ", "/ブログ"},
-		{"https://example.com/%E3%83%96", "/%E3%83%96"},
-	} {
-		if got := basePath(tt.in); got != tt.want {
-			t.Errorf("basePath(%q) = %q, want %q", tt.in, got, tt.want)
-		}
 	}
 }
