@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -919,6 +920,484 @@ func TestRebuildIndex(t *testing.T) {
 	})
 }
 
+// indexWrites is a backendTx that notes the writes to the index that go through it, as indexWrite says.
+type indexWrites struct {
+	backendTx
+	writes []string
+}
+
+// indexWrite is how indexWrites notes the write op, "put" or "delete", of the row key of table.
+func indexWrite(op string, table indexTable, key []byte) string {
+	return fmt.Sprintf("%s %s %q", op, indexTableNames[table], key)
+}
+
+func (w *indexWrites) indexPut(table indexTable, key, value []byte) error {
+	w.writes = append(w.writes, indexWrite("put", table, key))
+	return w.backendTx.indexPut(table, key, value)
+}
+
+func (w *indexWrites) indexDelete(table indexTable, key []byte) error {
+	w.writes = append(w.writes, indexWrite("delete", table, key))
+	return w.backendTx.indexDelete(table, key)
+}
+
+func (w *indexWrites) setLastNumber(n int64) error {
+	w.writes = append(w.writes, fmt.Sprintf("number %d", n))
+	return w.backendTx.setLastNumber(n)
+}
+
+// rebuildWrites runs RebuildIndex in an Update of s, and returns its writes to the index, sorted.
+func rebuildWrites(t *testing.T, s *Store) []string {
+	t.Helper()
+	w := new(indexWrites)
+	update(t, s, func(tx *Tx) error {
+		w.backendTx = tx.b
+		tx.b = w
+		return tx.RebuildIndex()
+	})
+	slices.Sort(w.writes)
+	return w.writes
+}
+
+// TestRebuildIndexWrites checks that RebuildIndex writes only what the index lacks, has too much, or has with another
+// value: nothing if the index is right, and the one write that repairs each kind of damage; and that in the engine it
+// commits nothing for an index that is right, and little for a row that is missing.
+func TestRebuildIndexWrites(t *testing.T) {
+	ops := []string{"op_A", "op_B"}
+	pageRow := docKey(content.RefEntry, pageID)
+	termRow := docKey(content.RefTerm, termID)
+	menuRow := docKey(content.RefMenu, menuID)
+	extraRow := docKey(content.RefTerm, "trm_01JE0000000000000000000077")
+	published := refKey(mediaID, content.RefEntry, entryID, RolePublished)
+	publishedTerm := refKey(termID, content.RefEntry, entryID, RolePublished)
+	extraRef := refKey(medium2, content.RefTerm, termID, RoleDocument)
+	junk := []byte("junk")
+
+	eachStore(t, func(t *testing.T, s *Store) {
+		fillIndexStore(t, s)
+		before := readIndexState(t, s, ops...)
+		// The row of another document, to put as the value of a row.
+		var formRow []byte
+		view(t, s, func(tx *Tx) error {
+			v, _, err := tx.b.indexGet(indexSummaries, docKey(content.RefForm, formID))
+			formRow = bytes.Clone(v)
+			return err
+		})
+		if w := rebuildWrites(t, s); len(w) != 0 {
+			t.Errorf("RebuildIndex() of an index that is right wrote %q, want nothing", w)
+		}
+
+		put := func(table indexTable, key, value []byte) func(backendTx) error {
+			return func(b backendTx) error { return b.indexPut(table, key, value) }
+		}
+		del := func(table indexTable, key []byte) func(backendTx) error {
+			return func(b backendTx) error { return b.indexDelete(table, key) }
+		}
+		damages := []struct {
+			name   string
+			do     func(b backendTx) error
+			repair string // the write that repairs it
+		}{
+			{"a summary that is missing", del(indexSummaries, pageRow), indexWrite("put", indexSummaries, pageRow)},
+			{"a summary with another value", put(indexSummaries, termRow, []byte("not JSON")),
+				indexWrite("put", indexSummaries, termRow)},
+			{"a summary that is the row of another document", put(indexSummaries, menuRow, formRow),
+				indexWrite("put", indexSummaries, menuRow)},
+			{"a summary that nothing gives", put(indexSummaries, extraRow, formRow),
+				indexWrite("delete", indexSummaries, extraRow)},
+			{"a summary with a key that is not one", put(indexSummaries, junk, formRow),
+				indexWrite("delete", indexSummaries, junk)},
+			{"a reference that is missing", del(indexReferences, published),
+				indexWrite("put", indexReferences, published)},
+			{"a reference with a value", put(indexReferences, publishedTerm, []byte("x")),
+				indexWrite("put", indexReferences, publishedTerm)},
+			{"a reference that nothing gives", put(indexReferences, extraRef, nil),
+				indexWrite("delete", indexReferences, extraRef)},
+			{"a reference with a key that is not one", put(indexReferences, junk, nil),
+				indexWrite("delete", indexReferences, junk)},
+			{"a last number below the entries", func(b backendTx) error { return b.setLastNumber(3) }, "number 8"},
+		}
+		var all []string
+		for _, d := range damages {
+			all = append(all, d.repair)
+			t.Run(d.name, func(t *testing.T) {
+				update(t, s, func(tx *Tx) error { return d.do(tx.b) })
+				if got := rebuildWrites(t, s); !slices.Equal(got, []string{d.repair}) {
+					t.Errorf("RebuildIndex() wrote %q, want %q", got, d.repair)
+				}
+				checkIndexState(t, s, before, ops...)
+				checkConsistent(t, s)
+			})
+		}
+
+		// All the damage at once.
+		update(t, s, func(tx *Tx) error {
+			for _, d := range damages {
+				if err := d.do(tx.b); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		slices.Sort(all)
+		if got := rebuildWrites(t, s); !slices.Equal(got, all) {
+			t.Errorf("RebuildIndex() of all the damage wrote %q, want %q", got, all)
+		}
+		checkIndexState(t, s, before, ops...)
+		checkConsistent(t, s)
+	})
+
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, c := benchStore(t, tb, filepath.Join(t.TempDir(), "data"), true)
+		t.Cleanup(func() { benchClose(t, s, c) })
+		fillIndexStore(t, s)
+		lastCommit := func() (seq uint64) {
+			t.Helper()
+			if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+				seq = tx.Seq()
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return seq
+		}
+		rebuild := func() { update(t, s, func(tx *Tx) error { return tx.RebuildIndex() }) }
+
+		seq, counts := lastCommit(), c.Counts()
+		rebuild()
+		if got, now := lastCommit(), c.Counts(); got != seq || now != counts {
+			t.Errorf("RebuildIndex() of an index that is right has written: the last commit is %d, want %d; the files "+
+				"have %+v, want %+v", got, seq, now, counts)
+		}
+
+		update(t, s, func(tx *Tx) error { return tx.b.indexDelete(indexReferences, published) })
+		seq, counts = lastCommit(), c.Counts()
+		rebuild()
+		const most = 1024
+		if got, written := lastCommit(), c.Counts().BytesWritten-counts.BytesWritten; got != seq+1 || written > most {
+			t.Errorf("RebuildIndex() of an index with a row missing has made %d commits and written %d bytes, want 1 "+
+				"and at most %d", got-seq, written, most)
+		}
+		checkConsistent(t, s)
+	})
+}
+
+// decodesAsRow reports whether value is a row of summaries by its form alone, whatever document it is the row of.
+func decodesAsRow(value []byte) bool {
+	var r summaryRow
+	return json.Unmarshal(value, &r, json.RejectUnknownMembers(true)) == nil
+}
+
+// TestIndexDamagedRows checks that the reads of the index fail, with the row or the key in the error, for the rows and
+// keys that the index cannot have, which damage or another program may leave, for each way in which they are wrong; and
+// that RebuildIndex repairs them.
+func TestIndexDamagedRows(t *testing.T) {
+	ops := []string{"op_A", "op_B"}
+	const nul = "\x00"
+	join := func(fields ...string) string { return strings.Join(fields, nul) }
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, _ := newStore(t, tb)
+		fillIndexStore(t, s)
+		before := readIndexState(t, s, ops...)
+		write := func(t *testing.T, table uint32, key string, value []byte) {
+			t.Helper()
+			rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(table, []byte(key), value) })
+		}
+		repair := func(t *testing.T) {
+			t.Helper()
+			update(t, s, func(tx *Tx) error { return tx.RebuildIndex() })
+			checkIndexState(t, s, before, ops...)
+			checkConsistent(t, s)
+		}
+		// row returns the value of the row of summaries of the document of kind with id.
+		row := func(kind content.RefKind, id string) []byte {
+			t.Helper()
+			var value []byte
+			if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+				value = bytes.Clone(mustGet(tx, tableSummaries, string(docKey(kind, id))))
+				return nil
+			}); err != nil || value == nil {
+				t.Fatalf("the row of the %s %q = %q, %v", kind, id, value, err)
+			}
+			return value
+		}
+		checkError := func(t *testing.T, what string, err error, want string) {
+			t.Helper()
+			if err == nil || err.Error() != want || errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("%s = %v, want an error %q that does not wrap fs.ErrNotExist", what, err, want)
+			}
+		}
+
+		t.Run("values", func(t *testing.T) {
+			for _, tt := range []struct {
+				name   string
+				kind   content.RefKind
+				id     string
+				change func(r *summaryRow)
+			}{
+				{"an entry with the pointer of a term", content.RefEntry, pageID, func(r *summaryRow) {
+					r.Entry, r.Term = nil, &content.Term{ID: termID}
+				}},
+				{"an entry without its pointer", content.RefEntry, pageID, func(r *summaryRow) { r.Entry = nil }},
+				{"an entry with the pointers of a term and a form", content.RefEntry, pageID, func(r *summaryRow) {
+					r.Term, r.Form = &content.Term{ID: termID}, &content.Form{ID: formID}
+				}},
+				{"a term with the pointer of an entry", content.RefTerm, termID, func(r *summaryRow) {
+					r.Term, r.Entry = nil, &content.Entry{ID: pageID}
+				}},
+				{"a term with the pointer of a medium", content.RefTerm, termID, func(r *summaryRow) {
+					r.Term, r.Media = nil, &content.Media{ID: mediaID}
+				}},
+				{"a term with the pointers of a term and a medium", content.RefTerm, termID, func(r *summaryRow) {
+					r.Media = &content.Media{ID: mediaID}
+				}},
+				{"a term with a published revision", content.RefTerm, termID, func(r *summaryRow) {
+					r.Published = &content.Revision{Slug: "x"}
+				}},
+				{"a term with a last revision", content.RefTerm, termID, func(r *summaryRow) { r.Latest = revisionID }},
+				{"a form without its pointer", content.RefForm, formID, func(r *summaryRow) { r.Form = nil }},
+				{"the settings document with a pointer", SettingsKind, "", func(r *summaryRow) {
+					r.Form = &content.Form{ID: formID}
+				}},
+				{"a term with the role published", content.RefTerm, termID, func(r *summaryRow) {
+					r.setRefs(RolePublished, []string{mediaID})
+				}},
+				{"a term with the role latest", content.RefTerm, termID, func(r *summaryRow) {
+					r.setRefs(RoleLatest, []string{mediaID})
+				}},
+				{"a term with the role publishes", content.RefTerm, termID, func(r *summaryRow) {
+					r.setRefs(rolePublishes, []string{revisionID})
+				}},
+				{"the settings document with the role latest", SettingsKind, "", func(r *summaryRow) {
+					r.setRefs(RoleLatest, []string{mediaID})
+				}},
+				{"an entry with an unknown role", content.RefEntry, pageID, func(r *summaryRow) {
+					r.setRefs("draft", []string{mediaID})
+				}},
+				{"a term with an unknown role", content.RefTerm, termID, func(r *summaryRow) {
+					r.setRefs("draft", []string{mediaID})
+				}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					r, err := readRow(tt.kind, docKey(tt.kind, tt.id), row(tt.kind, tt.id))
+					if err != nil {
+						t.Fatal(err)
+					}
+					tt.change(&r)
+					value, err := r.marshal()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !decodesAsRow(value) {
+						t.Fatalf("the row %s does not decode, so it does not test the kind of the document", value)
+					}
+					key := docKey(tt.kind, tt.id)
+					write(t, tableSummaries, string(key), value)
+					want := fmt.Sprintf("summaries %q: invalid value", key)
+					view(t, s, func(tx *Tx) error {
+						_, err := tx.Summary(tt.kind, tt.id)
+						checkError(t, "Summary()", err, want)
+						_, err = tx.Summaries(tt.kind)
+						checkError(t, "Summaries()", err, want)
+						return nil
+					})
+					// A write of the document fails: the old references are not known.
+					err = s.Update(t.Context(), func(tx *Tx) error {
+						_, err := tx.Put(tt.kind, tt.id, docJSON(tt.kind, tt.id), userID)
+						return err
+					})
+					checkError(t, "Put()", err, want)
+					if tt.kind == content.RefEntry {
+						err = s.Update(t.Context(), func(tx *Tx) error {
+							_, err := tx.AddRevision(tt.id, revision4, revisionJSON(`"slug": "x"`), userID)
+							return err
+						})
+						checkError(t, "AddRevision()", err, want)
+					}
+					repair(t)
+				})
+			}
+		})
+
+		t.Run("keys of summaries", func(t *testing.T) {
+			for _, tt := range []struct {
+				name string
+				kind content.RefKind
+				id   string // of the key
+				like string // the ID of a document of the kind, whose row the row has
+			}{
+				{"an ID that is not one", content.RefTerm, "trm_x", termID},
+				{"an ID of another kind", content.RefTerm, pageID, termID},
+				{"an ID in lower case", content.RefTerm, strings.ToLower(termID), termID},
+				{"an ID with a byte more", content.RefTerm, termID + "0", termID},
+				{"an ID with a NUL", content.RefTerm, term2 + nul + "x", termID},
+				{"an empty ID", content.RefTerm, "", termID},
+				{"an entry with the ID of a term", content.RefEntry, termID, entryID},
+				{"the settings document with an ID", SettingsKind, entryID, ""},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					key := docKey(tt.kind, tt.id)
+					write(t, tableSummaries, string(key), row(tt.kind, tt.like))
+					view(t, s, func(tx *Tx) error {
+						_, err := tx.Summaries(tt.kind)
+						checkError(t, "Summaries()", err, fmt.Sprintf("summaries %q: invalid key", key))
+						// The rows of the other kinds are read.
+						if sums, err := tx.Summaries(content.RefMedia); err != nil || len(sums) != 1 {
+							t.Errorf("Summaries(media) = %d summaries, %v; want 1", len(sums), err)
+						}
+						return nil
+					})
+					repair(t)
+				})
+			}
+		})
+
+		// The keys of references that no document can make, under the ID of a medium, which Referrers reads; and
+		// under that of a revision, which AddRevision reads for the entries that publish it.
+		type keyCase struct{ name, rest string }
+		invalidKeys := func(t *testing.T, target string, cases []keyCase, read func(tx *Tx) error) {
+			t.Helper()
+			for _, tt := range cases {
+				t.Run(tt.name, func(t *testing.T) {
+					key := join(target, tt.rest)
+					write(t, tableReferences, key, nil)
+					err := s.Update(t.Context(), read)
+					checkError(t, "the read", err, fmt.Sprintf("references %q: invalid key", key))
+					repair(t)
+				})
+			}
+		}
+		t.Run("keys of references for Referrers", func(t *testing.T) {
+			invalidKeys(t, mediaID, []keyCase{
+				{"nothing after the target", ""},
+				{"a kind alone", "entry"},
+				{"no role field", join("entry", entryID)},
+				{"a field more", join("entry", entryID, "document", "x")},
+				{"a kind without summaries", join("revision", revisionID, "document")},
+				{"an unknown kind", join("page", entryID, "document")},
+				{"an empty kind", join("", entryID, "document")},
+				{"an ID that is not one", join("entry", "ent_x", "document")},
+				{"an ID of another kind", join("entry", termID, "document")},
+				{"an empty ID", join("entry", "", "document")},
+				{"the settings document with an ID", join("settings", entryID, "document")},
+				{"an unknown role", join("entry", entryID, "draft")},
+				{"an empty role", join("entry", entryID, "")},
+				{"publishes, which only a revision is the target of", join("entry", entryID, "publishes")},
+				{"published of a term", join("term", termID, "published")},
+				{"latest of the settings document", join("settings", "", "latest")},
+				{"publishes of a term", join("term", termID, "publishes")},
+			}, func(tx *Tx) error {
+				_, err := tx.Referrers(content.RefMedia, mediaID)
+				return err
+			})
+			// A target that no document refers to.
+			invalidKeys(t, menuID, []keyCase{
+				{"a menu as the target", join("entry", entryID, "document")},
+			}, func(tx *Tx) error {
+				_, err := tx.Referrers(content.RefMenu, menuID)
+				return err
+			})
+		})
+		t.Run("keys of references for AddRevision", func(t *testing.T) {
+			invalidKeys(t, revision4, []keyCase{
+				{"nothing after the target", ""},
+				{"no role field", join("entry", otherEntry)},
+				{"a field more", join("entry", otherEntry, "publishes", "x")},
+				{"a kind without summaries", join("revision", revision5, "publishes")},
+				{"an unknown kind", join("page", otherEntry, "publishes")},
+				{"an ID that is not one", join("entry", "ent_x", "publishes")},
+				{"an ID of another kind", join("entry", termID, "publishes")},
+				{"the settings document with an ID", join("settings", otherEntry, "publishes")},
+				{"an unknown role", join("entry", otherEntry, "draft")},
+				{"publishes of a term", join("term", termID, "publishes")},
+				{"publishes of the settings document", join("settings", "", "publishes")},
+				{"document, which a revision is not the target of", join("entry", otherEntry, "document")},
+				{"published, which a revision is not the target of", join("entry", otherEntry, "published")},
+			}, func(tx *Tx) error {
+				_, err := tx.AddRevision(pageID, revision4, revisionJSON(`"slug": "x"`), userID)
+				return err
+			})
+			// With no damage, the revision is added, and the entries that publish it get it.
+			update(t, s, func(tx *Tx) error {
+				data := publishedEntry(otherEntry, 9, revision4)
+				if _, err := tx.Put(content.RefEntry, otherEntry, data, userID); err != nil {
+					return err
+				}
+				_, err := tx.AddRevision(pageID, revision4, revisionJSON(`"slug": "x"`), userID)
+				return err
+			})
+			checkConsistent(t, s)
+			view(t, s, func(tx *Tx) error {
+				if sum, err := tx.Summary(content.RefEntry, otherEntry); err != nil || sum.Published == nil ||
+					sum.Published.Slug != "x" {
+					t.Errorf("Summary() = %s, %v; want the published revision", summaryText(sum), err)
+				}
+				return nil
+			})
+		})
+	})
+}
+
+// TestSplitRefKey checks which keys of references the index can have, and the document and role that they say.
+func TestSplitRefKey(t *testing.T) {
+	ids := map[content.RefKind]string{
+		content.RefEntry: entryID, content.RefTerm: termID, content.RefMedia: mediaID, content.RefAuthor: authorID,
+		content.RefMenu: menuID, content.RefForm: formID, content.RefRedirect: redirectID, SettingsKind: "",
+	}
+	if len(ids) != len(indexKinds) {
+		t.Fatalf("the test has the IDs of %d kinds, and the index has documents of %d", len(ids), len(indexKinds))
+	}
+	// The parser takes the kinds that checkKey does.
+	for kind := range decoders {
+		if !slices.Contains(indexKinds, kind) {
+			t.Errorf("the kind %q is one of a document, and the index has no summaries of it", kind)
+		}
+	}
+	for _, kind := range indexKinds {
+		id, ok := ids[kind]
+		if !ok {
+			t.Fatalf("the test has no ID of the kind %q", kind)
+		}
+		key := refKey(termID, kind, id, RoleDocument)
+		if got, ok := splitRefKey(key); !ok || got != (Referrer{Kind: kind, ID: id, Role: RoleDocument}) {
+			t.Errorf("splitRefKey(%q) = %+v, %v; want the %s %q with the role document", key, got, ok, kind, id)
+		}
+	}
+	for _, tt := range []struct {
+		target string
+		role   Role
+		valid  bool
+	}{
+		{termID, RoleDocument, true}, {mediaID, RolePublished, true}, {formID, RoleLatest, true},
+		{revisionID, rolePublishes, true}, {authorID, RoleDocument, true},
+		{revisionID, RoleDocument, false}, {revisionID, RolePublished, false}, {revisionID, RoleLatest, false},
+		{termID, rolePublishes, false}, {menuID, RoleDocument, false}, {userID, RoleDocument, false},
+		{"", RoleDocument, false}, {termID, "", false},
+	} {
+		key := refKey(tt.target, content.RefEntry, entryID, tt.role)
+		got, ok := splitRefKey(key)
+		want := Referrer{Kind: content.RefEntry, ID: entryID, Role: tt.role}
+		if ok != tt.valid || ok && got != want || !ok && got != (Referrer{}) {
+			t.Errorf("splitRefKey(%q) = %+v, %v; want %+v, %v", key, got, ok, want, tt.valid)
+		}
+	}
+	for _, kind := range indexKinds {
+		if kind == content.RefEntry {
+			continue
+		}
+		for _, role := range []Role{RolePublished, RoleLatest, rolePublishes} {
+			target := termID
+			if role == rolePublishes {
+				target = revisionID
+			}
+			if got, ok := splitRefKey(refKey(target, kind, ids[kind], role)); ok {
+				t.Errorf("splitRefKey() of the %s %q with the role %s = %+v, true; want false: only an entry has it",
+					kind, ids[kind], role, got)
+			}
+		}
+	}
+}
+
 // injectDocument makes data the current version of the document of kind with id behind the back of the store, past its
 // index, as a document that another version of this program has written.
 func injectDocument(t *testing.T, s *Store, kind content.RefKind, id string, data []byte) {
@@ -1167,17 +1646,24 @@ func TestIndexUpgrade(t *testing.T) {
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() = %v", err)
 		}
+		// The error says where the upgrade failed, and wraps the cause.
+		upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 2, so the store is unchanged: "
 		var first string
 		for i := range 2 {
 			c, err := open(dir, logOpts(o))
 			if err == nil {
 				_ = c.Close()
 			}
+			var cause string
+			if u := errors.Unwrap(err); u != nil {
+				cause = u.Error()
+			}
 			// The second failure is the same: the first has released the lock.
 			switch {
-			case err == nil || !strings.HasPrefix(err.Error(), "object sha256:") ||
-				!strings.Contains(err.Error(), ": the data has the hash "):
-				t.Fatalf("open() of a store of the schema 1 with a changed object = %v, want an error of its hash", err)
+			case err == nil || err.Error() != upgrade+cause || !strings.HasPrefix(cause, "object sha256:") ||
+				!strings.Contains(cause, ": the data has the hash "):
+				t.Fatalf("open() of a store of the schema 1 with a changed object = %v, want the error of its upgrade "+
+					"and, after it, the error of its hash", err)
 			case i == 0:
 				first = err.Error()
 			case err.Error() != first:

@@ -138,8 +138,9 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion: a store of the
-// schema 1 gets its index, and the schema 2, in one Update, so that a failure leaves the store as it was.
-func upgradeLog(b *logBackend) error {
+// schema 1 gets its index, and the schema 2, in one Update, so that a failure leaves the store as it was. name is that
+// of its logdb/ in errors.
+func upgradeLog(b *logBackend, name string) error {
 	upgrade := false
 	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
 		v, _ := tx.Get(tableMeta, []byte(metaSchema))
@@ -149,13 +150,17 @@ func upgradeLog(b *logBackend) error {
 	}); err != nil || !upgrade {
 		return err
 	}
-	return b.db.Update(context.Background(), func(tx *logdb.Tx) error {
+	if err := b.db.Update(context.Background(), func(tx *logdb.Tx) error {
 		// The schema first, so that the index methods find the schema that they need.
 		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, indexSchema)); err != nil {
 			return err
 		}
 		return (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() })
-	})
+	}); err != nil {
+		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name, indexSchema,
+			err)
+	}
+	return nil
 }
 
 func (b *logBackend) view(ctx context.Context, f func(backendTx) error) error {

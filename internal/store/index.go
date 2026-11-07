@@ -99,13 +99,49 @@ var indexTableNames = [numIndexTables]string{
 	indexSummaries: "summaries", indexReferences: "references", indexOperations: "operations",
 }
 
-// readRow decodes value, that of key in summaries.
-func readRow(key, value []byte) (summaryRow, error) {
+// readRow decodes value, that of key in summaries, the row of a document of kind.
+func readRow(kind content.RefKind, key, value []byte) (summaryRow, error) {
 	var r summaryRow
-	if err := json.Unmarshal(value, &r, json.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(value, &r, json.RejectUnknownMembers(true)); err != nil || !r.fits(kind) {
 		return summaryRow{}, fmt.Errorf("%s %q: invalid value", indexTableNames[indexSummaries], key)
 	}
 	return r, nil
+}
+
+func invalidKey(table indexTable, key []byte) error {
+	return fmt.Errorf("%s %q: invalid key", indexTableNames[table], key)
+}
+
+// fits reports whether r can be the row of a document of kind: it has the pointer of kind and no other pointer, and
+// only an entry has a published revision, a last revision, and the roles published, latest and publishes.
+func (r *summaryRow) fits(kind content.RefKind) bool {
+	for _, p := range []struct {
+		kind content.RefKind
+		set  bool
+	}{
+		{content.RefEntry, r.Entry != nil}, {content.RefTerm, r.Term != nil}, {content.RefMedia, r.Media != nil},
+		{content.RefAuthor, r.Author != nil}, {content.RefMenu, r.Menu != nil}, {content.RefForm, r.Form != nil},
+		{content.RefRedirect, r.Redirect != nil},
+	} {
+		if p.set != (p.kind == kind) {
+			return false
+		}
+	}
+	if kind != content.RefEntry && (r.Published != nil || r.Latest != "") {
+		return false
+	}
+	for role := range r.Refs {
+		switch role {
+		case RoleDocument:
+		case RolePublished, RoleLatest, rolePublishes:
+			if kind != content.RefEntry {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (r *summaryRow) marshal() ([]byte, error) {
@@ -300,13 +336,14 @@ func (t *Tx) latest(row *summaryRow, entry, published string, publishedData []by
 	return nil
 }
 
-// loadRow returns the row of summaries at key, and its value.
-func (t *Tx) loadRow(key []byte) (row summaryRow, value []byte, ok bool, err error) {
+// loadRow returns the row of the document of kind with id in summaries, and its value.
+func (t *Tx) loadRow(kind content.RefKind, id string) (row summaryRow, value []byte, ok bool, err error) {
+	key := docKey(kind, id)
 	value, ok, err = t.b.indexGet(indexSummaries, key)
 	if err != nil || !ok {
 		return summaryRow{}, nil, false, err
 	}
-	if row, err = readRow(key, value); err != nil {
+	if row, err = readRow(kind, key, value); err != nil {
 		return summaryRow{}, nil, false, err
 	}
 	return row, value, true, nil
@@ -364,7 +401,7 @@ func (t *Tx) updateRefs(kind content.RefKind, id string, old, now map[Role][]str
 // indexDocument updates the index after Put has saved data, the JSON of the document of kind with id, which has
 // decoded as doc; or, with data nil, after Delete has deleted the document.
 func (t *Tx) indexDocument(kind content.RefKind, id string, doc any, data []byte) error {
-	old, oldValue, hadOld, err := t.loadRow(docKey(kind, id))
+	old, oldValue, hadOld, err := t.loadRow(kind, id)
 	if err != nil {
 		return err
 	}
@@ -418,17 +455,26 @@ func (t *Tx) entryRow(row *summaryRow, id string, e *content.Entry, old summaryR
 func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte) error {
 	entries := []string{entry}
 	prefix := append([]byte(id), 0)
+	var rerr error
 	if err := t.b.indexScan(indexReferences, prefix, func(key, _ []byte) bool {
-		if kind, source, role, ok := splitRefKey(key[len(prefix):]); ok && kind == content.RefEntry &&
-			role == rolePublishes && source != entry {
-			entries = append(entries, source)
+		r, ok := splitRefKey(key)
+		if !ok {
+			rerr = invalidKey(indexReferences, key)
+			return false
+		}
+		// Under the ID of a revision, a key is that of the entry that publishes it.
+		if r.ID != entry {
+			entries = append(entries, r.ID)
 		}
 		return true
 	}); err != nil {
 		return err
 	}
+	if rerr != nil {
+		return rerr
+	}
 	for _, e := range entries {
-		old, oldValue, ok, err := t.loadRow(docKey(content.RefEntry, e))
+		old, oldValue, ok, err := t.loadRow(content.RefEntry, e)
 		if err != nil {
 			return err
 		}
@@ -453,13 +499,30 @@ func (t *Tx) indexRevision(entry, id string, rev *content.Revision, data []byte)
 	return nil
 }
 
-// splitRefKey splits what follows the target in a key of references into the kind and ID of the document, and the role.
-func splitRefKey(rest []byte) (kind content.RefKind, id string, role Role, ok bool) {
-	fields := bytes.Split(rest, []byte{0})
-	if len(fields) != 3 {
-		return "", "", "", false
+// splitRefKey splits key, a key of references, into the document that refers and the role. It reports false for a key
+// that the index cannot make: a document that has no summary, a role that its kind does not have (only an entry has
+// published, latest and publishes), or a target that the role does not take (only publishes takes a revision).
+func splitRefKey(key []byte) (Referrer, bool) {
+	target, rest, ok1 := bytes.Cut(key, []byte{0})
+	kind, rest, ok2 := bytes.Cut(rest, []byte{0})
+	id, role, ok3 := bytes.Cut(rest, []byte{0})
+	r := Referrer{Kind: content.RefKind(kind), ID: string(id), Role: Role(role)}
+	if !ok1 || !ok2 || !ok3 || checkKey(r.Kind, r.ID) != nil {
+		return Referrer{}, false
 	}
-	return content.RefKind(fields[0]), string(fields[1]), Role(fields[2]), true
+	var ok bool
+	switch r.Role {
+	case RoleDocument:
+		ok = isRefID(string(target))
+	case RolePublished, RoleLatest:
+		ok = r.Kind == content.RefEntry && isRefID(string(target))
+	case rolePublishes:
+		ok = r.Kind == content.RefEntry && content.CheckID(content.RefRevision, string(target)) == nil
+	}
+	if !ok {
+		return Referrer{}, false
+	}
+	return r, true
 }
 
 // raiseNumber makes n the largest number that an entry has had, if it is larger than that.
@@ -495,8 +558,7 @@ func (t *Tx) Summary(kind content.RefKind, id string) (Summary, error) {
 	if err := t.checkIndex(); err != nil {
 		return Summary{}, err
 	}
-	key := docKey(kind, id)
-	row, _, ok, err := t.loadRow(key)
+	row, _, ok, err := t.loadRow(kind, id)
 	switch {
 	case err != nil:
 		return Summary{}, err
@@ -506,7 +568,8 @@ func (t *Tx) Summary(kind content.RefKind, id string) (Summary, error) {
 	return row.summary(kind, id), nil
 }
 
-// Summaries returns the summaries of the current documents of kind, in the order of their IDs.
+// Summaries returns the summaries of the current documents of kind, in the order of their IDs. A key or a row that the
+// index cannot have fails it.
 func (t *Tx) Summaries(kind content.RefKind) ([]Summary, error) {
 	if err := t.check(false); err != nil {
 		return nil, err
@@ -521,11 +584,16 @@ func (t *Tx) Summaries(kind content.RefKind) ([]Summary, error) {
 	var sums []Summary
 	var rerr error
 	if err := t.b.indexScan(indexSummaries, prefix, func(key, value []byte) bool {
-		var row summaryRow
-		if row, rerr = readRow(key, value); rerr != nil {
+		id := string(key[len(prefix):])
+		if checkKey(kind, id) != nil {
+			rerr = invalidKey(indexSummaries, key)
 			return false
 		}
-		sums = append(sums, row.summary(kind, string(key[len(prefix):])))
+		var row summaryRow
+		if row, rerr = readRow(kind, key, value); rerr != nil {
+			return false
+		}
+		sums = append(sums, row.summary(kind, id))
 		return true
 	}); err != nil {
 		return nil, err
@@ -539,7 +607,7 @@ func (t *Tx) Summaries(kind content.RefKind) ([]Summary, error) {
 // Referrers returns the current documents that refer to the document of kind with id, with how, in the order of their
 // kinds, IDs and roles: the IDs that the JSON of a document holds, and, of an entry, those that the JSON of its
 // published and of its last revision hold. Only entries, terms, media, authors and forms are referred to; nothing
-// refers to the settings document.
+// refers to the settings document. A key that the index cannot have fails it.
 func (t *Tx) Referrers(kind content.RefKind, id string) ([]Referrer, error) {
 	if err := t.check(false); err != nil {
 		return nil, err
@@ -557,12 +625,12 @@ func (t *Tx) Referrers(kind content.RefKind, id string) ([]Referrer, error) {
 	var refs []Referrer
 	var rerr error
 	if err := t.b.indexScan(indexReferences, prefix, func(key, _ []byte) bool {
-		kind, source, role, ok := splitRefKey(key[len(prefix):])
+		r, ok := splitRefKey(key)
 		if !ok {
-			rerr = fmt.Errorf("%s %q: invalid key", indexTableNames[indexReferences], key)
+			rerr = invalidKey(indexReferences, key)
 			return false
 		}
-		refs = append(refs, Referrer{Kind: kind, ID: source, Role: role})
+		refs = append(refs, r)
 		return true
 	}); err != nil {
 		return nil, err
@@ -634,33 +702,60 @@ func (t *Tx) computeIndex(emit func(table indexTable, key, value []byte) error) 
 	return largest, nil
 }
 
-// RebuildIndex makes the index again from the current documents and the revisions: it replaces every row of summaries
-// and references with those that Put, Delete and AddRevision would have made, and raises the last number to the
-// largest of the current entries. A document that does not decode has no summary. It leaves the operations, which are
-// records, and not derived from anything.
+// RebuildIndex makes the index again from the current documents and the revisions: the rows of summaries and
+// references become those that Put, Delete and AddRevision would have made, and the last number is raised to the
+// largest of the current entries. It writes only what differs: the rows that are missing or have another value, and
+// the deletion of the rows that nothing gives, so that an index that is right gets no write. A document that does not
+// decode has no summary. It leaves the operations, which are records, and not derived from anything.
 func (t *Tx) RebuildIndex() error {
 	if err := t.check(true); err != nil {
 		return err
 	}
-	for _, table := range []indexTable{indexSummaries, indexReferences} {
-		var keys [][]byte
-		if err := t.b.indexScan(table, nil, func(key, _ []byte) bool {
-			keys = append(keys, bytes.Clone(key))
-			return true
+	tables := []indexTable{indexSummaries, indexReferences}
+	// Of each table that has rows, the keys of the rows that the index must have, to find those that it has too much.
+	// A table without rows needs neither: its rows are all to put.
+	want := map[indexTable]map[string]struct{}{}
+	for _, table := range tables {
+		empty := true
+		if err := t.b.indexScan(table, nil, func(_, _ []byte) bool {
+			empty = false
+			return false
 		}); err != nil {
 			return err
 		}
-		for _, key := range keys {
-			if err := t.b.indexDelete(table, key); err != nil {
-				return err
-			}
+		if !empty {
+			want[table] = map[string]struct{}{}
 		}
 	}
 	largest, err := t.computeIndex(func(table indexTable, key, value []byte) error {
+		if keys, ok := want[table]; ok {
+			keys[string(key)] = struct{}{}
+			if old, found, err := t.b.indexGet(table, key); err != nil || found && bytes.Equal(old, value) {
+				return err
+			}
+		}
 		return t.b.indexPut(table, key, value)
 	})
 	if err != nil {
 		return err
+	}
+	for _, table := range tables {
+		keys, ok := want[table]
+		if !ok {
+			continue
+		}
+		var derr error
+		if err := t.b.indexScan(table, nil, func(key, _ []byte) bool {
+			if _, ok := keys[string(key)]; !ok {
+				derr = t.b.indexDelete(table, key)
+			}
+			return derr == nil
+		}); err != nil {
+			return err
+		}
+		if derr != nil {
+			return derr
+		}
 	}
 	return t.raiseNumber(largest)
 }

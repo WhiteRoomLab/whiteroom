@@ -150,7 +150,8 @@ func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
 
 // Open opens the store of the data directory dir, which Create has made, as its writer. While it is open, Open in
 // another process fails after 2 seconds, and other processes read the store with OpenReader. A store of the table
-// schema 1, which has no index, gets its index and the schema 2 in one Update.
+// schema 1, which has no index, gets its index and the schema 2 in one Update; if that fails, so does Open, and the
+// store is unchanged.
 func Open(dir string) (*Store, error) {
 	return open(dir, options{})
 }
@@ -185,12 +186,13 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 		}
 	}
 	s := &Store{now: o.clock(), readOnly: reader}
-	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(filepath.Join(dir, "logdb"))), reader)
+	logName := filepath.Join(dir, "logdb")
+	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(logName)), reader)
 	if err != nil {
 		return nil, err
 	}
 	if !reader {
-		if err := upgradeLog(b); err != nil {
+		if err := upgradeLog(b, logName); err != nil {
 			_ = b.close()
 			return nil, err
 		}
