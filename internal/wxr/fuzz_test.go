@@ -3,7 +3,10 @@ package wxr
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -151,6 +154,79 @@ func checkExport(t *testing.T, data []byte, ex *Export, opts Options) {
 	}
 }
 
+// skeleton returns the markup that the decoder reads from the input for data, without the text: the kinds of the tokens
+// and the names of the elements and of their attributes. It also returns the namespace declarations with their values.
+// ok is false if the decoder fails, or reads a declaration, which the input follows less exactly than the other markup.
+func skeleton(data []byte, opts Options) (markup, namespaces string, ok bool) {
+	d := xml.NewDecoder(newInput(bytes.NewReader(data), opts.withDefaults()))
+	d.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
+	var m, ns strings.Builder
+	for {
+		tok, err := d.RawToken()
+		if err != nil {
+			return m.String(), ns.String(), errors.Is(err, io.EOF)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			fmt.Fprintf(&m, "<%s:%s", t.Name.Space, t.Name.Local)
+			for _, a := range t.Attr {
+				fmt.Fprintf(&m, " %s:%s", a.Name.Space, a.Name.Local)
+				if a.Name.Space == "xmlns" || a.Name.Space == "" && a.Name.Local == "xmlns" {
+					fmt.Fprintf(&ns, "%s:%s=%q ", a.Name.Space, a.Name.Local, a.Value)
+				}
+			}
+			m.WriteString(">")
+		case xml.EndElement:
+			fmt.Fprintf(&m, "</%s:%s>", t.Name.Space, t.Name.Local)
+		case xml.Comment:
+			m.WriteString("<!---->")
+		case xml.ProcInst:
+			m.WriteString("<??>")
+		case xml.Directive:
+			return "", "", false
+		case xml.CharData:
+		}
+	}
+}
+
+// replaceDisallowed returns data with each character that XML does not allow replaced by an x.
+func replaceDisallowed(data []byte) []byte {
+	return bytes.Map(func(r rune) rune {
+		if allowed(r) {
+			return r
+		}
+		return 'x'
+	}, data)
+}
+
+// sameStructure checks that two Exports have the same version, and the same number of authors, terms and items, which
+// have the same IDs.
+func sameStructure(a, b *Export) error {
+	switch {
+	case a.Version != b.Version:
+		return fmt.Errorf("the versions %q and %q", a.Version, b.Version)
+	case len(a.Authors) != len(b.Authors) || len(a.Terms) != len(b.Terms) || len(a.Items) != len(b.Items):
+		return fmt.Errorf("%d authors, %d terms and %d items, and %d, %d and %d", len(a.Authors), len(a.Terms), len(a.Items),
+			len(b.Authors), len(b.Terms), len(b.Items))
+	}
+	for i := range a.Authors {
+		if a.Authors[i].ID != b.Authors[i].ID {
+			return fmt.Errorf("the IDs %d and %d of author %d", a.Authors[i].ID, b.Authors[i].ID, i)
+		}
+	}
+	for i := range a.Terms {
+		if a.Terms[i].ID != b.Terms[i].ID {
+			return fmt.Errorf("the IDs %d and %d of term %d", a.Terms[i].ID, b.Terms[i].ID, i)
+		}
+	}
+	for i := range a.Items {
+		if a.Items[i].ID != b.Items[i].ID {
+			return fmt.Errorf("the IDs %d and %d of item %d", a.Items[i].ID, b.Items[i].ID, i)
+		}
+	}
+	return nil
+}
+
 func FuzzRead(f *testing.F) {
 	for _, tt := range errorCases(f) {
 		f.Add([]byte(tt.in))
@@ -168,6 +244,15 @@ func FuzzRead(f *testing.F) {
 	f.Add([]byte(wxrDoc("<title>a" + string(rune(8)) + "b</title>\n<item><wp:post_id>1</wp:post_id><wp:post_type>post</wp:post_type></item>\n")))
 	opts := Options{MaxBytes: 1 << 20, MaxItems: 1000, MaxTerms: 1000, MaxAuthors: 1000, MaxDepth: 32, MaxTagBytes: 4096}
 	f.Fuzz(func(t *testing.T, data []byte) {
+		// Removing the characters that XML does not allow does not change the structure: it is what it is with an x for
+		// each of them, unless the file is rejected, for the characters are then in markup or make the end of a section.
+		replaced := replaceDisallowed(data)
+		markup, namespaces, ok := skeleton(data, opts)
+		replacedMarkup, replacedNamespaces, replacedOK := skeleton(replaced, opts)
+		if ok && replacedOK && markup != replacedMarkup {
+			t.Errorf("Read(%q): the markup is %q, and %q with an x for each character that XML does not allow", data, markup, replacedMarkup)
+		}
+
 		ex, err := Read(context.Background(), bytes.NewReader(data), opts)
 		if err != nil {
 			var e *Error
@@ -184,6 +269,15 @@ func FuzzRead(f *testing.F) {
 			return
 		}
 		checkExport(t, data, ex, opts)
+
+		// The other file fails if the character is in a value that has a form, such as an integer, and then it is not
+		// compared. A character in the value of a namespace declaration is not markup, but it changes what the prefixes
+		// mean, so the files are not compared for it either.
+		if other, err := Read(context.Background(), bytes.NewReader(replaced), opts); err == nil && namespaces == replacedNamespaces {
+			if err := sameStructure(ex, other); err != nil {
+				t.Errorf("Read(%q): with an x for each character that XML does not allow, %v", data, err)
+			}
+		}
 	})
 }
 

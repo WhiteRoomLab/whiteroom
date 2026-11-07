@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -59,6 +61,15 @@ func readSample(t *testing.T, name string) *Export {
 		t.Fatalf("Read(%s) = %v", name, err)
 	}
 	return ex
+}
+
+func readSampleText(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // posAt returns the place of the byte at idx in s, counting lines by LF and columns by characters, without the byte
@@ -252,9 +263,13 @@ func TestReadWordPress33(t *testing.T) {
 
 func TestReadWordPress30(t *testing.T) {
 	ex := readSample(t, "wordpress-3.0.xml")
-	// The comment says wordpress in lower case, and the generator element has the same version.
-	if ex.Version != "1.0" || ex.WordPress != "3.0" {
-		t.Errorf("Version, WordPress = %q, %q, want 1.0, 3.0", ex.Version, ex.WordPress)
+	// The comment says wordpress in lower case, and the generator elements, of which WordPress 3.0 writes two, have the
+	// same version.
+	if ex.Version != "1.0" || ex.WordPress != "3.0" || ex.Channel.Generator != "http://wordpress.org/?v=3.0" {
+		t.Errorf("Version, WordPress, Generator = %q, %q, %q, want 1.0, 3.0, http://wordpress.org/?v=3.0", ex.Version, ex.WordPress, ex.Channel.Generator)
+	}
+	if got := strings.Count(readSampleText(t, "wordpress-3.0.xml"), "<generator>"); got != 2 {
+		t.Errorf("the sample has %d generator elements, want the 2 that WordPress 3.0 writes", got)
 	}
 	if len(ex.Authors) != 0 || len(ex.Terms) != 4 || len(ex.Items) != 2 {
 		t.Fatalf("%d authors, %d terms, %d items, want 0, 4, 2", len(ex.Authors), len(ex.Terms), len(ex.Items))
@@ -284,6 +299,23 @@ func TestReadWordPress30(t *testing.T) {
 	}
 }
 
+// TestGeneratorCommentIsNotCopied looks for the version in a large comment, which is not copied into a string.
+func TestGeneratorCommentIsNotCopied(t *testing.T) {
+	const size = 4 << 20
+	comment := xml.Comment(strings.Repeat("x", size) + ` generator="WordPress/6.8.3" ` + strings.Repeat("y", size))
+	p := &parser{ex: &Export{}}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	p.generator(comment)
+	runtime.ReadMemStats(&after)
+	if p.ex.WordPress != "6.8.3" {
+		t.Errorf("WordPress = %q, want 6.8.3", p.ex.WordPress)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 64<<10 {
+		t.Errorf("generator() allocated %d bytes for a comment of %d bytes, want it not to copy the comment", got, len(comment))
+	}
+}
+
 // acceptCase is a file that Read reads, with a check of what it reads.
 type acceptCase struct {
 	name  string
@@ -303,8 +335,30 @@ func acceptCases() []acceptCase {
 		`xmlns:c="http://purl.org/rss/1.0/modules/content/" xmlns:d="http://purl.org/dc/elements/1.1/">` +
 		`<channel><w:wxr_version>1.2</w:wxr_version><item><w:post_id>3</w:post_id><w:post_type>post</w:post_type>` +
 		`<d:creator>x</d:creator><c:encoded>body</c:encoded><e:encoded>excerpt</e:encoded></item></channel></rss>`
+	secondGenerator := wxrDoc("<generator>https://wordpress.org/?v=6.1</generator>\n<generator>x\x0by</generator>\n")
+	// What a plugin writes in rss2_head, such as PuSHPress, has a prefix that the export does not declare.
+	plugin := strings.Replace(head, "<channel>", `<atom:link rel="hub" href="https://hub.example.com/"/>`+"\n<channel>", 1) +
+		"<title>t</title>\n" +
+		`<atom:link rel='hub' href='https://hub.example.com/'/>` + "\n" +
+		`<atom:link rel="x"><atom:title>deep</atom:title></atom:link>` + "\n" +
+		`<wp:author><wp:author_login>a</wp:author_login><atom:link rel="x"/></wp:author>` + "\n" +
+		`<wp:category><wp:category_nicename>c</wp:category_nicename><atom:link/></wp:category>` + "\n" +
+		"<item>\n" + minimalItem + `<atom:link rel="x"/><atom:title>no title</atom:title><atom:link>text</atom:link>` + "\n</item>\n" + tail
 
 	return []acceptCase{
+		{"elements of a plugin with a prefix that the export does not declare", plugin, func(t *testing.T, ex *Export) {
+			if ex.Channel.Title != "t" || ex.Channel.Link != "" || len(ex.Authors) != 1 || len(ex.Terms) != 1 || len(ex.Items) != 1 {
+				t.Errorf("Channel = %+v, %d authors, %d terms, %d items, want the title t, no link, and 1 of each", ex.Channel, len(ex.Authors), len(ex.Terms), len(ex.Items))
+			}
+			if it := ex.Items[0]; it.Title != "" || it.Link != "" || it.ID != 1 {
+				t.Errorf("Items[0] = %+v, want the atom elements not to be its title or link", it)
+			}
+		}},
+		{"an attribute with a prefix that is not declared", itemDoc(minimalItem + `<title x:a="1">t</title><category domain="tag" nicename="n" x:y="1">N</category>`), func(t *testing.T, ex *Export) {
+			if it := ex.Items[0]; it.Title != "t" || len(it.Terms) != 1 || it.Terms[0].Slug != "n" {
+				t.Errorf("Items[0] = %+v", it)
+			}
+		}},
 		{"blank lines before the declaration", "\n \n\t" + decl + wxrDoc(""), version12},
 		{"byte order mark", "\xef\xbb\xbf" + decl + wxrDoc(""), version12},
 		{"no XML declaration", wxrDoc(""), version12},
@@ -457,6 +511,38 @@ func acceptCases() []acceptCase {
 				t.Errorf("WordPress = %q, want 6.0", ex.WordPress)
 			}
 		}},
+		{"two generator elements, as WordPress 3.0 writes them", wxrDoc("<generator>http://wordpress.org/?v=3.0</generator>\n<title>t</title>\n<generator>http://wordpress.org/?v=3.0</generator>\n"),
+			func(t *testing.T, ex *Export) {
+				if ex.WordPress != "3.0" || ex.Channel.Generator != "http://wordpress.org/?v=3.0" || ex.Channel.Title != "t" {
+					t.Errorf("WordPress, Generator, Title = %q, %q, %q", ex.WordPress, ex.Channel.Generator, ex.Channel.Title)
+				}
+			}},
+		{"the first of three generator elements", wxrDoc("<generator>https://wordpress.org/?v=6.1.2</generator>\n<generator>https://wordpress.org/?v=9.9</generator>\n<generator>other</generator>\n"),
+			func(t *testing.T, ex *Export) {
+				if ex.WordPress != "6.1.2" || ex.Channel.Generator != "https://wordpress.org/?v=6.1.2" {
+					t.Errorf("WordPress, Generator = %q, %q, want the first", ex.WordPress, ex.Channel.Generator)
+				}
+			}},
+		{"the generator comment and two generator elements", `<!-- generator="WordPress/6.0" -->` + "\n" +
+			wxrDoc("<generator>https://wordpress.org/?v=6.1.2</generator>\n<generator>https://wordpress.org/?v=9.9</generator>\n"),
+			func(t *testing.T, ex *Export) {
+				if ex.WordPress != "6.0" || ex.Channel.Generator != "https://wordpress.org/?v=6.1.2" {
+					t.Errorf("WordPress, Generator = %q, %q, want 6.0 from the comment and the first element", ex.WordPress, ex.Channel.Generator)
+				}
+			}},
+		{"an empty first generator element", wxrDoc("<generator></generator>\n<generator>https://wordpress.org/?v=6.1.2</generator>\n"),
+			func(t *testing.T, ex *Export) {
+				if ex.WordPress != "" || ex.Channel.Generator != "" {
+					t.Errorf("WordPress, Generator = %q, %q, want none: only the first element counts", ex.WordPress, ex.Channel.Generator)
+				}
+			}},
+		{"a generator element that is not the first has its removed characters noted", secondGenerator,
+			func(t *testing.T, ex *Export) {
+				if want := place(t, secondGenerator, "\x0b", 1); ex.WordPress != "6.1" || len(ex.Notes) != 1 ||
+					ex.Notes[0].Record != RecordChannel || ex.Notes[0].Pos != want {
+					t.Errorf("WordPress = %q, Notes = %+v, want one for the channel at %v", ex.WordPress, ex.Notes, want)
+				}
+			}},
 		{"a generator that is not WordPress", `<!-- generator="Other/1.0" -->` + wxrDoc("<generator>https://example.com/?v=1</generator>\n"), func(t *testing.T, ex *Export) {
 			if ex.WordPress != "" {
 				t.Errorf("WordPress = %q, want none", ex.WordPress)
@@ -497,18 +583,23 @@ func TestReadAccepts(t *testing.T) {
 }
 
 // TestRemovedCharacters puts the characters that XML does not allow where they are removed from a value, and where
-// they are not, and checks the notes.
+// they are not, and checks the notes. The characters that are in markup, or make the end of a section, are errors, which
+// errorCases has.
 func TestRemovedCharacters(t *testing.T) {
 	u := func(r rune) string { return string(r) }
 	var (
 		backspace, vtab, unitSep = u(0x08), u(0x0b), u(0x1f)
 		fffe, ffff               = u(0xfffe), u(0xffff)
-		// The characters that are removed from the values.
-		loginChar, contentChar, metaChar, attrChar = u(0x01), u(0x02), u(0x03), u(0x04)
-		// The characters that are not in a value, and not in a note.
-		commentChar, unknownChar, xmlCommentChar, endTagChar = u(0x05), u(0x06), u(0x07), u(0x0c)
-		betweenChar, wpCommentChar, unknownChar2             = u(0x0e), u(0x0f), u(0x10)
-		many                                                 = u(0x11)
+		// The characters that are removed from values: in text and CDATA sections, next to ]> and ]]> and the end of a
+		// section, and in the attributes of a category.
+		loginChar, contentChar, metaChar, attrChar, niceChar = u(0x01), u(0x02), u(0x03), u(0x04), u(0x12)
+		bracketChar, bracketsChar, beforeEndChar             = u(0x14), u(0x15), u(0x16)
+		// The characters that are not in a value, and not in a note: in the other elements, the attributes of the other
+		// elements, comments and processing instructions.
+		commentChar, unknownChar, xmlCommentChar, tagAttrChar = u(0x05), u(0x06), u(0x07), u(0x0c)
+		betweenChar, wpCommentChar, unknownChar2, piChar      = u(0x0e), u(0x0f), u(0x10), u(0x13)
+		valueCommentChar, valuePIChar                         = u(0x17), u(0x18)
+		many                                                  = u(0x11)
 	)
 	in := strings.Join([]string{
 		`<rss version="2.0" ` + nsDecl + `>`,
@@ -522,15 +613,21 @@ func TestRemovedCharacters(t *testing.T) {
 		`<wp:post_id>1</wp:post_id><wp:post_type>post</wp:post_type>`,
 		`<content:encoded><![CDATA[p` + contentChar + `q` + ffff + `r]]></content:encoded>`,
 		`<wp:postmeta><wp:meta_key>k</wp:meta_key><wp:meta_value>v` + metaChar + `</wp:meta_value></wp:postmeta>`,
-		`<category domain="post_tag` + attrChar + `" nicename="t">T</category>`,
+		`<category domain="post_tag` + attrChar + `" nicename="t` + niceChar + `">T</category>`,
 		`<wp:comment><wp:comment_content>x` + commentChar + `y</wp:comment_content></wp:comment>`,
 		`<unknown>` + unknownChar + `</unknown>`,
 		`<!-- a` + xmlCommentChar + `b -->`,
-		`<wp:post_name>n</wp:post_name` + endTagChar + `>`,
+		`<?pi a` + piChar + `b?>`,
+		`<wp:post_name x="1` + tagAttrChar + `">n</wp:post_name>`,
 		betweenChar,
 		`</item>`,
 		`<item><wp:post_id>2</wp:post_id><wp:post_type>post</wp:post_type><wp:comment>` + wpCommentChar + `</wp:comment><unknown>` + unknownChar2 + `</unknown></item>`,
 		`<item><wp:post_id>3</wp:post_id><wp:post_type>post</wp:post_type><title>` + strings.Repeat(many, 13) + `</title></item>`,
+		`<item><wp:post_id>4</wp:post_id><wp:post_type>post</wp:post_type>` +
+			`<title><![CDATA[a]` + bracketChar + `>b]]></title>` +
+			`<excerpt:encoded><![CDATA[a]]` + bracketsChar + `]]></excerpt:encoded>` +
+			`<content:encoded><![CDATA[` + beforeEndChar + `]]></content:encoded>` +
+			`<link>c<!-- x` + valueCommentChar + `y -->d<?pi x` + valuePIChar + `y?>e</link></item>`,
 		`</channel>`,
 		`</rss>`,
 		``,
@@ -543,11 +640,19 @@ func TestRemovedCharacters(t *testing.T) {
 	if ex.Authors[0].Login != "ab" || ex.Terms[0].Name != "xy" {
 		t.Errorf("Login, Name = %q, %q, want ab, xy", ex.Authors[0].Login, ex.Terms[0].Name)
 	}
-	if it := ex.Items[0]; it.Content != "pqr" || it.Meta[0].Value != "v" || it.Terms[0].Taxonomy != "post_tag" || it.Name != "n" || it.Comments != 1 {
+	if it := ex.Items[0]; it.Content != "pqr" || it.Meta[0].Value != "v" || it.Name != "n" || it.Comments != 1 {
 		t.Errorf("Items[0] = %+v", it)
+	}
+	// The values of the attributes of a category lose the characters too.
+	if ref := ex.Items[0].Terms[0]; ref.Taxonomy != "post_tag" || ref.Slug != "t" || ref.Name != "T" {
+		t.Errorf("Items[0].Terms[0] = %+v, want post_tag, t, T", ref)
 	}
 	if got := ex.Items[2].Title; got != "" {
 		t.Errorf("Items[2].Title = %q, want none", got)
+	}
+	// ]> and ]]> before the end of a CDATA section are values, and the section that is only a character is empty.
+	if it := ex.Items[3]; it.Title != "a]>b" || it.Excerpt != "a]]" || it.Content != "" || it.Link != "cde" {
+		t.Errorf("Items[3] = %q, %q, %q, %q, want a]>b, a]], an empty content and cde", it.Title, it.Excerpt, it.Content, it.Link)
 	}
 
 	// listed returns the part of a note that lists the characters, at the places that the file has them.
@@ -569,8 +674,9 @@ func TestRemovedCharacters(t *testing.T) {
 		{Pos: place(t, in, backspace, 1), Record: RecordChannel, Index: 0, Msg: fmt.Sprintf(msg, 3, listed(backspace, vtab, unitSep))},
 		{Pos: place(t, in, loginChar, 1), Record: RecordAuthor, Index: 0, Msg: "removed 1 character that XML does not allow: " + listed(loginChar)},
 		{Pos: place(t, in, fffe, 1), Record: RecordTerm, Index: 0, Msg: "removed 1 character that XML does not allow: " + listed(fffe)},
-		{Pos: place(t, in, contentChar, 1), Record: RecordItem, Index: 0, Msg: fmt.Sprintf(msg, 4, listed(contentChar, ffff, metaChar, attrChar))},
+		{Pos: place(t, in, contentChar, 1), Record: RecordItem, Index: 0, Msg: fmt.Sprintf(msg, 5, listed(contentChar, ffff, metaChar, attrChar, niceChar))},
 		{Pos: place(t, in, many, 1), Record: RecordItem, Index: 2, Msg: fmt.Sprintf(msg, 13, strings.Join(manyPlaces, ", ")+", and 3 more")},
+		{Pos: place(t, in, bracketChar, 1), Record: RecordItem, Index: 3, Msg: fmt.Sprintf(msg, 3, listed(bracketChar, bracketsChar, beforeEndChar))},
 	}
 	if len(ex.Notes) != len(want) {
 		for _, n := range ex.Notes {
@@ -586,10 +692,10 @@ func TestRemovedCharacters(t *testing.T) {
 }
 
 func TestRemovedCharactersInEmptyValues(t *testing.T) {
-	c1, c2, c3 := string(rune(1)), string(rune(2)), string(rune(3))
+	c1, c2 := string(rune(1)), string(rune(2))
 	// A value that is only removed characters is empty, and they are noted. The character after <title/> is not in a
-	// value, and neither is the one in the end tag.
-	in := itemDoc(minimalItem + "<title/>" + c1 + "<link>" + c2 + "</link" + c3 + ">\n")
+	// value.
+	in := itemDoc(minimalItem + "<title/>" + c1 + "<link>" + c2 + "</link>\n")
 	ex := read(t, in)
 	if got := ex.Items[0]; got.Title != "" || got.Link != "" {
 		t.Errorf("Title, Link = %q, %q, want none", got.Title, got.Link)
@@ -602,15 +708,15 @@ func TestRemovedCharactersInEmptyValues(t *testing.T) {
 }
 
 func TestRemovedCharactersBeforeTags(t *testing.T) {
-	// A removed character before a start tag does not move the place of the record, and one in the start tag, between
-	// the elements, or after the last one is not in the note.
+	// A removed character before a start tag does not move the place of the record, and one in the value of an attribute
+	// of the start tag, between the elements, or after the last one is not in the note.
 	bs := string(rune(0x08))
-	in := wxrDoc("<wp:author><wp:author_login>a</wp:author_login></wp:author>" + bs + "<wp:author" + bs + "><wp:author_login>b</wp:author_login></wp:author" + bs + ">" + bs + "\n")
+	in := wxrDoc("<wp:author><wp:author_login>a</wp:author_login></wp:author>" + bs + `<wp:author x="` + bs + `"><wp:author_login>b</wp:author_login></wp:author>` + bs + "\n")
 	ex := read(t, in)
 	if len(ex.Authors) != 2 || len(ex.Notes) != 0 {
 		t.Fatalf("%d authors, %d notes, want 2, 0", len(ex.Authors), len(ex.Notes))
 	}
-	if want := place(t, in, "<wp:author"+bs+">", 1); ex.Authors[1].Pos != want {
+	if want := place(t, in, `<wp:author x="`+bs+`">`, 1); ex.Authors[1].Pos != want {
 		t.Errorf("Authors[1].Pos = %v, want %v", ex.Authors[1].Pos, want)
 	}
 }

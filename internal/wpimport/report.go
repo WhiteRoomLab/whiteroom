@@ -185,6 +185,19 @@ func (s Source) location() string {
 	return strings.Join(parts, ":")
 }
 
+// typeText is a post type or a taxonomy as it is, if it is made of the characters that WordPress allows in one (lower
+// case letters, digits, _ and -), and quoted otherwise, so that the line stays one line.
+func typeText(s string) string {
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return strconv.Quote(s)
+		}
+	}
+	return s
+}
+
 // what is the record, with what tells it apart, and the meta if the Source has one.
 func (s Source) what() string {
 	var b strings.Builder
@@ -199,9 +212,9 @@ func (s Source) what() string {
 		}
 		switch {
 		case s.Type != "" && s.Name != "":
-			fmt.Fprintf(&b, " (%s %q)", s.Type, s.Name)
+			fmt.Fprintf(&b, " (%s %q)", typeText(s.Type), s.Name)
 		case s.Type != "":
-			fmt.Fprintf(&b, " (%s)", s.Type)
+			fmt.Fprintf(&b, " (%s)", typeText(s.Type))
 		case s.Name != "":
 			fmt.Fprintf(&b, " (%q)", s.Name)
 		}

@@ -1,6 +1,7 @@
 package wxr
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/xml"
@@ -155,6 +156,8 @@ type parser struct {
 		base   int
 	}
 	buf []byte
+
+	gotGenerator bool // the channel has had a <generator>
 }
 
 // Read reads the WXR in r. It stops at the first problem in the file, which it returns as an *Error, without the part
@@ -241,16 +244,13 @@ func (p *parser) next() (xml.Token, Pos, error) {
 	return tok, pos, nil
 }
 
-// undeclared returns the prefix that the start tag uses without declaring it, which encoding/xml puts into Space.
+// undeclared returns the prefix of the element if it is one that a WordPress export declares and the file does not,
+// which encoding/xml puts into Space. A plugin writes elements with other prefixes in rss2_head, such as atom:link,
+// without a declaration that the export does not have, so they are elements that are not known.
 func undeclared(t xml.StartElement) (string, bool) {
-	undeclared := func(space string) bool { return space != "" && !strings.Contains(space, ":") }
-	if undeclared(t.Name.Space) {
-		return t.Name.Space, true
-	}
-	for _, a := range t.Attr {
-		if a.Name.Space != "xmlns" && undeclared(a.Name.Space) {
-			return a.Name.Space, true
-		}
+	switch space := t.Name.Space; space {
+	case "wp", "excerpt", "content", "dc", "wfw":
+		return space, true
 	}
 	return "", false
 }
@@ -336,15 +336,18 @@ func (p *parser) document() error {
 }
 
 // generator reads the version of WordPress from the comment before the root element, such as generator="WordPress/6.8.3"
-// (WordPress 3.0 wrote wordpress in lower case).
+// (WordPress 3.0 wrote wordpress in lower case). The comment can be large, so it is not copied.
 func (p *parser) generator(c xml.Comment) {
 	const attr, product = `generator="`, "wordpress/"
-	_, rest, ok := strings.Cut(string(c), attr)
-	if !ok || p.ex.WordPress != "" || len(rest) < len(product) || !strings.EqualFold(rest[:len(product)], product) {
+	if p.ex.WordPress != "" {
 		return
 	}
-	if v, _, ok := strings.Cut(rest[len(product):], `"`); ok {
-		p.ex.WordPress = v
+	_, rest, ok := bytes.Cut(c, []byte(attr))
+	if !ok || len(rest) < len(product) || !bytes.EqualFold(rest[:len(product)], []byte(product)) {
+		return
+	}
+	if v, _, ok := bytes.Cut(rest[len(product):], []byte(`"`)); ok {
+		p.ex.WordPress = string(v)
 	}
 }
 
@@ -594,15 +597,19 @@ func (p *parser) version(c child) error {
 	return &Error{c.pos, fmt.Sprintf("unsupported WXR version %q; use 1.0, 1.1 or 1.2", v)}
 }
 
-// generatorElement reads the generator of the channel, which tells the version of WordPress if the comment does not.
+// generatorElement reads a generator of the channel. WordPress 3.0 writes two, so there can be any number: the first is
+// the generator of the channel, and tells the version of WordPress if the comment does not.
 func (p *parser) generatorElement(c child) error {
-	if err := p.text(c, &p.ex.Channel.Generator); err != nil {
+	v, err := p.value(c.name)
+	if err != nil || p.gotGenerator {
 		return err
 	}
-	g := strings.TrimSpace(p.ex.Channel.Generator)
+	p.gotGenerator = true
+	p.ex.Channel.Generator = v
+	g := strings.TrimSpace(v)
 	for _, prefix := range []string{"http://wordpress.org/?v=", "https://wordpress.org/?v="} {
-		if v, ok := strings.CutPrefix(g, prefix); ok && p.ex.WordPress == "" {
-			p.ex.WordPress = v
+		if version, ok := strings.CutPrefix(g, prefix); ok && p.ex.WordPress == "" {
+			p.ex.WordPress = version
 		}
 	}
 	return nil

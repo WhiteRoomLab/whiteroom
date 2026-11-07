@@ -62,7 +62,7 @@
   ],
   "Items": [
     {
-      "Line": 28,
+      "Line": 29,
       "Column": 2,
       "Title": "Notes from the road",
       "Link": "http://notes.example.com/2010/06/notes-from-the-road/",
@@ -89,21 +89,21 @@
       "Sticky": false,
       "Terms": [
         {
-          "Line": 34,
+          "Line": 35,
           "Column": 3,
           "Taxonomy": "category",
           "Slug": "travel",
           "Name": "Travel"
         },
         {
-          "Line": 36,
+          "Line": 37,
           "Column": 3,
           "Taxonomy": "post_tag",
           "Slug": "rss",
           "Name": "rss"
         },
         {
-          "Line": 38,
+          "Line": 39,
           "Column": 3,
           "Taxonomy": "post_tag",
           "Slug": "feeds",
@@ -112,7 +112,7 @@
       ],
       "Meta": [
         {
-          "Line": 54,
+          "Line": 55,
           "Column": 3,
           "Key": "_edit_lock",
           "Value": "1277800000:1"
@@ -121,7 +121,7 @@
       "Comments": 1
     },
     {
-      "Line": 73,
+      "Line": 74,
       "Column": 2,
       "Title": "About",
       "Link": "http://notes.example.com/about/",

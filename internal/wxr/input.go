@@ -16,6 +16,13 @@ type removedChar struct {
 	r   rune
 }
 
+// gap is where characters were removed before a byte that was passed on: the first of them, and how many bytes were
+// passed on before them.
+type gap struct {
+	first removedChar
+	at    int64
+}
+
 // readError is an error of the reader under the input, which has no place in the file.
 type readError struct{ err error }
 
@@ -41,6 +48,10 @@ const (
 // characters that XML does not allow, and it finds the problems that the decoder would report in the wrong place or
 // not at all: invalid UTF-8, the size of the file and the length of a tag. It tracks the place in the file of every
 // byte that it passes on.
+//
+// It removes a character that XML does not allow from text, CDATA sections, comments, processing instructions and the
+// values of attributes. In other markup, and where removing it would make the end of a CDATA section, a comment or a
+// processing instruction, it returns an error instead: the characters after it would be markup, not a value.
 type input struct {
 	br       *bufio.Reader
 	maxBytes int64
@@ -61,7 +72,8 @@ type input struct {
 	lastPos Pos   // of the last byte passed on
 
 	removed  [maxListed]removedChar
-	nRemoved int // since the last drain, which can be more than maxListed
+	nRemoved int    // since the last drain, which can be more than maxListed
+	gaps     [2]gap // the last two, the later first
 
 	// The scan of the tags in the bytes passed on.
 	state  scanState
@@ -133,7 +145,8 @@ func (in *input) start() error {
 }
 
 // fill reads the next character that the decoder is to get into pend, and removes the characters before it that XML
-// does not allow. It returns io.EOF at the end of the file.
+// does not allow, or returns an error for one that markup says cannot be removed. It returns io.EOF at the end of the
+// file.
 func (in *input) fill() error {
 	if !in.started {
 		in.started = true
@@ -141,6 +154,7 @@ func (in *input) fill() error {
 			return err
 		}
 	}
+	var first removedChar // the first character removed since the last one that is passed on
 	for {
 		r, n, err := in.br.ReadRune()
 		if err != nil {
@@ -151,11 +165,16 @@ func (in *input) fill() error {
 		}
 		pos := Pos{in.line, in.col}
 		in.consumed += int64(n)
+		ok := allowed(r)
 		switch {
 		case in.consumed > in.maxBytes:
 			return &Error{pos, fmt.Sprintf("too large: at least %d bytes (max %d)", in.maxBytes+1, in.maxBytes)}
 		case r == utf8.RuneError && n == 1:
 			return &Error{pos, "invalid UTF-8; the WXR must be in UTF-8"}
+		case !ok:
+			if where := in.markup(); where != "" {
+				return disallowed(removedChar{pos, r}, where)
+			}
 		}
 		if r == '\n' {
 			in.line++
@@ -163,12 +182,18 @@ func (in *input) fill() error {
 		} else {
 			in.col++
 		}
-		if !allowed(r) {
+		if !ok {
 			if in.nRemoved < maxListed {
 				in.removed[in.nRemoved] = removedChar{pos, r}
 			}
 			in.nRemoved++
+			if first.pos.Line == 0 {
+				first = removedChar{pos, r}
+			}
 			continue
+		}
+		if first.pos.Line > 0 {
+			in.gaps = [2]gap{{first, in.given}, in.gaps[0]}
 		}
 		if r < utf8.RuneSelf {
 			in.pend[0], in.pendN = byte(r), 1
@@ -184,6 +209,41 @@ func (in *input) fill() error {
 // allowed reports whether XML allows r, apart from the surrogates, which are not valid UTF-8.
 func allowed(r rune) bool {
 	return r >= 0x20 && r != 0xFFFE && r != 0xFFFF || r == '\t' || r == '\n' || r == '\r'
+}
+
+// markup returns what the next character would be in, if removing a character there would change the markup, or "".
+func (in *input) markup() string {
+	switch in.state {
+	case afterLT:
+		return "a tag"
+	case inTag:
+		if in.quote == 0 {
+			return "a tag"
+		}
+	case afterBang, afterDash, inDecl:
+		return "a declaration"
+	case inCDATAOpen:
+		return `"<![CDATA["`
+	case inText, inPI, inComment, inCDATA:
+	}
+	return ""
+}
+
+func disallowed(c removedChar, where string) *Error {
+	return &Error{c.pos, fmt.Sprintf("character U+%04X that XML does not allow is in %s", c.r, where)}
+}
+
+// joined returns an error if characters were removed between the bytes of end, the delimiter that the last byte passed
+// on completes: without them it would not end the section, and the section would go on.
+func (in *input) joined(end string) error {
+	for at := in.given - int64(len(end)) + 1; at < in.given; at++ {
+		for _, g := range in.gaps {
+			if g.at == at && g.first.pos.Line > 0 {
+				return disallowed(g.first, fmt.Sprintf("%q", end))
+			}
+		}
+	}
+	return nil
 }
 
 // pos returns the place in the file of the byte at off, an InputOffset of the decoder, which is the next byte that it
@@ -213,7 +273,8 @@ func (in *input) drain() ([]removedChar, int) {
 }
 
 // scan follows the tags in the bytes passed on, and returns an error if one is too long. It does not limit the
-// comments, the CDATA sections and the processing instructions, which hold the large values and the metadata.
+// comments, the CDATA sections and the processing instructions, which hold the large values and the metadata. It also
+// returns the error of a section whose end removed characters made.
 func (in *input) scan(b byte) error {
 	switch in.state {
 	case inText:
@@ -258,6 +319,7 @@ func (in *input) scan(b byte) error {
 		switch {
 		case b == '>' && in.n == 1:
 			in.toText()
+			return in.joined("?>")
 		case b == '?':
 			in.n = 1
 		default:
@@ -273,6 +335,7 @@ func (in *input) scan(b byte) error {
 		switch {
 		case b == '>' && in.n >= 2:
 			in.toText()
+			return in.joined("-->")
 		case b == '-':
 			in.n = min(in.n+1, 2)
 		default:
@@ -294,6 +357,7 @@ func (in *input) scan(b byte) error {
 		switch {
 		case b == '>' && in.n >= 2:
 			in.toText()
+			return in.joined("]]>")
 		case b == ']':
 			in.n = min(in.n+1, 2)
 		default:

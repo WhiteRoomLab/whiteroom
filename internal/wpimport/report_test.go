@@ -99,6 +99,26 @@ func reportCases() []reportCase {
 			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 43, Column: 1, Record: "item", ID: 53, Name: "T"}, Message: "a name"},
 			`wp.xml:43:1: skipped: item 53 ("T"): a name`,
 		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 44, Column: 1, Record: "item", ID: 54, Type: "\n  post\n", Name: "A"}, Message: "a type with line breaks"},
+			`wp.xml:44:1: skipped: item 54 ("\n  post\n" "A"): a type with line breaks`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 45, Column: 1, Record: "item", ID: 55, Type: "my type"}, Message: "a type with a space"},
+			`wp.xml:45:1: skipped: item 55 ("my type"): a type with a space`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 46, Column: 1, Record: "item", ID: 56, Type: "Post"}, Message: "a type in upper case"},
+			`wp.xml:46:1: skipped: item 56 ("Post"): a type in upper case`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 47, Column: 1, Record: "term", ID: 6, Type: "my\ntaxonomy", Name: "T"}, Message: "a taxonomy with a line break"},
+			`wp.xml:47:1: skipped: term 6 ("my\ntaxonomy" "T"): a taxonomy with a line break`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 48, Column: 1, Record: "item", ID: 57, Type: "nav_menu_item-2", Name: "N"}, Message: "a type with all the characters that are allowed"},
+			`wp.xml:48:1: skipped: item 57 (nav_menu_item-2 "N"): a type with all the characters that are allowed`,
+		},
 		{Entry{Kind: Review, Source: Source{File: "wp2.xml", Line: 1, Column: 1, Record: "channel"}, Message: "another file"}, `wp2.xml:1:1: review: channel: another file`},
 	}
 }
@@ -143,6 +163,41 @@ func TestReportText(t *testing.T) {
 			if entries[i] != c.entry {
 				t.Errorf("Entries()[%d] = %+v, want %+v", i, entries[i], c.entry)
 			}
+		}
+	}
+}
+
+func TestTypeText(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"post", "post"},
+		{"post_tag", "post_tag"},
+		{"nav_menu", "nav_menu"},
+		{"wp-block2", "wp-block2"},
+		{"Post", `"Post"`},
+		{"my type", `"my type"`},
+		{"a.b", `"a.b"`},
+		{"a\nb", `"a\nb"`},
+		{`a"b`, `"a\"b"`},
+		{"投稿", `"投稿"`},
+	} {
+		if got := typeText(tt.in); got != tt.want {
+			t.Errorf("typeText(%q) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestReportTextOneLine checks that whatever the post type, the name and the key of the meta are, an entry is one line.
+func TestReportTextOneLine(t *testing.T) {
+	for _, odd := range []string{"\n", "a\nb", "\r\n", "x\ry", "\n  post\n", string(rune(0x2028)), string(rune(0x85)), " post", "a-b_c9"} {
+		rep := NewReport(Info{})
+		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp.xml", Line: 1, Column: 1, Record: "item", ID: 1, Type: odd, Name: odd, Meta: odd}, Message: "m"})
+		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp.xml", Line: 2, Column: 1, Record: "term", Type: odd}, Message: "m"})
+		var got bytes.Buffer
+		if err := rep.WriteText(&got); err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Split(strings.TrimSuffix(got.String(), "\n"), "\n"); len(lines) != 2 || strings.ContainsAny(got.String(), "\r") {
+			t.Errorf("%q: WriteText = %q, want two lines", odd, got.String())
 		}
 	}
 }

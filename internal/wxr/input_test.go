@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"unicode/utf8"
 )
 
 // isEOF reports whether err is io.EOF itself, which encoding/xml compares its errors with.
@@ -45,6 +46,34 @@ func readAll(in *input) (data []byte, places []Pos, err error) {
 		data = append(data, b)
 		places = append(places, in.lastPos)
 	}
+}
+
+// readAllAhead is readAll that asks for the place of the next byte before each byte, as the decoder does between the
+// tokens, so the input looks ahead past the characters that it removes.
+func readAllAhead(in *input) (data []byte, places []Pos, err error) {
+	for {
+		_ = in.pos(in.given)
+		b, err := in.ReadByte()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = nil
+			}
+			return data, places, err
+		}
+		data = append(data, b)
+		places = append(places, in.lastPos)
+	}
+}
+
+// removedIn returns the characters that XML does not allow in s, with their places.
+func removedIn(s string) []removedChar {
+	var list []removedChar
+	for i, r := range s {
+		if !allowed(r) {
+			list = append(list, removedChar{posAt(s, i), r})
+		}
+	}
+	return list
 }
 
 func TestInputPositions(t *testing.T) {
@@ -445,6 +474,203 @@ func TestInputTextStart(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%q: textPos of the texts = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestInputMarkup puts characters that XML does not allow into text and into each kind of markup. They are removed from
+// text, the values of attributes, CDATA sections, comments and processing instructions, unless that would make the end
+// of the section, and are an error everywhere else.
+func TestInputMarkup(t *testing.T) {
+	const vt, ff, so = "\x0b", "\x0c", "\x0e"
+	ffff := string(rune(0xffff))
+	const (
+		msgTag     = "character U+000B that XML does not allow is in a tag"
+		msgDecl    = "character U+000B that XML does not allow is in a declaration"
+		msgOpen    = `character U+000B that XML does not allow is in "<![CDATA["`
+		msgCDATA   = `character U+000B that XML does not allow is in "]]>"`
+		msgComment = `character U+000B that XML does not allow is in "-->"`
+		msgPI      = `character U+000B that XML does not allow is in "?>"`
+	)
+	tests := []struct {
+		name string
+		in   string
+		data string // what is passed on: all of the input but the removed characters, or what comes before the error
+		at   string // the character that the error is about, whose first place is the place of the error; "" if none
+		msg  string
+	}{
+		{name: "text", in: "a" + vt + "b", data: "ab"},
+		{name: "text between tags", in: "<a>x" + vt + "y</a>" + ff + "<b/>", data: "<a>xy</a><b/>"},
+		{name: "text before a tag", in: "x" + vt + "<a>", data: "x<a>"},
+		{name: "]]> in text, which the decoder rejects", in: "x]" + vt + "]>y", data: "x]]>y"},
+		{name: "the value of an attribute", in: `<a b="x` + vt + `y">`, data: `<a b="xy">`},
+		{name: "the value of an attribute in single quotes", in: `<a b='x` + vt + `y'>`, data: `<a b='xy'>`},
+		{name: "a > in the value of an attribute", in: `<a b=">` + vt + `">`, data: `<a b=">">`},
+		{name: "a quote of the other kind in the value", in: `<a b="'` + vt + `'">`, data: `<a b="''">`},
+		{name: "the tag goes on after the value of an attribute", in: `<a b="` + vt + `" c="d">`, data: `<a b="" c="d">`},
+		{name: "a CDATA section", in: "<![CDATA[a" + vt + "b]]>", data: "<![CDATA[ab]]>"},
+		{name: "the start of a CDATA section", in: "<![CDATA[" + vt + "a]]>", data: "<![CDATA[a]]>"},
+		{name: "before the end of a CDATA section", in: "<![CDATA[a" + vt + "]]>", data: "<![CDATA[a]]>"},
+		{name: "in a CDATA section that has only a character", in: "<![CDATA[" + vt + "]]>", data: "<![CDATA[]]>"},
+		{name: "a CDATA section that has been split at ]]>", in: "<![CDATA[a" + vt + "]]]]><![CDATA[>b]]>", data: "<![CDATA[a]]]]><![CDATA[>b]]>"},
+		{name: "a bracket and >", in: "<![CDATA[x]" + vt + ">y", data: "<![CDATA[x]>y"},
+		{name: "brackets that do not end the section", in: "<![CDATA[]" + vt + "]x]]>", data: "<![CDATA[]]x]]>"},
+		{name: "before three brackets", in: "<![CDATA[x" + vt + "]]]>", data: "<![CDATA[x]]]>"},
+		{name: "before the last two of three brackets", in: "<![CDATA[]" + vt + "]]>", data: "<![CDATA[]]]>"},
+		{name: "before the last two of four brackets", in: "<![CDATA[]]" + vt + "]]>", data: "<![CDATA[]]]]>"},
+		{name: "text after a CDATA section", in: "<![CDATA[a]]>" + vt + "<b>", data: "<![CDATA[a]]><b>"},
+		{name: "a comment", in: "<!-- a" + vt + "b -->", data: "<!-- ab -->"},
+		{name: "the start of a comment", in: "<!--" + vt + " a -->", data: "<!-- a -->"},
+		{name: "before the dashes that end a comment", in: "<!-- a" + vt + "-->", data: "<!-- a-->"},
+		{name: "a dash and >", in: "<!-- a -" + vt + ">", data: "<!-- a ->"},
+		{name: "a dash after the start of a comment", in: "<!--" + vt + "->", data: "<!--->"},
+		{name: "text after a comment", in: "<!-- a -->" + vt + "<b>", data: "<!-- a --><b>"},
+		{name: "a processing instruction", in: "<?pi a" + vt + "b?>", data: "<?pi ab?>"},
+		{name: "the start of a processing instruction", in: "<?" + vt + "pi x?>", data: "<?pi x?>"},
+		{name: "before the ? that ends a processing instruction", in: "<?pi x" + vt + "?>", data: "<?pi x?>"},
+		{name: "between two ?", in: "<?pi x?" + vt + "?>", data: "<?pi x??>"},
+		{name: "text after a processing instruction", in: "<?pi?>" + vt + "<b>", data: "<?pi?><b>"},
+		{name: "after a character of three bytes", in: "<![CDATA[あ" + vt + "]]>", data: "<![CDATA[あ]]>"},
+		{name: "before a character of three bytes", in: "<![CDATA[]]" + vt + "あ]]>", data: "<![CDATA[]]あ]]>"},
+		{name: "U+FFFE", in: "<![CDATA[a" + string(rune(0xfffe)) + "b]]>", data: "<![CDATA[ab]]>"},
+
+		{name: "after <", in: "<" + vt + "a>", data: "<", at: vt, msg: msgTag},
+		{name: "after </", in: "</" + vt + "a>", data: "</", at: vt, msg: msgTag},
+		{name: "between < and /", in: "<" + vt + "/a>", data: "<", at: vt, msg: msgTag},
+		{name: "in the name of a tag", in: "<ti" + vt + "tle>", data: "<ti", at: vt, msg: msgTag},
+		{name: "before the > of a tag", in: "<a" + vt + ">", data: "<a", at: vt, msg: msgTag},
+		{name: "before the > of an end tag", in: "</a" + vt + ">", data: "</a", at: vt, msg: msgTag},
+		{name: "between attributes", in: `<a b="c"` + vt + `d="e">`, data: `<a b="c"`, at: vt, msg: msgTag},
+		{name: "after the value of an attribute", in: `<a b="c"` + vt + `>`, data: `<a b="c"`, at: vt, msg: msgTag},
+		{name: "in the / of a tag", in: "<a/" + vt + ">", data: "<a/", at: vt, msg: msgTag},
+		{name: "in the name of an attribute", in: "<a b" + vt + `c="d">`, data: "<a b", at: vt, msg: msgTag},
+		{name: "before the value of an attribute", in: "<a b=" + vt + `"c">`, data: "<a b=", at: vt, msg: msgTag},
+		{name: "after <!", in: "<!" + vt + "-- x -->", data: "<!", at: vt, msg: msgDecl},
+		{name: "after <!-", in: "<!-" + vt + "- x -->", data: "<!-", at: vt, msg: msgDecl},
+		{name: "in <![CDATA[", in: "<![CD" + vt + "ATA[x]]>", data: "<![CD", at: vt, msg: msgOpen},
+		{name: "after <![", in: "<![" + vt + "CDATA[x]]>", data: "<![", at: vt, msg: msgOpen},
+		{name: "before the [ of <![CDATA[", in: "<![CDATA" + vt + "[x]]>", data: "<![CDATA", at: vt, msg: msgOpen},
+		{name: "in a declaration", in: "<!DOC" + vt + "TYPE a>", data: "<!DOC", at: vt, msg: msgDecl},
+		{name: "in the quotes of a declaration", in: `<!DOCTYPE a "x` + vt + `y">`, data: `<!DOCTYPE a "x`, at: vt, msg: msgDecl},
+		{name: "before the > that ends a CDATA section", in: "<![CDATA[x]]" + vt + ">", data: "<![CDATA[x]]", at: vt, msg: msgCDATA},
+		{name: "between a bracket and ]>", in: "<![CDATA[x]" + vt + "]>", data: "<![CDATA[x]]", at: vt, msg: msgCDATA},
+		{name: "two places in ]]>", in: "<![CDATA[x]" + vt + "]" + ff + ">", data: "<![CDATA[x]]", at: vt, msg: msgCDATA},
+		{name: "three brackets and >", in: "<![CDATA[x]]]" + vt + ">", data: "<![CDATA[x]]]", at: vt, msg: msgCDATA},
+		{
+			name: "the first place that is in the last ]]>", in: "<![CDATA[x]" + vt + "]" + ff + "]" + so + ">", data: "<![CDATA[x]]]",
+			at: ff, msg: `character U+000C that XML does not allow is in "]]>"`,
+		},
+		{
+			name: "U+FFFF", in: "<![CDATA[x]]" + ffff + ">", data: "<![CDATA[x]]",
+			at: ffff, msg: `character U+FFFF that XML does not allow is in "]]>"`,
+		},
+		{name: "before the > that ends a comment", in: "<!-- a --" + vt + ">", data: "<!-- a --", at: vt, msg: msgComment},
+		{name: "a dash, a place and ->", in: "<!-- a -" + vt + "->", data: "<!-- a --", at: vt, msg: msgComment},
+		{name: "two places in -->", in: "<!-- a -" + vt + "-" + ff + ">", data: "<!-- a --", at: vt, msg: msgComment},
+		{name: "three dashes and >", in: "<!-- a ---" + vt + ">", data: "<!-- a ---", at: vt, msg: msgComment},
+		{name: "a dash after the start of a comment and ->", in: "<!---" + vt + "->", data: "<!----", at: vt, msg: msgComment},
+		{name: "before the > that ends a processing instruction", in: "<?pi x?" + vt + ">", data: "<?pi x?", at: vt, msg: msgPI},
+		{name: "two ? and >", in: "<?pi x??" + vt + ">", data: "<?pi x??", at: vt, msg: msgPI},
+		{
+			name: "the items that ]]> lets in", in: "<![CDATA[x]]" + vt + "></wp:meta_value></wp:postmeta></item><item>",
+			data: "<![CDATA[x]]", at: vt, msg: msgCDATA,
+		},
+		{name: "a place on the third line", in: "<![CDATA[\n\n]]" + vt + ">", data: "<![CDATA[\n\n]]", at: vt, msg: msgCDATA},
+		{name: "a place after characters of three bytes", in: "<![CDATA[あい]]" + vt + ">", data: "<![CDATA[あい]]", at: vt, msg: msgCDATA},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := testInput(tt.in, 0, 0)
+			data, places, err := readAll(in)
+			if string(data) != tt.data {
+				t.Errorf("data = %q, want %q", data, tt.data)
+			}
+			if tt.at == "" {
+				if err != nil {
+					t.Errorf("err = %v, want none", err)
+				}
+				want := removedIn(tt.in)
+				if list, n := in.drain(); n != len(want) || !reflect.DeepEqual(list, want) {
+					t.Errorf("drain() = %v, %d, want %v", list, n, want)
+				}
+			} else {
+				pos := posAt(tt.in, strings.Index(tt.in, tt.at))
+				var e *Error
+				if !errors.As(err, &e) || e.Pos != pos || e.Msg != tt.msg {
+					t.Errorf("err = %v, want %d:%d: %s", err, pos.Line, pos.Column, tt.msg)
+				}
+				// The error stays.
+				if _, err2 := in.ReadByte(); !errors.Is(err2, err) {
+					t.Errorf("ReadByte() = %v, want %v again", err2, err)
+				}
+			}
+
+			// Asking for the place of the next byte before each byte, as the decoder does between the tokens, makes the
+			// input look ahead, and it decides the same.
+			ahead := testInput(tt.in, 0, 0)
+			data2, places2, err2 := readAllAhead(ahead)
+			if !reflect.DeepEqual(data2, data) || !reflect.DeepEqual(places2, places) || (err2 == nil) != (err == nil) ||
+				err2 != nil && err2.Error() != err.Error() {
+				t.Errorf("looking ahead: %q, %v, %v, want %q, %v, %v", data2, places2, err2, data, places, err)
+			}
+			if tt.at == "" {
+				want := removedIn(tt.in)
+				if list, n := ahead.drain(); n != len(want) || !reflect.DeepEqual(list, want) {
+					t.Errorf("looking ahead: drain() = %v, %d, want %v", list, n, want)
+				}
+			}
+		})
+	}
+}
+
+// TestInputKeepsStructure puts a character that XML does not allow at each place of a document, once as it is and once
+// as an x, and checks that the markup is the same, unless the input rejects the character, which it does if it is in
+// the markup or makes the end of a section. Without that, a value with ]]> and the character in it would end the CDATA
+// section, and what follows it would be markup.
+func TestInputKeepsStructure(t *testing.T) {
+	const doc = `<?xml version="1.0" encoding="UTF-8"?>
+<!-- generator="WordPress/6.8.3" -->
+<?php echo 1; ?>
+<rss version="2.0" xmlns:wp="http://wordpress.org/export/1.2/">
+<channel a="1" b='>' c="'" d='"'>
+<title>t &amp; &#12354;</title>
+<wp:wxr_version>1.2</wp:wxr_version>
+<item><title><![CDATA[a]]]]><![CDATA[>b]]></title><empty/><x></x>
+<!-- c - d -> e --><?pi ? > ?? ?>
+</item>
+</channel>
+</rss>
+`
+	opts := Options{MaxBytes: MaxBytes, MaxTagBytes: MaxTagBytes}
+	if _, _, ok := skeleton([]byte(doc), opts); !ok {
+		t.Fatal("the document is not XML")
+	}
+	rejected := make(map[string]int)
+	for _, r := range []rune{0x0b, 0xffff} {
+		for i := 0; i <= len(doc); i++ {
+			if i < len(doc) && !utf8.RuneStart(doc[i]) {
+				continue
+			}
+			with, plain := doc[:i]+string(r)+doc[i:], doc[:i]+"x"+doc[i:]
+			if _, _, err := readAll(testInput(with, 0, 0)); err != nil {
+				var e *Error
+				if !errors.As(err, &e) {
+					t.Fatalf("U+%04X at %d: %v is not an *Error", r, i, err)
+				}
+				_, where, _ := strings.Cut(e.Msg, " is in ")
+				rejected[where]++
+				continue
+			}
+			markupWith, _, okWith := skeleton([]byte(with), opts)
+			markupPlain, _, okPlain := skeleton([]byte(plain), opts)
+			if okWith && okPlain && markupWith != markupPlain {
+				t.Errorf("U+%04X at %d: the markup is %q, and with an x %q", r, i, markupWith, markupPlain)
+			}
+		}
+	}
+	for _, where := range []string{"a tag", "a declaration", `"<![CDATA["`, `"]]>"`, `"-->"`, `"?>"`} {
+		if rejected[where] == 0 {
+			t.Errorf("no place in the document is rejected for being in %s: %v", where, rejected)
 		}
 	}
 }

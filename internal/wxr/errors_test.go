@@ -67,6 +67,25 @@ func errorCases(t testing.TB) []errorCase {
 	post := "<wp:post_id>1</wp:post_id>\n<wp:post_type>post</wp:post_type>\n"
 	typeOnly := "<wp:post_type>post</wp:post_type>\n"
 	idDoc := func(id string) string { return itemDoc("<wp:post_id>" + id + "</wp:post_id>\n" + typeOnly) }
+	without := func(doc, decl string) string { return strings.Replace(doc, " "+decl, "", 1) }
+
+	// A value in the database that has ]]> with a character that XML does not allow in it is written as it is, because
+	// WordPress only splits ]]>. Without the character, it ends the CDATA section, and the rest is markup, here a second
+	// item that the value writes into the export.
+	vt := string(rune(0x0b))
+	meta := func(value string) string {
+		return itemDoc(post + "<wp:postmeta><wp:meta_key>k</wp:meta_key><wp:meta_value><![CDATA[" + value + "]]></wp:meta_value></wp:postmeta>\n")
+	}
+	injection := "></wp:meta_value></wp:postmeta></item>\n<item><title>injected</title><wp:post_id>999</wp:post_id>" +
+		"<wp:post_type>post</wp:post_type><wp:postmeta><wp:meta_key>j</wp:meta_key><wp:meta_value><![CDATA["
+	const (
+		msgTag        = "character U+000B that XML does not allow is in a tag"
+		msgDecl       = "character U+000B that XML does not allow is in a declaration"
+		msgOpen       = `character U+000B that XML does not allow is in "<![CDATA["`
+		msgCDATAEnd   = `character U+000B that XML does not allow is in "]]>"`
+		msgCommentEnd = `character U+000B that XML does not allow is in "-->"`
+		msgPIEnd      = `character U+000B that XML does not allow is in "?>"`
+	)
 
 	tests := []errorCase{
 		{name: "empty input", in: "", at: "", msg: "not a WXR file: missing <rss>"},
@@ -114,8 +133,26 @@ func errorCases(t testing.TB) []errorCase {
 		{name: "two versions", in: wxrDoc("<wp:wxr_version>1.2</wp:wxr_version>\n"), at: "<wp:wxr_version>", nth: 2, msg: "duplicate <wp:wxr_version> in <channel>"},
 		{name: "two titles in the channel", in: wxrDoc("<title>a</title>\n<title>b</title>\n"), at: "<title>", nth: 2, msg: "duplicate <title> in <channel>"},
 		{name: "an undeclared prefix", in: "<rss><channel><wp:wxr_version>1.2</wp:wxr_version></channel></rss>", at: "<wp:wxr_version>", msg: `undeclared namespace prefix "wp"`},
-		{name: "an undeclared prefix in an attribute", in: wxrDoc("<title a:b=\"1\">t</title>\n"), at: "<title a:b", msg: `undeclared namespace prefix "a"`},
-		{name: "an undeclared prefix in an element that is skipped", in: wxrDoc("<foo:bar/>\n"), at: "<foo:bar/>", msg: `undeclared namespace prefix "foo"`},
+		{name: "wp is not declared", in: without(wxrDoc(""), `xmlns:wp="http://wordpress.org/export/1.2/"`), at: "<wp:wxr_version>", msg: `undeclared namespace prefix "wp"`},
+		{name: "dc is not declared", in: without(itemDoc(post+"<dc:creator>a</dc:creator>\n"), `xmlns:dc="http://purl.org/dc/elements/1.1/"`), at: "<dc:creator>", msg: `undeclared namespace prefix "dc"`},
+		{name: "content is not declared", in: without(itemDoc(post+"<content:encoded>a</content:encoded>\n"), `xmlns:content="http://purl.org/rss/1.0/modules/content/"`), at: "<content:encoded>", msg: `undeclared namespace prefix "content"`},
+		{name: "excerpt is not declared", in: without(itemDoc(post+"<excerpt:encoded>a</excerpt:encoded>\n"), `xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"`), at: "<excerpt:encoded>", msg: `undeclared namespace prefix "excerpt"`},
+		{name: "wfw is not declared", in: wxrDoc("<wfw:commentRss>x</wfw:commentRss>\n"), at: "<wfw:commentRss>", msg: `undeclared namespace prefix "wfw"`},
+		{name: "an element of a plugin in a value", in: itemDoc(post + "<title><atom:link/></title>\n"), at: "<atom:link/>", msg: "unexpected element <{atom}link> in <title>"},
+		{name: "the end of a CDATA section that a removed character makes", in: meta("x]]" + vt + injection), at: vt, msg: msgCDATAEnd},
+		{name: "the end of a CDATA section, with the character between the brackets", in: meta("x]" + vt + "]" + injection), at: vt, msg: msgCDATAEnd},
+		{name: "the end of a CDATA section in a term", in: wxrDoc("<wp:tag><wp:tag_slug>s</wp:tag_slug><wp:tag_name><![CDATA[x]]" + vt + "></wp:tag_name></wp:tag>\n"), at: vt, msg: msgCDATAEnd},
+		{name: "the end of a comment that a removed character makes", in: itemDoc(post + "<!-- a -" + vt + "-><wp:post_id>2</wp:post_id> -->\n"), at: vt, msg: msgCommentEnd},
+		{name: "the end of a comment, with the character before >", in: itemDoc(post + "<!-- a --" + vt + "><wp:post_id>2</wp:post_id> -->\n"), at: vt, msg: msgCommentEnd},
+		{name: "the end of a processing instruction that a removed character makes", in: itemDoc(post + "<?x a?" + vt + "><wp:post_id>2</wp:post_id>?>\n"), at: vt, msg: msgPIEnd},
+		{name: "a removed character in the name of a tag", in: itemDoc(post + "<ti" + vt + "tle>x</title>\n"), at: vt, msg: msgTag},
+		{name: "a removed character after <", in: itemDoc(post + "<" + vt + "title>x</title>\n"), at: vt, msg: msgTag},
+		{name: "a removed character in an end tag", in: itemDoc(post + "<title>x</title" + vt + ">\n"), at: vt, msg: msgTag},
+		{name: "a removed character in a start tag, outside the quotes", in: itemDoc(post + `<category domain="a" nicename="b"` + vt + ">x</category>\n"), at: vt, msg: msgTag},
+		{name: "a removed character after <!", in: itemDoc(post + "<!" + vt + "-- c -->\n"), at: vt, msg: msgDecl},
+		{name: "a removed character after <!-", in: itemDoc(post + "<!-" + vt + "- c -->\n"), at: vt, msg: msgDecl},
+		{name: "a removed character in <![CDATA[", in: itemDoc(post + "<title><![CD" + vt + "ATA[x]]></title>\n"), at: vt, msg: msgOpen},
+		{name: "a removed character in a declaration", in: wxrDoc("<!DOC" + vt + "TYPE x>\n"), at: vt, msg: msgDecl},
 		{name: "a named entity", in: itemDoc(post + "<title>&nbsp;</title>\n"), at: "&nbsp;", end: true, msg: "invalid XML: invalid character entity &nbsp;"},
 		{name: "an ampersand", in: itemDoc(post + "<title>a & b</title>\n"), at: "& b", skip: 1, msg: "invalid XML: invalid character entity & (no semicolon)"},
 		{name: "a character reference beyond Unicode", in: itemDoc(post + "<title>&#x110000;</title>\n"), at: "&#x110000;", end: true, msg: "invalid XML: invalid character entity &#x110000;"},
@@ -225,6 +262,21 @@ func TestReadErrors(t *testing.T) {
 				t.Errorf("Read() = {%v, %q}, want {%v, %q}", e.Pos, e.Msg, pos, tt.msg)
 			}
 		})
+	}
+}
+
+// TestErrorExamples checks the errors that 6.10.5 shows for the characters that XML does not allow, with the places that
+// it shows.
+func TestErrorExamples(t *testing.T) {
+	vt := string(rune(0x0b))
+	const post = "<wp:post_id>1</wp:post_id>\n<wp:post_type>post</wp:post_type>\n"
+	for _, tt := range []struct{ in, want string }{
+		{itemDoc(post + "<title><![CDATA[x]]" + vt + "></title>\n"), `7:20: character U+000B that XML does not allow is in "]]>"`},
+		{itemDoc(post + "<ti" + vt + "tle>x</title>\n"), "7:4: character U+000B that XML does not allow is in a tag"},
+	} {
+		if _, err := Read(context.Background(), strings.NewReader(tt.in), Options{}); err == nil || err.Error() != tt.want {
+			t.Errorf("Read() = %v, want %s", err, tt.want)
+		}
 	}
 }
 

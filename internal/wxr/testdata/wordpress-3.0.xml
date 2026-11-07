@@ -24,6 +24,7 @@
 	<wp:category><wp:category_nicename>travel</wp:category_nicename><wp:category_parent>uncategorized</wp:category_parent><wp:cat_name><![CDATA[Travel]]></wp:cat_name></wp:category>
 	<wp:tag><wp:tag_slug>rss</wp:tag_slug><wp:tag_name><![CDATA[rss]]></wp:tag_name></wp:tag>
 	<wp:tag><wp:tag_slug>feeds</wp:tag_slug><wp:tag_name><![CDATA[feeds]]></wp:tag_name></wp:tag>
+	<generator>http://wordpress.org/?v=3.0</generator>
 
 	<item>
 		<title>Notes from the road</title>
