@@ -26,7 +26,8 @@ type Entry struct {
 
 // Site is a model of a site, with its documents by ID, which the build fills from the files of a site and the save
 // operations from the summaries that the store keeps of its documents. The site settings, the theme and the documents
-// must be valid, and what they refer to must be in the maps: siteplan does not check them.
+// must be valid, and what they refer to must be in the maps, apart from the terms of published revisions and the
+// parents of terms, which the lists skip if they are missing: siteplan does not check them.
 //
 // A Site needs only the following fields of its documents, and the others may be zero. Of every file, it needs only
 // the Name, which the problems name; the Data may be nil.

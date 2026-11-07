@@ -199,3 +199,18 @@ func TestFormatIDUnknownKind(t *testing.T) {
 		}()
 	}
 }
+
+// TestFormatIDOrder checks that the IDs of larger ULIDs are larger texts, as the ULID specification has it.
+func TestFormatIDOrder(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for range 1000 {
+		var a, b [16]byte
+		for i := range a {
+			a[i], b[i] = byte(r.Uint32()), byte(r.Uint32())
+		}
+		x, y := FormatID(RefEntry, a), FormatID(RefEntry, b)
+		if (string(a[:]) < string(b[:])) != (x < y) {
+			t.Fatalf("FormatID(%x) = %q and FormatID(%x) = %q are not in the order of the bits", a, x, b, y)
+		}
+	}
+}

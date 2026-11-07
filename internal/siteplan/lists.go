@@ -58,9 +58,14 @@ func (s *Site) Members() Lists {
 		var terms []string
 		for _, ids := range d.Rev.Terms {
 			for _, t := range ids {
-				// Only the terms of hierarchical taxonomies have parents.
-				for ; t != "" && !slices.Contains(terms, t); t = s.Terms[t].V.Parent {
+				// Only the terms of hierarchical taxonomies have parents. A term that is not in s.Terms ends the walk.
+				for t != "" && !slices.Contains(terms, t) {
+					term := s.Terms[t]
+					if term == nil {
+						break
+					}
 					terms = append(terms, t)
+					t = term.V.Parent
 				}
 			}
 		}
