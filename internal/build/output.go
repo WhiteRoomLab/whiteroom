@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // The output directory holds only what the build makes: the lock file; the directory of the releases, each a
@@ -179,6 +180,8 @@ func newRelease(root *os.Root) (tmp string, rel *os.Root, err error) {
 	return "", nil, errors.Join(err, outError(root, root.RemoveAll(tmp)))
 }
 
+var copyBuffers = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
+
 // releaseName returns the name of the release in rel, made of its content: the first 16 hex digits of the SHA-256 of
 // the list of its files, a line "<path>\t<the hex digits of the SHA-256 of the file>\n" for each, with the path in rel,
 // in the order of the bytes of the paths. It reads the files in at most workers goroutines. It also returns the number
@@ -208,7 +211,10 @@ func releaseName(ctx context.Context, rel *os.Root, workers int) (name string, f
 			return err
 		}
 		h := sha256.New()
-		_, err = io.Copy(h, f)
+		buf := copyBuffers.Get().(*[]byte)
+		// Not f itself: its WriteTo would copy with a 32 KiB buffer of its own for each file.
+		_, err = io.CopyBuffer(h, struct{ io.Reader }{f}, *buf)
+		copyBuffers.Put(buf)
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}

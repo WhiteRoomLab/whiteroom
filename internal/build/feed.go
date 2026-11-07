@@ -96,7 +96,7 @@ func (b *builder) feed(ctx context.Context, language string, es []*entryDoc) ([]
 				w.plain("category", b.terms[id].v.Name)
 			}
 		}
-		if s := oneLine(excerpt(rev)); s != "" {
+		if s := oneLine(d.excerpt); s != "" {
 			w.text("description", htmlEscaper.Replace(s))
 		}
 		if body := html["/body"]; body != "" {

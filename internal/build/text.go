@@ -76,7 +76,7 @@ func (b *builder) description(p *page) string {
 		if s := p.entry.rev.SEO.Description; s != "" {
 			return oneLine(s)
 		}
-		return oneLine(excerpt(p.entry.rev))
+		return oneLine(p.entry.excerpt)
 	case theme.KindTerm:
 		return oneLine(p.term.v.Description)
 	case theme.KindAuthor:
@@ -92,7 +92,7 @@ func oneLine(s string) string {
 }
 
 // excerpt returns the excerpt of rev, the published revision of an entry: its excerpt as written, else its automatic
-// excerpt (autoExcerpt).
+// excerpt (autoExcerpt). validateEntry calls it once for each revision, before it lets go of the body of rev.
 func excerpt(rev *content.Revision) string {
 	if rev.Excerpt != "" {
 		return rev.Excerpt

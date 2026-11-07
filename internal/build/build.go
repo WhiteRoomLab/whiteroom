@@ -13,6 +13,15 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 )
 
+// afterStage, if not nil, is called with the name of each stage of a build when it has ended; for the memory tests.
+var afterStage func(stage string)
+
+func stageEnded(stage string) {
+	if afterStage != nil {
+		afterStage(stage)
+	}
+}
+
 // Options are the options of Build.
 type Options struct {
 	Source Source // the site to build
@@ -55,9 +64,9 @@ type Result struct {
 // If Build fails, Out stays as it was: Build removes the temporary directory of the release, and makes only Out, .lock
 // and releases if they are missing. The error is then content.Errors, sorted by file, line, column and pointer, if the
 // site has problems: documents that do not validate, outputs with the same paths, originals of media that do not match
-// their documents; ctx.Err() if ctx is done; or else another error, such as one of the Source or of the file system,
-// which says what failed. If Build has published the release but cannot remove the old releases or prune the cache,
-// it returns the Result with that error.
+// their documents; ctx.Err() if ctx is done; or else another error, such as one of the Source or of the file system, or
+// that a revision has changed since the build validated it, which says what failed. If Build has published the release
+// but cannot remove the old releases or prune the cache, it returns the Result with that error.
 //
 // The same site gives the same files and the same release name, however many workers there are and whatever the
 // cache has. Build needs flock(2), which Linux and other Unix systems have, to lock Out.
@@ -112,7 +121,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	b.res = newResolver(b, images, min(workers, 4))
-	var p problems
+	p := problems{read: b.revisionData}
 	b.resolveRedirects(b.res.mediaPath, &p)
 	b.checkPaths(&p)
 	if p.len() > 0 {
@@ -121,6 +130,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	stageEnded("checked")
 
 	tmp, rel, err := newRelease(root)
 	if err != nil {
@@ -133,6 +143,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	changed := false
 	if err == nil {
+		stageEnded("named")
 		changed, err = publish(root, tmp, name, l.current)
 	}
 	if err != nil {
@@ -171,18 +182,22 @@ func (b *builder) writeRelease(ctx context.Context, rel *os.Root, workers int, p
 	if err := b.renderPages(ctx, pub, workers); err != nil {
 		return fail("rendering the pages", err)
 	}
+	stageEnded("pages")
 	if err := b.writeFeeds(ctx, pub); err != nil {
 		return fail("writing the feeds", err)
 	}
+	stageEnded("feeds")
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
 	if err := b.writeSitemap(pub); err != nil {
 		return fail("writing the sitemap", err)
 	}
+	stageEnded("sitemap")
 	if err := b.publishMedia(ctx, pub, workers, p); err != nil {
 		return fail("publishing the media", err)
 	}
+	stageEnded("media")
 	if p.len() == 0 {
 		b.checkPaths(p)
 	}
@@ -195,6 +210,7 @@ func (b *builder) writeRelease(ctx context.Context, rel *os.Root, workers int, p
 	if err := b.writeServerFiles(rel); err != nil {
 		return fail("writing the files for the servers", err)
 	}
+	stageEnded("servers")
 	return releaseName(ctx, rel, workers)
 }
 

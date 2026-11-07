@@ -1,6 +1,8 @@
 package build
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -49,7 +51,9 @@ func TestLoad(t *testing.T) {
 	src := testSource(t)
 	jaPosts := src.addPosts(t, "ja", 11)
 	enPosts := src.addPosts(t, "en", 11)
+	src.editRevision(t, servicesID, func(r *content.Revision) { r.Excerpt = "手書きの抜粋です。" })
 	b := mustLoad(t, src)
+	read := slices.Clone(src.read)
 	if n := b.warnings.len(); n != 0 {
 		t.Errorf("load() made %d warnings:\n%v", n, b.warnings.sorted())
 	}
@@ -123,16 +127,44 @@ func TestLoad(t *testing.T) {
 		revisions = append(revisions, revisionID(id))
 		if b.published(id) != d || d.rev == nil || d.revFile.Name != "revisions/"+revisionID(id)+".json" {
 			t.Errorf("the published entry %s has the revision %+v in %q", id, d.rev, d.revFile.Name)
+			continue
+		}
+		want := src.revisions[revisionID(id)].Data
+		if sum := sha256.Sum256(want); d.revFile.Data != nil || d.revSum != sum {
+			t.Errorf("the published entry %s keeps %d bytes of its revision file, with the SHA-256 %x, want none, with %x",
+				id, len(d.revFile.Data), d.revSum, sum)
+		}
+		if b.revisions[d.revFile.Name] != d {
+			t.Errorf("the revision file %s is not that of the published entry %s by name", d.revFile.Name, id)
+		}
+		f, err := b.revisionFile(d)
+		if err != nil || !bytes.Equal(f.Data, want) {
+			t.Errorf("revisionFile() of %s = %q, %v; want the file of the source", id, f.Data, err)
+		}
+		if body, err := revisionBody(f); d.rev.Body != nil || len(body) == 0 || err != nil {
+			t.Errorf("the published entry %s keeps %d blocks of its body, and revisionBody() returns %d blocks, %v",
+				id, len(d.rev.Body), len(body), err)
 		}
 	}
-	if got, want := slices.Sorted(slices.Values(src.read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
+	if got, want := slices.Sorted(slices.Values(read)), slices.Sorted(slices.Values(revisions)); !slices.Equal(got, want) {
 		t.Errorf("load() read the revisions %q, want %q", got, want)
+	}
+	if got := len(b.revisions); got != len(revisions) {
+		t.Errorf("load() has %d revisions by name, want %d", got, len(revisions))
 	}
 	if d := b.published(jaPosts[0]); d == nil || d.rev.Slug != "post-1001" || d.rev.Date != "2026-09-01T09:00:00+09:00" {
 		t.Errorf("the first post added has %+v", d)
 	}
 	if d := b.published(postID); d == nil || d.rev.Slug != "新サービス" || d.e.Number != 123 {
 		t.Errorf("the post of 6.11.9 has %+v", d)
+	}
+	for _, tt := range []struct{ id, want string }{
+		{postID, "Webサイトの更新と運用をお手伝いするサービスです。"},
+		{servicesID, "手書きの抜粋です。"},
+	} {
+		if got := b.published(tt.id).excerpt; got != tt.want {
+			t.Errorf("the excerpt of %s is %q, want %q", tt.id, got, tt.want)
+		}
 	}
 	media := []string{imageID, pdfID, avatarID, logoID, iconID, ogImageID}
 	if got, want := slices.Sorted(maps.Keys(b.media)), slices.Sorted(slices.Values(media)); !slices.Equal(got, want) {
@@ -286,8 +318,17 @@ func TestLoadImport(t *testing.T) {
 		)
 	})
 	b := mustLoad(t, src)
-	if r := b.published(aboutID).rev; len(r.Body) != 7 || r.Template != "standard" {
-		t.Errorf("the about page has the revision %+v", r)
+	d := b.published(aboutID)
+	f, err := b.revisionFile(d)
+	if err != nil {
+		t.Fatalf("revisionFile() of the about page: %v", err)
+	}
+	body, err := revisionBody(f)
+	if err != nil {
+		t.Fatalf("revisionBody() of the about page: %v", err)
+	}
+	if r := d.rev; len(body) != 7 || r.Body != nil || r.Template != "standard" {
+		t.Errorf("the about page has the revision %+v and the body of %d blocks read again", r, len(body))
 	}
 }
 
@@ -362,6 +403,71 @@ func TestLoadSiteDir(t *testing.T) {
 	} {
 		if !reflect.DeepEqual(x.got, x.want) {
 			t.Errorf("%s through sitedir = %+v, want %+v", x.name, x.got, x.want)
+		}
+	}
+}
+
+// paddedSource is a Source whose documents are in arrays with padding bytes to spare, as those of sitedir are (with
+// bytes.MinRead). It keeps the arrays.
+type paddedSource struct {
+	Source
+	arrays [][]byte
+}
+
+const padding = 64 << 10
+
+func (s *paddedSource) Documents(kind content.RefKind) (map[string]content.SiteFile, error) {
+	docs, err := s.Source.Documents(kind)
+	for id, f := range docs {
+		f.Data = append(make([]byte, 0, len(f.Data)+padding), f.Data...)
+		s.arrays = append(s.arrays, f.Data)
+		docs[id] = f
+	}
+	return docs, err
+}
+
+func docFiles[T any](docs map[string]*doc[T]) map[string]content.SiteFile {
+	files := make(map[string]content.SiteFile, len(docs))
+	for id, d := range docs {
+		files[id] = d.file
+	}
+	return files
+}
+
+// TestLoadKeepsExactDocuments checks that the build keeps copies of the files of the documents of every kind, without
+// the room to spare of the arrays that its Source returns.
+func TestLoadKeepsExactDocuments(t *testing.T) {
+	src := testSource(t)
+	padded := &paddedSource{Source: src}
+	b := mustLoad(t, padded)
+	for _, a := range padded.arrays {
+		clear(a[:cap(a)])
+	}
+	entries := make(map[string]content.SiteFile, len(b.entries))
+	for id, d := range b.entries {
+		entries[id] = d.file
+	}
+	for kind, got := range map[content.RefKind]map[string]content.SiteFile{
+		content.RefEntry:    entries,
+		content.RefTerm:     docFiles(b.terms),
+		content.RefMedia:    docFiles(b.media),
+		content.RefAuthor:   docFiles(b.authors),
+		content.RefMenu:     docFiles(b.menus),
+		content.RefForm:     docFiles(b.forms),
+		content.RefRedirect: docFiles(b.redirects),
+	} {
+		want := src.docs[kind]
+		if len(got) == 0 || len(got) != len(want) {
+			t.Errorf("load() keeps %d files of the kind %s, want %d", len(got), kind, len(want))
+		}
+		for id, f := range got {
+			if f.Name != want[id].Name || !bytes.Equal(f.Data, want[id].Data) {
+				t.Errorf("load() keeps the file of %s %s as %q with %d bytes, not %q with %d bytes of the Source; keep a copy",
+					kind, id, f.Name, len(f.Data), want[id].Name, len(want[id].Data))
+			}
+			if cap(f.Data) >= len(f.Data)+padding {
+				t.Errorf("load() keeps the file of %s %s, %d bytes, in an array of %d", kind, id, len(f.Data), cap(f.Data))
+			}
 		}
 	}
 }

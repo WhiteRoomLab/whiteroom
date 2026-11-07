@@ -8,7 +8,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
-// renderKey is an entry and a renderer, by which pageData keeps what it makes once.
+// renderKey is an entry and a renderer, by which postsBodies keeps what it makes once.
 type renderKey struct {
 	id string
 	r  *render.Renderer
@@ -99,7 +99,7 @@ func (b *builder) entryHTML(p *page, r *render.Renderer) (map[string]template.HT
 }
 
 // summary returns the data of d, a published entry, in the lists of the pages that r renders (entryData without its
-// HTML), made once for d and r.
+// HTML). Every page that lists d makes it again, so that the build does not keep one for every entry.
 func (b *builder) summary(d *entryDoc, r *render.Renderer) *Entry {
-	return b.summaries.get(renderKey{d.e.ID, r}, func() *Entry { return b.entryData(d, r, nil) })
+	return b.entryData(d, r, nil)
 }

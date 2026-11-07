@@ -1,6 +1,8 @@
 package build
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"maps"
@@ -22,8 +24,10 @@ type doc[T any] struct {
 type entryDoc struct {
 	file    content.SiteFile
 	e       content.Entry
-	revFile content.SiteFile
-	rev     *content.Revision // nil unless e is published and the revision is valid
+	revFile content.SiteFile  // once the revision is valid, its Name alone; revisionFile reads the file again
+	revSum  [sha256.Size]byte // the SHA-256 of the file that was valid
+	rev     *content.Revision // nil unless e is published and the revision is valid; without its Body (revisionBody)
+	excerpt string            // the excerpt of rev (excerpt)
 }
 
 // builder holds what the build has read of a site and found out about it. The documents are by ID.
@@ -34,6 +38,7 @@ type builder struct {
 	theme            *theme.Theme
 
 	entries   map[string]*entryDoc
+	revisions map[string]*entryDoc // the published entries with a valid revision, by the names of their revision files
 	terms     map[string]*doc[content.Term]
 	media     map[string]*doc[content.Media]
 	authors   map[string]*doc[content.AuthorProfile]
@@ -56,8 +61,7 @@ type builder struct {
 	serverRedirects []redirect
 	// The resolver of the media and the other entities that content refers to, which records the media to publish.
 	res *resolver
-	// What pageData makes once for all the pages that show it: the entries in lists, and the HTML of the posts pages.
-	summaries   onceMap[renderKey, *Entry]
+	// The HTML of the posts pages, which pageData makes once for all the pages of their lists.
 	postsBodies onceMap[renderKey, renderedEntry]
 
 	warnings problems
@@ -74,6 +78,7 @@ var kinds = []content.RefKind{
 // the documents; planning the pages and the other outputs. The error is content.Errors, or an error of src as it is.
 func load(src Source) (*builder, error) {
 	b := &builder{src: src}
+	b.warnings.read = b.revisionData
 	var err error
 	if b.settings, b.schema, err = src.Settings(); err != nil {
 		return nil, err
@@ -89,7 +94,7 @@ func load(src Source) (*builder, error) {
 		return nil, err
 	}
 
-	var p problems
+	p := problems{read: b.revisionData}
 	b.decode(files, &p)
 	if p.len() > 0 {
 		return nil, p.sorted()
@@ -103,6 +108,7 @@ func load(src Source) (*builder, error) {
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
+	stageEnded("validated")
 	b.checkAcross(&p)
 	if p.len() > 0 {
 		return nil, p.sorted()
@@ -111,6 +117,7 @@ func load(src Source) (*builder, error) {
 	if p.len() > 0 {
 		return nil, p.sorted()
 	}
+	stageEnded("planned")
 	return b, nil
 }
 
@@ -118,6 +125,7 @@ func load(src Source) (*builder, error) {
 func (b *builder) decode(files map[content.RefKind]map[string]content.SiteFile, p *problems) {
 	entries := decodeDocs(p, files[content.RefEntry], func(e *content.Entry) string { return e.ID })
 	b.entries = make(map[string]*entryDoc, len(entries))
+	b.revisions = make(map[string]*entryDoc, len(entries))
 	for id, d := range entries {
 		b.entries[id] = &entryDoc{file: d.file, e: d.v}
 	}
@@ -137,6 +145,8 @@ func decodeDocs[T any, P interface {
 	docs := make(map[string]*doc[T], len(files))
 	for _, key := range slices.Sorted(maps.Keys(files)) {
 		d := &doc[T]{file: files[key]}
+		// A Source may return an array larger than the file (sitedir reads with bytes.MinRead more); keep a copy.
+		d.file.Data = bytes.Clone(d.file.Data)
 		if !decodeFile(p, d.file, P(&d.v).UnmarshalJSON) {
 			continue
 		}
