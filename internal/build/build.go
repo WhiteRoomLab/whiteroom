@@ -57,7 +57,7 @@ type Result struct {
 // names the release after its content, and points Out/current to it at once, by renaming a new symbolic link over it.
 //
 // Out holds only what Build makes: .lock, which keeps two builds from running in it at once; the directory releases,
-// with the releases; and current. Build keeps the release that current pointed to before, for a rollback, and removes
+// with the releases; and current. Build keeps the release that current pointed to before, for Rollback, and removes
 // the older ones; it removes none if the release is that of current. It also removes what builds that did not end
 // left: releases/.tmp-* and current.tmp-*. Anything else in Out is an error, and Build never removes it.
 //

@@ -500,6 +500,45 @@ func TestPublish(t *testing.T) {
 	checkTree(t, "publish() over a file", dir, before)
 }
 
+// TestPointCurrent checks that pointCurrent replaces current, or makes it, with a relative link to a release, and that
+// one that fails leaves nothing behind.
+func TestPointCurrent(t *testing.T) {
+	base := []string{".lock", "releases/" + releaseA + "/public/a", "releases/" + releaseB + "/public/b"}
+	stale := "current.tmp-" + randomA + " -> releases/" + releaseA
+	for _, tt := range []struct {
+		what    string
+		current []string // before
+		want    []string // after
+	}{
+		{"another release", []string{"current -> releases/" + releaseA}, []string{"current -> releases/" + releaseB}},
+		{"the same release", []string{"current -> releases/" + releaseB}, []string{"current -> releases/" + releaseB}},
+		{"no current", nil, []string{"current -> releases/" + releaseB}},
+		{
+			"a current to a release that does not exist",
+			[]string{"current -> releases/" + releaseC}, []string{"current -> releases/" + releaseB},
+		},
+		{
+			"stale links",
+			[]string{"current -> releases/" + releaseA, stale}, []string{"current -> releases/" + releaseB, stale},
+		},
+	} {
+		dir := makeDir(t, append(slices.Clone(base), tt.current...)...)
+		if err := pointCurrent(openRoot(t, dir), releaseB); err != nil {
+			t.Errorf("%s: pointCurrent() = %v", tt.what, err)
+		}
+		checkTree(t, tt.what, dir, tree(t, makeDir(t, append(slices.Clone(base), tt.want...)...)))
+	}
+
+	dir := makeDir(t, append(slices.Clone(base), "current/")...)
+	before := tree(t, dir)
+	pattern := regexp.QuoteMeta(dir) + `: renameat current\.tmp-[0-9a-f]{16} current: .+`
+	err := pointCurrent(openRoot(t, dir), releaseB)
+	if err == nil || !regexp.MustCompile("^"+pattern+"$").MatchString(err.Error()) {
+		t.Errorf("pointCurrent() over a directory = %v, want an error that matches %s", err, pattern)
+	}
+	checkTree(t, "pointCurrent() over a directory", dir, before)
+}
+
 // TestRemoveOld checks that removeOld removes the releases that it does not keep and what builds that did not end left,
 // and nothing else.
 func TestRemoveOld(t *testing.T) {

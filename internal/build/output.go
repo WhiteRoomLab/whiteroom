@@ -258,21 +258,27 @@ func publish(root *os.Root, tmp, name, previous string) (changed bool, err error
 	if err != nil || name == previous {
 		return false, outError(root, err)
 	}
-	link, err := unique(linkPrefix, func(link string) error { return root.Symlink(dir, link) })
-	if err == nil {
-		if err = root.Rename(link, currentLink); err != nil {
-			err = errors.Join(outError(root, err), outError(root, root.Remove(link)))
-		}
-	} else {
-		err = outError(root, err)
-	}
-	if err != nil {
+	if err = pointCurrent(root, name); err != nil {
 		if made {
 			err = errors.Join(err, outError(root, root.RemoveAll(dir)))
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+// pointCurrent points current in root, an output directory, to the release releases/<name> by renaming a new relative
+// symbolic link over it, which replaces it at once. If it fails, current is as it was.
+func pointCurrent(root *os.Root, name string) error {
+	dir := releasesDir + "/" + name
+	link, err := unique(linkPrefix, func(link string) error { return root.Symlink(dir, link) })
+	if err != nil {
+		return outError(root, err)
+	}
+	if err := root.Rename(link, currentLink); err != nil {
+		return errors.Join(outError(root, err), outError(root, root.Remove(link)))
+	}
+	return nil
 }
 
 // removeOld removes from root, an output directory that held l, the releases of l other than keep, and what builds that
