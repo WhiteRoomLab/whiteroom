@@ -73,6 +73,14 @@ func (r row) hasCredential() bool {
 	return r.Password != ""
 }
 
+// removeCredentials removes every credential of r and reports whether it had any. Like hasCredential, it lists the
+// kinds of credentials.
+func (r *row) removeCredentials() bool {
+	had := r.hasCredential()
+	r.Password = ""
+	return had
+}
+
 func (r row) status() Status {
 	switch {
 	case r.Disabled:

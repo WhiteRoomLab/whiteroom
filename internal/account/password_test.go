@@ -897,7 +897,7 @@ func TestPasswordTestHelpers(t *testing.T) {
 	}
 }
 
-func FuzzCheckPassword(f *testing.F) {
+func FuzzPasswordRules(f *testing.F) {
 	for _, s := range []string{
 		pwGood, "", "a", strings.Repeat("a", 15), strings.Repeat("a", 257), pwAcutes(15), pwAcutes(14), pwJamo(15),
 		"\xff", "a\tb", strings.Repeat("a", 14) + "\x00", "taro.yamada.2026", "Taro.Yamada.2026", strings.Repeat("e"+acute, 15),
