@@ -1,7 +1,9 @@
 package content
 
 import (
+	"bytes"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -785,5 +787,300 @@ func FuzzUnmarshalSchema(f *testing.F) {
 		}
 		// Validate takes any definitions that read, without panicking.
 		_ = s.Validate(nil)
+		// MarshalSchema writes definitions that read back as they are, unless it fails: a definition may have only
+		// items that it does not write, and a key or a text may be longer or have characters that YAML cannot have.
+		if out, err := s.MarshalSchema(); err == nil {
+			again := fullSettingsSite()
+			if err := again.UnmarshalSchema(out); err != nil || !reflect.DeepEqual(again, s) {
+				t.Errorf("UnmarshalSchema(%q) = %v, %#v; want %#v", out, err, again, s)
+			}
+		}
 	})
+}
+
+// marshalSchemaYAML is a schema file with what everySchemaYAML has not: every kind of number in min and max,
+// untranslatable fields, groups and lists in groups and in lists, and every item of post, page, category and tag.
+const marshalSchemaYAML = `schemaVersion: 1
+authorUrl: /writers/{slug}/
+taxonomies:
+  category:
+    label: カテゴリー
+    url: /topics/{path}/
+  tag:
+    label: タグ
+    url: /tags/{slug}/
+  genre:
+    label: ジャンル
+    hierarchical: true
+types:
+  post:
+    label: お知らせ
+    url: /news/{yyyy}/{slug}/
+    taxonomies: [genre]
+    fields:
+      subtitle:
+        type: text
+  page:
+    url: /pages/{path}/
+    fields:
+      lead: { type: textarea, label: リード }
+  measure:
+    label: 計測
+    archive: /measures/
+    body: true
+    fields:
+      ratio:
+        type: number
+        min: -0.1
+        max: 1e300
+      small:
+        type: number
+        min: 1e-7
+        max: 0.30000000000000004
+      negative:
+        type: number
+        min: -1000000
+        max: -5
+      big:
+        type: number
+        min: 0
+        max: 123456789012345680000
+      frozen:
+        type: text
+        required: true
+        translatable: false
+      spec:
+        type: group
+        fields:
+          inner:
+            type: group
+            fields:
+              leaf: { type: text, minLength: 1, maxLength: 9 }
+          grid:
+            type: list
+            of:
+              type: list
+              of: { type: number, min: 0 }
+            minItems: 1
+            maxItems: 4
+      pick:
+        type: select
+        options: ["1", "a: b", "#c", 日本語]
+        multiple: true
+        minItems: 1
+        maxItems: 2
+      link:
+        type: link
+      refs:
+        type: entry
+        types: [post, page]
+        multiple: true
+      terms:
+        type: term
+        taxonomy: genre
+      files:
+        type: media
+        accept: [image, pdf]
+`
+
+// schemaFromYAML returns a case of TestMarshalSchema that reads in.
+func schemaFromYAML(in string) func(t *testing.T) *Site {
+	return func(t *testing.T) *Site {
+		s := minimalSite()
+		if err := s.UnmarshalSchema([]byte(in)); err != nil {
+			t.Fatalf("UnmarshalSchema(%s) = %v", in, err)
+		}
+		return s
+	}
+}
+
+func TestMarshalSchema(t *testing.T) {
+	sample, err := os.ReadFile(filepath.Join("..", "build", "testdata", "site", "site", "schema.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSettings := func(s *Site) func(t *testing.T) *Site {
+		return func(t *testing.T) *Site {
+			site := minimalSite()
+			site.AuthorURL, site.Types, site.Taxonomies = s.AuthorURL, s.Types, s.Taxonomies
+			return site
+		}
+	}
+	tests := []struct {
+		name string
+		site func(t *testing.T) *Site
+	}{
+		{"sample site", schemaFromYAML(string(sample))},
+		{"works", schemaFromYAML(readTestdata(t, "works-schema.yaml"))},
+		{"example", schemaFromYAML(readTestdata(t, "example-site-schema.yaml"))},
+		{"every item", schemaFromYAML(everySchemaYAML)},
+		{"numbers and nesting", schemaFromYAML(marshalSchemaYAML)},
+		{"schemaVersion only", schemaFromYAML("schemaVersion: 1\n")},
+		{"test site", withSettings(testSite())},
+		{"example site", withSettings(exampleSite())},
+		{"every item of the schema", withSettings(everySchema())},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.site(t)
+			if err := s.Validate(testLookup); err != nil {
+				t.Fatalf("Validate() = %v", err)
+			}
+			out, err := s.MarshalSchema()
+			if err != nil {
+				t.Fatalf("MarshalSchema() = %v", err)
+			}
+			again := minimalSite()
+			if err := again.UnmarshalSchema(out); err != nil {
+				t.Fatalf("UnmarshalSchema(%s) = %v", out, err)
+			}
+			if !reflect.DeepEqual(again, s) {
+				t.Errorf("UnmarshalSchema(%s) = %#v, want %#v", out, again, s)
+			}
+			if err := again.Validate(testLookup); err != nil {
+				t.Errorf("Validate() of the schema file %s = %v", out, err)
+			}
+			if b, err := again.MarshalSchema(); err != nil || !bytes.Equal(b, out) {
+				t.Errorf("MarshalSchema() = %s, %v; want the schema file %s again", b, err, out)
+			}
+		})
+	}
+}
+
+func TestMarshalSchemaOutput(t *testing.T) {
+	s := &Site{
+		AuthorURL: "/writers/{slug}/",
+		Taxonomies: []TaxonomyDef{
+			{Name: TaxonomyCategory, URL: "/topics/{path}/"},
+			{Name: "works_category", Label: "実績の種類", Hierarchical: true},
+		},
+		Types: []TypeDef{{
+			Name: "works", Label: "制作実績", URL: "/works/{slug}/", Archive: "/works/",
+			Taxonomies: []string{"works_category"}, Body: true,
+			Fields: []FieldDef{
+				{Name: "client", Type: FieldText, Label: "クライアント名", Required: true, MaxLength: 100},
+				{Name: "year", Type: FieldNumber, Min: new(1990.0), Max: new(2100.5), Synced: true},
+				{Name: "images", Type: FieldList, Of: &FieldDef{Type: FieldMedia, Accept: []string{MediaImage}}, MaxItems: 20},
+			},
+		}},
+	}
+	const want = `schemaVersion: 1
+authorUrl: /writers/{slug}/
+taxonomies:
+  category:
+    url: /topics/{path}/
+  works_category:
+    label: 実績の種類
+    hierarchical: true
+types:
+  works:
+    label: 制作実績
+    url: /works/{slug}/
+    archive: /works/
+    taxonomies: [works_category]
+    body: true
+    fields:
+      client:
+        type: text
+        label: クライアント名
+        required: true
+        maxLength: 100
+      year:
+        type: number
+        translatable: false
+        min: 1990
+        max: 2100.5
+      images:
+        type: list
+        maxItems: 20
+        of:
+          type: media
+          accept: [image]
+`
+	if got, err := s.MarshalSchema(); err != nil || string(got) != want {
+		t.Errorf("MarshalSchema() = %q, %v; want %q", got, err, want)
+	}
+
+	// post and page always have a body, and it is not written.
+	postPage := &Site{Types: []TypeDef{{Name: TypePost, Label: "お知らせ", Body: true}, {Name: TypePage, URL: "/{path}.html", Body: true}}}
+	const wantPostPage = "schemaVersion: 1\ntypes:\n  post:\n    label: お知らせ\n  page:\n    url: /{path}.html\n"
+	if got, err := postPage.MarshalSchema(); err != nil || string(got) != wantPostPage {
+		t.Errorf("MarshalSchema() = %q, %v; want %q", got, err, wantPostPage)
+	}
+	if got, err := new(Site).MarshalSchema(); err != nil || string(got) != "schemaVersion: 1\n" {
+		t.Errorf("MarshalSchema() of an empty site = %q, %v", got, err)
+	}
+
+	// The items of the settings document are not written.
+	schema, err := exampleSite().MarshalSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := fullSettingsSite().MarshalSchema(); err != nil || !bytes.Equal(got, schema) {
+		t.Errorf("MarshalSchema() = %q, %v; want %q", got, err, schema)
+	}
+}
+
+func TestMarshalSchemaErrors(t *testing.T) {
+	const nothing = " has nothing to write; give it at least one item"
+	group := func(fields ...FieldDef) *Site {
+		return &Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "spec", Type: FieldGroup, Fields: fields}}}}}
+	}
+	tests := []struct {
+		name string
+		site *Site
+		msg  string
+	}{
+		{"type", &Site{Types: []TypeDef{{Name: "works"}}}, `the type "works"` + nothing},
+		{"type after others", &Site{Types: []TypeDef{{Name: "a", Label: "A"}, {Name: "b"}}}, `the type "b"` + nothing},
+		{"type with only items that are not written", &Site{Types: []TypeDef{{Name: TypePost, Body: true}}}, `the type "post"` + nothing},
+		{"taxonomy", &Site{Taxonomies: []TaxonomyDef{{Name: "series"}}}, `the taxonomy "series"` + nothing},
+		{
+			"field",
+			&Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "year"}}}}},
+			`the field "year" of the type "works"` + nothing,
+		},
+		{
+			"field with only items that are not written",
+			&Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "year", Options: []string{}, Fields: []FieldDef{}}}}}},
+			`the field "year" of the type "works"` + nothing,
+		},
+		{"field in a group", group(FieldDef{Name: "inner"}), `the field "inner" of the field "spec" of the type "works"` + nothing},
+		{
+			"field in a group in a group",
+			group(FieldDef{Name: "inner", Type: FieldGroup, Fields: []FieldDef{{Name: "leaf"}}}),
+			`the field "leaf" of the field "inner" of the field "spec" of the type "works"` + nothing,
+		},
+		{
+			"of",
+			&Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "items", Type: FieldList, Of: &FieldDef{}}}}}},
+			`the "of" of the field "items" of the type "works"` + nothing,
+		},
+		{
+			"of in a list",
+			&Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "grid", Type: FieldList, Of: &FieldDef{Type: FieldList, Of: &FieldDef{}}}}}}},
+			`the "of" of the "of" of the field "grid" of the type "works"` + nothing,
+		},
+		{"duplicate type", &Site{Types: []TypeDef{{Name: "works", Label: "A"}, {Name: "works", Label: "B"}}}, `duplicate object member name "works"`},
+		{"duplicate taxonomy", &Site{Taxonomies: []TaxonomyDef{{Name: "a", Label: "A"}, {Name: "a", Label: "B"}}}, `duplicate object member name "a"`},
+		{
+			"duplicate field",
+			&Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "a", Type: FieldText}, {Name: "a", Type: FieldText}}}}},
+			`duplicate object member name "a"`,
+		},
+		{"invalid UTF-8", &Site{Types: []TypeDef{{Name: "works", Label: "a\xffb"}}}, "invalid UTF-8"},
+		{"U+FEFF", &Site{Types: []TypeDef{{Name: "works", Label: "a" + string(rune(0xFEFF))}}}, "which YAML cannot have"},
+		{"U+0080 in an option", &Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "a", Type: FieldSelect, Options: []string{string(rune(0x80))}}}}}}, "which YAML cannot have"},
+		{"name with U+FFFE", &Site{Taxonomies: []TaxonomyDef{{Name: "a" + string(rune(0xFFFE)), Label: "A"}}}, "which YAML cannot have"},
+		{"NaN", &Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "a", Type: FieldNumber, Min: new(math.NaN())}}}}}, "invalid character"},
+		{"infinity", &Site{Types: []TypeDef{{Name: "works", Fields: []FieldDef{{Name: "a", Type: FieldNumber, Max: new(math.Inf(1))}}}}}, "invalid character"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := tt.site.MarshalSchema()
+			if err == nil || !strings.Contains(err.Error(), tt.msg) || out != nil {
+				t.Errorf("MarshalSchema() = %q, %v; want the error %q", out, err, tt.msg)
+			}
+		})
+	}
 }

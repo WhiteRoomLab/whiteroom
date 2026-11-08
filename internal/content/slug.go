@@ -13,9 +13,19 @@ import (
 // MaxSlugBytes is the maximum length of a slug in UTF-8, which keeps it within a file name.
 const MaxSlugBytes = 200
 
+// NormalizeSlug removes the control characters of s and maps it to lower case and NFC, as CheckSlug requires.
+func NormalizeSlug(s string) string {
+	return normalizeSlug(s)
+}
+
 // normalizeSlug removes control characters as normalizeText does, and maps letters to lower case before NFC.
 func normalizeSlug(s string) string {
 	return nfc.Normalize(strings.Map(unicode.ToLower, cleanText(s, false)))
+}
+
+// CheckSlug checks s by the rule for slugs: lower case, NFC, up to MaxSlugBytes bytes, and the characters slugs can have.
+func CheckSlug(s string) error {
+	return checkSlug(s)
 }
 
 // checkSlug accepts lower case ASCII letters, digits, "-", "_", and characters other than ASCII
