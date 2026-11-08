@@ -42,7 +42,7 @@
 | `whiteroom help` | 使い方を示す（`whiteroom -h`・`-help`・`--help` も同じ） |
 | `whiteroom init`・`whiteroom doctor`・`whiteroom backup`・`whiteroom serve admin` | まだ無い（9.2。`init` で作るものは6.12の69、`doctor` は6.9） |
 
-前のリリースに戻すコマンド（4.2のロールバック。6.12の108）と、ビルドの後にNginxに設定を読み込み直させるコマンド（6.12の113）も、まだ無い。
+前のリリースに戻す操作は、Goの関数としてある（`build.Rollback`・`build.ListReleases`と、ビルドを止めて再開する `publish.Publisher` の `Rollback`・`Resume`。4.4）が、そのコマンドは、保存先からのビルドのコマンドとともに、まだ無い（#49。6.12の108）。ビルドの後にNginxに設定を読み込み直させるコマンド（6.12の113）も、まだ無い。
 
 規則：
 
