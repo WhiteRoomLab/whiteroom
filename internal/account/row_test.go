@@ -146,6 +146,47 @@ func TestRowRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRowRoundTripPasswordHashes(t *testing.T) {
+	made, err := hashPassword(pwGood, pwLow, &pwSequence{})
+	if err != nil {
+		t.Fatalf("hashPassword() = %v", err)
+	}
+	for name, hash := range map[string]string{
+		"a hash that hashPassword made": made,
+		"the hash of the other tests":   testPasswordHash(0xab),
+		"the smallest count":            pwForm("1", pwB64(16, 3), pwB64(32, 4)),
+		"the largest count":             pwForm("10000000", pwB64(16, 3), pwB64(32, 4)),
+		"a longer salt":                 pwForm("600000", pwB64(64, 3), pwB64(32, 4)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := testRow()
+			r.Password = hash
+			data := jsonOf(t, r)
+			if !strings.Contains(data, `"password":"`+hash+`"`) {
+				t.Error("encodeRow() does not write the hash as it is")
+			}
+			got, err := decodeRow(r.ID, []byte(data))
+			if err != nil {
+				t.Fatalf("decodeRow() = %v", err)
+			}
+			if got != r || got.Password != hash || got.status() != StatusActive {
+				t.Errorf("decodeRow() returned another row, or one that is not active: status %q", got.status())
+			}
+		})
+	}
+
+	// The hash that is read back is the hash that verifies the password.
+	r := testRow()
+	r.Password = made
+	got, err := decodeRow(r.ID, []byte(jsonOf(t, r)))
+	if err != nil {
+		t.Fatalf("decodeRow() = %v", err)
+	}
+	if ok, _, err := matchHash(got.Password, pwGood, pwLow); !ok || err != nil {
+		t.Errorf("matchHash() of the hash read from the row = %v, %v, want true, nil", ok, err)
+	}
+}
+
 func TestDecodeRowRejects(t *testing.T) {
 	full := jsonOf(t, testRow())
 	// The escape of a character in a JSON string, written out here so that the source holds no such escape.
@@ -282,6 +323,35 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a token hash with a digit that is not hexadecimal", data: with(func(r *row) { r.Token.Hash = "sha256:" + strings.Repeat("g", 64) })},
 		{name: "a token without an expiry", data: with(func(r *row) { r.Token.ExpiresAt = time.Time{} })},
 		{name: "a disabled account with a token", data: with(func(r *row) { r.Disabled = true })},
+
+		{name: "a password that is not a hash", data: with(func(r *row) { r.Password = "not a password hash" })},
+		{name: "a password that is only a prefix", data: with(func(r *row) { r.Password = "$pbkdf2-sha256$" })},
+		{name: "a password hash of another algorithm", data: with(func(r *row) {
+			r.Password = strings.Replace(testPasswordHash(0xab), "sha256", "sha512", 1)
+		})},
+		{name: "a password hash with a count of zero", data: with(func(r *row) {
+			r.Password = strings.Replace(testPasswordHash(0xab), "i=600000", "i=0", 1)
+		})},
+		{name: "a password hash with a leading zero in the count", data: with(func(r *row) {
+			r.Password = strings.Replace(testPasswordHash(0xab), "i=600000", "i=0600000", 1)
+		})},
+		{name: "a password hash with a count above the maximum", data: with(func(r *row) {
+			r.Password = strings.Replace(testPasswordHash(0xab), "i=600000", "i=10000001", 1)
+		})},
+		{name: "a password hash with a short salt", data: with(func(r *row) { r.Password = pwForm("600000", pwB64(15, 0xab), pwB64(32, 0xab)) })},
+		{name: "a password hash with a short key", data: with(func(r *row) { r.Password = pwForm("600000", pwB64(16, 0xab), pwB64(31, 0xab)) })},
+		{name: "a password hash with a long key", data: with(func(r *row) { r.Password = pwForm("600000", pwB64(16, 0xab), pwB64(33, 0xab)) })},
+		{name: "a password hash with padding", data: with(func(r *row) { r.Password = testPasswordHash(0xab) + "=" })},
+		{name: "a password hash with a surrounding space", data: with(func(r *row) { r.Password = " " + testPasswordHash(0xab) })},
+		{name: "a password hash with a line break", data: with(func(r *row) { r.Password = testPasswordHash(0xab) + "\n" })},
+		{name: "a password hash with an extra part", data: with(func(r *row) { r.Password = testPasswordHash(0xab) + "$" + pwB64(32, 0xab) })},
+		{name: "the hash of a token as the password", data: with(func(r *row) { r.Password = testTokenHash(0xcd) })},
+		{name: "an unreadable password for a disabled account", data: with(func(r *row) {
+			r.Disabled, r.Token, r.Password = true, tokenRow{}, "x"
+		})},
+		{name: "an unreadable password for an account without a password time", data: with(func(r *row) {
+			r.CredentialsChangedAt, r.Password = time.Time{}, "x"
+		})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

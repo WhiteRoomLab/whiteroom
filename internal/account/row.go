@@ -118,7 +118,7 @@ func invalidRow(id string) error {
 }
 
 // check reports whether r can be the row of the account id: its ID, its fields as an Input that normalize leaves
-// as it is, who made it and when, and its token.
+// as it is, who made it and when, its password hash and its token.
 func (r row) check(id string) bool {
 	if r.ID != id || content.CheckID(content.RefUser, id) != nil {
 		return false
@@ -130,6 +130,9 @@ func (r row) check(id string) bool {
 		return false
 	}
 	if r.CreatedBy != "" && content.CheckID(content.RefUser, r.CreatedBy) != nil || r.CreatedAt.IsZero() {
+		return false
+	}
+	if _, _, _, err := parseHash(r.Password); r.Password != "" && err != nil {
 		return false
 	}
 	return r.Token.valid() && (!r.Disabled || r.Token.IsZero())
