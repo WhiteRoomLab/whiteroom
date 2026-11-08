@@ -375,7 +375,8 @@ func sameDocuments(t *testing.T, what string, before, after *Source) {
 }
 
 // quietPublisher returns a Publisher of an empty store, which nothing runs, for the tests of its state: they set and read
-// the state without a lock, as no goroutine uses it.
+// the state without a lock, as no goroutine uses it. The step of the scheduler that the start asks for is not due, so that
+// they can set the state of the builds by hand.
 func quietPublisher(t *testing.T) *Publisher {
 	t.Helper()
 	p, err := New(Options{
@@ -385,6 +386,7 @@ func quietPublisher(t *testing.T) *Publisher {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	p.reread = false
 	return p
 }
 
@@ -431,7 +433,10 @@ func TestStateMachine(t *testing.T) {
 						}
 
 						before, nWanted := p.running, len(p.wanted)
-						b, changed := p.next()
+						step, b, changed := p.next()
+						if step {
+							t.Fatal("next() = a step of the scheduler, want none: no step is due")
+						}
 						if starts := due && !running; (b != nil) != starts {
 							t.Fatalf("next() = %+v, want a build: %v", b, starts)
 						}
@@ -439,7 +444,7 @@ func TestStateMachine(t *testing.T) {
 							if p.running != before || len(p.wanted) != nWanted {
 								t.Errorf("next() changed the state without starting a build")
 							}
-							p.request("rebuild", edit.Result{})
+							p.request("rebuild", edit.Result{}, false)
 							select {
 							case <-changed:
 							default:
@@ -465,7 +470,7 @@ func TestTransitions(t *testing.T) {
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	b1, _ := p.next()
+	_, b1, _ := p.next()
 	if b1 == nil || !slices.Equal(reasons(b1.Requests), []string{"start"}) {
 		t.Fatalf("next() = %+v, want the build of the start", b1)
 	}
@@ -473,8 +478,8 @@ func TestTransitions(t *testing.T) {
 	p.Rebuild()
 	p.notify(edit.Result{Kind: content.RefTerm, ID: newsTerm, Publishes: true})
 	p.notify(edit.Result{Kind: content.RefEntry, ID: draftEN})
-	if b, _ := p.next(); b != nil {
-		t.Fatalf("next() = %+v while a build runs", b)
+	if step, b, _ := p.next(); step || b != nil {
+		t.Fatalf("next() = %v, %+v while a build runs", step, b)
 	}
 	st := p.Status()
 	if st.Running == nil || !st.Pending || st.Last != nil || !slices.Equal(reasons(st.Running.Requests), []string{"start"}) {
@@ -497,7 +502,17 @@ func TestTransitions(t *testing.T) {
 		t.Errorf("Wait() error = %v with a build wanted, want %v", err, context.Canceled)
 	}
 
-	b2, _ := p.next()
+	// Rebuild asked for a step of the scheduler too, which comes before the build and which Wait waits for: the entries it
+	// publishes are covered by that build. No other request asked for a step.
+	if step, b, _ := p.next(); !step || b != nil {
+		t.Fatalf("next() = %v, %+v, want the step that Rebuild asked for", step, b)
+	}
+	if st := p.Status(); !st.Pending || st.Running != nil {
+		t.Errorf("Status() = %+v during the step, want the build still wanted", st)
+	}
+	p.step(t.Context())
+
+	_, b2, _ := p.next()
 	if b2 == nil || !slices.Equal(reasons(b2.Requests), []string{"rebuild", "operation"}) || !b2.Started.Equal(fixedLater) {
 		t.Fatalf("next() = %+v, want the build of the rebuild and the operation, which the first build did not cover", b2)
 	}
@@ -508,10 +523,10 @@ func TestTransitions(t *testing.T) {
 		t.Errorf("Status() = %+v, want the second build ended with a copy of its result, and nothing wanted", st)
 	}
 	if err := p.Wait(canceled); err != nil {
-		t.Errorf("Wait() error = %v with nothing running or wanted, want nil", err)
+		t.Errorf("Wait() error = %v with nothing running, wanted or due, want nil", err)
 	}
-	if b, _ := p.next(); b != nil {
-		t.Errorf("next() = %+v with nothing wanted", b)
+	if step, b, _ := p.next(); step || b != nil {
+		t.Errorf("next() = %v, %+v with nothing wanted or due", step, b)
 	}
 }
 
@@ -1148,6 +1163,9 @@ func (st Status) text() string {
 				fmt.Fprintf(&b, "    warning %v\n", w)
 			}
 		}
+	}
+	for _, f := range st.Schedules {
+		fmt.Fprintf(&b, "schedule %q at=%v tried=%v err=%v\n", f.Entry, f.At, f.Tried, f.Err)
 	}
 	return b.String()
 }

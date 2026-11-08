@@ -35,6 +35,8 @@ type Options struct {
 	Memory        int64
 	Workers       int
 	Now           func() time.Time // the clock of the Publisher and of its Editor, for several goroutines; nil is time.Now
+	// Retry is the wait before a scheduled publish that has failed is tried again; 0 is one minute.
+	Retry time.Duration
 }
 
 // Request asks for a build.
@@ -61,6 +63,9 @@ type Status struct {
 	// Paused is true while no build may start: after a Rollback until Resume, and while a Rollback runs.
 	Paused bool
 	Last   *Build // the build that ended last, nil if none has
+	// Schedules are the scheduled publishes that failed at the last step of the scheduler, in the order of the schedules,
+	// whose entries stay scheduled; or the one failure to read the schedules, which has no entry.
+	Schedules []ScheduleFailure
 }
 
 // Publisher builds the site of a store into Options.Out whenever what is published may have changed, one build at a
@@ -76,30 +81,48 @@ type Status struct {
 // A build that fails neither undoes the operations, which stay in the store, nor changes the site that is published,
 // which stays as the last successful build left it (4.2). The failure is in Status. The running build and the last one are
 // kept in memory only: Status is empty in every new Publisher, whose start builds the store again.
+//
+// Run also publishes the entries that are scheduled when their times come (Editor.PublishScheduled), as the users who
+// scheduled them, in steps that it takes between the builds: when it starts, before the first build, so that this covers
+// the schedules that are overdue; at the earliest time of a schedule, by one timer; and after each operation of the Editor
+// that sets the state of an entry, and after Rebuild. A scheduled publish asks for a build as any publish does, also while
+// the builds are paused. One that fails leaves the entry scheduled, and is in Status.Schedules until the entry is published
+// or no longer scheduled; it is tried again at every step, so after Options.Retry and after each change of the state of an
+// entry. A step waits for the build that runs, as a build waits for a step.
 type Publisher struct {
-	o   Options
-	ed  *edit.Editor
-	now func() time.Time
+	o     Options
+	ed    *edit.Editor
+	now   func() time.Time
+	retry time.Duration // the wait before a scheduled publish that failed is tried again
 
 	// beforeBuild, if not nil, is called by Run with the options of a build after its snapshot is taken and before it is
 	// built; for the tests.
 	beforeBuild func(build.Options)
 
+	// afterFunc makes the timer of the scheduler, and beforePublish, if not nil, is called by a step of it before it
+	// publishes an entry; for the tests, which fire the timers and change the entries by themselves.
+	afterFunc     func(d time.Duration, f func()) stopper
+	beforePublish func(entry string)
+	timer         stopper // the timer that Run has armed, which only the goroutine of Run uses
+
 	// mu guards the state below. Each change of it closes changed and replaces it, which is how Run, Wait and Rollback
 	// learn of the change.
-	mu      sync.Mutex
-	changed chan struct{}
-	started bool      // Run has been called
-	wanted  []Request // the requests that no build has taken
-	running *Build    // the build that runs, if any
-	last    *Build    // the build that ended last
-	paused  bool      // a Rollback has paused the builds, until Resume
-	rolling bool      // a Rollback runs, so that no build may start
+	mu       sync.Mutex
+	changed  chan struct{}
+	started  bool              // Run has been called
+	wanted   []Request         // the requests that no build has taken
+	running  *Build            // the build that runs, if any
+	last     *Build            // the build that ended last
+	paused   bool              // a Rollback has paused the builds, until Resume
+	rolling  bool              // a Rollback runs, so that no build may start
+	reread   bool              // a step of the scheduler is due: the schedules are to be read again
+	stepping bool              // a step of the scheduler runs
+	failures []ScheduleFailure // the scheduled publishes that failed at the last step that read the schedules
 }
 
-// New returns a Publisher of o.Store that has not started: it wants a build, which Run makes. It loads the theme for the
-// Editor, and fails if it does not load, or if the store, the output directory, the cache directory or the theme is
-// missing, or Memory or Workers is negative.
+// New returns a Publisher of o.Store that has not started: it wants a build and a step of the scheduler, which Run makes.
+// It loads the theme for the Editor, and fails if it does not load, or if the store, the output directory, the cache
+// directory or the theme is missing, or Memory, Workers or Retry is negative.
 func New(o Options) (*Publisher, error) {
 	switch {
 	case o.Store == nil:
@@ -114,19 +137,24 @@ func New(o Options) (*Publisher, error) {
 		return nil, fmt.Errorf("memory %d is out of range (0 or more)", o.Memory)
 	case o.Workers < 0:
 		return nil, fmt.Errorf("workers %d is out of range (0 or more)", o.Workers)
+	case o.Retry < 0:
+		return nil, fmt.Errorf("retry %v is out of range (0 or more)", o.Retry)
 	}
 	th, err := theme.Load(o.Theme)
 	if err != nil {
 		return nil, themeErrors(err)
 	}
-	p := &Publisher{o: o, now: o.Now, changed: make(chan struct{})}
+	p := &Publisher{o: o, now: o.Now, retry: o.Retry, afterFunc: startTimer, changed: make(chan struct{})}
 	if p.now == nil {
 		p.now = time.Now
+	}
+	if p.retry == 0 {
+		p.retry = defaultRetry
 	}
 	p.ed = edit.New(o.Store, o.Schema, th)
 	p.ed.SetClock(p.now)
 	p.ed.Notify(p.notify)
-	p.request(reasonStart, edit.Result{})
+	p.request(reasonStart, edit.Result{}, true)
 	return p, nil
 }
 
@@ -148,20 +176,26 @@ func themeErrors(err error) error {
 // Editor returns the Editor whose operations the Publisher follows. Its clock is Options.Now.
 func (p *Publisher) Editor() *edit.Editor { return p.ed }
 
-// notify is the Notify function of the Editor, which its operations call in their own goroutines.
+// notify is the Notify function of the Editor, which its operations call in their own goroutines. A Result of an entry
+// that has a Status is a change of the state of an entry, which can add, change or cancel a schedule.
 func (p *Publisher) notify(res edit.Result) {
-	if res.Publishes {
+	step := res.Kind == content.RefEntry && res.Status != ""
+	switch {
+	case res.Publishes:
 		res.Warnings = slices.Clone(res.Warnings) // the caller of the operation gets the same result
-		p.request(reasonOperation, res)
+		p.request(reasonOperation, res, step)
+	case step:
+		p.wake()
 	}
 }
 
-// request records a request for a build.
-func (p *Publisher) request(reason string, res edit.Result) {
+// request records a request for a build, and for a step of the scheduler if step.
+func (p *Publisher) request(reason string, res edit.Result, step bool) {
 	r := Request{At: p.now(), Reason: reason, Result: res}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.wanted = append(p.wanted, r)
+	p.reread = p.reread || step
 	p.changeLocked()
 }
 
@@ -171,9 +205,9 @@ func (p *Publisher) changeLocked() {
 	p.changed = make(chan struct{})
 }
 
-// Run makes the builds until ctx ends, and returns nil then. It cancels the build that runs as build.Build is canceled,
-// and returns when that has stopped: a build that has switched the site by then ends its publish. The builds that are
-// wanted then are not made. Run can be called only once.
+// Run makes the builds, and the steps of the scheduler before them, until ctx ends, and returns nil then. It cancels the
+// build that runs as build.Build is canceled, and returns when that has stopped: a build that has switched the site by
+// then ends its publish. The builds that are wanted then are not made. Run can be called only once.
 func (p *Publisher) Run(ctx context.Context) error {
 	p.mu.Lock()
 	started := p.started
@@ -182,17 +216,21 @@ func (p *Publisher) Run(ctx context.Context) error {
 	if started {
 		return errors.New("the publisher has run already")
 	}
+	defer p.arm(0, false)
 	for ctx.Err() == nil {
-		b, changed := p.next()
-		if b == nil {
+		step, b, changed := p.next()
+		switch {
+		case step:
+			p.step(ctx)
+		case b != nil:
+			res, err := p.build(ctx)
+			p.end(b, res, err)
+		default:
 			select {
 			case <-changed:
 			case <-ctx.Done():
 			}
-			continue
 		}
-		res, err := p.build(ctx)
-		p.end(b, res, err)
 	}
 	return nil
 }
@@ -203,19 +241,28 @@ func (p *Publisher) blocked() bool { return p.paused || p.rolling }
 // due reports whether a build will start as soon as none runs, with mu held.
 func (p *Publisher) due() bool { return len(p.wanted) > 0 && !p.blocked() }
 
-// next takes the requests into a new build, which it sets as the one that runs, if none runs and a build is due; else
-// it returns the channel that is closed at the next change of the state.
-func (p *Publisher) next() (*Build, <-chan struct{}) {
+// next decides what Run does now, and starts it, if no build runs. A step of the scheduler that is due comes first, and
+// next makes it the one that runs: whatever asks for a step while it runs asks for another, after it. Else, if a build is
+// due, next takes the requests into a new build, which it sets as the one that runs. Else it returns the channel that is
+// closed at the next change of the state. All of it is one critical section, so that no change is missed between what Run
+// decides and what it waits for.
+func (p *Publisher) next() (step bool, b *Build, changed <-chan struct{}) {
 	at := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.running != nil || !p.due() {
-		return nil, p.changed
+	switch {
+	case p.running != nil:
+		return false, nil, p.changed
+	case p.reread:
+		p.reread, p.stepping = false, true
+		return true, nil, nil
+	case !p.due():
+		return false, nil, p.changed
 	}
-	b := &Build{Started: at, Requests: p.wanted}
+	b = &Build{Started: at, Requests: p.wanted}
 	p.wanted, p.running = nil, b
 	p.changeLocked()
-	return b, nil
+	return false, b, nil
 }
 
 // build reads a snapshot of the store and builds it. Its result is what build.Build returns.
@@ -241,19 +288,21 @@ func (p *Publisher) end(b *Build, res *build.Result, err error) {
 	p.changeLocked()
 }
 
-// Rebuild asks for a build of the store as it is, also if no operation of the Editor has asked for one: after a change
-// that it does not see, such as an import or a save with the store's own API.
-func (p *Publisher) Rebuild() { p.request(reasonRebuild, edit.Result{}) }
+// Rebuild asks for a build of the store as it is, and for a step of the scheduler that reads the schedules again, also if
+// no operation of the Editor has asked for them: after a change that it does not see, such as an import or a save with
+// the store's own API.
+func (p *Publisher) Rebuild() { p.request(reasonRebuild, edit.Result{}, true) }
 
 // Status returns the state of the builds. It is a copy.
 func (p *Publisher) Status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return Status{
-		Running: p.running.clone(),
-		Pending: len(p.wanted) > 0,
-		Paused:  p.blocked(),
-		Last:    p.last.clone(),
+		Running:   p.running.clone(),
+		Pending:   len(p.wanted) > 0,
+		Paused:    p.blocked(),
+		Last:      p.last.clone(),
+		Schedules: slices.Clone(p.failures),
 	}
 }
 
@@ -275,10 +324,11 @@ func (b *Build) clone() *Build {
 	return &c
 }
 
-// Wait returns when no build runs and none is due: none is wanted, or the builds are paused. It returns the error of ctx
-// if that ends first. Before Run starts and after it has returned, Wait waits for a build that is wanted until ctx ends.
+// Wait returns when no build runs and none is due (none is wanted, or the builds are paused), and no step of the scheduler
+// is due or runs, which may ask for a build. It returns the error of ctx if that ends first. Before Run starts and after it
+// has returned, Wait waits for a build or a step that is due until ctx ends.
 func (p *Publisher) Wait(ctx context.Context) error {
-	return p.wait(ctx, func() bool { return p.running == nil && !p.due() })
+	return p.wait(ctx, func() bool { return p.running == nil && !p.due() && !p.reread && !p.stepping })
 }
 
 // wait returns when cond, which is called with mu held, is true, or with the error of ctx if that ends first.
