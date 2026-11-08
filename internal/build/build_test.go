@@ -581,7 +581,7 @@ func checkFileError(t *testing.T, what string, src Source, out, cache, pattern s
 }
 
 // TestBuildRemoveError checks that a build that has published its release but cannot remove an old one returns the
-// result and the error.
+// result and the error, and leaves the rest of the old release under a temporary name, not as a release.
 func TestBuildRemoveError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root may write in any directory")
@@ -592,20 +592,21 @@ func TestBuildRemoveError(t *testing.T) {
 	src.editRevision(t, aboutID, func(r *content.Revision) { r.Title = "会社案内" })
 	second := mustBuild(t, src, out, cache, 4)
 	src.editRevision(t, aboutID, func(r *content.Revision) { r.Title = "私たちについて" })
-	public := filepath.Join(out, "releases", first.Release, "public")
-	if err := os.Chmod(public, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(public, 0o755) })
+	makeReadOnly(t, out, filepath.Join(out, "releases", first.Release, "public"))
 	res, err := Build(t.Context(), buildOptions(src, out, cache, 4))
-	pattern := "^" + regexp.QuoteMeta(out+": RemoveAll releases/"+first.Release+": permission denied") + "$"
+	pattern := "^" + regexp.QuoteMeta(out+": RemoveAll releases/.tmp-") + "[0-9a-f]{16}: permission denied$"
 	if res == nil || !errors.Is(err, fs.ErrPermission) || !regexp.MustCompile(pattern).MatchString(err.Error()) {
 		t.Fatalf("Build() = %+v, %v, want a result and an error that matches %s", res, err, pattern)
 	}
 	if !isHex16(res.Release) || !res.Changed || slices.Contains([]string{first.Release, second.Release}, res.Release) {
 		t.Errorf("Build() = %+v, want a new release", res)
 	}
-	checkReleases(t, "an old release not removed", out, res.Release, first.Release, second.Release, res.Release)
+	left := staleNames(t, out)
+	if len(left) != 1 {
+		t.Fatalf("the temporary directories are %q, want the one that holds the rest of the first release", left)
+	}
+	// The rest is among the names in releases, but not as the first release.
+	checkReleases(t, "an old release not removed", out, res.Release, left[0], second.Release, res.Release)
 }
 
 // TestBuildDeterministic checks that builds of a site give the same release, with the same files and warnings,

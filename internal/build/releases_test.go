@@ -520,3 +520,62 @@ func TestRollback(t *testing.T) {
 		t.Errorf("the files through current are not those of the first build")
 	}
 }
+
+// TestRemovalStopped builds the sample site and a change of it, and then a third site, whose build cannot remove the
+// first release entirely. It checks that what is left of the first release is no release: the build returns its result
+// with the error, ListReleases does not list it, Rollback refuses it, and the next build removes it. It then builds
+// the first site again, which makes its release anew, whole, and does not take the rest for it.
+func TestRemovalStopped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the modes of directories")
+	}
+	src := openSample(t)
+	out, cache := t.TempDir(), t.TempDir()
+	a := mustBuild(t, src, out, cache, 4).Release
+	filesA := manifest(t, filepath.Join(out, "releases", a))
+	b := mustBuild(t, retitled(t, src, "Privacy notice"), out, cache, 4).Release
+	makeReadOnly(t, out, filepath.Join(out, "releases", a, "public", "en"))
+
+	// The release that this build publishes and the one of current are kept; a is removed.
+	third := retitled(t, src, "Privacy notice 2")
+	res, err := Build(t.Context(), buildOptions(third, out, cache, 4))
+	pattern := "^" + regexp.QuoteMeta(out+": RemoveAll releases/.tmp-") + "[0-9a-f]{16}: permission denied$"
+	if res == nil || !errors.Is(err, fs.ErrPermission) || !regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Fatalf("Build() = %+v, %v, want a result and an error that matches %s", res, err, pattern)
+	}
+	c := res.Release
+	if c == a || c == b || !res.Changed {
+		t.Fatalf("Build() = %+v, want a new release", res)
+	}
+	if _, err := os.Lstat(filepath.Join(out, "releases", a)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the rest of the release %s is still under its name (%v)", a, err)
+	}
+	if left := staleNames(t, out); len(left) != 1 {
+		t.Errorf("the temporary directories are %q, want the one that holds the rest of the release %s", left, a)
+	}
+	checkListed(t, "a removal that stopped", out, c, b, c)
+	before := tree(t, out)
+	want := filepath.Join(out, "releases", a) + ": no such release"
+	if changed, err := Rollback(out, a); changed || err == nil || err.Error() != want {
+		t.Errorf("Rollback() to the rest of a release = %v, %v, want the error %q", changed, err, want)
+	}
+	checkTree(t, "Rollback() to the rest of a release", out, before)
+
+	writable(out)
+	if again := mustBuild(t, third, out, cache, 4); again.Release != c || again.Changed {
+		t.Errorf("Build() of the same site = %+v, want %s unchanged", again, c)
+	}
+	checkReleases(t, "the rest removed", out, c, b, c)
+
+	if again := mustBuild(t, src, out, cache, 4); again.Release != a || !again.Changed {
+		t.Errorf("Build() of the first site again = %+v, want %s, changed", again, a)
+	}
+	checkReleases(t, "the first site again", out, a, a, c)
+	current := filepath.Join(out, "current")
+	if _, err := os.Stat(filepath.Join(current, publicDir, "index.html")); err != nil {
+		t.Errorf("the front page of the release %s: %v", a, err)
+	}
+	if manifest(t, current) != filesA {
+		t.Errorf("the files through current are not those of the first build")
+	}
+}

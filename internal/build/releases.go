@@ -13,7 +13,8 @@ type Releases struct {
 	// Current is the release that Out/current points to; "" if there is none, or if it points to a release that does not
 	// exist.
 	Current string
-	// Names are the releases, in the order of their names; empty if there are none.
+	// Names are the releases, in the order of their names; empty if there are none. Each is a whole release: Build
+	// renames a release to releases/.tmp-* before it removes it, so what a removal that stopped half way left is not one.
 	Names []string
 }
 
