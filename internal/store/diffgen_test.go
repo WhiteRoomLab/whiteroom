@@ -51,8 +51,34 @@ var (
 	diffInvalidOperations = []string{"", "op_" + strings.Repeat("d", 254)}
 	diffOperationData     = [][]byte{nil, []byte("x"), []byte(strings.Repeat("y", 3000))}
 
+	// diffAccounts are the IDs of the accounts; the invalid ones are short, those of an entry, empty, or in lower case.
+	diffAccounts        = []string{userID, otherUser, "usr_01JE0000000000000000000000"}
+	diffInvalidAccounts = []string{"usr_x", entryID, "", "usr_" + strings.ToLower(userID[4:])}
+
+	// diffAccountData are the data that PutAccount takes, and diffInvalidAccountData those that it refuses.
+	diffAccountData = []diffRow{
+		{"1 byte", 12, func() []byte { return []byte("a") }},
+		{"3000 bytes", 8, func() []byte { return []byte(longText) }},
+		{"largest", 2, func() []byte { return diffAccountLarge()[:maxAccountBytes] }},
+	}
+	diffInvalidAccountData = []diffRow{
+		{"empty", 3, func() []byte { return nil }},
+		{"too large", 2, diffAccountLarge},
+	}
+
 	diffValidDocs, diffInvalidDocs = diffDocs()
 )
+
+// diffRow is a variant of the data of a row of accounts, with its weight.
+type diffRow struct {
+	name   string
+	weight int
+	data   func() []byte
+}
+
+// diffAccountLarge returns a buffer of maxAccountBytes+1 zero bytes, which every run shares: the data of the row that
+// is too large, and without its last byte that of the largest row.
+var diffAccountLarge = sync.OnceValue(func() []byte { return make([]byte, maxAccountBytes+1) })
 
 // revisionIDs returns n IDs of revisions, which AddRevision can use once each.
 func revisionIDs(n int) []string {
@@ -468,6 +494,10 @@ var diffOps = []struct {
 	{6, (*diffGen).revisions},
 	{5, (*diffGen).putOperation},
 	{4, (*diffGen).operation},
+	{4, (*diffGen).putAccount},
+	{2, (*diffGen).deleteAccount},
+	{3, (*diffGen).account},
+	{2, (*diffGen).accounts},
 }
 
 // update returns an Update of 1 to 6 operations, a quarter of which end with errAbort, or rarely a bulk one.
@@ -635,9 +665,69 @@ func operationResult(tx *Tx, id string) (any, error) {
 	return data, err
 }
 
+func (g *diffGen) accountID() string {
+	if g.chance(0.92) {
+		return pick(g, diffAccounts)
+	}
+	return pick(g, diffInvalidAccounts)
+}
+
+// rowData returns the data of a row of accounts from rows, by their weights.
+func (g *diffGen) rowData(rows []diffRow) []byte {
+	return rows[weighted(g, len(rows), func(i int) int { return rows[i].weight })].data()
+}
+
+// putAccount puts a pooled ID and valid data, or else an invalid ID or invalid data.
+func (g *diffGen) putAccount() diffOp {
+	id, data := pick(g, diffAccounts), g.rowData(diffAccountData)
+	if !g.chance(0.92) {
+		if g.chance(0.5) {
+			id = pick(g, diffInvalidAccounts)
+		} else {
+			data = g.rowData(diffInvalidAccountData)
+		}
+	}
+	return diffOp{
+		desc: fmt.Sprintf("PutAccount(%q, %d bytes)", id, len(data)),
+		run:  func(tx *Tx) (any, error) { return nil, tx.PutAccount(id, data) },
+	}
+}
+
+func (g *diffGen) deleteAccount() diffOp {
+	id := g.accountID()
+	return diffOp{
+		desc: fmt.Sprintf("DeleteAccount(%q)", id),
+		run:  func(tx *Tx) (any, error) { return nil, tx.DeleteAccount(id) },
+	}
+}
+
+func (g *diffGen) account() diffOp {
+	id := g.accountID()
+	return diffOp{
+		desc: fmt.Sprintf("Account(%q)", id),
+		run:  func(tx *Tx) (any, error) { return accountResult(tx, id) },
+	}
+}
+
+func (g *diffGen) accounts() diffOp {
+	return diffOp{
+		desc: "Accounts()",
+		run:  func(tx *Tx) (any, error) { return tx.Accounts() },
+	}
+}
+
+// accountResult returns the data of the account id, or nil if there are none.
+func accountResult(tx *Tx, id string) (any, error) {
+	data, ok, err := tx.Account(id)
+	if !ok {
+		return nil, err
+	}
+	return data, err
+}
+
 // diffReads are the reads of a dump of a store: Documents and Summaries of each kind, Document, History, Summary and
 // Referrers of each document, Revision of each revision, Revisions of each entry, Object of each hash, Operation of
-// each operation, and LastNumber.
+// each operation, Account of each account, Accounts, and LastNumber.
 type diffReads struct {
 	kinds      []content.RefKind
 	docs       []diffDoc
@@ -645,6 +735,7 @@ type diffReads struct {
 	entries    []string
 	hashes     []string
 	operations []string
+	accounts   []string
 }
 
 // reads returns the reads of everything that a store can have of what the operations of g name, and if invalid is
@@ -657,6 +748,7 @@ func (g *diffGen) reads(invalid bool) diffReads {
 		entries:    diffKinds[0].ids,
 		hashes:     append(slices.Clone(g.seen), diffMissingHash),
 		operations: diffOperations,
+		accounts:   diffAccounts,
 	}
 	kinds := diffKinds
 	if invalid {
@@ -670,6 +762,7 @@ func (g *diffGen) reads(invalid bool) diffReads {
 		}
 		r.hashes = append(r.hashes, diffInvalidHashes...)
 		r.operations = slices.Concat(diffOperations, diffInvalidOperations)
+		r.accounts = slices.Concat(diffAccounts, diffInvalidAccounts)
 		kinds = slices.Concat(diffKinds, diffUnsupported)
 	}
 	for _, k := range kinds {

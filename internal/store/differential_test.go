@@ -334,6 +334,12 @@ func (r diffReads) run(tx *Tx, line func(desc string, v any, err error)) {
 		data, err := operationResult(tx, id)
 		line(fmt.Sprintf("Operation(%q)", id), data, err)
 	}
+	for _, id := range r.accounts {
+		data, err := accountResult(tx, id)
+		line(fmt.Sprintf("Account(%q)", id), data, err)
+	}
+	rows, err := tx.Accounts()
+	line("Accounts()", rows, err)
 	n, err := tx.LastNumber()
 	line("LastNumber()", n, err)
 }

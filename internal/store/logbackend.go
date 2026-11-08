@@ -31,16 +31,18 @@ import (
 //	references (7)      target ID 0x00 kind 0x00 id 0x00 role -> nothing: the document of kind with id refers to
 //	                    the target, as role says
 //	operations (8)      operation ID -> the data that the caller of PutOperation keeps
+//	accounts (9)        user ID -> the row of a login account, which internal/account writes and the store does not read
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 3 (upgradeLog). The
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 4 (upgradeLog). The
 // schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
-// summaries, which the schema 3 adds; Open sets the schema 3 in a store of the schema 2 with the same index, since no
-// program of the schema 2 could save an entry with them.
-const logSchemaVersion = 3
+// summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
+// the schema 3. The schema 4 adds the table accounts, which a store of an older schema has no rows of: Open sets the
+// schema 4 in a store of the schema 2 or 3 with no other write, and builds the index of one of the schema 1 as before.
+const logSchemaVersion = 4
 
 // indexSchema is the first schema that has the index tables.
 const indexSchema = 2
@@ -54,17 +56,19 @@ const (
 	tableSummaries
 	tableReferences
 	tableOperations
+	tableAccounts
 )
 
 var tableNames = map[uint32]string{
 	tableMeta: "meta", tableDocuments: "documents", tableHistory: "history", tableRevisions: "revisions",
 	tableEntryRevisions: "entryRevisions", tableSummaries: "summaries", tableReferences: "references",
-	tableOperations: "operations",
+	tableOperations: "operations", tableAccounts: "accounts",
 }
 
 // indexTableIDs are the tables of the engine that keep the index tables.
 var indexTableIDs = [numIndexTables]uint32{
 	indexSummaries: tableSummaries, indexReferences: tableReferences, indexOperations: tableOperations,
+	indexAccounts: tableAccounts,
 }
 
 // The keys of meta.
@@ -141,8 +145,8 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion: a store of the
-// schema 1 gets its index, and the schema 3, and one of the schema 2 gets the schema 3, in one Update, so that a failure
-// leaves the store as it was. name is that of its logdb/ in errors.
+// schema 1 gets its index, and the schema 4, and one of the schema 2 or 3 gets the schema 4, in one Update, so that a
+// failure leaves the store as it was. name is that of its logdb/ in errors.
 func upgradeLog(b *logBackend, name string) error {
 	upgrade := false
 	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
