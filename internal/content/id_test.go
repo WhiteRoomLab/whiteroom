@@ -1,10 +1,18 @@
 package content
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/binary"
-	"math/rand/v2"
+	"errors"
+	"io"
+	"math/big"
+	mathrand "math/rand/v2"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestCheckID(t *testing.T) {
@@ -172,7 +180,7 @@ func TestFormatIDRoundTrip(t *testing.T) {
 	if got := FormatID(RefEntry, parseULID(t, ulid)); got != "ent_"+ulid {
 		t.Errorf("FormatID(entry, the bits of %s) = %q, want %q", ulid, got, "ent_"+ulid)
 	}
-	r := rand.New(rand.NewPCG(1, 2))
+	r := mathrand.New(mathrand.NewPCG(1, 2))
 	for range 2000 {
 		var u [16]byte
 		binary.BigEndian.PutUint64(u[:8], r.Uint64())
@@ -202,7 +210,7 @@ func TestFormatIDUnknownKind(t *testing.T) {
 
 // TestFormatIDOrder checks that the IDs of larger ULIDs are larger texts, as the ULID specification has it.
 func TestFormatIDOrder(t *testing.T) {
-	r := rand.New(rand.NewPCG(3, 4))
+	r := mathrand.New(mathrand.NewPCG(3, 4))
 	for range 1000 {
 		var a, b [16]byte
 		for i := range a {
@@ -212,5 +220,304 @@ func TestFormatIDOrder(t *testing.T) {
 		if (string(a[:]) < string(b[:])) != (x < y) {
 			t.Fatalf("FormatID(%x) = %q and FormatID(%x) = %q are not in the order of the bits", a, x, b, y)
 		}
+	}
+}
+
+var idSourceNow = time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+
+// idSourceSeed gives a new IDSource the same random bits each time.
+var idSourceSeed = [32]byte{'i', 'd', 's'}
+
+// ulidMillis returns the time in Unix milliseconds that the first 48 bits of u hold.
+func ulidMillis(u [16]byte) int64 {
+	return int64(binary.BigEndian.Uint64(u[:8]) >> 16)
+}
+
+// repeatByte reads its byte for ever.
+type repeatByte byte
+
+func (r repeatByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
+
+func TestIDSourceGrows(t *testing.T) {
+	g := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+	now := idSourceNow
+
+	var ids []string
+	var times []int64
+	add := func() {
+		id, err := g.NewID(RefTerm, now)
+		if err != nil {
+			t.Fatalf("NewID() = %v", err)
+		}
+		ids, times = append(ids, id), append(times, ulidMillis(parseULID(t, strings.TrimPrefix(id, "trm_"))))
+	}
+	for range 5 { // within a millisecond
+		add()
+	}
+	now = now.Add(time.Millisecond)
+	add()
+	add()
+	now = now.Add(24 * time.Hour)
+	add()
+	now = now.Add(-time.Hour) // the clock goes back
+	add()
+	add()
+
+	for i := 1; i < len(ids); i++ {
+		if ids[i-1] >= ids[i] {
+			t.Errorf("ID %d, %s, is not larger than ID %d, %s", i, ids[i], i-1, ids[i-1])
+		}
+		if err := CheckID(RefTerm, ids[i]); err != nil {
+			t.Error(err)
+		}
+	}
+	ms := idSourceNow.UnixMilli()
+	wantTimes := []int64{
+		ms, ms, ms, ms, ms,
+		ms + 1, ms + 1,
+		ms + 1 + 24*3600*1000,
+		ms + 1 + 24*3600*1000, ms + 1 + 24*3600*1000, // after the clock went back
+	}
+	if !slices.Equal(times, wantTimes) {
+		t.Errorf("the times of the IDs = %v, want %v", times, wantTimes)
+	}
+}
+
+func TestIDSourceNext(t *testing.T) {
+	g := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+	var ulids [][16]byte
+	for range 3 {
+		u, err := g.Next(idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ulids = append(ulids, u)
+	}
+	for i, u := range ulids {
+		if ulidMillis(u) != idSourceNow.UnixMilli() {
+			t.Errorf("the time of ULID %d = %d, want %d", i, ulidMillis(u), idSourceNow.UnixMilli())
+		}
+		if i > 0 && bytes.Compare(ulids[i-1][:], u[:]) >= 0 {
+			t.Errorf("ULID %d, %x, is not larger than ULID %d, %x", i, u, i-1, ulids[i-1])
+		}
+	}
+	// NewID is the ID of the next ULID.
+	h := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+	for i, u := range ulids {
+		id, err := h.NewID(RefMedia, idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := FormatID(RefMedia, u); id != want {
+			t.Errorf("NewID(media) %d = %q, want %q", i, id, want)
+		}
+	}
+}
+
+func TestIDSourcePredictable(t *testing.T) {
+	first, second := NewIDSource(mathrand.NewChaCha8(idSourceSeed)), NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+	for range 3 {
+		a, err := first.NewID(RefTerm, idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := second.NewID(RefTerm, idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a != b {
+			t.Errorf("two sources with the same clock and random bits made %q and %q", a, b)
+		}
+	}
+}
+
+func TestIDSourceKinds(t *testing.T) {
+	g := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+	kinds := []RefKind{RefEntry, RefMedia, RefForm, RefTerm, RefAuthor, RefMenu, RefRedirect, RefRevision, RefTranslationGroup, RefUser}
+	seen := make(map[string]bool)
+	for _, kind := range kinds {
+		id, err := g.NewID(kind, idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckID(kind, id); err != nil {
+			t.Error(err)
+		}
+		if !strings.HasPrefix(id, idPrefixes[kind]) {
+			t.Errorf("NewID(%s) = %q, want the prefix %q", kind, id, idPrefixes[kind])
+		}
+		// Two kinds from one source never collide.
+		ulid := strings.TrimPrefix(id, idPrefixes[kind])
+		if seen[ulid] {
+			t.Errorf("NewID(%s) = %q, whose ULID was made before", kind, id)
+		}
+		seen[ulid] = true
+	}
+}
+
+func TestIDSourceCountsUp(t *testing.T) {
+	g := NewIDSource(io.MultiReader(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe}), repeatByte(0)))
+	var got []*big.Int
+	for i := range 3 {
+		u, err := g.Next(idSourceNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe}; i == 0 && !bytes.Equal(u[6:], want) {
+			t.Errorf("the random bits of the first ULID = %x, want %x", u[6:], want)
+		}
+		got = append(got, new(big.Int).SetBytes(u[:]))
+	}
+	for i := 1; i < len(got); i++ {
+		if d := new(big.Int).Sub(got[i], got[i-1]); d.Cmp(big.NewInt(1)) != 0 {
+			t.Errorf("ULID %d minus ULID %d = %v, want 1", i, i-1, d)
+		}
+	}
+
+	// A carry goes through the bytes of the random part and stops there: the time does not change.
+	g = NewIDSource(io.MultiReader(bytes.NewReader([]byte{0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}), repeatByte(0)))
+	first, err := g.Next(idSourceNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := g.Next(idSourceNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; !bytes.Equal(second[6:], want) {
+		t.Errorf("the random bits after 00ffffffffffffffffff = %x, want %x", second[6:], want)
+	}
+	if ulidMillis(first) != idSourceNow.UnixMilli() || ulidMillis(second) != idSourceNow.UnixMilli() {
+		t.Errorf("the times after a carry = %d and %d, want %d", ulidMillis(first), ulidMillis(second), idSourceNow.UnixMilli())
+	}
+}
+
+func TestIDSourceErrors(t *testing.T) {
+	const allOnes = "cannot make an ID: the 80 random bits of the last one are all ones"
+	g := NewIDSource(repeatByte(0xff))
+	if _, err := g.Next(idSourceNow); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // the failure leaves the last ULID as it was
+		if _, err := g.NewID(RefTerm, idSourceNow); err == nil || err.Error() != allOnes {
+			t.Errorf("NewID() in the same millisecond as a ULID of all ones = %v, want %q", err, allOnes)
+		}
+	}
+	// The clock going back does not help; a later millisecond has new random bits.
+	if _, err := g.Next(idSourceNow.Add(-time.Hour)); err == nil || err.Error() != allOnes {
+		t.Errorf("Next() with the clock back = %v, want %q", err, allOnes)
+	}
+	u, err := g.Next(idSourceNow.Add(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ulidMillis(u) != idSourceNow.UnixMilli()+1 {
+		t.Errorf("the time of the ULID in the next millisecond = %d, want %d", ulidMillis(u), idSourceNow.UnixMilli()+1)
+	}
+
+	for _, tt := range []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{"before 1970", time.UnixMilli(-1).UTC(), "the time 1969-12-31T23:59:59Z is out of range for an ID (1970 to the year 10889)"},
+		{"after the year 10889", time.UnixMilli(1 << 48).UTC(), "the time 10889-08-02T05:31:50Z is out of range for an ID (1970 to the year 10889)"},
+	} {
+		g := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+		if id, err := g.NewID(RefTerm, tt.now); err == nil || err.Error() != tt.want {
+			t.Errorf("NewID() %s = %q, %v, want the error %q", tt.name, id, err, tt.want)
+		}
+		if _, err := g.Next(tt.now); err == nil {
+			t.Errorf("Next() %s did not fail", tt.name)
+		}
+		// The failure took no random bits and left the source usable.
+		if _, err := g.Next(idSourceNow); err != nil {
+			t.Errorf("Next() after a time %s = %v", tt.name, err)
+		}
+	}
+	// The limits of the range are valid.
+	for _, now := range []time.Time{time.UnixMilli(0), time.UnixMilli(1<<48 - 1)} {
+		g := NewIDSource(mathrand.NewChaCha8(idSourceSeed))
+		u, err := g.Next(now)
+		if err != nil {
+			t.Errorf("Next(%s) = %v", now.UTC().Format(time.RFC3339Nano), err)
+			continue
+		}
+		if ulidMillis(u) != now.UnixMilli() {
+			t.Errorf("the time of the ULID for %d = %d", now.UnixMilli(), ulidMillis(u))
+		}
+		if err := CheckID(RefTerm, FormatID(RefTerm, u)); err != nil {
+			t.Error(err)
+		}
+	}
+
+	g = NewIDSource(bytes.NewReader([]byte{1, 2, 3}))
+	if id, err := g.NewID(RefTerm, idSourceNow); err == nil || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("NewID() with a source of 3 bytes = %q, %v, want an error that wraps io.ErrUnexpectedEOF", id, err)
+	}
+	// A failure to read leaves nothing behind: the next ULID is made as the first one of the source.
+	g = NewIDSource(&failFirstRead{})
+	if _, err := g.Next(idSourceNow); err == nil || err.Error() != "no random bits" {
+		t.Fatalf("Next() with a source that fails = %v, want its error", err)
+	}
+	u, err = g.Next(idSourceNow)
+	if err != nil {
+		t.Fatalf("Next() after a failed read = %v", err)
+	}
+	if want := bytes.Repeat([]byte{7}, 10); !bytes.Equal(u[6:], want) || ulidMillis(u) != idSourceNow.UnixMilli() {
+		t.Errorf("the ULID after a failed read = %x, want the time %d and the random bits %x", u, idSourceNow.UnixMilli(), want)
+	}
+}
+
+// failFirstRead fails its first read and then reads the byte 7 for ever.
+type failFirstRead struct{ failed bool }
+
+func (r *failFirstRead) Read(p []byte) (int, error) {
+	if !r.failed {
+		r.failed = true
+		return 0, errors.New("no random bits")
+	}
+	return repeatByte(7).Read(p)
+}
+
+func TestIDSourceConcurrent(t *testing.T) {
+	g := NewIDSource(rand.Reader)
+	const goroutines, each = 8, 200
+	ids := make([][]string, goroutines)
+	var wg sync.WaitGroup
+	for n := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range each {
+				id, err := g.NewID(RefRedirect, idSourceNow) // one millisecond for all of them
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				ids[n] = append(ids[n], id)
+			}
+		}()
+	}
+	wg.Wait()
+	seen := make(map[string]bool)
+	for n, list := range ids {
+		if !slices.IsSorted(list) {
+			t.Errorf("the IDs of goroutine %d are not in the order in which it made them", n)
+		}
+		for _, id := range list {
+			if seen[id] {
+				t.Fatalf("ID %q was made twice", id)
+			}
+			seen[id] = true
+		}
+	}
+	if len(seen) != goroutines*each {
+		t.Errorf("%d IDs, want %d", len(seen), goroutines*each)
 	}
 }

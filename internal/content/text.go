@@ -39,6 +39,17 @@ func checkText(s string, multiline bool) error {
 	return checkTextWith(s, multiline, "contains a line break or tab; use hardBreak for line breaks")
 }
 
+// NormalizeLine normalizes a line of plain text such as alt, as CheckLine requires: it removes control characters other
+// than line breaks and tabs, which CheckLine reports, and applies NFC.
+func NormalizeLine(s string) string {
+	return normalizeText(s, false)
+}
+
+// CheckLine checks a line of plain text such as alt, which has no line breaks or tabs and so no hardBreak.
+func CheckLine(s string) error {
+	return checkLine(s)
+}
+
 // checkLine checks a line of plain text such as alt, which has no hardBreak.
 func checkLine(s string) error {
 	return checkTextWith(s, false, "contains a line break or tab")
