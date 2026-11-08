@@ -1,5 +1,6 @@
-// Package yaml reads a subset of YAML 1.2 into JSON, for the files that developers write, such as site/schema.yaml.
-// Anything outside the subset is an error.
+// Package yaml reads a subset of YAML 1.2 into JSON, for the files that developers write, such as site/schema.yaml,
+// and writes JSON as YAML of the subset (FromJSON), for the schema file that an import makes. Anything outside the
+// subset is an error.
 package yaml
 
 //go:generate go run ./gen
