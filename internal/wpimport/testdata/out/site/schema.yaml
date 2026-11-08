@@ -1,0 +1,22 @@
+schemaVersion: 1
+authorUrl: /author/{slug}/
+taxonomies:
+  category:
+    url: /category/{path}/
+  tag:
+    url: /tag/{slug}/
+  genre:
+    label: ジャンル
+    url: /genre/{slug}/
+    hierarchical: true
+types:
+  post:
+    url: /{yyyy}/{mm}/{dd}/{slug}/
+  page:
+    url: /{path}/
+  works:
+    label: 制作実績
+    url: /works/{slug}/
+    archive: /works/
+    taxonomies: [genre]
+    body: true

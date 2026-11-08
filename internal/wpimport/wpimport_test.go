@@ -12,6 +12,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/phpserialize"
+	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
 	"github.com/WhiteRoomLab/whiteroom/internal/wxr"
 )
 
@@ -192,6 +193,36 @@ func TestReadNotes(t *testing.T) {
 			t.Errorf("Entries()[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
+
+	// The login of an author who is an email address is not named: the note shows the author by the ID.
+	in = head +
+		"<link>https://example.com</link>\n" +
+		"<wp:author><wp:author_id>3</wp:author_id><wp:author_login>mary@example.org</wp:author_login>" +
+		"<wp:author_email>mary@example.org</wp:author_email><wp:author_display_name>Ma" + soh + "ry</wp:author_display_name></wp:author>\n" +
+		tail
+	_, rep = readString(t, "site.xml", in)
+	line, column := place(t, in, soh, 1)
+	wantEntry := Entry{
+		Kind:    Changed,
+		Source:  Source{File: "site.xml", Line: line, Column: column, Record: "author", ID: 3},
+		Message: fmt.Sprintf("removed 1 character that XML does not allow: U+0001 at %d:%d", line, column),
+	}
+	if got := rep.Entries(); len(got) != 1 || got[0] != wantEntry {
+		t.Errorf("Entries = %+v, want [%+v]", got, wantEntry)
+	}
+	var text, js strings.Builder
+	if err := rep.WriteText(&text); err != nil {
+		t.Fatal(err)
+	}
+	if err := rep.WriteJSON(&js); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("site.xml:%d:%d: changed: author 3: %s\n", line, column, wantEntry.Message); text.String() != want {
+		t.Errorf("WriteText = %q, want %q", text.String(), want)
+	}
+	if strings.Contains(text.String()+js.String(), "mary@example.org") {
+		t.Errorf("the email address is in the report:\n%s\n%s", text.String(), js.String())
+	}
 }
 
 func TestReadErrors(t *testing.T) {
@@ -266,9 +297,26 @@ func TestSources(t *testing.T) {
 		{"item", item, Source{File: "a.xml", Line: 11, Column: 4, Record: "item", ID: 14, Type: "attachment", Name: "photo"}},
 		{"meta of an item", MetaSource(item, m), Source{File: "a.xml", Line: 20, Column: 5, Record: "item", ID: 14, Type: "attachment", Name: "photo", Meta: "_mail"}},
 		{"meta of a term", MetaSource(TermSource("a.xml", term), m), Source{File: "a.xml", Line: 20, Column: 5, Record: "term", ID: 7, Type: "genre", Name: "SF", Meta: "_mail"}},
+		{"taxonomy of a term", taxonomySource("a.xml", term), Source{File: "a.xml", Line: 8, Column: 3, Record: "term", Type: "genre"}},
+		{"route of the REST API", RESTSource("rest.json", "/wp/v2/users"), Source{File: "rest.json", Record: "rest", Name: "/wp/v2/users"}},
+		{"user of the REST API", RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "admin", Slug: "ignored"}), Source{File: "rest.json", Record: "rest", ID: 5, Type: "user", Name: "admin"}},
+		{"term of the REST API", RESTTermSource("rest.json", &wprest.Term{ID: 3, Taxonomy: "category", Name: "News", Slug: "ignored"}), Source{File: "rest.json", Record: "rest", ID: 3, Type: "category", Name: "News"}},
 	} {
 		if tt.got != tt.want {
 			t.Errorf("%s: Source = %+v, want %+v", tt.name, tt.got, tt.want)
+		}
+	}
+	for _, tt := range []struct {
+		src  Source
+		want string
+	}{
+		{taxonomySource("a.xml", term), "term (genre)"},
+		{RESTSource("rest.json", "/wp/v2/users"), `rest "/wp/v2/users"`},
+		{RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "admin"}), `rest 5 (user "admin")`},
+		{RESTTermSource("rest.json", &wprest.Term{ID: 3, Taxonomy: "category", Name: "News"}), `rest 3 (category "News")`},
+	} {
+		if got := tt.src.what(); got != tt.want {
+			t.Errorf("what() of %+v = %q, want %q", tt.src, got, tt.want)
 		}
 	}
 	if item.Meta != "" || item.Line != 11 {

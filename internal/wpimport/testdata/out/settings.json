@@ -1,0 +1,32 @@
+{
+  "site": {
+    "name": "見本サイト & ブログ",
+    "tagline": "手で書いた見本のサイトです",
+    "url": "https://example.com",
+    "language": "ja",
+    "timeZone": "Asia/Tokyo",
+    "postsPerPage": 10,
+    "noindex": false,
+    "frontPage": 30,
+    "postsPage": 31,
+    "logo": 50,
+    "icon": 51
+  },
+  "urls": {
+    "post": "/{yyyy}/{mm}/{dd}/{slug}/",
+    "page": "/{path}/",
+    "author": "/author/{slug}/",
+    "taxonomies": {
+      "category": "/category/{path}/",
+      "genre": "/genre/{slug}/",
+      "tag": "/tag/{slug}/"
+    },
+    "types": {
+      "works": {
+        "url": "/works/{slug}/",
+        "archive": "/works/"
+      }
+    }
+  },
+  "defaultCategory": ""
+}
