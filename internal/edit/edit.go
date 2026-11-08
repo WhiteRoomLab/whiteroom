@@ -70,7 +70,7 @@ type Result struct {
 	Kind      content.RefKind
 	ID        string         // of the document that the operation made, changed or deleted; "" for the settings
 	Version   store.Version  // that it saved; the current one if it saved nothing, as when it added a revision to an entry
-	Revision  string         // the revision that it added to an entry, or published
+	Revision  string         // the revision that it added to an entry, published or scheduled
 	Redirect  string         // the redirect that a publish has registered from the old URL of the entry
 	Number    int            // the number of the entry that it made
 	Warnings  content.Errors // problems that do not stop it, located as the build locates its own

@@ -90,30 +90,56 @@ func formatIn(site *content.Site, t time.Time) (string, error) {
 	return t.In(zone).Format(time.RFC3339), nil
 }
 
-// dated returns the revision that an entry of the type typ is published or scheduled with, which is rv: for a post whose
-// revision has no date, a copy of it with the date that when gives, in the time zone of the site, and a new ID (6.4.2);
-// the revision itself never changes (6.4.1). The bytes of the copy are kept in r.given, so that the problems in them are
-// located in them.
+// lacksDate reports whether rev, a revision of an entry of the type typ, is that of a post and has no date (6.4.3).
+func lacksDate(typ string, rev *content.Revision) bool {
+	return typ == content.TypePost && rev.Date == ""
+}
+
+// withDate returns rev, a revision of an entry of the type typ, as it is published: for a post without a date, a copy of
+// it with the time t as its date, in the time zone of the site, to the second; else rev itself.
+func withDate(site *content.Site, typ string, rev *content.Revision, t time.Time) (*content.Revision, error) {
+	if !lacksDate(typ, rev) {
+		return rev, nil
+	}
+	date, err := formatIn(site, t)
+	if err != nil {
+		return nil, err
+	}
+	dated := *rev
+	dated.Date = date
+	return &dated, nil
+}
+
+// dated returns the revision that an entry of the type typ is published with, which is rv: for a post whose revision has
+// no date, a copy of it with the date that when gives (withDate) and a new ID (6.4.2); the revision itself never changes
+// (6.4.1). The bytes of the copy are kept in r.given, so that the problems in them are located in them.
 func (r *run) dated(site *content.Site, typ string, rv revisionFile, when func() time.Time) (revisionFile, error) {
-	if typ != content.TypePost || rv.rev.Date != "" {
+	if !lacksDate(typ, rv.rev) {
 		return rv, nil
 	}
-	date, err := formatIn(site, when())
+	rev, err := withDate(site, typ, rv.rev, when())
 	if err != nil {
 		return revisionFile{}, err
 	}
-	rv.rev.Date = date
 	id, err := r.e.newID(content.RefRevision)
 	if err != nil {
 		return revisionFile{}, err
 	}
-	data, err := rv.rev.MarshalJSON()
+	data, err := rev.MarshalJSON()
 	if err != nil {
 		return revisionFile{}, err
 	}
 	f := content.SiteFile{Name: revisionName(id), Data: data}
 	r.given[f.Name] = data
-	return revisionFile{id, f, rv.rev}, nil
+	return revisionFile{id, f, rev}, nil
+}
+
+// publishedAtSchedule returns rev, the revision of the scheduled entry ent, as its scheduled publish publishes it (withDate
+// with the scheduled time): the revision to validate wherever a scheduled revision is validated as a published one. The
+// state ent must be valid, so that its scheduledAt reads.
+func publishedAtSchedule(site *content.Site, ent *content.Entry, rev *content.Revision) (*content.Revision, error) {
+	at, _ := time.Parse(time.RFC3339, ent.ScheduledAt)
+	return withDate(site, ent.Type, rev, at)
 }
 
 // checkPublishable validates the revision rv as the one that the entry state is published or scheduled with, as the build

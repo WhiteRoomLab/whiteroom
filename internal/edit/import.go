@@ -297,7 +297,15 @@ func (im *importer) validateRevision(d *imported, ent *content.Entry, id, pointe
 	if err != nil {
 		return nil, err
 	}
-	if err := validatePublished(im.site, ent, &rev, im.sp.Ref); err != nil {
+	// A post without a date is validated with the scheduled time as its date, as its scheduled publish publishes it; the
+	// bytes that are stored stay as they are.
+	checked := &rev
+	if ent.Status == content.StatusScheduled {
+		if checked, err = publishedAtSchedule(im.site, ent, &rev); err != nil {
+			return nil, err
+		}
+	}
+	if err := validatePublished(im.site, ent, checked, im.sp.Ref); err != nil {
 		return content.LocateErrors(err, f), nil
 	}
 	if !im.kept[id] {

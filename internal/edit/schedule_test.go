@@ -280,6 +280,9 @@ func TestPublishScheduled(t *testing.T) {
 	if got := entryPath(t, ed, s, draftEN); got != "/en/careers/" {
 		t.Errorf("the page of the entry is %q, want /en/careers/", got)
 	}
+	if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev, newer}) {
+		t.Errorf("the revisions are %v, want %v: a page is published as it is, and the newer revision stays the latest", got, []string{rev, newer})
+	}
 	if got := schedules(t, ed); len(got) != 0 {
 		t.Errorf("Schedules() = %+v after the publish, want none", got)
 	}
@@ -321,8 +324,59 @@ func TestPublishScheduledDue(t *testing.T) {
 	}
 }
 
-// TestScheduleDate schedules a post whose revision has no date: the date goes into a new revision, which is then the
-// scheduled and the latest revision (Q6-A).
+// The revision of the posts that the tests of the dates schedule: it has no date.
+const comingRevision = `{"schemaVersion":1,"title":"Coming","slug":"coming"}`
+
+const day = 24 * time.Hour
+
+// revisionUsers returns the user who saved each revision of the entry id, by the ID of the revision.
+func revisionUsers(t *testing.T, s *store.Store, id string) map[string]string {
+	t.Helper()
+	users := make(map[string]string)
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		revs, err := tx.Revisions(id)
+		for _, r := range revs {
+			users[r.ID] = r.SavedBy
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return users
+}
+
+// wantRevision fails the test unless the revision id is the JSON that MarshalJSON writes for want.
+func wantRevision(t *testing.T, s *store.Store, id string, want content.Revision) {
+	t.Helper()
+	data, err := want.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := revisionData(t, s, id); !bytes.Equal(got, data) {
+		t.Errorf("the revision %s is %s, want %s", id, got, data)
+	}
+}
+
+// wantRebuiltIndex fails the test unless the index of s is the one that RebuildIndex makes of its documents and revisions.
+func wantRebuiltIndex(t *testing.T, s *store.Store) {
+	t.Helper()
+	got := indexOf(t, s)
+	errRollBack := errors.New("roll back")
+	err := s.Update(t.Context(), func(tx *store.Tx) error {
+		if err := tx.RebuildIndex(); err != nil {
+			return err
+		}
+		sameIndex(t, "after RebuildIndex", readIndex(t, tx), got)
+		return errRollBack
+	})
+	if !errors.Is(err, errRollBack) {
+		t.Fatalf("Update() = %v, want the error that rolls it back", err)
+	}
+}
+
+// TestScheduleDate schedules posts: Schedule adds no revision, whatever the revision lacks, and the date of a post that has
+// none goes into a new revision when the entry is published, with the scheduled time (Q19-A).
 func TestScheduleDate(t *testing.T) {
 	op := Op{By: userID}
 	t.Run("a post without a date", func(t *testing.T) {
@@ -337,48 +391,66 @@ func TestScheduleDate(t *testing.T) {
 
 		// 2026-12-01T00:30:00Z is 09:30 in Tokyo; the fraction of a second is dropped.
 		at := time.Date(2026, 12, 1, 0, 30, 0, 700_000_000, time.UTC)
+		const date = "2026-12-01T09:30:00+09:00"
 		res, err := ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, at)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.Revision != ids[3] || res.Status != content.StatusScheduled || res.Publishes {
-			t.Fatalf("Schedule() = %+v, want the new revision %s scheduled", res, ids[3])
+		if res.Revision != saved.Revision || res.Status != content.StatusScheduled || res.Publishes {
+			t.Fatalf("Schedule() = %+v, want the revision %s scheduled as it was given", res, saved.Revision)
 		}
-		want := decodeRevision(t, []byte(data))
-		want.Date = "2026-12-01T09:30:00+09:00"
-		if got := decodeRevision(t, revisionData(t, s, res.Revision)); !reflect.DeepEqual(got, want) {
-			t.Errorf("the new revision is %+v, want %+v", got, want)
-		}
-		if again, err := want.MarshalJSON(); err != nil || !bytes.Equal(again, revisionData(t, s, res.Revision)) {
-			t.Errorf("the stored bytes are %s, MarshalJSON writes %s, %v", revisionData(t, s, res.Revision), again, err)
+		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision}) {
+			t.Errorf("the revisions are %v, want only the one that was saved: Schedule adds none", got)
 		}
 		if got := revisionData(t, s, saved.Revision); string(got) != data {
-			t.Errorf("the revision that was given is %s, want it as it was", got)
-		}
-		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, res.Revision}) {
-			t.Errorf("the revisions are %v, want the saved one and the new one", got)
+			t.Errorf("the revision is %s, want it as it was", got)
 		}
 		sum := summaryOf(t, s, entry)
-		if sum.Latest != res.Revision || sum.Entry.ScheduledRevision != res.Revision || sum.Entry.ScheduledAt != "2026-12-01T09:30:00+09:00" || sum.Entry.Status != content.StatusScheduled {
-			t.Errorf("Summary() = %+v %+v, want the new revision as the latest and the scheduled one", sum, sum.Entry)
+		if sum.Latest != saved.Revision || sum.Entry.ScheduledRevision != saved.Revision || sum.Entry.ScheduledAt != date || sum.Entry.Status != content.StatusScheduled {
+			t.Errorf("Summary() = %+v %+v, want the saved revision as the latest and the scheduled one, at %s", sum, sum.Entry, date)
 		}
-		// The caller's base is no longer the latest revision.
-		_, err = ed.SaveRevision(t.Context(), op, entry, saved.Revision, []byte(data))
-		if wantErr := docName(content.RefEntry, entry) + ": changed since it was read: its latest revision is " + res.Revision +
-			", not " + saved.Revision; !errors.Is(err, ErrConflict) || err.Error() != wantErr {
-			t.Errorf("SaveRevision() with the old base = %v, want %q wrapping ErrConflict", err, wantErr)
+		if got := entryPath(t, ed, s, entry); got != "" {
+			t.Errorf("the page of the entry is %q, want none before it is published", got)
 		}
 
-		// The time comes: the revision with the date is published, and no other revision is added.
-		pub := must(t)(ed.PublishScheduled(t.Context(), entry, at))
-		if pub.Revision != res.Revision || pub.Status != content.StatusPublished || !pub.Publishes {
-			t.Errorf("PublishScheduled() = %+v, want the revision %s published", pub, res.Revision)
+		// Scheduling it again saves nothing, and adds no revision either.
+		after, index := snapshot(t, s), indexOf(t, s)
+		rescheduled := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, at))
+		if rescheduled.Version != res.Version || rescheduled.Revision != saved.Revision || rescheduled.Publishes {
+			t.Errorf("Schedule() again = %+v, want the result %+v, and that nothing is changed", rescheduled, res)
 		}
-		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, res.Revision}) {
-			t.Errorf("the revisions are %v, want no other revision", got)
+		sameStore(t, s, after, index, "Schedule() again")
+
+		// The time comes: the date goes into a new revision, which is published and is the latest revision now.
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, at.Add(time.Hour)))
+		if pub.Revision != ids[3] || pub.Status != content.StatusPublished || !pub.Publishes {
+			t.Fatalf("PublishScheduled() = %+v, want the new revision %s published", pub, ids[3])
+		}
+		want := decodeRevision(t, []byte(data))
+		want.Date = date
+		if got := decodeRevision(t, revisionData(t, s, pub.Revision)); !reflect.DeepEqual(got, want) {
+			t.Errorf("the new revision is %+v, want %+v", got, want)
+		}
+		wantRevision(t, s, pub.Revision, want)
+		if got := revisionData(t, s, saved.Revision); string(got) != data {
+			t.Errorf("the revision that was scheduled is %s, want it as it was", got)
+		}
+		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, pub.Revision}) {
+			t.Errorf("the revisions are %v, want the saved one and the new one", got)
+		}
+		sum = summaryOf(t, s, entry)
+		if sum.Latest != pub.Revision || sum.Entry.PublishedRevision != pub.Revision || sum.Entry.Status != content.StatusPublished {
+			t.Errorf("Summary() = %+v %+v, want the new revision as the latest and the published one", sum, sum.Entry)
 		}
 		if got := entryPath(t, ed, s, entry); got != "/2026/12/01/coming/" {
 			t.Errorf("the page of the entry is %q, want /2026/12/01/coming/", got)
+		}
+		wantRebuiltIndex(t, s)
+		// The caller's base is no longer the latest revision.
+		_, err = ed.SaveRevision(t.Context(), op, entry, saved.Revision, []byte(data))
+		if wantErr := docName(content.RefEntry, entry) + ": changed since it was read: its latest revision is " + pub.Revision +
+			", not " + saved.Revision; !errors.Is(err, ErrConflict) || err.Error() != wantErr {
+			t.Errorf("SaveRevision() with the old base = %v, want %q wrapping ErrConflict", err, wantErr)
 		}
 	})
 
@@ -394,7 +466,13 @@ func TestScheduleDate(t *testing.T) {
 		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision}) {
 			t.Errorf("the revisions are %v, want the one that was saved", got)
 		}
-		must(t)(ed.PublishScheduled(t.Context(), entry, careersAt))
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, careersAt))
+		if pub.Revision != saved.Revision {
+			t.Errorf("PublishScheduled() = %+v, want the revision %s, which has a date", pub, saved.Revision)
+		}
+		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision}) {
+			t.Errorf("the revisions are %v after the publish, want the one that was saved", got)
+		}
 		if got := entryPath(t, ed, s, entry); got != "/2026/10/30/earlier/" {
 			t.Errorf("the page of the entry is %q, want the date of the revision, /2026/10/30/earlier/", got)
 		}
@@ -405,6 +483,10 @@ func TestScheduleDate(t *testing.T) {
 		rev := scheduleCareers(t, ed, s)
 		if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev}) {
 			t.Errorf("the revisions are %v, want no new revision for a page", got)
+		}
+		must(t)(ed.PublishScheduled(t.Context(), draftEN, careersAt))
+		if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev}) {
+			t.Errorf("the revisions are %v after the publish, want no new revision for a page", got)
 		}
 	})
 
@@ -424,21 +506,24 @@ func TestScheduleDate(t *testing.T) {
 		entry := newDraft(t, ed, content.TypePost, "ja")
 		saved := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(`{"schemaVersion":1,"title":"a","slug":"a"}`)))
 		res := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, careersAt.In(jst)))
-		if got := decodeRevision(t, revisionData(t, s, res.Revision)).Date; got != "2026-11-07T11:00:00Z" {
-			t.Errorf("the date is %q, want 2026-11-07T11:00:00Z", got)
+		if res.Revision != saved.Revision {
+			t.Errorf("Schedule() = %+v, want the revision that was given", res)
 		}
 		if got := summaryOf(t, s, entry).Entry.ScheduledAt; got != "2026-11-07T11:00:00Z" {
 			t.Errorf("scheduledAt is %q, want 2026-11-07T11:00:00Z", got)
 		}
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, careersAt.Add(time.Hour)))
+		if got := decodeRevision(t, revisionData(t, s, pub.Revision)).Date; got != "2026-11-07T11:00:00Z" {
+			t.Errorf("the date is %q, want 2026-11-07T11:00:00Z", got)
+		}
 	})
 
-	// A scheduled post whose revision has no date, which only the store's own API lets in, gets its date when it is
-	// published, from the time that it was scheduled for.
-	t.Run("a scheduled revision without a date", func(t *testing.T) {
+	// A schedule that the store's own API took in another time zone than the site's: the date is in the site's.
+	t.Run("a scheduled time in another time zone", func(t *testing.T) {
 		ed, s := newSample(t)
 		entry, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
 		put(t, s, content.RefEntry, entry, scheduledJSON(t, []byte(storedEntry(entry, maxNumber(t, s)+1, content.TypePost, "ja",
-			testID(content.RefTranslationGroup, 1), content.StatusDraft, "")), rev, "2026-11-10T09:00:00+09:00"))
+			testID(content.RefTranslationGroup, 1), content.StatusDraft, "")), rev, "2026-11-10T00:00:00Z"))
 		addStoredRevision(t, s, entry, rev, `{"schemaVersion":1,"title":"A","slug":"a"}`)
 		due := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 		res, err := ed.PublishScheduled(t.Context(), entry, due.Add(time.Hour))
@@ -446,11 +531,291 @@ func TestScheduleDate(t *testing.T) {
 			t.Fatalf("PublishScheduled() = %+v, %v; want a new revision published", res, err)
 		}
 		if got := decodeRevision(t, revisionData(t, s, res.Revision)).Date; got != "2026-11-10T09:00:00+09:00" {
-			t.Errorf("the date is %q, want the scheduled time, 2026-11-10T09:00:00+09:00", got)
+			t.Errorf("the date is %q, want the scheduled time in the time zone of the site, 2026-11-10T09:00:00+09:00", got)
 		}
 		if got := entryPath(t, ed, s, entry); got != "/2026/11/10/a/" {
 			t.Errorf("the page of the entry is %q, want /2026/11/10/a/", got)
 		}
+	})
+}
+
+// TestScheduledPostPublishedAtOnce checks that a post without a date that is scheduled and then published at once is dated
+// with the time of the publish, not with the time that it was scheduled for (Q19-A).
+func TestScheduledPostPublishedAtOnce(t *testing.T) {
+	ed, s := newSample(t)
+	op := Op{By: userID}
+	entry := newDraft(t, ed, content.TypePost, "ja")
+	saved := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(comingRevision)))
+	sch := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, testNow.Add(7*day)))
+	pub := must(t)(ed.Publish(t.Context(), op, entry, entrySeq(t, s, entry), sch.Revision))
+	if pub.Revision == saved.Revision || pub.Status != content.StatusPublished || !pub.Publishes {
+		t.Fatalf("Publish() = %+v, want a new revision with the date published", pub)
+	}
+	if got := decodeRevision(t, revisionData(t, s, pub.Revision)).Date; got != testNowJST {
+		t.Errorf("the date is %q, want the time of the publish, %s", got, testNowJST)
+	}
+	if got := entryPath(t, ed, s, entry); got != "/2026/11/07/coming/" {
+		t.Errorf("the page of the entry is %q, want the date of the publish, /2026/11/07/coming/", got)
+	}
+	if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, pub.Revision}) {
+		t.Errorf("the revisions are %v, want the saved one and the new one", got)
+	}
+	if got := schedules(t, ed); len(got) != 0 {
+		t.Errorf("Schedules() = %+v, want none", got)
+	}
+	if _, err := ed.PublishScheduled(t.Context(), entry, testNow.Add(8*day)); !errors.Is(err, ErrNotDue) {
+		t.Errorf("PublishScheduled() of the entry = %v, want ErrNotDue", err)
+	}
+}
+
+// TestScheduledPostScheduledAgain checks that a post without a date that is scheduled for another time is dated with the
+// second time, not the first (Q19-A).
+func TestScheduledPostScheduledAgain(t *testing.T) {
+	ed, s := newSample(t)
+	op := Op{By: userID}
+	entry := newDraft(t, ed, content.TypePost, "ja")
+	saved := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(comingRevision)))
+	first, later := testNow.Add(day), testNow.Add(30*day)
+	one := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, first))
+	two := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), one.Revision, later))
+	if one.Revision != saved.Revision || two.Revision != saved.Revision {
+		t.Errorf("Schedule() scheduled %s and %s, want the revision %s both times: it adds none", one.Revision, two.Revision, saved.Revision)
+	}
+	if _, err := ed.PublishScheduled(t.Context(), entry, first.Add(time.Hour)); !errors.Is(err, ErrNotDue) {
+		t.Errorf("PublishScheduled() at the first time = %v, want ErrNotDue: it is scheduled for the second", err)
+	}
+	pub := must(t)(ed.PublishScheduled(t.Context(), entry, later.Add(time.Hour)))
+	if got := decodeRevision(t, revisionData(t, s, pub.Revision)).Date; got != "2026-12-07T19:00:00+09:00" {
+		t.Errorf("the date is %q, want the second time, 2026-12-07T19:00:00+09:00", got)
+	}
+	if got := entryPath(t, ed, s, entry); got != "/2026/12/07/coming/" {
+		t.Errorf("the page of the entry is %q, want /2026/12/07/coming/", got)
+	}
+	if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, pub.Revision}) {
+		t.Errorf("the revisions are %v, want the saved one and the new one", got)
+	}
+}
+
+// TestScheduledPostCancelledThenPublished checks that a post without a date whose schedule is cancelled and which is
+// published a month later is dated with the time of that publish (Q19-A).
+func TestScheduledPostCancelledThenPublished(t *testing.T) {
+	ed, s := newSample(t)
+	op := Op{By: userID}
+	entry := newDraft(t, ed, content.TypePost, "ja")
+	saved := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(comingRevision)))
+	sch := must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), saved.Revision, testNow.Add(day)))
+	must(t)(ed.Unpublish(t.Context(), op, entry, entrySeq(t, s, entry)))
+	now := testNow.Add(40 * day)
+	ed.SetClock(func() time.Time { return now })
+	pub := must(t)(ed.Publish(t.Context(), op, entry, entrySeq(t, s, entry), sch.Revision))
+	if got := decodeRevision(t, revisionData(t, s, pub.Revision)).Date; got != "2026-12-17T19:00:00+09:00" {
+		t.Errorf("the date is %q, want the time of the publish, 2026-12-17T19:00:00+09:00", got)
+	}
+	if got := entryPath(t, ed, s, entry); got != "/2026/12/17/coming/" {
+		t.Errorf("the page of the entry is %q, want the date of the publish, /2026/12/17/coming/", got)
+	}
+	if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{saved.Revision, pub.Revision}) {
+		t.Errorf("the revisions are %v, want the saved one and the new one", got)
+	}
+}
+
+// TestScheduledPublishCopiesLatest checks the revisions that a scheduled publish adds when the editor has saved revisions
+// since the schedule: after the dated copy of the scheduled revision, a copy of the latest one, so that the draft stays the
+// latest revision (Q19-A).
+func TestScheduledPublishCopiesLatest(t *testing.T) {
+	const (
+		scheduler = "usr_01JB8T7H4MA2C5E8G1J4K7N3P9" // who schedules, as the users who save the revisions are others
+		first     = comingRevision
+		second    = `{"schemaVersion":1,"title":"Coming soon","slug":"coming-soon"}`
+		withDate  = `{
+  "schemaVersion": 1,
+  "title": "Coming later",
+  "slug": "coming-later",
+  "date": "2026-10-30T09:00:00+09:00"
+}`
+		date = "2026-11-08T19:00:00+09:00"
+	)
+	// The scheduler calls PublishScheduled some time after the time of the schedule.
+	at := testNow.Add(day)
+	now := at.Add(90 * time.Minute)
+
+	// setup saves the revision initial for a new post as userID, schedules it at at as scheduler, and saves the revisions
+	// later as otherUser, one after the other. It returns the entry and the IDs of the revisions that it saved.
+	setup := func(t *testing.T, initial string, later ...string) (*Editor, *store.Store, string, []string) {
+		t.Helper()
+		ed, s := newSample(t)
+		entry := newDraft(t, ed, content.TypePost, "ja")
+		revs := []string{must(t)(ed.SaveRevision(t.Context(), Op{By: userID}, entry, "", []byte(initial))).Revision}
+		must(t)(ed.Schedule(t.Context(), Op{By: scheduler}, entry, entrySeq(t, s, entry), revs[0], at))
+		for _, data := range later {
+			revs = append(revs, must(t)(ed.SaveRevision(t.Context(), Op{By: otherUser}, entry, revs[len(revs)-1], []byte(data))).Revision)
+		}
+		return ed, s, entry, revs
+	}
+
+	t.Run("a later revision without a date", func(t *testing.T) {
+		ed, s, entry, revs := setup(t, first, second)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		ids := revisionIDs(t, s, entry)
+		if len(ids) != 4 || !slices.Equal(ids[:2], revs) || ids[2] != pub.Revision {
+			t.Fatalf("the revisions are %v, want %v, the published revision %s, and a copy of the latest", ids, revs, pub.Revision)
+		}
+		copied := ids[3]
+		if pub.Status != content.StatusPublished || !pub.Publishes {
+			t.Errorf("PublishScheduled() = %+v, want the dated revision published", pub)
+		}
+
+		// The published revision is the scheduled one with the date, and the copy of the latest has the same date.
+		one := decodeRevision(t, []byte(first))
+		one.Date = date
+		wantRevision(t, s, pub.Revision, one)
+		two := decodeRevision(t, []byte(second))
+		two.Date = date
+		wantRevision(t, s, copied, two)
+		if string(revisionData(t, s, revs[0])) != first || string(revisionData(t, s, revs[1])) != second {
+			t.Errorf("the revisions that were saved are %s and %s, want them as they were", revisionData(t, s, revs[0]), revisionData(t, s, revs[1]))
+		}
+
+		sum := summaryOf(t, s, entry)
+		if sum.Latest != copied || sum.Entry.PublishedRevision != pub.Revision || sum.Entry.Status != content.StatusPublished {
+			t.Errorf("Summary() = %+v %+v, want the copy as the latest revision and the dated one as the published one", sum, sum.Entry)
+		}
+		if got := entryPath(t, ed, s, entry); got != "/2026/11/08/coming/" {
+			t.Errorf("the page of the entry is %q, want /2026/11/08/coming/", got)
+		}
+		wantRebuiltIndex(t, s)
+
+		// Both revisions that it adds are saved as the user who scheduled the entry.
+		want := map[string]string{revs[0]: userID, revs[1]: otherUser, pub.Revision: scheduler, copied: scheduler}
+		if users := revisionUsers(t, s, entry); !reflect.DeepEqual(users, want) {
+			t.Errorf("the revisions were saved by %v, want %v", users, want)
+		}
+
+		// The editor goes on from the copy: the revision that it had read is not the latest any more.
+		_, err := ed.SaveRevision(t.Context(), Op{By: otherUser}, entry, revs[1], []byte(second))
+		if wantErr := docName(content.RefEntry, entry) + ": changed since it was read: its latest revision is " + copied +
+			", not " + revs[1]; !errors.Is(err, ErrConflict) || err.Error() != wantErr {
+			t.Errorf("SaveRevision() with the base %s = %v, want %q wrapping ErrConflict", revs[1], err, wantErr)
+		}
+
+		// Publishing the copy keeps the date that it has: the post is not dated again.
+		again := must(t)(ed.Publish(t.Context(), Op{By: otherUser}, entry, entrySeq(t, s, entry), copied))
+		if again.Revision != copied || len(revisionIDs(t, s, entry)) != 4 {
+			t.Errorf("Publish() = %+v with the revisions %v, want the copy published as it is", again, revisionIDs(t, s, entry))
+		}
+		if got := entryPath(t, ed, s, entry); got != "/2026/11/08/coming-soon/" {
+			t.Errorf("the page of the entry is %q, want the date of the schedule, /2026/11/08/coming-soon/", got)
+		}
+	})
+
+	t.Run("a later revision with a date", func(t *testing.T) {
+		ed, s, entry, revs := setup(t, first, withDate)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		ids := revisionIDs(t, s, entry)
+		if len(ids) != 4 || !slices.Equal(ids[:2], revs) || ids[2] != pub.Revision {
+			t.Fatalf("the revisions are %v, want %v, the published revision %s, and a copy of the latest", ids, revs, pub.Revision)
+		}
+		// The copy is the bytes of the latest revision, as the editor wrote them.
+		if got := string(revisionData(t, s, ids[3])); got != withDate {
+			t.Errorf("the copy is %s, want the bytes of the latest revision, %s", got, withDate)
+		}
+		one := decodeRevision(t, []byte(first))
+		one.Date = date
+		wantRevision(t, s, pub.Revision, one)
+		if sum := summaryOf(t, s, entry); sum.Latest != ids[3] {
+			t.Errorf("the latest revision is %s, want the copy %s", sum.Latest, ids[3])
+		}
+		wantRebuiltIndex(t, s)
+	})
+
+	t.Run("several later revisions", func(t *testing.T) {
+		ed, s, entry, revs := setup(t, first, second, withDate)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		ids := revisionIDs(t, s, entry)
+		if len(ids) != 5 || !slices.Equal(ids[:3], revs) || ids[3] != pub.Revision {
+			t.Fatalf("the revisions are %v, want %v, the published revision %s, and a copy of the latest", ids, revs, pub.Revision)
+		}
+		if got := string(revisionData(t, s, ids[4])); got != withDate {
+			t.Errorf("the copy is %s, want the bytes of the latest revision, %s", got, withDate)
+		}
+	})
+
+	t.Run("the scheduled revision is the latest", func(t *testing.T) {
+		ed, s, entry, revs := setup(t, first)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{revs[0], pub.Revision}) {
+			t.Errorf("the revisions are %v, want the saved one and the dated one", got)
+		}
+	})
+
+	t.Run("a scheduled revision with a date", func(t *testing.T) {
+		ed, s, entry, revs := setup(t, withDate, second)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		if got := revisionIDs(t, s, entry); pub.Revision != revs[0] || !slices.Equal(got, revs) {
+			t.Errorf("PublishScheduled() = %+v with the revisions %v, want %v and the first published as it is", pub, got, revs)
+		}
+		if sum := summaryOf(t, s, entry); sum.Latest != revs[1] {
+			t.Errorf("the latest revision is %s, want %s", sum.Latest, revs[1])
+		}
+	})
+
+	t.Run("a page", func(t *testing.T) {
+		ed, s := newSample(t)
+		rev := scheduleCareers(t, ed, s)
+		newer := must(t)(ed.SaveRevision(t.Context(), Op{By: otherUser}, draftEN, rev,
+			[]byte(`{"schemaVersion":1,"title":"Careers soon","slug":"careers-soon"}`))).Revision
+		must(t)(ed.PublishScheduled(t.Context(), draftEN, careersAt))
+		if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev, newer}) {
+			t.Errorf("the revisions are %v, want %v: a page has no date to add", got, []string{rev, newer})
+		}
+	})
+
+	// The revision that a scheduled entry names may be one of another entry, which leaves it without a revision of its own.
+	t.Run("an entry that has no revision of its own", func(t *testing.T) {
+		ed, s := newSample(t)
+		owner := newDraft(t, ed, content.TypePost, "ja")
+		rev := must(t)(ed.SaveRevision(t.Context(), Op{By: userID}, owner, "", []byte(first))).Revision
+		entry := testID(content.RefEntry, 1)
+		put(t, s, content.RefEntry, entry, scheduledJSON(t, []byte(storedEntry(entry, maxNumber(t, s)+1, content.TypePost, "ja",
+			testID(content.RefTranslationGroup, 1), content.StatusDraft, "")), rev, date))
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
+		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{pub.Revision}) {
+			t.Errorf("the revisions are %v, want only the dated copy %s", got, pub.Revision)
+		}
+		if got := revisionIDs(t, s, owner); !slices.Equal(got, []string{rev}) {
+			t.Errorf("the revisions of the entry that has the revision are %v, want %s", got, rev)
+		}
+	})
+
+	// The revisions and the state are saved together, or not at all: a copy that cannot be saved fails the publish.
+	t.Run("a copy that cannot be saved", func(t *testing.T) {
+		ed, s, entry, _ := setup(t, first, second)
+		// The ID of the copy is the sixth that the Editor makes: the entry, its group, the two revisions that were saved, the
+		// dated revision, and then the copy. A revision of another entry has it.
+		ids := predictIDs(t, content.RefEntry, content.RefTranslationGroup, content.RefRevision, content.RefRevision, content.RefRevision, content.RefRevision)
+		addStoredRevision(t, s, draftEN, ids[5], careersRevision)
+		before, index := snapshot(t, s), indexOf(t, s)
+		res, err := ed.PublishScheduled(t.Context(), entry, now)
+		if !errors.Is(err, fs.ErrExist) || err == nil || err.Error() != revisionName(ids[5])+": already exists" {
+			t.Errorf("PublishScheduled() = %+v, %v; want the error that %s exists", res, err, revisionName(ids[5]))
+		}
+		sameStore(t, s, before, index, "PublishScheduled()")
+	})
+
+	// A publish that fails adds no revision, neither the dated one nor the copy.
+	t.Run("a publish that fails", func(t *testing.T) {
+		ed, s, entry, _ := setup(t, first, second)
+		// Another post takes the slug of the scheduled revision before its time comes.
+		other := newDraft(t, ed, content.TypePost, "ja")
+		rev := must(t)(ed.SaveRevision(t.Context(), Op{By: userID}, other, "",
+			[]byte(`{"schemaVersion":1,"title":"Other","slug":"coming","date":"2026-10-30T09:00:00+09:00"}`))).Revision
+		must(t)(ed.Publish(t.Context(), Op{By: userID}, other, entrySeq(t, s, other), rev))
+		before, index := snapshot(t, s), indexOf(t, s)
+		_, err := ed.PublishScheduled(t.Context(), entry, now)
+		if got := problemLines(t, err); len(got) != 1 || !strings.Contains(got[0], `/slug: slug "coming" is also used by `) {
+			t.Errorf("PublishScheduled() = %v, want the problem of the slug", err)
+		}
+		sameStore(t, s, before, index, "PublishScheduled()")
 	})
 }
 
@@ -595,42 +960,64 @@ func TestScheduleErrors(t *testing.T) {
 	}
 }
 
+// datedText returns data, the JSON of a revision in the form that the tests write, an object that ends in a line with "}",
+// with date as its last item, so that every other item keeps its place.
+func datedText(t *testing.T, data, date string) string {
+	t.Helper()
+	i := strings.LastIndex(data, "\n}")
+	if i < 0 {
+		t.Fatalf("%q does not end in a line with }", data)
+	}
+	return data[:i] + ",\n  \"date\": \"" + date + "\"" + data[i:]
+}
+
 // TestScheduleParity compares what Schedule refuses with what the build refuses in a copy of the sample site in which the
-// entry is published with the revision: the same lines, with the files, the pointers, the messages and the positions.
+// entry is published with the revision: the same lines, with the files, the pointers, the messages and the positions. A post
+// without a date is published with the date of the schedule, which Schedule only has in memory: the build reads the bytes
+// that the store has with the date added at their end.
 func TestScheduleParity(t *testing.T) {
 	op := Op{By: userID}
 	for _, tt := range []struct {
-		name string
-		typ  string // of a new draft entry in en that gets the revision; "" for the draft entry draftEN of the sample site
-		data string
-		msg  string
+		name  string
+		typ   string // of a new draft entry in en that gets the revision; "" for the draft entry draftEN of the sample site
+		data  string
+		msg   string
+		setup func(t *testing.T, p *parity) // after the revision is saved, for the store and the copy
 	}{
 		{"a slug that is the path of a feed", "", `{
   "schemaVersion": 1,
   "title": "Feed",
   "slug": "feed"
-}`, `/slug: output path "/en/feed/" is also that of the feed in en`},
+}`, `/slug: output path "/en/feed/" is also that of the feed in en`, nil},
 		{"a slug that another page has", "", `{
   "schemaVersion": 1,
   "title": "About",
   "slug": "about"
-}`, `/slug: slug "about" is also used by ` + revisionName(aboutENRev)},
+}`, `/slug: slug "about" is also used by ` + revisionName(aboutENRev), nil},
 		{"a missing title", "", `{
   "schemaVersion": 1,
   "slug": "untitled"
-}`, `/title: missing title`},
+}`, `/title: missing title`, nil},
 		{"a parent that is not published", content.TypePage, `{
   "schemaVersion": 1,
   "title": "Team",
   "slug": "team",
   "parent": "` + draftEN + `"
-}`, `/parent: entry "` + draftEN + `" is not published`},
-		// The revision that the build reads is the copy with the date of the schedule, in the bytes that Schedule would write.
+}`, `/parent: entry "` + draftEN + `" is not published`, nil},
 		{"a post without a date", content.TypePost, `{
   "schemaVersion": 1,
   "title": "New service again",
   "slug": "new-service"
-}`, `/slug: slug "new-service" is also used by ` + revisionName("rev_01JC0000000000000000000001")},
+}`, `/slug: slug "new-service" is also used by ` + revisionName("rev_01JC0000000000000000000001"), nil},
+		// The path of the post has the date of the schedule: a redirect from it is the problem.
+		{"a redirect from the dated path of a post without a date", content.TypePost, `{
+  "schemaVersion": 1,
+  "title": "Dated",
+  "slug": "dated"
+}`, `/from: from "/en/2026/11/07/dated/" is the output path "/en/2026/11/07/dated/" of revisions/`, func(t *testing.T, p *parity) {
+			made := must(t)(p.ed.Create(t.Context(), op, content.RefRedirect, []byte(redirectJSON("/en/2026/11/07/dated/", "/"))))
+			p.copyStored(content.RefRedirect, made.ID)
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newParity(t)
@@ -638,20 +1025,16 @@ func TestScheduleParity(t *testing.T) {
 			if tt.typ != "" {
 				entry = newDraft(t, p.ed, tt.typ, "en")
 			}
-			ids := predictIDs(t, content.RefEntry, content.RefTranslationGroup, content.RefRevision, content.RefRevision)
 			saved := saveRevision(t, p.ed, p.s, entry, tt.data)
-			rev, data := saved.Revision, tt.data
+			data := tt.data
 			if tt.typ == content.TypePost {
-				copied := decodeRevision(t, []byte(tt.data))
-				copied.Date = careersJST
-				copiedData, err := copied.MarshalJSON()
-				if err != nil {
-					t.Fatal(err)
-				}
-				rev, data = ids[3], string(copiedData)
+				data = datedText(t, tt.data, careersJST)
 			}
-			p.write(revisionName(rev), data)
-			p.write(docName(content.RefEntry, entry), published(t, read(t, p.s, content.RefEntry, entry).Data, rev))
+			if tt.setup != nil {
+				tt.setup(t, p)
+			}
+			p.write(revisionName(saved.Revision), data)
+			p.write(docName(content.RefEntry, entry), published(t, read(t, p.s, content.RefEntry, entry).Data, saved.Revision))
 			p.base = snapshot(t, p.s)
 			want := buildErrors(t, p.dir)
 			res, err := p.ed.Schedule(t.Context(), op, entry, p.seq(content.RefEntry, entry), saved.Revision, careersAt)
@@ -909,6 +1292,71 @@ func TestScheduledProtected(t *testing.T) {
 			t.Errorf("SaveSettings() problems:\n%s\nwant the error %q", strings.Join(got, "\n"), want)
 		}
 		sameStore(t, x.s, before, index, "SaveSettings()")
+	})
+
+	// A scheduled post without a date is valid with the scheduled time as its date, so a change finds no problem in it that
+	// it does not have, and finds those that it has, in the bytes that the store has.
+	t.Run("a post without a date that the settings change finds a problem in", func(t *testing.T) {
+		const html = `{"type":"html","id":"b_0000html","attrs":{"html":"<p>x</p>"}}`
+		post := `{
+  "schemaVersion": 1,
+  "title": "Post",
+  "slug": "post",
+  "body": [` + html + `]
+}`
+		x := newSmallSite(t, settings(",\n  \"allowHtml\": true"), nil)
+		entry := newDraft(t, x.ed, content.TypePost, "ja")
+		rev := must(t)(x.ed.SaveRevision(t.Context(), op, entry, "", []byte(post))).Revision
+		must(t)(x.ed.Schedule(t.Context(), op, entry, entrySeq(t, x.s, entry), rev, careersAt))
+		before, index := snapshot(t, x.s), indexOf(t, x.s)
+		_, err := x.ed.SaveSettings(t.Context(), op, read(t, x.s, store.SettingsKind, "").Seq, []byte(settings("")))
+		want := where(t, revisionName(rev), post, `{"type":"html"`) + "/body/0: html blocks are not enabled"
+		if got := problemLines(t, err); !slices.Equal(got, []string{want}) {
+			t.Errorf("SaveSettings() problems:\n%s\nwant the error %q alone: the revision is not refused for its missing date", strings.Join(got, "\n"), want)
+		}
+		sameStore(t, x.s, before, index, "SaveSettings()")
+	})
+
+	t.Run("a term that the scheduled revision of a post without a date uses", func(t *testing.T) {
+		ed, s := newSample(t)
+		tag := must(t)(ed.Create(t.Context(), op, content.RefTerm, []byte(termJSON("tag", "en", "", "Festival", "festival")))).ID
+		entry := newDraft(t, ed, content.TypePost, "en")
+		post := `{
+  "schemaVersion": 1,
+  "title": "Festival",
+  "slug": "festival-news",
+  "terms": { "tag": ["` + tag + `"] }
+}`
+		rev := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(post))).Revision
+		must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), rev, careersAt))
+		doc := read(t, s, content.RefTerm, tag)
+		before, index := snapshot(t, s), indexOf(t, s)
+		_, err := ed.Save(t.Context(), op, content.RefTerm, tag, doc.Seq, []byte(changedTerm(t, doc.Data, func(x *content.Term) {
+			x.Language, x.TranslationGroup = "ja", testID(content.RefTranslationGroup, 1)
+		})))
+		want := where(t, revisionName(rev), post, `"`+tag+`"`) + `/terms/tag/0: term "` + tag + `" is in the language "ja", not "en"`
+		if got := problemLines(t, err); !slices.Equal(got, []string{want}) {
+			t.Errorf("Save() of a term that the scheduled revision uses:\n%s\nwant the error %q alone", strings.Join(got, "\n"), want)
+		}
+		sameStore(t, s, before, index, "Save()")
+	})
+
+	// With settings that do not load there is no state before the change, and every problem of the new state counts as new:
+	// a post without a date is not one of them.
+	t.Run("a post without a date, for settings over some that do not load", func(t *testing.T) {
+		ed, s := newSample(t)
+		entry := newDraft(t, ed, content.TypePost, "ja")
+		rev := must(t)(ed.SaveRevision(t.Context(), op, entry, "", []byte(comingRevision))).Revision
+		must(t)(ed.Schedule(t.Context(), op, entry, entrySeq(t, s, entry), rev, careersAt))
+		sample := string(sampleFile(t, settingsName))
+		put(t, s, store.SettingsKind, "", replaceOnce(t, sample, "Asia/Tokyo", "Mars/Base"))
+		res, err := ed.SaveSettings(t.Context(), op, read(t, s, store.SettingsKind, "").Seq, []byte(sample))
+		if err != nil {
+			t.Fatalf("SaveSettings() = %+v, %v; want the settings saved: the scheduled post has a date when it is published", res, err)
+		}
+		if got := string(read(t, s, store.SettingsKind, "").Data); got != sample {
+			t.Errorf("the settings are %s, want the ones that were saved", got)
+		}
 	})
 }
 
@@ -1511,6 +1959,22 @@ func TestScheduleLookupFailure(t *testing.T) {
 	}
 }
 
+// TestPublishScheduledLatestFailure checks that a failure to read the summary of the entry, which tells its latest revision,
+// fails a scheduled publish with that error, not with problems, and saves nothing.
+func TestPublishScheduledLatestFailure(t *testing.T) {
+	errRead := errors.New("the index cannot be read")
+	ed, s := newSample(t)
+	scheduleCareers(t, ed, s)
+	ed.wrap = func(r reader) reader { return failSummaryOf{r, draftEN, errRead} }
+	before, index := snapshot(t, s), indexOf(t, s)
+	res, err := ed.PublishScheduled(t.Context(), draftEN, careersAt)
+	var problems content.Errors
+	if !errors.Is(err, errRead) || errors.As(err, &problems) {
+		t.Errorf("PublishScheduled() = %+v, %v; want the error of the read, not problems", res, err)
+	}
+	sameStore(t, s, before, index, "PublishScheduled()")
+}
+
 // TestScheduledUnits checks the validation of a scheduled entry that a change runs again, and which entries have the
 // validation of their latest revision besides.
 func TestScheduledUnits(t *testing.T) {
@@ -1546,6 +2010,43 @@ func TestScheduledUnits(t *testing.T) {
 		addStoredRevision(t, x.s, entry, rev, revision)
 		if got := unitProblems(t, x.ed, x.s, func(r *run) unit { return r.scheduledUnit(entry, []byte(doc)) }); len(got) != 0 {
 			t.Errorf("the unit of the scheduled revision has the problems %v, want none", got)
+		}
+	})
+
+	// A post without a date is valid with the scheduled time as its date, as it is published then, where a published post
+	// without one is not; the problems of the revision stay in the bytes that the store has.
+	t.Run("a post without a date", func(t *testing.T) {
+		ed, s := newSample(t)
+		entry, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+		group, number := testID(content.RefTranslationGroup, 1), maxNumber(t, s)+1
+		doc := scheduledJSON(t, []byte(storedEntry(entry, number, content.TypePost, "ja", group, content.StatusDraft, "")), rev, careersJST)
+		put(t, s, content.RefEntry, entry, doc)
+		addStoredRevision(t, s, entry, rev, `{"schemaVersion":1,"title":"A","slug":"a"}`)
+		if got := unitProblems(t, ed, s, func(r *run) unit { return r.scheduledUnit(entry, []byte(doc)) }); len(got) != 0 {
+			t.Errorf("the unit of a scheduled post without a date has the problems %v, want none", got)
+		}
+		published := storedEntry(entry, number, content.TypePost, "ja", group, content.StatusPublished, rev)
+		got := lines(unitProblems(t, ed, s, func(r *run) unit { return r.publishedUnit(entry, []byte(published)) }))
+		if want := revisionName(rev) + ":1:1: /date: missing date"; !slices.Equal(got, []string{want}) {
+			t.Errorf("the problems of the unit of a published post without a date:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
+		}
+	})
+
+	t.Run("a post without a date that has a problem", func(t *testing.T) {
+		ed, s := newSample(t)
+		entry, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+		doc := scheduledJSON(t, []byte(storedEntry(entry, maxNumber(t, s)+1, content.TypePost, "ja",
+			testID(content.RefTranslationGroup, 1), content.StatusDraft, "")), rev, careersJST)
+		put(t, s, content.RefEntry, entry, doc)
+		const revision = `{
+  "schemaVersion": 1,
+  "title": "A",
+  "slug": "-a"
+}`
+		addStoredRevision(t, s, entry, rev, revision)
+		got := lines(unitProblems(t, ed, s, func(r *run) unit { return r.scheduledUnit(entry, []byte(doc)) }))
+		if want := where(t, revisionName(rev), revision, `"slug"`) + `/slug: slugs cannot start or end with "-"`; !slices.Equal(got, []string{want}) {
+			t.Errorf("the problems of the unit:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
 		}
 	})
 
@@ -1729,6 +2230,58 @@ func TestImportScheduled(t *testing.T) {
 		if _, err := importSite(t, s, dir); err != nil {
 			t.Errorf("Import() error = %v, want the site imported: a scheduled entry is not checked across the site", err)
 		}
+	})
+
+	// A post without a date is validated with the scheduled time as its date, as its scheduled publish publishes it, and
+	// stored as it is (Q19-A). The build ignores it.
+	scheduledPost := func(t *testing.T) string {
+		t.Helper()
+		e := decodeEntry(t, []byte(scheduledEntry(t, rev)))
+		e.Type = content.TypePost
+		data, err := e.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	t.Run("a post without a date", func(t *testing.T) {
+		t.Parallel()
+		dir := copySite(t)
+		writeSite(t, dir, docName(content.RefEntry, entry), scheduledPost(t))
+		writeSite(t, dir, revisionName(rev), page)
+		if got := buildErrors(t, dir); len(got) != 0 {
+			t.Fatalf("the problems of the build:\n%s", strings.Join(got, "\n"))
+		}
+		s := newStore(t)
+		if _, err := importSite(t, s, dir); err != nil {
+			t.Fatalf("Import() error = %v", err)
+		}
+		if got := revisionData(t, s, rev); string(got) != page {
+			t.Errorf("the revision is %s, want the bytes of its file, which lack the date", got)
+		}
+		sameFiles(t, storedFiles(t, s), siteFiles(t, dir))
+
+		// Its scheduled publish gives it the date of the schedule, with the same checks.
+		ed := testEditor(t, s)
+		pub := must(t)(ed.PublishScheduled(t.Context(), entry, time.Date(2026, 11, 10, 1, 0, 0, 0, time.UTC)))
+		if pub.Revision == rev || !pub.Publishes {
+			t.Fatalf("PublishScheduled() = %+v, want a new revision published", pub)
+		}
+		if got := decodeRevision(t, revisionData(t, s, pub.Revision)).Date; got != "2026-11-10T09:00:00+09:00" {
+			t.Errorf("the date is %q, want the scheduled time, 2026-11-10T09:00:00+09:00", got)
+		}
+		if got := entryPath(t, ed, s, entry); got != "/2026/11/10/soon/" {
+			t.Errorf("the page of the entry is %q, want /2026/11/10/soon/", got)
+		}
+	})
+
+	t.Run("a post without a date that has a problem", func(t *testing.T) {
+		t.Parallel()
+		dir := copySite(t)
+		writeSite(t, dir, docName(content.RefEntry, entry), scheduledPost(t))
+		writeSite(t, dir, revisionName(rev), `{"schemaVersion":1,"slug":"soon"}`)
+		importRefuses(t, dir, true, revisionName(rev)+`: /title: missing title`)
 	})
 
 	t.Run("an entry without its items", func(t *testing.T) {

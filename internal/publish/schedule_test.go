@@ -433,6 +433,77 @@ func TestScheduledAtStart(t *testing.T) {
 	r.wantStoreBuilt()
 }
 
+// TestScheduledPostDate checks that a post without a date, scheduled and published when its time comes, is built with the
+// scheduled time as its date: its page is at the dated path, not at one of the time when it was scheduled or when the
+// scheduler called, and a revision that the editor saved since stays the latest one (Q19-A).
+func TestScheduledPostDate(t *testing.T) {
+	t.Parallel()
+	r := newClockRig(t, nil)
+	h := holdBuild(t, r.Publisher, 0)
+	r.start()
+	r.idle()
+	startRelease := r.current()
+
+	entry := must(t)(r.Editor().CreateEntry(t.Context(), r.op(), content.TypePost, "ja")).ID
+	rev := r.saveRevision(entry, `{"schemaVersion":1,"title":"Coming","slug":"coming"}`).Revision
+	// 18:00 UTC is 03:00 of the next day in Tokyo, where the date of the page is counted.
+	at := time.Date(2026, 11, 11, 18, 0, 0, 0, time.UTC)
+	r.schedule(entry, rev, at, otherUser)
+	later := r.saveRevision(entry, `{"schemaVersion":1,"title":"Coming soon","slug":"coming-soon"}`).Revision
+	r.idle()
+	r.wantStatus(entry, content.StatusScheduled)
+	if h.builds() != 1 || r.current() != startRelease {
+		t.Errorf("%d builds have run and %s is published, want only the start build: a schedule asks for none", h.builds(), r.current())
+	}
+	r.timers.want(t, at.Sub(fixedNow))
+
+	// The scheduler publishes it some time after the time of the schedule.
+	r.clock.set(at.Add(5 * time.Minute))
+	r.timers.fire(t)
+	r.idle()
+	state, latest := r.entryState(entry)
+	if state.Status != content.StatusPublished || state.PublishedRevision == rev || state.PublishedRevision == later {
+		t.Fatalf("the entry is %+v, want it published with a new revision, the copy of %s with the date", state, rev)
+	}
+	if latest == later || latest == state.PublishedRevision {
+		t.Errorf("the latest revision is %s, want a copy of %s, the draft that was saved after the schedule", latest, later)
+	}
+	titleAndDate := func(id string) (title, date string) {
+		t.Helper()
+		var parsed content.Revision
+		err := r.s.View(t.Context(), func(tx *store.Tx) error {
+			stored, err := tx.Revision(id)
+			if err != nil {
+				return err
+			}
+			return parsed.UnmarshalJSON(stored.Data)
+		})
+		if err != nil {
+			t.Fatalf("Revision(%q) error = %v", id, err)
+		}
+		return parsed.Title, parsed.Date
+	}
+	const date = "2026-11-12T03:00:00+09:00"
+	if title, got := titleAndDate(state.PublishedRevision); title != "Coming" || got != date {
+		t.Errorf("the published revision is %q dated %q, want Coming dated %s, the scheduled time", title, got, date)
+	}
+	if title, got := titleAndDate(latest); title != "Coming soon" || got != date {
+		t.Errorf("the latest revision is %q dated %q, want Coming soon dated %s", title, got, date)
+	}
+	const page = "public/2026/11/12/coming/index.html"
+	if len(r.file(page)) == 0 {
+		t.Errorf("%s is not published", page)
+	}
+	if r.file("public/2026/11/08/coming/index.html") != nil || r.file("public/2026/11/11/coming/index.html") != nil {
+		t.Errorf("the post has a page at a date that is not the scheduled one")
+	}
+	b := wantBuild(t, r.Status(), "operation")
+	if q := b.Requests[0]; q.Result.ID != entry || q.Result.Revision != state.PublishedRevision || !q.Result.Publishes {
+		t.Errorf("the request of the scheduled publish is %+v, want the entry %s published with %s", q, entry, state.PublishedRevision)
+	}
+	r.wantStoreBuilt()
+}
+
 // TestScheduledFailure checks that a scheduled publish that does not pass the checks of the build leaves the entry
 // scheduled, shows the problems of the build in Status, is tried again after the retry and after the state of an entry
 // changes, and publishes once the problem is gone.

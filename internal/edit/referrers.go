@@ -157,32 +157,42 @@ func (r *run) previousRevision(entry, latest string) (*content.Revision, error) 
 // valid, its published revision, which it reads. A published revision that the store does not have is the problem that
 // the build reports.
 func (r *run) publishedUnit(id string, data []byte) unit {
-	return r.publicationUnit(id, data, "/publishedRevision", func(ent *content.Entry) string { return ent.PublishedRevision })
+	return r.publicationUnit(id, data, false)
 }
 
 // scheduledUnit validates the scheduled entry id, whose document is data, as publishedUnit validates a published entry: its
-// state, and if that is valid, its scheduled revision, as the build would validate it if it were published. Its problems
-// are not those of a draft, as the scheduled publish needs them to be none.
+// state, and if that is valid, its scheduled revision, as the build would validate it if it were published at its
+// scheduled time: a post without a date has the scheduled time as its date (publishedAtSchedule), and the problems stay
+// located in the bytes of the stored revision. Its problems are not those of a draft, as the scheduled publish needs them
+// to be none.
 func (r *run) scheduledUnit(id string, data []byte) unit {
-	return r.publicationUnit(id, data, "/scheduledRevision", func(ent *content.Entry) string { return ent.ScheduledRevision })
+	return r.publicationUnit(id, data, true)
 }
 
-// publicationUnit validates the entry id, whose document is data, and the revision that revision finds in its state, which
-// the entry publishes now or later: a revision that the store does not have is the problem at pointer.
-func (r *run) publicationUnit(id string, data []byte, pointer string, revision func(*content.Entry) string) unit {
+// publicationUnit validates the entry id, whose document is data, and the revision that it publishes now, or at its
+// scheduled time if scheduled is true: a revision that the store does not have is the problem at its pointer in the state.
+func (r *run) publicationUnit(id string, data []byte, scheduled bool) unit {
 	f := content.SiteFile{Name: docName(content.RefEntry, id), Data: data}
 	return unit{check: func(env checkEnv) (content.Errors, error) {
 		ent, problems, ok := entryState(f, env.site)
 		if !ok || len(problems) > 0 {
 			return problems, nil
 		}
-		revID := revision(&ent)
+		pointer, revID := "/publishedRevision", ent.PublishedRevision
+		if scheduled {
+			pointer, revID = "/scheduledRevision", ent.ScheduledRevision
+		}
 		rf, rev, err := r.decodedRevision(revID)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			return problemAt(f, pointer, fmt.Sprintf("revision %q does not exist", revID)), nil
 		case err != nil || rev == nil:
 			return nil, err
+		}
+		if scheduled {
+			if rev, err = publishedAtSchedule(env.site, &ent, rev); err != nil {
+				return nil, err
+			}
 		}
 		return locatedIn(validatePublished(env.site, &ent, rev, env.lookup), rf), nil
 	}}

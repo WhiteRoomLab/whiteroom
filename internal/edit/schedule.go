@@ -37,9 +37,11 @@ func (e notDue) Unwrap() error { return ErrNotDue }
 // that another page has, are the error, located as the build locates them, and nothing is saved; the new warnings are in
 // the result. Nothing is published, so the result does not have Publishes, and no build is due.
 //
-// A post whose revision has no date gets a new revision: a copy of it with the scheduled time as its date, which is then
-// the latest revision and the one that is scheduled. Result.Revision is the scheduled revision, and Result.Status is
-// scheduled. Scheduling what is scheduled in the same way saves nothing.
+// No revision is added. A post whose revision has no date is validated and checked as it will be published, with a copy
+// of the revision in memory that has the scheduled time as its date; its problems are located in the bytes that the store
+// has, in which a pointer that they lack, such as /date, is located at its nearest ancestor. The date goes into a new
+// revision when the entry is published (PublishScheduled), or when Publish publishes it instead. Result.Revision is the
+// scheduled revision, and Result.Status is scheduled. Scheduling what is scheduled in the same way saves nothing.
 func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, revision string, at time.Time) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -72,18 +74,14 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 		if err != nil {
 			return Result{}, err
 		}
-		rv, err = r.dated(site, ent.Type, rv, func() time.Time { return at })
-		if err != nil {
-			return Result{}, err
-		}
 		scheduledAt, err := formatIn(site, at)
 		if err != nil {
 			return Result{}, err
 		}
 
 		state := withStatus(ent, content.StatusScheduled, "")
-		state.ScheduledRevision, state.ScheduledAt = rv.id, scheduledAt
-		res := Result{Kind: content.RefEntry, ID: entry, Version: cur.Version, Revision: rv.id, Status: content.StatusScheduled}
+		state.ScheduledRevision, state.ScheduledAt = revision, scheduledAt
+		res := Result{Kind: content.RefEntry, ID: entry, Version: cur.Version, Revision: revision, Status: content.StatusScheduled}
 		if state == ent {
 			return res, nil
 		}
@@ -103,6 +101,10 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 		if len(problems) > 0 {
 			return Result{}, problems
 		}
+		// The revision as it will be published, in memory: its problems are located in the bytes that the store has (rv.file).
+		if rv.rev, err = publishedAtSchedule(site, &state, rv.rev); err != nil {
+			return Result{}, err
+		}
 		if err := r.checkPublishable(site, &state, rv); err != nil {
 			return Result{}, err
 		}
@@ -115,11 +117,6 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 			return Result{}, err
 		case len(bad) > 0:
 			return Result{}, bad
-		}
-		if rv.id != revision {
-			if _, err := r.tx.AddRevision(entry, rv.id, rv.file.Data, r.by); err != nil {
-				return Result{}, err
-			}
 		}
 		v, err := r.tx.Put(content.RefEntry, entry, ef.Data, r.by)
 		if err != nil {
@@ -140,6 +137,13 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 //
 // No redirect is registered, as the entry was not published; the redirects to the entry from its new path are deleted, as
 // Publish does. Result.Status is published, and the result has Publishes.
+//
+// A post whose scheduled revision has no date gets a new revision: a copy of it with the scheduled time as its date, in
+// the time zone of the site, which is then the latest revision and the one that is published. If the scheduled revision
+// was not the latest revision, the editor has saved revisions since: the same Update then adds a copy of the latest one
+// after it, so that the draft that the editor works on stays the latest revision. That copy has the same date if it is
+// a post without a date, and is otherwise the same bytes; it is a draft, which nothing validates. Both revisions are saved
+// as the user who scheduled the entry, and Result.Revision is the one that is published.
 func (e *Editor) PublishScheduled(ctx context.Context, entry string, now time.Time) (Result, error) {
 	if err := content.CheckID(content.RefEntry, entry); err != nil {
 		return Result{}, err
@@ -178,8 +182,48 @@ func (e *Editor) PublishScheduled(ctx context.Context, entry string, now time.Ti
 		} else if err != nil {
 			return Result{}, err
 		}
-		return r.publish(cur, ent, rv, site, settings, func() time.Time { return at }, before)
+		sum, err := r.rd.Summary(content.RefEntry, entry)
+		if err != nil {
+			return Result{}, err
+		}
+		res, err := r.publish(cur, ent, rv, site, settings, func() time.Time { return at }, before)
+		if err != nil {
+			return Result{}, err
+		}
+		// A dated copy is the latest revision now, which an editor's later revision must stay: it is copied after it.
+		if res.Revision != rv.id && sum.Latest != "" && sum.Latest != rv.id {
+			if err := r.copyLatest(site, ent, sum.Latest, at); err != nil {
+				return Result{}, err
+			}
+		}
+		return res, nil
 	})
+}
+
+// copyLatest adds a copy of latest, the latest revision of the entry ent, as the latest revision again, after the scheduled
+// publish has added the dated copy of an earlier one: a post without a date gets at as its date, in the time zone of the
+// site, as that copy has it; any other revision is copied as it is.
+func (r *run) copyLatest(site *content.Site, ent content.Entry, latest string, at time.Time) error {
+	rv, err := r.readRevision(latest)
+	if err != nil {
+		return err
+	}
+	data := rv.file.Data
+	if lacksDate(ent.Type, rv.rev) {
+		dated, err := withDate(site, ent.Type, rv.rev, at)
+		if err != nil {
+			return err
+		}
+		if data, err = dated.MarshalJSON(); err != nil {
+			return err
+		}
+	}
+	id, err := r.e.newID(content.RefRevision)
+	if err != nil {
+		return err
+	}
+	_, err = r.tx.AddRevision(ent.ID, id, data, r.by)
+	return err
 }
 
 // Scheduled is an entry that is scheduled, and its scheduled time.
