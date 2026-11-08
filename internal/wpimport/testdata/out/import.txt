@@ -1,0 +1,9 @@
+site-rest.json: skipped: rest 5 (user "Ghost"): user 5 of the REST API is not an author in the WXR; it is not imported
+site.xml:12:1: skipped: channel: 2 comments on 1 item are not imported; whiteroom has no comments
+site.xml:22:2: skipped: author "admin": the author has no posts; whiteroom makes author profiles only for the authors of posts
+site.xml:24:2: skipped: author "writer": the website "javascript:alert(1)" is not imported: scheme "javascript" is not allowed -> authors/aut_0000000000XCC758X7YMPSJ3AK.json#/links
+site.xml:25:2: skipped: author "guest": the author has no posts; whiteroom makes author profiles only for the authors of posts
+site.xml:33:2: changed: term 3 (category "お知らせ"): kept only the text of the HTML; lost a link to "https://example.com/", <strong> -> terms/trm_00000000009S0MYTEEWC021TN0.json#/description
+site.xml:47:2: skipped: term 5 (post_tag "WordPress"): termmeta "accent_color" is not imported; whiteroom terms have no custom fields -> terms/trm_0000000000GRH3X0TGVE4SNRZK.json
+site.xml:81:2: skipped: term (series): 1 term of the taxonomy series is not imported; define series in the schema file to import it
+site.xml:88:2: skipped: term (post_format): 1 term of the taxonomy post_format is not imported; whiteroom does not use it

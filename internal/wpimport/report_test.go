@@ -9,6 +9,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
+	"github.com/WhiteRoomLab/whiteroom/internal/wxr"
 )
 
 // reportCase is an entry, and the line that WriteText writes for it.
@@ -24,6 +28,41 @@ func reportCases() []reportCase {
 		{Entry{Kind: Changed, Message: "no source at all"}, `changed: no source at all`},
 		{Entry{Kind: Review, Source: Source{Record: "channel"}, Message: "no file"}, `review: channel: no file`},
 		{
+			Entry{Kind: Changed, Source: Source{File: "wp-rest.json", Record: "rest"}, Message: "a record of the REST API with nothing to tell it by"},
+			`wp-rest.json: changed: rest: a record of the REST API with nothing to tell it by`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp-rest.json", Record: "rest", Type: "post_tag", Name: "no ID"}, Message: "a record with no ID, as the route of a taxonomy"},
+			`wp-rest.json: review: rest (post_tag "no ID"): a record with no ID, as the route of a taxonomy`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp-rest.json", Record: "rest", Name: "/wp/v2/users"}, Message: "a route"},
+			`wp-rest.json: review: rest "/wp/v2/users": a route`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp-rest.json", Record: "rest", ID: 3, Type: "category", Name: "News"}, Message: "a term of the REST API"},
+			`wp-rest.json: skipped: rest 3 (category "News"): a term of the REST API`,
+		},
+		{
+			Entry{Kind: Skipped, Source: Source{File: "wp-rest.json", Record: "rest", ID: 5, Type: "user", Name: "admin"}, Message: "a user"},
+			`wp-rest.json: skipped: rest 5 (user "admin"): a user`,
+		},
+		{
+			Entry{
+				Kind: Review, Source: Source{File: "wp-rest.json", Record: "rest", ID: 5, Type: "user", Name: "admin"}, Message: "a user",
+				Target: Target{File: "authors/aut_X.json", Pointer: "/slug"},
+			},
+			`wp-rest.json: review: rest 5 (user "admin"): a user -> authors/aut_X.json#/slug`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp-rest.json", Record: "rest", ID: 6, Type: "user"}, Message: "a user with no name"},
+			`wp-rest.json: review: rest 6 (user): a user with no name`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp-rest.json", Record: "rest", ID: 7, Name: "no type"}, Message: "a record with no type"},
+			`wp-rest.json: review: rest 7 ("no type"): a record with no type`,
+		},
+		{
 			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Record: "item", ID: 9, Type: "page", Name: "No place"}, Message: "no line"},
 			`wp.xml: skipped: item 9 (page "No place"): no line`,
 		},
@@ -38,6 +77,18 @@ func reportCases() []reportCase {
 		{
 			Entry{Kind: Skipped, Source: Source{File: "wp.xml", Line: 10, Column: 3, Record: "author", ID: 4, Name: `ed"itor`}, Message: "the author"},
 			`wp.xml:10:3: skipped: author "ed\"itor": the author`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp.xml", Line: 11, Column: 1, Record: "author", ID: 3}, Message: "an author with the ID only"},
+			`wp.xml:11:1: review: author 3: an author with the ID only`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp.xml", Line: 11, Column: 2, Record: "author", Name: "maryexample-org"}, Message: "an author with a name only"},
+			`wp.xml:11:2: review: author "maryexample-org": an author with a name only`,
+		},
+		{
+			Entry{Kind: Review, Source: Source{File: "wp.xml", Line: 11, Column: 3, Record: "author"}, Message: "an author with neither"},
+			`wp.xml:11:3: review: author: an author with neither`,
 		},
 		{
 			Entry{Kind: Changed, Source: Source{File: "wp.xml", Line: 12, Column: 2, Record: "author", Name: "x"}, Message: "the place of a term"},
@@ -192,6 +243,22 @@ func TestReportTextOneLine(t *testing.T) {
 		rep := NewReport(Info{})
 		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp.xml", Line: 1, Column: 1, Record: "item", ID: 1, Type: odd, Name: odd, Meta: odd}, Message: "m"})
 		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp.xml", Line: 2, Column: 1, Record: "term", Type: odd}, Message: "m"})
+		var got bytes.Buffer
+		if err := rep.WriteText(&got); err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Split(strings.TrimSuffix(got.String(), "\n"), "\n"); len(lines) != 2 || strings.ContainsAny(got.String(), "\r") {
+			t.Errorf("%q: WriteText = %q, want two lines", odd, got.String())
+		}
+	}
+}
+
+// TestReportTextOneLineREST checks the same for the records of the REST API.
+func TestReportTextOneLineREST(t *testing.T) {
+	for _, odd := range []string{"\n", "a\nb", "\r\n", "x\ry", "\n  post\n", string(rune(0x2028)), string(rune(0x85)), " post", "a-b_c9"} {
+		rep := NewReport(Info{})
+		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp-rest.json", Record: "rest", ID: 1, Type: odd, Name: odd}, Message: "m"})
+		rep.Add(Entry{Kind: Changed, Source: Source{File: "wp-rest.json", Record: "rest", Name: odd}, Message: "m"})
 		var got bytes.Buffer
 		if err := rep.WriteText(&got); err != nil {
 			t.Fatal(err)
@@ -404,5 +471,87 @@ func TestKindRank(t *testing.T) {
 	}
 	if Kind("other").rank() <= Review.rank() {
 		t.Error("an unknown kind does not come after the known ones")
+	}
+}
+
+func TestTargets(t *testing.T) {
+	const id = "trm_0000000000AAFHG8EJHY38VMP6"
+	for _, tt := range []struct {
+		name string
+		got  Target
+		want Target
+	}{
+		{"a term", documentTarget(content.RefTerm, id, ""), Target{File: "terms/" + id + ".json"}},
+		{"in a term", documentTarget(content.RefTerm, id, "/name"), Target{File: "terms/" + id + ".json", Pointer: "/name"}},
+		{"in an author", documentTarget(content.RefAuthor, "aut_X", "/bio/ja"), Target{File: "authors/aut_X.json", Pointer: "/bio/ja"}},
+		{"in an entry", documentTarget(content.RefEntry, "ent_X", "/blocks/0"), Target{File: "entries/ent_X.json", Pointer: "/blocks/0"}},
+		{"in a medium", documentTarget(content.RefMedia, "med_X", "/alt"), Target{File: "media/med_X.json", Pointer: "/alt"}},
+		{"in a menu", documentTarget(content.RefMenu, "mnu_X", "/items/0"), Target{File: "menus/mnu_X.json", Pointer: "/items/0"}},
+		{"in a form", documentTarget(content.RefForm, "frm_X", "/fields/0"), Target{File: "forms/frm_X.json", Pointer: "/fields/0"}},
+		{"in a redirect", documentTarget(content.RefRedirect, "rdr_X", "/to"), Target{File: "redirects/rdr_X.json", Pointer: "/to"}},
+		{"the settings", settingsTarget(""), Target{File: "site/settings.json"}},
+		{"in the settings", settingsTarget("/url"), Target{File: "site/settings.json", Pointer: "/url"}},
+		{"the schema file", schemaTarget(""), Target{File: "site/schema.yaml"}},
+		{"in the schema file", schemaTarget("/types/works/url"), Target{File: "site/schema.yaml", Pointer: "/types/works/url"}},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s: Target = %+v, want %+v", tt.name, tt.got, tt.want)
+		}
+	}
+	// A target is the end of a line of the text, after " -> ".
+	e := Entry{Kind: Changed, Source: Source{Record: "term", ID: 5, Type: "category", Name: "News"}, Message: "m", Target: documentTarget(content.RefTerm, id, "/slug")}
+	if got, want := e.line(), `changed: term 5 (category "News"): m -> terms/`+id+".json#/slug"; got != want {
+		t.Errorf("line = %q, want %q", got, want)
+	}
+}
+
+// TestAuthorSources checks how the report names an author: by the login, and, if the login is an email address or the
+// email address of the author, by the ID, or by the slug that the login makes if there is no ID.
+func TestAuthorSources(t *testing.T) {
+	pos := wxr.Pos{Line: 5, Column: 2}
+	author := func(id int64, login, email string) *wxr.Author {
+		return &wxr.Author{Pos: pos, ID: id, Login: login, Email: email}
+	}
+	at := func(id int64, name string) Source {
+		return Source{File: "a.xml", Line: 5, Column: 2, Record: "author", ID: id, Name: name}
+	}
+	for _, tt := range []struct {
+		name string
+		got  Source
+		want Source
+		text string // what the report says of it
+	}{
+		{"a login", AuthorSource("a.xml", author(3, "mary", "mary@example.org")), at(3, "mary"), `author "mary"`},
+		{"a login with no ID", AuthorSource("a.xml", author(0, "mary", "mary@example.org")), at(0, "mary"), `author "mary"`},
+		{"a login that is an email address", AuthorSource("a.xml", author(3, "mary@example.org", "")), at(3, ""), "author 3"},
+		{"an email address with no ID", AuthorSource("a.xml", author(0, "mary@example.org", "")), at(0, "maryexample-org"), `author "maryexample-org"`},
+		{"the email address of the author", AuthorSource("a.xml", author(8, "erin@localhost", "erin@localhost")), at(8, ""), "author 8"},
+		{"the email address in other letters", AuthorSource("a.xml", author(8, "ERIN@localhost", " erin@Localhost\n")), at(8, ""), "author 8"},
+		{"a login that is not the email address", AuthorSource("a.xml", author(8, "erin", "erin@localhost")), at(8, "erin"), `author "erin"`},
+		{"a user that dc:creator names", authorSource("a.xml", pos, 0, "dave", ""), at(0, "dave"), `author "dave"`},
+		{"a user that dc:creator names, with an email address", authorSource("a.xml", pos, 0, "dave@example.com", ""), at(0, "daveexample-com"), `author "daveexample-com"`},
+		{"an email address that makes no slug", authorSource("a.xml", pos, 0, "-@-.-", ""), at(0, ""), "author"},
+		{"a user of the REST API", RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "Ghost"}), Source{File: "rest.json", Record: "rest", ID: 5, Type: "user", Name: "Ghost"}, `rest 5 (user "Ghost")`},
+		{"a user of the REST API with an escaped name", RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "Tom &amp; Jerry"}), Source{File: "rest.json", Record: "rest", ID: 5, Type: "user", Name: "Tom &amp; Jerry"}, `rest 5 (user "Tom &amp; Jerry")`},
+		{"a user of the REST API whose name is an email address", RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "a@b.c"}), Source{File: "rest.json", Record: "rest", ID: 5, Type: "user"}, "rest 5 (user)"},
+		{"a user of the REST API whose name is an escaped email address", RESTUserSource("rest.json", &wprest.User{ID: 5, Name: "a&#64;b.c"}), Source{File: "rest.json", Record: "rest", ID: 5, Type: "user"}, "rest 5 (user)"},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s: Source = %+v, want %+v", tt.name, tt.got, tt.want)
+		}
+		if got := tt.got.what(); got != tt.text {
+			t.Errorf("%s: what() = %q, want %q", tt.name, got, tt.text)
+		}
+	}
+
+	// The JSON of an author with the ID only has no name.
+	rep := NewReport(Info{})
+	rep.Add(Entry{Kind: Review, Source: at(3, ""), Message: "m"})
+	var got bytes.Buffer
+	if err := rep.WriteJSON(&got); err != nil {
+		t.Fatal(err)
+	}
+	if out := got.String(); !strings.Contains(out, `"id": 3`) || strings.Contains(out, `"name"`) {
+		t.Errorf("WriteJSON = %s, want the ID and no name", out)
 	}
 }

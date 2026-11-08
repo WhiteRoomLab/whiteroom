@@ -78,3 +78,93 @@ func FuzzToJSON(f *testing.F) {
 		}
 	})
 }
+
+// jsonFacts are the things in a JSON value that make FromJSON fail.
+type jsonFacts struct {
+	depth    int  // the deepest nesting of objects and lists
+	null     bool // there is a null
+	badChar  bool // a string has a character that YAML cannot have
+	longName bool // a name has so many characters that it may be longer than ToJSON reads once written
+}
+
+// scanJSON reads data, a valid JSON value.
+func scanJSON(t testing.TB, data []byte) jsonFacts {
+	t.Helper()
+	var facts jsonFacts
+	dec := jsontext.NewDecoder(bytes.NewBuffer(data))
+	for {
+		tok, err := dec.ReadToken()
+		if errors.Is(err, io.EOF) {
+			return facts
+		}
+		if err != nil {
+			t.Fatalf("ReadToken() of %q: %v", data, err)
+		}
+		facts.depth = max(facts.depth, dec.StackDepth())
+		switch tok.Kind() {
+		case jsontext.KindNull:
+			facts.null = true
+		case jsontext.KindString:
+			s := tok.String()
+			for _, r := range s {
+				if r == 0x7F || 0x80 <= r && r <= 0x9F && r != 0x85 || r == 0xFEFF || r == 0xFFFE || r == 0xFFFF {
+					facts.badChar = true
+				}
+			}
+			// An object with an odd length has just read a name.
+			if k, n := dec.StackIndex(dec.StackDepth()); k == jsontext.KindBeginObject && n%2 == 1 && utf8.RuneCountInString(s) >= 256 {
+				facts.longName = true
+			}
+		case jsontext.KindFalse, jsontext.KindTrue, jsontext.KindNumber,
+			jsontext.KindBeginObject, jsontext.KindEndObject, jsontext.KindBeginArray, jsontext.KindEndArray, jsontext.KindInvalid:
+		}
+	}
+}
+
+func FuzzFromJSON(f *testing.F) {
+	for _, tt := range toJSONTests {
+		if out, _, err := ToJSON([]byte(tt.in)); err == nil {
+			f.Add(out)
+		}
+	}
+	if out, _, err := ToJSON([]byte(worksSchema)); err == nil {
+		f.Add(out)
+	}
+	for _, s := range []string{
+		`{}`,
+		`{"a":null}`,
+		`[{"a":1}]`,
+		`{"a":[1,"b",{"c":[]},[[]],{}],"d":{"e":-0.5e+10}}`,
+		`{"":"","true":"true","a b":"a: b","x":["- x","[y]","#z","0x1F",",",""],"y":{"z":{"1":[[{"k":"v"}]]}}}`,
+		`{"k":` + quoteJSON("a"+string(rune(0x85))+"b\t"+string(rune(0))+string(rune(0x2028))) + `}`,
+		`{"k":` + quoteJSON("a"+string(rune(0x7F))) + `}`,
+		`{"` + jsonEscape('a') + `":"` + jsonEscape('b') + `\/"}`,
+		`{"a":` + strings.Repeat("[", 99) + "1" + strings.Repeat("]", 99) + "}",
+		`{"a":` + strings.Repeat(`{"a":`, 100) + "1" + strings.Repeat("}", 100) + "}",
+		`{"` + strings.Repeat("k", 1025) + `":1}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		out, err := FromJSON(data)
+		v := jsontext.Value(data)
+		if !v.IsValid() || v.Kind() != jsontext.KindBeginObject {
+			if err == nil || out != nil {
+				t.Fatalf("FromJSON(%q) = %q, %v; want an error", data, out, err)
+			}
+			return
+		}
+		facts := scanJSON(t, data)
+		switch mustFail := facts.null || facts.depth > maxDepth || facts.badChar; {
+		case err != nil && out != nil:
+			t.Fatalf("FromJSON(%q) = %q, %v", data, out, err)
+		case err == nil && mustFail:
+			t.Fatalf("FromJSON(%q) = %q; want an error for %+v", data, out, facts)
+		case err != nil && (strings.Contains(err.Error(), "does not read back") || !mustFail && !facts.longName):
+			t.Fatalf("FromJSON(%q) = %v for %+v", data, err, facts)
+		case err != nil:
+			return
+		}
+		checkYAML(t, string(data), out)
+	})
+}

@@ -1,0 +1,12 @@
+# The definitions that the developer of the site in site.xml writes, for the tests of internal/wpimport.
+# The URL rules are left out: the import guesses them from the old site.
+schemaVersion: 1
+types:
+  works:
+    label: 制作実績
+    taxonomies: [genre]
+    body: true
+taxonomies:
+  genre:
+    label: ジャンル
+    hierarchical: true

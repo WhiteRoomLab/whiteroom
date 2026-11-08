@@ -1,0 +1,13 @@
+site.xml:12:1: skipped: channel: 2 comments on 1 item are not imported; whiteroom has no comments
+site.xml:12:1: review: channel: WordPress keeps the number of posts on a page and whether search engines may index the site where the import cannot read them; check site.postsPerPage (10 by default) and site.noindex -> site/settings.json#/postsPerPage
+site.xml:12:1: review: channel: inferred the permalink structure "/%pagename%/" of pages from 3 of 3 links; the URL rule is "/{path}/" -> site/schema.yaml#/types/page/url
+site.xml:12:1: review: channel: inferred the permalink structure "/%year%/%monthnum%/%day%/%postname%/" of posts from 3 of 3 links; the URL rule is "/{yyyy}/{mm}/{dd}/{slug}/" -> site/schema.yaml#/types/post/url
+site.xml:12:1: review: channel: inferred the permalink structure "/author/%author%/" of author pages from 3 of 3 links; the URL rule is "/author/{slug}/" -> site/schema.yaml#/authorUrl
+site.xml:12:1: review: channel: inferred the permalink structure "/category/%category%/" of the taxonomy category from 3 of 3 links; the URL rule is "/category/{path}/" -> site/schema.yaml#/taxonomies/category/url
+site.xml:12:1: review: channel: inferred the permalink structure "/genre/%genre%/" of the taxonomy genre from 2 of 2 links; the URL rule is "/genre/{slug}/" -> site/schema.yaml#/taxonomies/genre/url
+site.xml:12:1: review: channel: inferred the permalink structure "/tag/%post_tag%/" of the taxonomy tag from 3 of 3 links; the URL rule is "/tag/{slug}/" -> site/schema.yaml#/taxonomies/tag/url
+site.xml:12:1: review: channel: inferred the permalink structure "/works/%works%/" of the post type works from 1 of 1 link; the URL rule is "/works/{slug}/" -> site/schema.yaml#/types/works/url
+site.xml:12:1: review: channel: the post type works had an archive; its path is "/works/" -> site/schema.yaml#/types/works/archive
+site.xml:81:2: skipped: term (series): 1 term of the taxonomy series is not imported; define series in the schema file to import it
+site.xml:88:2: skipped: term (post_format): 1 term of the taxonomy post_format is not imported; whiteroom does not use it
+site.xml:467:2: skipped: item (product): 1 item of the post type product is not imported; define product in the schema file to import it

@@ -10,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
+	"github.com/WhiteRoomLab/whiteroom/internal/wxr"
 )
 
 // Kind is what happened to what an Entry is about.
@@ -34,12 +38,13 @@ func (k Kind) rank() int {
 	return 3
 }
 
-// The records of a WXR.
+// The records of a WXR, and rest for a value of the REST API.
 const (
 	recordChannel = "channel"
 	recordAuthor  = "author"
 	recordTerm    = "term"
 	recordItem    = "item"
+	recordREST    = "rest"
 )
 
 // Source is what in the WXR an Entry is about: a record, and the place in the file of the record or of a value of it.
@@ -47,11 +52,14 @@ type Source struct {
 	File   string `json:"file,omitzero"`
 	Line   int    `json:"line,omitzero"`
 	Column int    `json:"column,omitzero"`
-	Record string `json:"record,omitzero"` // channel, author, term or item
+	Record string `json:"record,omitzero"` // channel, author, term or item, or rest for the REST API
 	ID     int64  `json:"id,omitzero"`     // in WordPress, if the record has one
 	Type   string `json:"type,omitzero"`   // the post type of an item, or the taxonomy of a term
-	Name   string `json:"name,omitzero"`   // the login of an author, the name of a term, or the title of an item
-	Meta   string `json:"meta,omitzero"`   // the key of the postmeta or termmeta that the Entry is about
+	// Name is the login of an author, the name of a term, or the title of an item. An author whose login is an email
+	// address, or is the email address of the author in the WXR, has no login here: the ID tells the author, or, if there
+	// is none, the slug that the login makes. A user of the REST API whose name is an email address has no name either.
+	Name string `json:"name,omitzero"`
+	Meta string `json:"meta,omitzero"` // the key of the postmeta or termmeta that the Entry is about
 }
 
 // Target is where in the site directory the Entry's thing went.
@@ -202,9 +210,15 @@ func typeText(s string) string {
 func (s Source) what() string {
 	var b strings.Builder
 	b.WriteString(s.Record)
-	if s.Record == recordAuthor {
-		if s.Name != "" {
+	// An author is told by the login, or by the ID if the login is not named (see Name), and a route of the REST API, which
+	// has no ID or type, by its name alone.
+	nameOnly := s.Record == recordAuthor || (s.Record == recordREST && s.ID == 0 && s.Type == "")
+	if nameOnly {
+		switch {
+		case s.Name != "":
 			fmt.Fprintf(&b, " %q", s.Name)
+		case s.Record == recordAuthor && s.ID != 0:
+			fmt.Fprintf(&b, " %d", s.ID)
 		}
 	} else {
 		if s.ID != 0 {
@@ -227,4 +241,43 @@ func (s Source) what() string {
 		fmt.Fprintf(&b, " %s %q", meta, s.Meta)
 	}
 	return strings.TrimPrefix(b.String(), " ")
+}
+
+// RESTSource returns the source of an entry about the route of the REST API, such as /wp/v2/users, of the API that is
+// called file in the report.
+func RESTSource(file, route string) Source {
+	return Source{File: file, Record: recordREST, Name: route}
+}
+
+// RESTUserSource returns the source of an entry about the user u of the REST API. It does not name a user whose name is an
+// email address.
+func RESTUserSource(file string, u *wprest.User) Source {
+	name := u.Name
+	if hasEmailAddress(decodeRefs(name)) {
+		name = ""
+	}
+	return Source{File: file, Record: recordREST, ID: u.ID, Type: "user", Name: name}
+}
+
+// RESTTermSource returns the source of an entry about the term t of the REST API.
+func RESTTermSource(file string, t *wprest.Term) Source {
+	return Source{File: file, Record: recordREST, ID: t.ID, Type: t.Taxonomy, Name: t.Name}
+}
+
+// taxonomySource returns the source of an entry about the taxonomy of the term t as a whole, at the place of t.
+func taxonomySource(file string, t *wxr.Term) Source {
+	return Source{File: file, Line: t.Line, Column: t.Column, Record: recordTerm, Type: t.Taxonomy}
+}
+
+// documentTarget returns the place in the document of the entity with the ID id of kind, such as terms/<ID>.json.
+func documentTarget(kind content.RefKind, id, pointer string) Target {
+	return Target{File: content.DocumentDir(kind) + "/" + id + ".json", Pointer: pointer}
+}
+
+func settingsTarget(pointer string) Target {
+	return Target{File: "site/settings.json", Pointer: pointer}
+}
+
+func schemaTarget(pointer string) Target {
+	return Target{File: "site/schema.yaml", Pointer: pointer}
 }

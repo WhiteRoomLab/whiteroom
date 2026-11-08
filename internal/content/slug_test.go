@@ -1,6 +1,7 @@
 package content
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode"
@@ -77,7 +78,11 @@ func TestCheckSlug(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertErrorMsg(t, checkSlug(tt.in), tt.msg)
+			err := checkSlug(tt.in)
+			assertErrorMsg(t, err, tt.msg)
+			if exported := CheckSlug(tt.in); fmt.Sprint(exported) != fmt.Sprint(err) {
+				t.Errorf("CheckSlug(%q) = %v, want %v", tt.in, exported, err)
+			}
 		})
 	}
 }
@@ -104,6 +109,9 @@ func TestNormalizeSlug(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeSlug(tt.in); got != tt.want {
 				t.Errorf("normalizeSlug(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if got := NormalizeSlug(tt.in); got != tt.want {
+				t.Errorf("NormalizeSlug(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

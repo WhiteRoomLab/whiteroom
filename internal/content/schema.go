@@ -1,7 +1,10 @@
 package content
 
 import (
+	"bytes"
+	"encoding/json/jsontext"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -195,6 +198,173 @@ func (f *FieldDef) decode(d *decoder) error {
 			return d.errorf("unknown key")
 		}
 		return err
+	})
+}
+
+// MarshalSchema returns AuthorURL, Types and Taxonomies as the contents of a schema file, without comments.
+// UnmarshalSchema reads them back as they are, except that an empty list reads as nil, if s passes Validate and has
+// no character that YAML cannot have, such as U+FEFF. A definition with nothing to write, which UnmarshalSchema
+// rejects, is an error.
+func (s *Site) MarshalSchema() ([]byte, error) {
+	var buf bytes.Buffer
+	w := &schemaWriter{enc: jsontext.NewEncoder(&buf)}
+	w.token(jsontext.BeginObject)
+	w.name("schemaVersion")
+	w.token(jsontext.Int(SchemaVersion))
+	w.str("authorUrl", s.AuthorURL)
+	if len(s.Taxonomies) > 0 {
+		w.name("taxonomies")
+		w.token(jsontext.BeginObject)
+		for i := range s.Taxonomies {
+			t := &s.Taxonomies[i]
+			w.name(t.Name)
+			w.object("the taxonomy "+strconv.Quote(t.Name), func() {
+				w.str("label", t.Label)
+				w.str("url", t.URL)
+				w.flag("hierarchical", t.Hierarchical)
+			})
+		}
+		w.token(jsontext.EndObject)
+	}
+	if len(s.Types) > 0 {
+		w.name("types")
+		w.token(jsontext.BeginObject)
+		for i := range s.Types {
+			t := &s.Types[i]
+			what := "the type " + strconv.Quote(t.Name)
+			w.name(t.Name)
+			w.object(what, func() {
+				w.str("label", t.Label)
+				w.str("url", t.URL)
+				w.str("archive", t.Archive)
+				w.strs("taxonomies", t.Taxonomies)
+				// UnmarshalSchema rejects body for post and page, which always have it.
+				w.flag("body", t.Body && t.Name != TypePost && t.Name != TypePage)
+				if len(t.Fields) > 0 {
+					w.name("fields")
+					w.fields(t.Fields, what)
+				}
+			})
+		}
+		w.token(jsontext.EndObject)
+	}
+	w.token(jsontext.EndObject)
+	if w.err != nil {
+		return nil, w.err
+	}
+	return yaml.FromJSON(buf.Bytes())
+}
+
+// schemaWriter writes the JSON of a schema file, and stops at the first error. Its methods for members write nothing
+// for an empty string, false, 0, nil and an empty list, which are the same as omitting them.
+type schemaWriter struct {
+	enc *jsontext.Encoder
+	err error
+	n   int // the names written
+}
+
+func (w *schemaWriter) token(t jsontext.Token) {
+	if w.err == nil {
+		w.err = w.enc.WriteToken(t)
+	}
+}
+
+func (w *schemaWriter) name(s string) {
+	w.n++
+	w.token(jsontext.String(s))
+}
+
+func (w *schemaWriter) str(name, v string) {
+	if v != "" {
+		w.name(name)
+		w.token(jsontext.String(v))
+	}
+}
+
+func (w *schemaWriter) flag(name string, v bool) {
+	if v {
+		w.name(name)
+		w.token(jsontext.True)
+	}
+}
+
+func (w *schemaWriter) count(name string, v int) {
+	if v != 0 {
+		w.name(name)
+		w.token(jsontext.Int(int64(v)))
+	}
+}
+
+func (w *schemaWriter) number(name string, v *float64) {
+	if v != nil {
+		w.name(name)
+		if w.err == nil {
+			w.err = w.enc.WriteValue(jsontext.Value(formatNumber(*v)))
+		}
+	}
+}
+
+func (w *schemaWriter) strs(name string, vs []string) {
+	if len(vs) > 0 {
+		w.name(name)
+		w.token(jsontext.BeginArray)
+		for _, v := range vs {
+			w.token(jsontext.String(v))
+		}
+		w.token(jsontext.EndArray)
+	}
+}
+
+// object writes the definition what as an object with the members that write adds, and fails if there are none.
+func (w *schemaWriter) object(what string, write func()) {
+	w.token(jsontext.BeginObject)
+	n := w.n
+	write()
+	if w.n == n && w.err == nil {
+		w.err = fmt.Errorf("%s has nothing to write; give it at least one item", what)
+	}
+	w.token(jsontext.EndObject)
+}
+
+// fields writes the definitions of fs, the fields of parent, which is described like what of object.
+func (w *schemaWriter) fields(fs []FieldDef, parent string) {
+	w.token(jsontext.BeginObject)
+	for i := range fs {
+		w.name(fs[i].Name)
+		w.field(&fs[i], "the field "+strconv.Quote(fs[i].Name)+" of "+parent)
+	}
+	w.token(jsontext.EndObject)
+}
+
+// field writes the definition of f, which is described as what.
+func (w *schemaWriter) field(f *FieldDef, what string) {
+	w.object(what, func() {
+		w.str("type", string(f.Type))
+		w.str("label", f.Label)
+		w.flag("required", f.Required)
+		if f.Synced {
+			w.name("translatable")
+			w.token(jsontext.False)
+		}
+		w.count("minLength", f.MinLength)
+		w.count("maxLength", f.MaxLength)
+		w.number("min", f.Min)
+		w.number("max", f.Max)
+		w.strs("options", f.Options)
+		w.flag("multiple", f.Multiple)
+		w.count("minItems", f.MinItems)
+		w.count("maxItems", f.MaxItems)
+		w.strs("accept", f.Accept)
+		w.strs("types", f.Types)
+		w.str("taxonomy", f.Taxonomy)
+		if len(f.Fields) > 0 {
+			w.name("fields")
+			w.fields(f.Fields, what)
+		}
+		if f.Of != nil {
+			w.name("of")
+			w.field(f.Of, `the "of" of `+what)
+		}
 	})
 }
 

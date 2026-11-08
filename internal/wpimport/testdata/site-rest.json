@@ -1,0 +1,161 @@
+{
+  "api": "https://example.com/wp-json/",
+  "index": {
+    "name": "見本サイト &amp; ブログ",
+    "description": "手で書いた見本のサイトです",
+    "url": "https://example.com",
+    "home": "https://example.com",
+    "gmt_offset": "9",
+    "timezone_string": "Asia/Tokyo",
+    "show_on_front": "page",
+    "page_on_front": 30,
+    "page_for_posts": 31,
+    "site_logo": 50,
+    "site_icon": 51
+  },
+  "taxonomies": [
+    {
+      "slug": "category",
+      "name": "カテゴリー",
+      "hierarchical": true,
+      "rest_base": "categories",
+      "rest_namespace": "wp/v2",
+      "types": [
+        "post"
+      ]
+    },
+    {
+      "slug": "genre",
+      "name": "ジャンル",
+      "hierarchical": true,
+      "rest_base": "genres",
+      "rest_namespace": "wp/v2",
+      "types": [
+        "works"
+      ]
+    },
+    {
+      "slug": "post_tag",
+      "name": "タグ",
+      "rest_base": "tags",
+      "rest_namespace": "wp/v2",
+      "types": [
+        "post"
+      ]
+    }
+  ],
+  "types": [
+    {
+      "slug": "page",
+      "name": "固定ページ",
+      "hierarchical": true,
+      "has_archive": false,
+      "rest_base": "pages",
+      "rest_namespace": "wp/v2"
+    },
+    {
+      "slug": "post",
+      "name": "投稿",
+      "has_archive": false,
+      "rest_base": "posts",
+      "rest_namespace": "wp/v2",
+      "taxonomies": [
+        "category",
+        "post_tag"
+      ]
+    },
+    {
+      "slug": "works",
+      "name": "制作実績",
+      "has_archive": true,
+      "rest_base": "works",
+      "rest_namespace": "wp/v2",
+      "taxonomies": [
+        "genre"
+      ]
+    }
+  ],
+  "terms": [
+    {
+      "id": 1,
+      "taxonomy": "category",
+      "slug": "uncategorized",
+      "name": "未分類",
+      "link": "https://example.com/category/uncategorized/"
+    },
+    {
+      "id": 3,
+      "taxonomy": "category",
+      "slug": "%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b",
+      "name": "お知らせ",
+      "link": "https://example.com/category/%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b/"
+    },
+    {
+      "id": 4,
+      "taxonomy": "category",
+      "slug": "press",
+      "name": "プレスリリース",
+      "parent": 3,
+      "link": "https://example.com/category/%e3%81%8a%e7%9f%a5%e3%82%89%e3%81%9b/press/"
+    },
+    {
+      "id": 8,
+      "taxonomy": "genre",
+      "slug": "fiction",
+      "name": "フィクション",
+      "link": "https://example.com/genre/fiction/"
+    },
+    {
+      "id": 9,
+      "taxonomy": "genre",
+      "slug": "sf",
+      "name": "SF",
+      "parent": 8,
+      "link": "https://example.com/genre/sf/"
+    },
+    {
+      "id": 5,
+      "taxonomy": "post_tag",
+      "slug": "wordpress",
+      "name": "WordPress",
+      "link": "https://example.com/tag/wordpress/"
+    },
+    {
+      "id": 6,
+      "taxonomy": "post_tag",
+      "slug": "%e6%97%a5%e8%a8%98",
+      "name": "日記",
+      "link": "https://example.com/tag/%e6%97%a5%e8%a8%98/"
+    },
+    {
+      "id": 7,
+      "taxonomy": "post_tag",
+      "slug": "news-events",
+      "name": "News &amp; Events",
+      "link": "https://example.com/tag/news-events/"
+    }
+  ],
+  "users": [
+    {
+      "id": 2,
+      "name": "編集部 &amp; 広報",
+      "slug": "editor",
+      "description": "<p>編集部です。</p>",
+      "url": "https://example.com/about/",
+      "link": "https://example.com/author/editor/"
+    },
+    {
+      "id": 3,
+      "name": "山田 太郎",
+      "slug": "%e3%82%84%e3%81%be%e3%81%a0",
+      "url": "javascript:alert(1)",
+      "link": "https://example.com/author/%e3%82%84%e3%81%be%e3%81%a0/"
+    },
+    {
+      "id": 5,
+      "name": "Ghost",
+      "slug": "ghost",
+      "link": "https://example.com/author/ghost/"
+    }
+  ]
+}

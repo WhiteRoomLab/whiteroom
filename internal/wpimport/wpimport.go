@@ -1,8 +1,13 @@
-// Package wpimport imports a WordPress site from its WXR (section 6.10 of the design document). An import goes in steps:
-// Read reads the WXR; the plan decides what to import, and gives each object of WordPress its ID in a Table; the
-// conversion turns each into an entity, finds the IDs of the others with the Table's Lookup, and drops from the Table
-// what it cannot import; the writing puts the entities into the site directory. Only reading, the IDs, and the report
-// of what was not imported are here so far.
+// Package wpimport imports a WordPress site from its WXR (section 6.10 of the design document). An import goes in steps,
+// and the order is needed: Read reads the WXR; ProposeSettings guesses what the WXR does not hold, such as the time zone
+// and the URL rules, as Settings, which the person who imports checks and corrects; the plan decides what to import,
+// gives each object of WordPress its ID in a Table, and records the entries and the media with AddRef; Site makes the
+// site settings from the corrected Settings, finding the front page, the logo and the like among those records; Terms and
+// Authors make the terms and the author profiles in that site; the conversion of the media and the entries then turns each
+// into an entity, finds the IDs of the others with the Table's Lookup and Ref, and drops from the Table what it cannot
+// import; the writing puts the entities into the site directory. Only reading, the settings, the IDs, the report of what
+// was not imported, Import (the state of an import), the conversion of the terms, of the authors and of the site
+// settings, and the guess of the permalinks are here so far.
 package wpimport
 
 import (
@@ -80,7 +85,22 @@ func ChannelSource(file string, e *wxr.Export) Source {
 }
 
 func AuthorSource(file string, a *wxr.Author) Source {
-	return Source{File: file, Line: a.Line, Column: a.Column, Record: recordAuthor, ID: a.ID, Name: a.Login}
+	return authorSource(file, a.Pos, a.ID, a.Login, a.Email)
+}
+
+// authorSource returns the source of the author with the login, at pos. A login that is an email address, or is the email
+// address of the author, is not named: the ID tells the author, or, if there is none, the slug that the login makes.
+func authorSource(file string, pos wxr.Pos, id int64, login, email string) Source {
+	s := Source{File: file, Line: pos.Line, Column: pos.Column, Record: recordAuthor}
+	switch {
+	case !hidesLogin(login, email):
+		s.ID, s.Name = id, login
+	case id >= 1:
+		s.ID = id
+	default:
+		s.Name = nicename(login)
+	}
+	return s
 }
 
 func TermSource(file string, t *wxr.Term) Source {
