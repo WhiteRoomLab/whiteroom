@@ -233,11 +233,12 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 //
 // If the save changes what the validation of other documents reads of this one (a term's taxonomy or language), what
 // refers to it is validated again as the build validates it (Q16-A). A problem that this brings to a document, or to a
-// published entry or its published revision, which the build validates, fails the save, located in the bytes that the
-// store has; one that it brings only to an entry that is not published, or to the latest revision of one that does not
-// publish it, is a warning. The problems that they had before are neither. A current version that this program cannot
-// decode has no summary, so lookup did not find the document before: its save is not an error, and what refers to it is
-// validated again as for a change of the Ref.
+// published entry or its published revision, which the build validates, or to a scheduled entry or its scheduled revision,
+// which its scheduled publish validates, fails the save, located in the bytes that the store has; one that it brings only
+// to an entry that is neither published nor scheduled, or to the latest revision of one that does not publish or schedule
+// it, is a warning. The problems that they had before are neither. A current version that this program cannot decode has
+// no summary, so lookup did not find the document before: its save is not an error, and what refers to it is validated
+// again as for a change of the Ref.
 func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id string, base int64, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -311,9 +312,9 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 // maxListed is the most files that the error of a deletion names.
 const maxListed = 10
 
-// uses finds what refers to the document of kind with id (Q8). If a document or the published revision of an entry
-// does, the error is that it cannot be deleted, which names their files. Otherwise the warnings are those for the
-// entries whose last revision, which is not published, refers to it.
+// uses finds what refers to the document of kind with id (Q8). If a document, the published revision of an entry or the
+// scheduled revision of a scheduled entry does, the error is that it cannot be deleted, which names their files. Otherwise
+// the warnings are those for the entries whose last revision, which is neither published nor scheduled, refers to it.
 func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 	sources, err := r.referrers(kind, id)
 	if err != nil {
@@ -336,7 +337,10 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 		if slices.Contains(s.roles, store.RolePublished) && entry.Entry != nil {
 			files, used = append(files, revisionName(entry.Entry.PublishedRevision)), true
 		}
-		if !used && entry.Entry != nil {
+		if slices.Contains(s.roles, store.RoleScheduled) && entry.Entry != nil && entry.Entry.Status == content.StatusScheduled {
+			files, used = append(files, revisionName(entry.Entry.ScheduledRevision)), true
+		}
+		if !used && entry.Entry != nil && slices.Contains(s.roles, store.RoleLatest) {
 			warnings = append(warnings, &content.Error{File: name, Msg: fmt.Sprintf(
 				"deleted although used by %s, the latest revision of %s, which is not published",
 				revisionName(entry.Latest), docName(s.kind, s.id))})
@@ -355,11 +359,11 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 }
 
 // Delete deletes the document of kind with id, which must be at the version base (as in Save). It refuses a document
-// that published content uses: another document, or the published revision of an entry; the error names the first
-// maxListed files that use it. One that only drafts use (the last revision of an entry that is not published) it
-// deletes, with a warning for each. The settings document cannot be deleted. Nor can an entry that is published or
-// scheduled; the revisions of an entry that is deleted stay, and so does the original of a medium that is deleted, which
-// the store has no way to remove.
+// that published content uses: another document, the published revision of an entry, or the scheduled revision of a
+// scheduled entry, which is published later; the error names the first maxListed files that use it. One that only drafts
+// use (the last revision of an entry that is neither published nor scheduled) it deletes, with a warning for each. The
+// settings document cannot be deleted. Nor can an entry that is published or scheduled; the revisions of an entry that is
+// deleted stay, and so does the original of a medium that is deleted, which the store has no way to remove.
 func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id string, base int64) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
@@ -418,9 +422,9 @@ func (d *settingsDoc) marshal() ([]byte, error) { return d.site.MarshalSettings(
 // validated with the schema file and with what the store has.
 //
 // What the build validates of every other document reads the settings, so a save that changes them validates again every
-// document of every kind, every published revision and the latest revision of every entry (Q16-A), which takes a time
-// that grows with the site. The problems that this brings fail the save and the warnings are in the result, as for Save.
-// If the settings that it replaces do not load, every problem is new.
+// document of every kind, every published and scheduled revision and the latest revision of every entry (Q16-A), which
+// takes a time that grows with the site. The problems that this brings fail the save and the warnings are in the result,
+// as for Save. If the settings that it replaces do not load, every problem is new.
 func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err

@@ -993,6 +993,18 @@ func TestPublishesFlag(t *testing.T) {
 		{"Archive of a draft", func(t *testing.T, ed *Editor, s *store.Store) (Result, error) {
 			return ed.Archive(t.Context(), op, draftEN, entrySeq(t, s, draftEN))
 		}, false, content.StatusArchived},
+		{"Schedule", func(t *testing.T, ed *Editor, s *store.Store) (Result, error) {
+			rev := saveRevision(t, ed, s, draftEN, careersRevision).Revision
+			return ed.Schedule(t.Context(), op, draftEN, entrySeq(t, s, draftEN), rev, careersAt)
+		}, false, content.StatusScheduled},
+		{"Schedule of what is scheduled", func(t *testing.T, ed *Editor, s *store.Store) (Result, error) {
+			rev := scheduleCareers(t, ed, s)
+			return ed.Schedule(t.Context(), op, draftEN, entrySeq(t, s, draftEN), rev, careersAt)
+		}, false, content.StatusScheduled},
+		{"PublishScheduled", func(t *testing.T, ed *Editor, s *store.Store) (Result, error) {
+			scheduleCareers(t, ed, s)
+			return ed.PublishScheduled(t.Context(), draftEN, careersAt)
+		}, true, content.StatusPublished},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ed, s := newSample(t)

@@ -3,8 +3,9 @@
 // the build does (internal/siteplan), and updates the store and its index in one Update. The files of media are saved as
 // originals before their documents, and their formats and sizes are read from their contents (internal/mediafile). Publish,
 // Unpublish and Archive change the state of an entry with the same checks, and Publish redirects the old URL of an entry
-// whose URL it changes. A Result says whether an operation has changed what a build of the site publishes. Import imports
-// a whole site that a Source reads, such as a site directory, into a store that has no documents.
+// whose URL it changes. Schedule sets the time at which an entry that is not published is published, with the checks of a
+// publish, and PublishScheduled publishes it then. A Result says whether an operation has changed what a build of the site
+// publishes. Import imports a whole site that a Source reads, such as a site directory, into a store that has no documents.
 package edit
 
 import (
@@ -74,7 +75,7 @@ type Result struct {
 	Number    int            // the number of the entry that it made
 	Warnings  content.Errors // problems that do not stop it, located as the build locates its own
 	Publishes bool           // it has changed what a build of the site publishes, so that a new build is due
-	Status    content.Status // of the entry after an operation that sets it (Publish, Unpublish and Archive); "" for the others
+	Status    content.Status // of the entry after an operation that sets it (Publish, Unpublish, Archive, Schedule and PublishScheduled); "" for the others
 }
 
 // request is what a caller asked an operation to do, of which the record of an operation ID keeps the hash.

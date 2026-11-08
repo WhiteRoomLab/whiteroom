@@ -27,12 +27,106 @@ func (r *run) currentEntry(id string, base int64) (store.Document, content.Entry
 	if err != nil {
 		return store.Document{}, content.Entry{}, err
 	}
-	var ent content.Entry
-	if err := decodeFile(content.SiteFile{Name: docName(content.RefEntry, id), Data: cur.Data}, ent.UnmarshalJSON); err != nil {
+	ent, err := decodeState(id, cur)
+	if err != nil {
 		return store.Document{}, content.Entry{}, err
 	}
-	ent.ID = id
 	return cur, ent, nil
+}
+
+// decodeState decodes the state of the entry id from its document cur, which may lack the id.
+func decodeState(id string, cur store.Document) (content.Entry, error) {
+	var ent content.Entry
+	if err := decodeFile(content.SiteFile{Name: docName(content.RefEntry, id), Data: cur.Data}, ent.UnmarshalJSON); err != nil {
+		return content.Entry{}, err
+	}
+	ent.ID = id
+	return ent, nil
+}
+
+// checkLatest fails unless revision is the latest revision of the entry: if the entry has none to verb, that is a problem
+// of its document, and if it has another one, the error wraps ErrConflict.
+func (r *run) checkLatest(entry, revision, verb string) error {
+	name := docName(content.RefEntry, entry)
+	sum, err := r.rd.Summary(content.RefEntry, entry)
+	switch {
+	case err != nil:
+		return err
+	case sum.Latest == "":
+		return content.Errors{{File: name, Msg: "has no revision to " + verb}}
+	case sum.Latest != revision:
+		return fmt.Errorf("%s: %w: its latest revision is %s, not %s", name, ErrConflict, sum.Latest, revision)
+	}
+	return nil
+}
+
+// revisionFile is a revision that the store has, and its file, decoded.
+type revisionFile struct {
+	id   string
+	file content.SiteFile
+	rev  *content.Revision
+}
+
+// readRevision reads the revision id and decodes it: the problems of decoding, located in its bytes, are the error.
+func (r *run) readRevision(id string) (revisionFile, error) {
+	stored, err := r.tx.Revision(id)
+	if err != nil {
+		return revisionFile{}, err
+	}
+	f := content.SiteFile{Name: revisionName(id), Data: stored.Data}
+	rev := new(content.Revision)
+	if err := decodeFile(f, rev.UnmarshalJSON); err != nil {
+		return revisionFile{}, err
+	}
+	return revisionFile{id, f, rev}, nil
+}
+
+// formatIn returns t in the time zone of the site, in RFC 3339, to the second.
+func formatIn(site *content.Site, t time.Time) (string, error) {
+	zone, err := time.LoadLocation(site.TimeZone)
+	if err != nil {
+		return "", err
+	}
+	return t.In(zone).Format(time.RFC3339), nil
+}
+
+// dated returns the revision that an entry of the type typ is published or scheduled with, which is rv: for a post whose
+// revision has no date, a copy of it with the date that when gives, in the time zone of the site, and a new ID (6.4.2);
+// the revision itself never changes (6.4.1). The bytes of the copy are kept in r.given, so that the problems in them are
+// located in them.
+func (r *run) dated(site *content.Site, typ string, rv revisionFile, when func() time.Time) (revisionFile, error) {
+	if typ != content.TypePost || rv.rev.Date != "" {
+		return rv, nil
+	}
+	date, err := formatIn(site, when())
+	if err != nil {
+		return revisionFile{}, err
+	}
+	rv.rev.Date = date
+	id, err := r.e.newID(content.RefRevision)
+	if err != nil {
+		return revisionFile{}, err
+	}
+	data, err := rv.rev.MarshalJSON()
+	if err != nil {
+		return revisionFile{}, err
+	}
+	f := content.SiteFile{Name: revisionName(id), Data: data}
+	r.given[f.Name] = data
+	return revisionFile{id, f, rv.rev}, nil
+}
+
+// checkPublishable validates the revision rv as the one that the entry state is published or scheduled with, as the build
+// validates what it publishes; the problems, located in its bytes, are the error.
+func (r *run) checkPublishable(site *content.Site, state *content.Entry, rv revisionFile) error {
+	problems := locatedIn(validatePublished(site, state, rv.rev, r.lookup), rv.file)
+	switch {
+	case r.err != nil:
+		return r.err
+	case len(problems) > 0:
+		return problems
+	}
+	return nil
 }
 
 // stateFile writes the state ent of an entry as MarshalJSON writes it (Q14-B), and keeps the bytes in r.given so that
@@ -87,88 +181,66 @@ func (e *Editor) Publish(ctx context.Context, op Op, entry string, base int64, r
 		if err != nil {
 			return Result{}, err
 		}
-		name := docName(content.RefEntry, entry)
-		sum, err := r.rd.Summary(content.RefEntry, entry)
-		switch {
-		case err != nil:
+		if err := r.checkLatest(entry, revision, "publish"); err != nil {
 			return Result{}, err
-		case sum.Latest == "":
-			return Result{}, content.Errors{{File: name, Msg: "has no revision to publish"}}
-		case sum.Latest != revision:
-			return Result{}, fmt.Errorf("%s: %w: its latest revision is %s, not %s", name, ErrConflict, sum.Latest, revision)
 		}
 		site, settings, err := r.site()
 		if err != nil {
 			return Result{}, err
 		}
-		stored, err := r.tx.Revision(revision)
+		rv, err := r.readRevision(revision)
 		if err != nil {
 			return Result{}, err
 		}
-		rf := content.SiteFile{Name: revisionName(revision), Data: stored.Data}
-		var rev content.Revision
-		if err := decodeFile(rf, rev.UnmarshalJSON); err != nil {
-			return Result{}, err
-		}
-
-		// The date goes into a new revision, which the validation below sees with its date.
-		id := revision
-		if ent.Type == content.TypePost && rev.Date == "" {
-			zone, err := time.LoadLocation(site.TimeZone)
-			if err != nil {
-				return Result{}, err
-			}
-			rev.Date = e.now().In(zone).Format(time.RFC3339)
-			if id, err = e.newID(content.RefRevision); err != nil {
-				return Result{}, err
-			}
-			data, err := rev.MarshalJSON()
-			if err != nil {
-				return Result{}, err
-			}
-			rf = content.SiteFile{Name: revisionName(id), Data: data}
-			r.given[rf.Name] = data
-		}
-
-		state := withStatus(ent, content.StatusPublished, id)
-		res := Result{Kind: content.RefEntry, ID: entry, Version: cur.Version, Revision: id, Status: content.StatusPublished}
-		if state == ent {
-			return res, nil
-		}
-		ef, err := r.stateFile(state)
-		if err != nil {
-			return Result{}, err
-		}
-		if problems := locatedIn(state.Validate(site), ef); len(problems) > 0 {
-			return Result{}, problems
-		}
-		problems := locatedIn(validatePublished(site, &state, &rev, r.lookup), rf)
-		switch {
-		case r.err != nil:
-			return Result{}, r.err
-		case len(problems) > 0:
-			return Result{}, problems
-		}
-
-		if id != revision {
-			if _, err := r.tx.AddRevision(entry, id, rf.Data, r.by); err != nil {
-				return Result{}, err
-			}
-		}
-		v, err := r.tx.Put(content.RefEntry, entry, ef.Data, r.by)
-		if err != nil {
-			return Result{}, err
-		}
-		after, err := r.model(site, settings)
-		if err != nil {
-			return Result{}, err
-		}
-		res.Version, res.Publishes = v, true
-		if err := r.updateRedirects(&res, ent, rf, site, after, before); err != nil {
-			return Result{}, err
-		}
-		return res, r.finishWith(&res, after, before)
+		return r.publish(cur, ent, rv, site, settings, e.now, before)
 	})
+}
+
+// publish publishes the revision rv with the entry ent, whose current version is cur, in the Update of r: the state and the
+// revision are validated, a post without a date gets a dated copy of the revision (when gives the date), the redirects
+// change and the checks across the site run on the site before, which before makes, and the site after.
+func (r *run) publish(cur store.Document, ent content.Entry, rv revisionFile, site *content.Site, settings content.SiteFile,
+	when func() time.Time, before func() (*siteplan.Site, error)) (Result, error) {
+	given := rv.id
+	// The date goes into a new revision, which the validation below sees with its date.
+	rv, err := r.dated(site, ent.Type, rv, when)
+	if err != nil {
+		return Result{}, err
+	}
+	state := withStatus(ent, content.StatusPublished, rv.id)
+	res := Result{Kind: content.RefEntry, ID: ent.ID, Version: cur.Version, Revision: rv.id, Status: content.StatusPublished}
+	if state == ent {
+		return res, nil
+	}
+	ef, err := r.stateFile(state)
+	if err != nil {
+		return Result{}, err
+	}
+	if problems := locatedIn(state.Validate(site), ef); len(problems) > 0 {
+		return Result{}, problems
+	}
+	if err := r.checkPublishable(site, &state, rv); err != nil {
+		return Result{}, err
+	}
+
+	if rv.id != given {
+		if _, err := r.tx.AddRevision(ent.ID, rv.id, rv.file.Data, r.by); err != nil {
+			return Result{}, err
+		}
+	}
+	v, err := r.tx.Put(content.RefEntry, ent.ID, ef.Data, r.by)
+	if err != nil {
+		return Result{}, err
+	}
+	after, err := r.model(site, settings)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Version, res.Publishes = v, true
+	if err := r.updateRedirects(&res, ent, rv.file, site, after, before); err != nil {
+		return Result{}, err
+	}
+	return res, r.finishWith(&res, after, before)
 }
 
 // updateRedirects changes the redirects for the entry ent, whose new revision rf the Update has published, in the store

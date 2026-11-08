@@ -14,8 +14,9 @@ import (
 // A save can make other documents invalid without changing them: when it changes what their validation reads of the
 // saved document (its Ref, which a lookup tells), or the site settings. They are validated again as the build validates
 // them (Q16-A), each as a unit, under the state after the change and, if that has problems, under the state before it, to
-// tell the problems that are new. New problems in what the build validates are errors; those only in drafts, which it does
-// not validate, are warnings.
+// tell the problems that are new. New problems in what the build validates are errors, and so are those in a scheduled
+// entry and its scheduled revision, which its scheduled publish validates in the same way; those only in drafts, which are
+// not validated, are warnings.
 
 type lookupFunc = func(kind content.RefKind, id string) (content.Ref, bool)
 
@@ -156,16 +157,30 @@ func (r *run) previousRevision(entry, latest string) (*content.Revision, error) 
 // valid, its published revision, which it reads. A published revision that the store does not have is the problem that
 // the build reports.
 func (r *run) publishedUnit(id string, data []byte) unit {
+	return r.publicationUnit(id, data, "/publishedRevision", func(ent *content.Entry) string { return ent.PublishedRevision })
+}
+
+// scheduledUnit validates the scheduled entry id, whose document is data, as publishedUnit validates a published entry: its
+// state, and if that is valid, its scheduled revision, as the build would validate it if it were published. Its problems
+// are not those of a draft, as the scheduled publish needs them to be none.
+func (r *run) scheduledUnit(id string, data []byte) unit {
+	return r.publicationUnit(id, data, "/scheduledRevision", func(ent *content.Entry) string { return ent.ScheduledRevision })
+}
+
+// publicationUnit validates the entry id, whose document is data, and the revision that revision finds in its state, which
+// the entry publishes now or later: a revision that the store does not have is the problem at pointer.
+func (r *run) publicationUnit(id string, data []byte, pointer string, revision func(*content.Entry) string) unit {
 	f := content.SiteFile{Name: docName(content.RefEntry, id), Data: data}
 	return unit{check: func(env checkEnv) (content.Errors, error) {
 		ent, problems, ok := entryState(f, env.site)
 		if !ok || len(problems) > 0 {
 			return problems, nil
 		}
-		rf, rev, err := r.decodedRevision(ent.PublishedRevision)
+		revID := revision(&ent)
+		rf, rev, err := r.decodedRevision(revID)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return problemAt(f, "/publishedRevision", fmt.Sprintf("revision %q does not exist", ent.PublishedRevision)), nil
+			return problemAt(f, pointer, fmt.Sprintf("revision %q does not exist", revID)), nil
 		case err != nil || rev == nil:
 			return nil, err
 		}
@@ -242,8 +257,8 @@ func (r *run) referrers(kind content.RefKind, id string) ([]referrer, error) {
 }
 
 // referrerUnits returns the validations of what refers to the document of kind with id: the documents that name it, the
-// published entries whose published revision names it, and the latest revisions that name it of the entries that do not
-// publish them. An entry document names nothing.
+// published entries whose published revision names it, the scheduled entries whose scheduled revision names it, and the
+// latest revisions that name it of the entries that do not publish or schedule them. An entry document names nothing.
 func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 	refs, err := r.referrers(kind, id)
 	if err != nil {
@@ -270,8 +285,9 @@ func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 				return nil, err
 			}
 			published := sum.Entry != nil && sum.Entry.Status == content.StatusPublished && slices.Contains(ref.roles, store.RolePublished)
+			scheduled := sum.Entry != nil && sum.Entry.Status == content.StatusScheduled && slices.Contains(ref.roles, store.RoleScheduled)
 			latest := sum.Latest != "" && slices.Contains(ref.roles, store.RoleLatest) && !publishesLatest(sum)
-			if !published && !latest {
+			if !published && !scheduled && !latest {
 				continue
 			}
 			d, err := r.tx.Document(content.RefEntry, ref.id)
@@ -281,6 +297,9 @@ func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 			if published {
 				units = append(units, r.publishedUnit(ref.id, d.Data))
 			}
+			if scheduled {
+				units = append(units, r.scheduledUnit(ref.id, d.Data))
+			}
 			if latest {
 				units = append(units, r.latestUnit(ref.id, d.Data, sum.Latest))
 			}
@@ -289,15 +308,34 @@ func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 	return units, nil
 }
 
-// publishesLatest reports whether the entry of sum is published with its latest revision, which then the unit of its
-// published revision validates.
+// publishesLatest reports whether the entry of sum is published or scheduled with its latest revision, which then the unit
+// of its published or scheduled revision validates.
 func publishesLatest(sum store.Summary) bool {
-	return sum.Entry != nil && sum.Entry.Status == content.StatusPublished && sum.Latest == sum.Entry.PublishedRevision
+	e := sum.Entry
+	if e == nil {
+		return false
+	}
+	return e.Status == content.StatusPublished && sum.Latest == e.PublishedRevision ||
+		e.Status == content.StatusScheduled && sum.Latest == e.ScheduledRevision
 }
 
-// allUnits returns the validations of everything that the build validates, and of the latest revisions that it does not:
-// every term, medium, author, menu, form and redirect; every entry, as published (its state and its published revision)
-// or as a draft (its state); and the latest revision of every entry that does not publish it.
+// entryUnit returns the validation of the entry id with the status status, whose document is data: as published or
+// scheduled, with its revision, else as a draft, with its state alone.
+func (r *run) entryUnit(status content.Status, id string, data []byte) unit {
+	switch status {
+	case content.StatusPublished:
+		return r.publishedUnit(id, data)
+	case content.StatusScheduled:
+		return r.scheduledUnit(id, data)
+	case content.StatusDraft, content.StatusArchived:
+	}
+	return stateUnit(id, data)
+}
+
+// allUnits returns the validations of everything that the build validates, of the scheduled entries that its scheduled
+// publish validates, and of the latest revisions that neither does: every term, medium, author, menu, form and redirect;
+// every entry, as published (its state and its published revision), as scheduled (its state and its scheduled revision) or
+// as a draft (its state); and the latest revision of every entry that does not publish or schedule it.
 func (r *run) allUnits() ([]unit, error) {
 	var units []unit
 	for _, kind := range slices.Sorted(maps.Keys(emptyDocuments)) {
@@ -325,11 +363,7 @@ func (r *run) allUnits() ([]unit, error) {
 		if sum.Entry == nil || data[sum.ID] == nil {
 			continue
 		}
-		if sum.Entry.Status == content.StatusPublished {
-			units = append(units, r.publishedUnit(sum.ID, data[sum.ID]))
-		} else {
-			units = append(units, stateUnit(sum.ID, data[sum.ID]))
-		}
+		units = append(units, r.entryUnit(sum.Entry.Status, sum.ID, data[sum.ID]))
 		if sum.Latest != "" && !publishesLatest(sum) {
 			units = append(units, r.latestUnit(sum.ID, data[sum.ID], sum.Latest))
 		}
