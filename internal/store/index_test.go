@@ -168,6 +168,15 @@ func publishedEntry(id string, n int, rev string) []byte {
 	return entryJSON(id, fmt.Sprintf(`"number": %d, "status": "published", "publishedRevision": "%s"`, n, rev))
 }
 
+// scheduledAt is the time at which the entries of the tests schedule their revisions.
+const scheduledAt = "2026-11-10T09:00:00+09:00"
+
+// scheduledEntry returns the JSON of the entry id, which schedules the revision rev, with the number n.
+func scheduledEntry(id string, n int, rev string) []byte {
+	return entryJSON(id, fmt.Sprintf(`"number": %d, "status": "scheduled", "scheduledRevision": "%s", `+
+		`"scheduledAt": "%s"`, n, rev, scheduledAt))
+}
+
 // revisionJSON returns the JSON of a revision with what the index reads of it: the fields that follow its schema
 // version.
 func revisionJSON(fields string) []byte {
@@ -597,13 +606,210 @@ func TestIndexEntryRevisions(t *testing.T) {
 	})
 }
 
+// TestIndexScheduled follows the references of entries that schedule a revision through the orders in which their
+// documents and revisions are saved, as TestIndexEntryRevisions does for the published one: the revision that is not
+// there yet, that is added, that is not the last one, that the entry changes or drops, and the entry that is deleted;
+// and entries that schedule a revision of another entry, or publish and schedule the same one.
+func TestIndexScheduled(t *testing.T) {
+	revA := revisionJSON(`"title": "A", "slug": "a", "author": "` + authorID + `", "parent": "` + pageID +
+		`", "featuredImage": "` + mediaID + `", "terms": {"category": ["` + termID + `"]}`)
+	revB := revisionJSON(`"title": "B", "slug": "b", "featuredImage": "` + medium2 + `"`)
+	eachStore(t, func(t *testing.T, s *Store) {
+		// scheduling returns the state of the entry id with the number n, which schedules rev.
+		scheduling := func(id string, n int, rev string) *content.Entry {
+			return &content.Entry{
+				ID: id, Number: n, Status: content.StatusScheduled, ScheduledRevision: rev, ScheduledAt: scheduledAt,
+			}
+		}
+		// both returns the JSON of the entry id with the number n, which publishes and schedules rev.
+		both := func(id string, n int, rev string) []byte {
+			return entryJSON(id, fmt.Sprintf(`"number": %d, "status": "published", "publishedRevision": "%s", `+
+				`"scheduledRevision": "%s", "scheduledAt": "%s"`, n, rev, rev, scheduledAt))
+		}
+		bothState := func(id string, n int, rev string) *content.Entry {
+			return &content.Entry{
+				ID: id, Number: n, Status: content.StatusPublished, PublishedRevision: rev, ScheduledRevision: rev,
+				ScheduledAt: scheduledAt,
+			}
+		}
+		addRevision := func(entry, id string, data []byte) {
+			t.Helper()
+			update(t, s, func(tx *Tx) error {
+				_, err := tx.AddRevision(entry, id, data, userID)
+				return err
+			})
+			checkConsistent(t, s)
+		}
+		put := func(id string, data []byte) {
+			t.Helper()
+			putAll(t, s, indexDoc{content.RefEntry, id, data})
+			checkConsistent(t, s)
+		}
+		check := func(f func(tx *Tx)) {
+			t.Helper()
+			view(t, s, func(tx *Tx) error {
+				f(tx)
+				return nil
+			})
+		}
+		// by returns the referrers that checkReferrers takes for the entry id in each of roles.
+		by := func(id string, roles ...string) []string {
+			var refs []string
+			for _, role := range roles {
+				refs = append(refs, "entry "+id+" "+role)
+			}
+			return refs
+		}
+
+		// The entry schedules a revision that is not there yet: it has no references.
+		put(entryID, scheduledEntry(entryID, 5, revisionID))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{Entry: scheduling(entryID, 5, revisionID)})
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+		})
+
+		// The revision is added: it is the scheduled and the last one, and the entry refers to what it holds in both
+		// roles, but has no published revision.
+		addRevision(entryID, revisionID, revA)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: scheduling(entryID, 5, revisionID), Latest: revisionID,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by(entryID, "latest", "scheduled")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID, by(entryID, "latest", "scheduled")...)
+			checkReferrers(t, tx, content.RefTerm, termID, by(entryID, "latest", "scheduled")...)
+			checkReferrers(t, tx, content.RefEntry, pageID, by(entryID, "latest", "scheduled")...)
+		})
+
+		// A draft: the last revision changes, and the scheduled one does not.
+		addRevision(entryID, revision2, revB)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: scheduling(entryID, 5, revisionID), Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by(entryID, "scheduled")...)
+			checkReferrers(t, tx, content.RefMedia, medium2, by(entryID, "latest")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID, by(entryID, "scheduled")...)
+		})
+
+		// The entry schedules the newer revision.
+		put(entryID, scheduledEntry(entryID, 5, revision2))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: scheduling(entryID, 5, revision2), Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+			checkReferrers(t, tx, content.RefMedia, medium2, by(entryID, "latest", "scheduled")...)
+			checkReferrers(t, tx, content.RefAuthor, authorID)
+		})
+
+		// A Put without the items removes the role, and the entry no longer names the revision.
+		put(entryID, entryJSON(entryID, `"number": 5, "status": "draft"`))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{
+				Entry: &content.Entry{ID: entryID, Number: 5, Status: content.StatusDraft}, Latest: revision2,
+			})
+			checkReferrers(t, tx, content.RefMedia, medium2, by(entryID, "latest")...)
+		})
+
+		// The entry schedules the older revision, which is not the last one; and again with another time, which keeps
+		// what the entry refers to.
+		put(entryID, scheduledEntry(entryID, 5, revisionID))
+		const later = "2026-12-01T00:00:00+09:00"
+		put(entryID, entryJSON(entryID, `"number": 5, "status": "scheduled", "scheduledRevision": "`+revisionID+
+			`", "scheduledAt": "`+later+`"`))
+		check(func(tx *Tx) {
+			want := scheduling(entryID, 5, revisionID)
+			want.ScheduledAt = later
+			checkSummary(t, tx, content.RefEntry, entryID, Summary{Entry: want, Latest: revision2})
+			checkReferrers(t, tx, content.RefMedia, mediaID, by(entryID, "scheduled")...)
+			checkReferrers(t, tx, content.RefMedia, medium2, by(entryID, "latest")...)
+		})
+
+		// Deleted, the entry has no summary and no references; its revisions stay.
+		update(t, s, func(tx *Tx) error {
+			_, err := tx.Delete(content.RefEntry, entryID, userID)
+			return err
+		})
+		checkConsistent(t, s)
+		check(func(tx *Tx) {
+			checkNoSummary(t, tx, content.RefEntry, entryID)
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+			checkReferrers(t, tx, content.RefMedia, medium2)
+		})
+
+		// Entries that schedule a revision that is not there yet get it when it is added, to another entry; and an
+		// entry that schedules a revision of another entry that is there gets it at once.
+		put(page2, scheduledEntry(page2, 8, revision4))
+		put(thirdEntry, scheduledEntry(thirdEntry, 6, revision4))
+		put(otherEntry, entryJSON(otherEntry, `"number": 9`))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, page2, Summary{Entry: scheduling(page2, 8, revision4)})
+			checkReferrers(t, tx, content.RefMedia, mediaID)
+		})
+		addRevision(otherEntry, revision4, revA)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, thirdEntry, Summary{Entry: scheduling(thirdEntry, 6, revision4)})
+			checkSummary(t, tx, content.RefEntry, otherEntry, Summary{
+				Entry: &content.Entry{ID: otherEntry, Number: 9}, Latest: revision4,
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID,
+				"entry "+page2+" scheduled", "entry "+otherEntry+" latest", "entry "+thirdEntry+" scheduled")
+		})
+		put(lateEntry, scheduledEntry(lateEntry, 4, revision4))
+		check(func(tx *Tx) {
+			checkReferrers(t, tx, content.RefMedia, mediaID, "entry "+page2+" scheduled", "entry "+otherEntry+" latest",
+				"entry "+lateEntry+" scheduled", "entry "+thirdEntry+" scheduled")
+		})
+
+		// The revision of an entry that is deleted.
+		put(page3, scheduledEntry(page3, 11, revision2))
+		check(func(tx *Tx) {
+			checkReferrers(t, tx, content.RefMedia, medium2, by(page3, "scheduled")...)
+		})
+
+		// An entry that publishes and schedules the same revision, which is its last one, has the roles published and
+		// scheduled, and latest.
+		put(pageID, entryJSON(pageID, `"number": 12`))
+		addRevision(pageID, revision5, revB)
+		put(pageID, both(pageID, 12, revision5))
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, pageID, Summary{
+				Entry: bothState(pageID, 12, revision5), Published: &content.Revision{Slug: "b"}, Latest: revision5,
+			})
+			checkReferrers(t, tx, content.RefMedia, medium2,
+				slices.Concat(by(pageID, "latest", "published", "scheduled"), by(page3, "scheduled"))...)
+		})
+
+		// Such an entry has one reference that names the revision, so that the revision, added later, gives it both roles
+		// at once.
+		put(lateEntry, both(lateEntry, 4, revision3))
+		addRevision(otherEntry, revision3, revB)
+		check(func(tx *Tx) {
+			checkSummary(t, tx, content.RefEntry, lateEntry, Summary{
+				Entry: bothState(lateEntry, 4, revision3), Published: &content.Revision{Slug: "b"},
+			})
+			checkReferrers(t, tx, content.RefMedia, mediaID,
+				slices.Concat(by(page2, "scheduled"), by(thirdEntry, "scheduled"))...)
+			checkReferrers(t, tx, content.RefMedia, medium2, slices.Concat(
+				by(pageID, "latest", "published", "scheduled"), by(otherEntry, "latest"),
+				by(lateEntry, "published", "scheduled"), by(page3, "scheduled"))...)
+		})
+
+		// The index is right, so RebuildIndex writes nothing.
+		if w := rebuildWrites(t, s); len(w) != 0 {
+			t.Errorf("RebuildIndex() of an index that is right wrote %q, want nothing", w)
+		}
+	})
+}
+
 // jsonf returns the JSON that format makes of args, which are IDs that need no escapes.
 func jsonf(format string, args ...any) []byte {
 	return fmt.Appendf(nil, format, args...)
 }
 
-// TestIndexPublishedRevisionIDs checks that only an ID of a revision that an entry publishes makes a row of references,
-// so that no string in a document can make the keys of the rows of other documents unreadable.
+// TestIndexPublishedRevisionIDs checks that only an ID of a revision that an entry publishes or schedules makes a row of
+// references, so that no string in a document can make the keys of the rows of other documents unreadable.
 func TestIndexPublishedRevisionIDs(t *testing.T) {
 	nul := string(rune(92)) + "u0000" // the escape of a NUL in JSON
 	odd := []string{
@@ -614,6 +820,8 @@ func TestIndexPublishedRevisionIDs(t *testing.T) {
 		for i, rev := range odd {
 			id := fmt.Sprintf("ent_01JE%022d", 100+i)
 			docs = append(docs, indexDoc{content.RefEntry, id, publishedEntry(id, i+1, rev)})
+			id = fmt.Sprintf("ent_01JE%022d", 300+i)
+			docs = append(docs, indexDoc{content.RefEntry, id, scheduledEntry(id, len(odd)+i+1, rev)})
 		}
 		putAll(t, s, docs...)
 		checkConsistent(t, s)
@@ -623,26 +831,30 @@ func TestIndexPublishedRevisionIDs(t *testing.T) {
 				t.Fatalf("the rows of the index = %v", err)
 			}
 			if n := len(rows[indexReferences]); n != 0 {
-				t.Errorf("the rows of references = %d, want none: no entry publishes an ID of a revision", n)
+				t.Errorf("the rows of references = %d, want none: no entry publishes or schedules an ID of a revision", n)
 			}
-			if sums, err := tx.Summaries(content.RefEntry); err != nil || len(sums) != len(odd) {
-				t.Errorf("Summaries() = %d summaries, %v; want %d", len(sums), err, len(odd))
+			if sums, err := tx.Summaries(content.RefEntry); err != nil || len(sums) != 2*len(odd) {
+				t.Errorf("Summaries() = %d summaries, %v; want %d", len(sums), err, 2*len(odd))
 			}
 			checkReferrers(t, tx, content.RefEntry, entryID)
 			return nil
 		})
 		// An ID that is one makes a row, which AddRevision finds.
-		id := "ent_01JE0000000000000000000200"
+		id, scheduler := "ent_01JE0000000000000000000200", "ent_01JE0000000000000000000201"
 		putAll(t, s, indexDoc{content.RefEntry, id, publishedEntry(id, 9, revisionID)},
+			indexDoc{content.RefEntry, scheduler, scheduledEntry(scheduler, 10, revisionID)},
 			indexDoc{content.RefEntry, otherEntry, entryJSON(otherEntry, `"number": 1`)})
 		update(t, s, func(tx *Tx) error {
-			_, err := tx.AddRevision(otherEntry, revisionID, revisionJSON(`"slug": "x"`), userID)
+			_, err := tx.AddRevision(otherEntry, revisionID, revisionJSON(`"slug": "x", "featuredImage": "`+mediaID+`"`),
+				userID)
 			return err
 		})
 		view(t, s, func(tx *Tx) error {
 			if sum, err := tx.Summary(content.RefEntry, id); err != nil || sum.Published == nil || sum.Published.Slug != "x" {
 				t.Errorf("Summary() = %s, %v; want the published revision", summaryText(sum), err)
 			}
+			checkReferrers(t, tx, content.RefMedia, mediaID,
+				"entry "+otherEntry+" latest", "entry "+id+" published", "entry "+scheduler+" scheduled")
 			return nil
 		})
 		checkConsistent(t, s)
@@ -1165,11 +1377,17 @@ func TestIndexDamagedRows(t *testing.T) {
 				{"a term with the role latest", content.RefTerm, termID, func(r *summaryRow) {
 					r.setRefs(RoleLatest, []string{mediaID})
 				}},
+				{"a term with the role scheduled", content.RefTerm, termID, func(r *summaryRow) {
+					r.setRefs(RoleScheduled, []string{mediaID})
+				}},
 				{"a term with the role publishes", content.RefTerm, termID, func(r *summaryRow) {
 					r.setRefs(rolePublishes, []string{revisionID})
 				}},
 				{"the settings document with the role latest", SettingsKind, "", func(r *summaryRow) {
 					r.setRefs(RoleLatest, []string{mediaID})
+				}},
+				{"the settings document with the role scheduled", SettingsKind, "", func(r *summaryRow) {
+					r.setRefs(RoleScheduled, []string{mediaID})
 				}},
 				{"an entry with an unknown role", content.RefEntry, pageID, func(r *summaryRow) {
 					r.setRefs("draft", []string{mediaID})
@@ -1285,6 +1503,8 @@ func TestIndexDamagedRows(t *testing.T) {
 				{"publishes, which only a revision is the target of", join("entry", entryID, "publishes")},
 				{"published of a term", join("term", termID, "published")},
 				{"latest of the settings document", join("settings", "", "latest")},
+				{"scheduled of a term", join("term", termID, "scheduled")},
+				{"scheduled of the settings document", join("settings", "", "scheduled")},
 				{"publishes of a term", join("term", termID, "publishes")},
 			}, func(tx *Tx) error {
 				_, err := tx.Referrers(content.RefMedia, mediaID)
@@ -1313,6 +1533,7 @@ func TestIndexDamagedRows(t *testing.T) {
 				{"publishes of the settings document", join("settings", "", "publishes")},
 				{"document, which a revision is not the target of", join("entry", otherEntry, "document")},
 				{"published, which a revision is not the target of", join("entry", otherEntry, "published")},
+				{"scheduled, which a revision is not the target of", join("entry", otherEntry, "scheduled")},
 			}, func(tx *Tx) error {
 				_, err := tx.AddRevision(pageID, revision4, revisionJSON(`"slug": "x"`), userID)
 				return err
@@ -1369,9 +1590,10 @@ func TestSplitRefKey(t *testing.T) {
 		valid  bool
 	}{
 		{termID, RoleDocument, true}, {mediaID, RolePublished, true}, {formID, RoleLatest, true},
-		{revisionID, rolePublishes, true}, {authorID, RoleDocument, true},
+		{entryID, RoleScheduled, true}, {revisionID, rolePublishes, true}, {authorID, RoleDocument, true},
 		{revisionID, RoleDocument, false}, {revisionID, RolePublished, false}, {revisionID, RoleLatest, false},
-		{termID, rolePublishes, false}, {menuID, RoleDocument, false}, {userID, RoleDocument, false},
+		{revisionID, RoleScheduled, false}, {termID, rolePublishes, false}, {menuID, RoleDocument, false},
+		{userID, RoleDocument, false},
 		{"", RoleDocument, false}, {termID, "", false},
 	} {
 		key := refKey(tt.target, content.RefEntry, entryID, tt.role)
@@ -1385,7 +1607,7 @@ func TestSplitRefKey(t *testing.T) {
 		if kind == content.RefEntry {
 			continue
 		}
-		for _, role := range []Role{RolePublished, RoleLatest, rolePublishes} {
+		for _, role := range []Role{RolePublished, RoleLatest, RoleScheduled, rolePublishes} {
 			target := termID
 			if role == rolePublishes {
 				target = revisionID
@@ -1456,19 +1678,26 @@ func TestIndexUndecodable(t *testing.T) {
 		injectDocument(t, s, content.RefTerm, term2, []byte(`{`+later+`, "id": "`+term2+`", "parent": "`+termID+`"}`))
 		putAll(t, s, indexDoc{content.RefEntry, lateEntry, publishedEntry(lateEntry, 12, revision5)})
 		injectRevision(t, s, lateEntry, revision5, []byte(`{`+later+`, "featuredImage": "`+medium2+`"}`))
+		// An entry that schedules the revision that does not decode.
+		putAll(t, s, indexDoc{content.RefEntry, thirdEntry, scheduledEntry(thirdEntry, 3, revision5)})
 
 		update(t, s, func(tx *Tx) error { return tx.RebuildIndex() })
 		checkConsistent(t, s)
 		view(t, s, func(tx *Tx) error {
 			checkNoSummary(t, tx, content.RefEntry, otherEntry)
 			checkNoSummary(t, tx, content.RefTerm, term2)
-			// The revision does not decode, so it is not projected; the JSON still says what it refers to.
+			// The revision does not decode, so it is not projected; the JSON still says what it refers to, for the entry
+			// whose last revision it is, and not for the one that schedules it.
 			checkSummary(t, tx, content.RefEntry, lateEntry, Summary{
 				Entry: &content.Entry{
 					ID: lateEntry, Number: 12, Status: content.StatusPublished, PublishedRevision: revision5,
 				},
 				Latest: revision5,
 			})
+			checkSummary(t, tx, content.RefEntry, thirdEntry, Summary{Entry: &content.Entry{
+				ID: thirdEntry, Number: 3, Status: content.StatusScheduled, ScheduledRevision: revision5,
+				ScheduledAt: scheduledAt,
+			}})
 			checkReferrers(t, tx, content.RefMedia, medium2, "entry "+entryID+" latest", "entry "+lateEntry+" latest")
 			// The term that does not decode refers to nothing in the index.
 			checkReferrers(t, tx, content.RefTerm, termID, "entry "+entryID+" published", "menu "+menuID+" document")
@@ -1507,8 +1736,9 @@ func TestIndexUndecodable(t *testing.T) {
 }
 
 // TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
-// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 2 when its writer
-// opens it, once; and that a failure of that leaves the store as it was.
+// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 3 when its writer
+// opens it, once; that a store of the schema 2, which has the index without the scheduled items, gets the schema 3 in
+// one commit that writes nothing else; and that a failure of either leaves the store as it was.
 func TestIndexUpgrade(t *testing.T) {
 	ops := []string{"op_A", "op_B"}
 	// toSchema1 removes the rows of the tables that the schema 2 has, and the number, and makes the schema 1.
@@ -1530,6 +1760,12 @@ func TestIndexUpgrade(t *testing.T) {
 			return errors.Join(tx.Delete(tableMeta, []byte(metaNumbers)),
 				tx.Put(tableMeta, []byte(metaSchema), []byte{1}))
 		})
+	}
+	// toSchema2 makes the schema 2. The rows of the index stay: in a store without entries that have scheduled items,
+	// which no program of the schema 2 could save, they are those of the schema 3.
+	toSchema2 := func(t *testing.T, s *Store) {
+		t.Helper()
+		rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaSchema), []byte{2}) })
 	}
 	schemaOf := func(t *testing.T, s *Store) uint64 {
 		t.Helper()
@@ -1553,74 +1789,27 @@ func TestIndexUpgrade(t *testing.T) {
 		}
 		return seq
 	}
-
-	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		s, dir := newStore(t, tb)
-		fillIndexStore(t, s)
-		// A document that does not decode has no summary in the index that the upgrade makes.
-		injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
-		want := readIndexState(t, s, ops...)
-		toSchema1(t, s)
-		if err := s.Close(); err != nil {
-			t.Fatalf("Close() = %v", err)
+	// tablesOf returns the rows of every table of the engine of s, which the schema has, by the number of the table.
+	tablesOf := func(t *testing.T, s *Store) map[uint32][][2]string {
+		t.Helper()
+		tables := map[uint32][][2]string{}
+		for table := tableMeta; table <= tableOperations; table++ {
+			tables[table] = rawTable(t, s, table)
 		}
-
-		// A reader reads everything but the index.
-		r, err := openLogReader(dir, tb.options())
-		if err != nil {
-			t.Fatalf("openLogReader() of a store of the schema 1 = %v", err)
-		}
-		view(t, r, func(tx *Tx) error {
-			if docs, err := tx.Documents(content.RefEntry); err != nil || len(docs) != 3 {
-				t.Errorf("Documents() of a store of the schema 1 = %d documents, %v; want 3", len(docs), err)
-			}
-			if rev, err := tx.Revision(revisionID); err != nil || rev.Entry != entryID {
-				t.Errorf("Revision() of a store of the schema 1 = %+v, %v", rev, err)
-			}
-			for name, err := range map[string]error{
-				"Summary":   func() error { _, err := tx.Summary(content.RefEntry, entryID); return err }(),
-				"Summaries": func() error { _, err := tx.Summaries(content.RefEntry); return err }(),
-				"Referrers": func() error { _, err := tx.Referrers(content.RefMedia, mediaID); return err }(),
-				"LastNumber": func() error {
-					_, err := tx.LastNumber()
-					return err
-				}(),
-			} {
-				if !errors.Is(err, ErrNoIndex) {
-					t.Errorf("%s() of a store of the schema 1 = %v, want ErrNoIndex", name, err)
-				}
-			}
-			return nil
-		})
-		if err := r.Close(); err != nil {
-			t.Fatalf("Close() of the reader = %v", err)
-		}
-
-		// Its writer builds the index in one commit, and sets the schema 2.
-		s = reopenLog(t, dir, *tb.log)
-		if v := schemaOf(t, s); v != 2 {
-			t.Errorf("the schema after Open() = %d, want 2", v)
-		}
-		checkConsistent(t, s)
-		checkIntegrity(t, s)
-		got := readIndexState(t, s, ops...)
-		if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number {
-			t.Errorf("the index after Open() differs from the one that the store had: %s; the last number %d, want %d",
-				problem, got.number, want.number)
-		}
-		if len(got.ops) != 0 {
-			t.Errorf("the operations after Open() = %q, want none: a store of the schema 1 has none", got.ops)
-		}
+		return tables
+	}
+	// secondOpen closes s, which has just upgraded the store in dir, and opens the store again: that commits nothing,
+	// and changes no file but head, which every Open writes.
+	secondOpen := func(t *testing.T, s *Store, dir string, tb testBackend) {
+		t.Helper()
 		seq := seqOf(t, s)
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() = %v", err)
 		}
 		first := snapshot(t, dir)
-
-		// A second Open commits nothing, and changes no file but head, which every Open writes.
 		s = reopenLog(t, dir, *tb.log)
-		if v := schemaOf(t, s); v != 2 {
-			t.Errorf("the schema after a second Open() = %d, want 2", v)
+		if v := schemaOf(t, s); v != logSchemaVersion {
+			t.Errorf("the schema after a second Open() = %d, want %d", v, logSchemaVersion)
 		}
 		if again := seqOf(t, s); again != seq {
 			t.Errorf("the last commit after a second Open() is %d, want %d, that of the first", again, seq)
@@ -1635,55 +1824,192 @@ func TestIndexUpgrade(t *testing.T) {
 		if !maps.Equal(first, second) {
 			t.Errorf("a second Open() has changed the files of the store")
 		}
+	}
+
+	t.Run("schema 1", func(t *testing.T) {
+		forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+			s, dir := newStore(t, tb)
+			fillIndexStore(t, s)
+			// A document that does not decode has no summary in the index that the upgrade makes.
+			injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
+			want := readIndexState(t, s, ops...)
+			toSchema1(t, s)
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+
+			// A reader reads everything but the index.
+			r, err := openLogReader(dir, tb.options())
+			if err != nil {
+				t.Fatalf("openLogReader() of a store of the schema 1 = %v", err)
+			}
+			view(t, r, func(tx *Tx) error {
+				if docs, err := tx.Documents(content.RefEntry); err != nil || len(docs) != 3 {
+					t.Errorf("Documents() of a store of the schema 1 = %d documents, %v; want 3", len(docs), err)
+				}
+				if rev, err := tx.Revision(revisionID); err != nil || rev.Entry != entryID {
+					t.Errorf("Revision() of a store of the schema 1 = %+v, %v", rev, err)
+				}
+				for name, err := range map[string]error{
+					"Summary":   func() error { _, err := tx.Summary(content.RefEntry, entryID); return err }(),
+					"Summaries": func() error { _, err := tx.Summaries(content.RefEntry); return err }(),
+					"Referrers": func() error { _, err := tx.Referrers(content.RefMedia, mediaID); return err }(),
+					"LastNumber": func() error {
+						_, err := tx.LastNumber()
+						return err
+					}(),
+				} {
+					if !errors.Is(err, ErrNoIndex) {
+						t.Errorf("%s() of a store of the schema 1 = %v, want ErrNoIndex", name, err)
+					}
+				}
+				return nil
+			})
+			if err := r.Close(); err != nil {
+				t.Fatalf("Close() of the reader = %v", err)
+			}
+
+			// Its writer builds the index in one commit, and sets the schema 3.
+			s = reopenLog(t, dir, *tb.log)
+			if v := schemaOf(t, s); v != logSchemaVersion {
+				t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
+			}
+			checkConsistent(t, s)
+			checkIntegrity(t, s)
+			got := readIndexState(t, s, ops...)
+			if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number {
+				t.Errorf("the index after Open() differs from the one that the store had: %s; the last number %d, want %d",
+					problem, got.number, want.number)
+			}
+			if len(got.ops) != 0 {
+				t.Errorf("the operations after Open() = %q, want none: a store of the schema 1 has none", got.ops)
+			}
+			secondOpen(t, s, dir, tb)
+		})
+	})
+
+	t.Run("schema 2", func(t *testing.T) {
+		forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+			s, dir := newStore(t, tb)
+			fillIndexStore(t, s)
+			// An entry that is scheduled without the items, which a program of the schema 2 could save as the store does
+			// not check it against the site, and a document that does not decode.
+			putAll(t, s, indexDoc{content.RefEntry, page2, entryJSON(page2, `"number": 20, "status": "scheduled"`)})
+			injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
+			want := readIndexState(t, s, ops...)
+			toSchema2(t, s)
+			wantTables, seq := tablesOf(t, s), seqOf(t, s)
+			for i, kv := range wantTables[tableMeta] {
+				if kv[0] == metaSchema {
+					wantTables[tableMeta][i][1] = string(binary.AppendUvarint(nil, logSchemaVersion))
+				}
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+
+			// A reader reads the index as it is, and the operations.
+			r, err := openLogReader(dir, tb.options())
+			if err != nil {
+				t.Fatalf("openLogReader() of a store of the schema 2 = %v", err)
+			}
+			if v := schemaOf(t, r); v != 2 {
+				t.Errorf("the schema read by the reader = %d, want 2", v)
+			}
+			got := readIndexState(t, r, ops...)
+			if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number ||
+				!maps.Equal(got.ops, want.ops) || len(got.ops) == 0 {
+				t.Errorf("the index read in a store of the schema 2 differs: %s; the last number %d, want %d; the "+
+					"operations %q, want %q", problem, got.number, want.number, got.ops, want.ops)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatalf("Close() of the reader = %v", err)
+			}
+
+			// Its writer sets the schema 3 in one commit, and writes nothing else.
+			s = reopenLog(t, dir, *tb.log)
+			if v := schemaOf(t, s); v != logSchemaVersion {
+				t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
+			}
+			if after := seqOf(t, s); after != seq+1 {
+				t.Errorf("the last commit after Open() is %d, want %d: one commit more", after, seq+1)
+			}
+			if gotTables := tablesOf(t, s); !reflect.DeepEqual(gotTables, wantTables) {
+				for table := tableMeta; table <= tableOperations; table++ {
+					if !reflect.DeepEqual(gotTables[table], wantTables[table]) {
+						t.Errorf("table %d after Open() = %q, want %q: only the schema changes", table, gotTables[table],
+							wantTables[table])
+					}
+				}
+			}
+			checkConsistent(t, s)
+			checkIntegrity(t, s)
+			got = readIndexState(t, s, ops...)
+			if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number ||
+				!maps.Equal(got.ops, want.ops) {
+				t.Errorf("the index after Open() differs from the one that the store had: %s; the last number %d, want %d; "+
+					"the operations %q, want %q", problem, got.number, want.number, got.ops, want.ops)
+			}
+			secondOpen(t, s, dir, tb)
+		})
 	})
 
 	t.Run("failure", func(t *testing.T) {
-		o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
-		s, dir := newLogStore(t, o)
-		fillIndexStore(t, s)
-		toSchema1(t, s)
-		corruptObjects(t, s)
-		if err := s.Close(); err != nil {
-			t.Fatalf("Close() = %v", err)
+		for _, schema := range []uint64{1, 2} {
+			t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
+				o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
+				s, dir := newLogStore(t, o)
+				fillIndexStore(t, s)
+				if schema == 1 {
+					toSchema1(t, s)
+				} else {
+					toSchema2(t, s)
+				}
+				corruptObjects(t, s)
+				if err := s.Close(); err != nil {
+					t.Fatalf("Close() = %v", err)
+				}
+				// The error says where the upgrade failed, and wraps the cause.
+				upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 3, so the store is unchanged: "
+				var first string
+				for i := range 2 {
+					c, err := open(dir, logOpts(o))
+					if err == nil {
+						_ = c.Close()
+					}
+					var cause string
+					if u := errors.Unwrap(err); u != nil {
+						cause = u.Error()
+					}
+					// The second failure is the same: the first has released the lock.
+					switch {
+					case err == nil || err.Error() != upgrade+cause || !strings.HasPrefix(cause, "object sha256:") ||
+						!strings.Contains(cause, ": the data has the hash "):
+						t.Fatalf("open() of a store of the schema %d with a changed object = %v, want the error of its "+
+							"upgrade and, after it, the error of its hash", schema, err)
+					case i == 0:
+						first = err.Error()
+					case err.Error() != first:
+						t.Errorf("the second open() = %v, want the error of the first, %v", err, first)
+					}
+				}
+				r, err := openLogReader(dir, logOpts(o))
+				if err != nil {
+					t.Fatalf("openLogReader() after the failures = %v", err)
+				}
+				t.Cleanup(func() { _ = r.Close() })
+				if v := schemaOf(t, r); v != schema {
+					t.Errorf("the schema after the failed Open() = %d, want %d", v, schema)
+				}
+				view(t, r, func(tx *Tx) error {
+					_, err := tx.Summary(content.RefEntry, entryID)
+					if schema == 1 && !errors.Is(err, ErrNoIndex) || schema == 2 && err != nil {
+						t.Errorf("Summary() = %v, want ErrNoIndex for the schema 1, and none for the schema 2", err)
+					}
+					return nil
+				})
+			})
 		}
-		// The error says where the upgrade failed, and wraps the cause.
-		upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 2, so the store is unchanged: "
-		var first string
-		for i := range 2 {
-			c, err := open(dir, logOpts(o))
-			if err == nil {
-				_ = c.Close()
-			}
-			var cause string
-			if u := errors.Unwrap(err); u != nil {
-				cause = u.Error()
-			}
-			// The second failure is the same: the first has released the lock.
-			switch {
-			case err == nil || err.Error() != upgrade+cause || !strings.HasPrefix(cause, "object sha256:") ||
-				!strings.Contains(cause, ": the data has the hash "):
-				t.Fatalf("open() of a store of the schema 1 with a changed object = %v, want the error of its upgrade "+
-					"and, after it, the error of its hash", err)
-			case i == 0:
-				first = err.Error()
-			case err.Error() != first:
-				t.Errorf("the second open() = %v, want the error of the first, %v", err, first)
-			}
-		}
-		r, err := openLogReader(dir, logOpts(o))
-		if err != nil {
-			t.Fatalf("openLogReader() after the failures = %v", err)
-		}
-		t.Cleanup(func() { _ = r.Close() })
-		if v := schemaOf(t, r); v != 1 {
-			t.Errorf("the schema after the failed Open() = %d, want 1", v)
-		}
-		view(t, r, func(tx *Tx) error {
-			if _, err := tx.Summary(content.RefEntry, entryID); !errors.Is(err, ErrNoIndex) {
-				t.Errorf("Summary() = %v, want ErrNoIndex", err)
-			}
-			return nil
-		})
 	})
 }
 

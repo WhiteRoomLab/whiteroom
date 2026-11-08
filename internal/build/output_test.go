@@ -114,6 +114,46 @@ func openRoot(t *testing.T, dir string) *os.Root {
 	return root
 }
 
+// makeReadOnly makes dir, a directory in out, read-only, so that nothing in it can be removed or renamed. At the end of
+// the test it makes the directories in out writable again, wherever a build has renamed them to.
+func makeReadOnly(t *testing.T, out, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { writable(out) })
+}
+
+// writable makes the directories in dir, and dir itself, writable, so that the test can remove them.
+func writable(dir string) {
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Mode().Perm()&0o200 == 0 {
+			_ = os.Chmod(p, info.Mode().Perm()|0o700)
+		}
+		return nil
+	})
+}
+
+// staleNames returns the names of the temporary directories in the releases of out, which builds that did not end
+// left, in the order of their names.
+func staleNames(t *testing.T, out string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(out, releasesDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if isTemp(e.Name(), tmpPrefix) {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
 // TestCheckLayout checks what checkLayout finds in output directories that hold only what the build makes.
 func TestCheckLayout(t *testing.T) {
 	for _, tt := range []struct {
@@ -500,6 +540,87 @@ func TestPublish(t *testing.T) {
 	checkTree(t, "publish() over a file", dir, before)
 }
 
+// TestPublishCurrentFails checks that publish, which cannot point current to the release that it has made, removes the
+// release, and that a removal that stops half way leaves the rest under a temporary name, and no release.
+func TestPublishCurrentFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the modes of directories")
+	}
+	const tmp = "releases/.tmp-" + randomA
+	// A directory current, which pointCurrent cannot replace with a link.
+	base := []string{".lock", "releases/" + releaseA + "/public/a", "current/"}
+	currentErr := `: renameat current\.tmp-[0-9a-f]{16} current: .+`
+
+	dir := makeDir(t, append(slices.Clone(base), tmp+"/public/new")...)
+	changed, err := publish(openRoot(t, dir), tmp, releaseC, "")
+	pattern := "^" + regexp.QuoteMeta(dir) + currentErr + "$"
+	if changed || err == nil || !regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Errorf("publish() = %v, %v, want an error that matches %s", changed, err, pattern)
+	}
+	checkTree(t, "the release removed", dir, tree(t, makeDir(t, base...)))
+
+	dir = makeDir(t, append(slices.Clone(base), tmp+"/public/sub/file")...)
+	makeReadOnly(t, dir, filepath.Join(dir, tmp, "public", "sub"))
+	changed, err = publish(openRoot(t, dir), tmp, releaseC, "")
+	pattern = "^" + regexp.QuoteMeta(dir) + currentErr + "\n" +
+		regexp.QuoteMeta(dir) + `: RemoveAll releases/\.tmp-[0-9a-f]{16}: permission denied$`
+	if changed || !errors.Is(err, fs.ErrPermission) || !regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Errorf("publish() with a removal that stops = %v, %v, want an error that matches %s", changed, err, pattern)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "releases", releaseC)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("publish() left the rest of the release under its name (%v)", err)
+	}
+	stale := staleNames(t, dir)
+	if len(stale) != 1 {
+		t.Fatalf("the temporary directories are %q, want the one that holds the rest of the release", stale)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "releases", stale[0], "public", "sub", "file")); err != nil {
+		t.Errorf("the rest of the release is not under the temporary name: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "releases", releaseA, "public", "a")); err != nil {
+		t.Errorf("publish() changed the other release: %v", err)
+	}
+}
+
+// TestPointCurrent checks that pointCurrent replaces current, or makes it, with a relative link to a release, and that
+// one that fails leaves nothing behind.
+func TestPointCurrent(t *testing.T) {
+	base := []string{".lock", "releases/" + releaseA + "/public/a", "releases/" + releaseB + "/public/b"}
+	stale := "current.tmp-" + randomA + " -> releases/" + releaseA
+	for _, tt := range []struct {
+		what    string
+		current []string // before
+		want    []string // after
+	}{
+		{"another release", []string{"current -> releases/" + releaseA}, []string{"current -> releases/" + releaseB}},
+		{"the same release", []string{"current -> releases/" + releaseB}, []string{"current -> releases/" + releaseB}},
+		{"no current", nil, []string{"current -> releases/" + releaseB}},
+		{
+			"a current to a release that does not exist",
+			[]string{"current -> releases/" + releaseC}, []string{"current -> releases/" + releaseB},
+		},
+		{
+			"stale links",
+			[]string{"current -> releases/" + releaseA, stale}, []string{"current -> releases/" + releaseB, stale},
+		},
+	} {
+		dir := makeDir(t, append(slices.Clone(base), tt.current...)...)
+		if err := pointCurrent(openRoot(t, dir), releaseB); err != nil {
+			t.Errorf("%s: pointCurrent() = %v", tt.what, err)
+		}
+		checkTree(t, tt.what, dir, tree(t, makeDir(t, append(slices.Clone(base), tt.want...)...)))
+	}
+
+	dir := makeDir(t, append(slices.Clone(base), "current/")...)
+	before := tree(t, dir)
+	pattern := regexp.QuoteMeta(dir) + `: renameat current\.tmp-[0-9a-f]{16} current: .+`
+	err := pointCurrent(openRoot(t, dir), releaseB)
+	if err == nil || !regexp.MustCompile("^"+pattern+"$").MatchString(err.Error()) {
+		t.Errorf("pointCurrent() over a directory = %v, want an error that matches %s", err, pattern)
+	}
+	checkTree(t, "pointCurrent() over a directory", dir, before)
+}
+
 // TestRemoveOld checks that removeOld removes the releases that it does not keep and what builds that did not end left,
 // and nothing else.
 func TestRemoveOld(t *testing.T) {
@@ -550,4 +671,117 @@ func TestRemoveOld(t *testing.T) {
 		}
 		checkTree(t, fmt.Sprintf("removeOld(%q)", tt.keep), dir, tree(t, makeDir(t, tt.want...)))
 	}
+}
+
+// TestRemoveOldStopped checks that removeOld goes on with the other releases and the temporary directories after a
+// release that it cannot remove entirely, which it leaves under a temporary name and not as a release, and that the
+// next removeOld removes the rest.
+func TestRemoveOldStopped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the modes of directories")
+	}
+	dir := makeDir(t,
+		".lock",
+		"releases/"+releaseA+"/public/index.html",
+		"releases/"+releaseB+"/public/index.html",
+		"releases/"+releaseC+"/public/index.html",
+		"releases/.tmp-"+randomA+"/public/index.html",
+		"current -> releases/"+releaseB,
+	)
+	root := openRoot(t, dir)
+	l, err := checkLayout(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// releaseC is the first release that removeOld removes.
+	makeReadOnly(t, dir, filepath.Join(dir, "releases", releaseC, "public"))
+	pattern := "^" + regexp.QuoteMeta(dir) + `: RemoveAll releases/\.tmp-[0-9a-f]{16}: permission denied$`
+	if err := removeOld(root, l, []string{releaseB}); !errors.Is(err, fs.ErrPermission) ||
+		!regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Errorf("removeOld() = %v, want an error that matches %s", err, pattern)
+	}
+	l, err = checkLayout(root)
+	if err != nil || !slices.Equal(l.releases, []string{releaseB}) || len(l.stale) != 1 ||
+		l.stale[0] == "releases/.tmp-"+randomA {
+		t.Fatalf("checkLayout() after removeOld() = %+v, %v, want only %s as a release, and the rest of %s as the one "+
+			"temporary directory", l, err, releaseB, releaseC)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(l.stale[0]), "public", "index.html")); err != nil {
+		t.Errorf("the rest of the release is not under the temporary name: %v", err)
+	}
+
+	writable(dir)
+	if err := removeOld(root, l, []string{releaseB}); err != nil {
+		t.Errorf("removeOld() of the rest = %v", err)
+	}
+	want := []string{".lock", "releases/" + releaseB + "/public/index.html", "current -> releases/" + releaseB}
+	checkTree(t, "the rest removed", dir, tree(t, makeDir(t, want...)))
+}
+
+// TestRemoveRelease checks that removeRelease renames a release to a temporary name and removes that: a removal that
+// stops half way leaves the rest under the temporary name and no release, and a release that cannot be renamed stays as
+// it is.
+func TestRemoveRelease(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the modes of directories")
+	}
+	base := []string{
+		".lock",
+		"releases/" + releaseA + "/public/a",
+		"releases/" + releaseB + "/public/b",
+		"current -> releases/" + releaseB,
+	}
+
+	dir := makeDir(t, base...)
+	root := openRoot(t, dir)
+	for _, what := range []string{"a release", "a release that is gone"} {
+		if err := removeRelease(root, releaseA); err != nil {
+			t.Errorf("removeRelease() of %s = %v", what, err)
+		}
+		want := []string{".lock", "releases/" + releaseB + "/public/b", "current -> releases/" + releaseB}
+		checkTree(t, what, dir, tree(t, makeDir(t, want...)))
+	}
+
+	dir = makeDir(t, append(slices.Clone(base),
+		"releases/"+releaseC+"/server.json", "releases/"+releaseC+"/public/sub/file")...)
+	makeReadOnly(t, dir, filepath.Join(dir, "releases", releaseC, "public", "sub"))
+	pattern := "^" + regexp.QuoteMeta(dir) + `: RemoveAll releases/\.tmp-[0-9a-f]{16}: permission denied$`
+	err := removeRelease(openRoot(t, dir), releaseC)
+	if !errors.Is(err, fs.ErrPermission) || !regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Errorf("removeRelease() that stops half way = %v, want an error that matches %s", err, pattern)
+	}
+	l, err := checkLayout(openRoot(t, dir))
+	if err != nil || !slices.Equal(l.releases, []string{releaseA, releaseB}) || len(l.stale) != 1 {
+		t.Fatalf("checkLayout() = %+v, %v, want the releases %s and %s, and the rest of %s as the one temporary directory",
+			l, err, releaseA, releaseB, releaseC)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(l.stale[0]), "public", "sub", "file")); err != nil {
+		t.Errorf("the rest of the release is not under the temporary name: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "releases", releaseC)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the rest of the release %s is still under its name (%v)", releaseC, err)
+	}
+
+	dir = makeDir(t, base...)
+	makeReadOnly(t, dir, filepath.Join(dir, "releases"))
+	before := tree(t, dir)
+	pattern = "^" + regexp.QuoteMeta(dir+": renameat releases/"+releaseA+" releases/.tmp-") +
+		"[0-9a-f]{16}: permission denied$"
+	if err := removeRelease(openRoot(t, dir), releaseA); !errors.Is(err, fs.ErrPermission) ||
+		!regexp.MustCompile(pattern).MatchString(err.Error()) {
+		t.Errorf("removeRelease() that cannot rename = %v, want an error that matches %s", err, pattern)
+	}
+	checkTree(t, "a release that cannot be renamed", dir, before)
+}
+
+// TestRenameOverDirectory checks what removeRelease needs of Root.Rename to take a name that exists for one that is
+// taken, and try another: it does not replace a directory, even an empty one, and its error wraps fs.ErrExist.
+func TestRenameOverDirectory(t *testing.T) {
+	dir := makeDir(t, "releases/"+releaseA+"/public/a", "releases/.tmp-"+randomA+"/")
+	before := tree(t, dir)
+	err := openRoot(t, dir).Rename("releases/"+releaseA, "releases/.tmp-"+randomA)
+	if !errors.Is(err, fs.ErrExist) {
+		t.Errorf("Rename() over an empty directory = %v, want an error that wraps %v", err, fs.ErrExist)
+	}
+	checkTree(t, "Rename() over an empty directory", dir, before)
 }

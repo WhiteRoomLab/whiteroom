@@ -138,13 +138,12 @@ func (r *run) lastRevision(id string) (*content.Revision, error) {
 	return &rev, nil
 }
 
-// publishedWarnings returns the problems that the site would have if the entry ent, with the revision rev whose ID is id,
-// were published, which model is the model of the site without it, as warnings (Q4-A): those that the checks of the
-// build find in a site in which it is.
-func (r *run) publishedWarnings(model func() (*siteplan.Site, error), ent *content.Entry, id string, rev *content.Revision) (content.Errors, error) {
+// publishedCheck runs the checks of the build on the site as it would be if the entry ent, with the revision rev whose ID
+// is id, were published, which model is the model of the site without it: the problems and the warnings that are new.
+func (r *run) publishedCheck(model func() (*siteplan.Site, error), ent *content.Entry, id string, rev *content.Revision) (problems, warnings content.Errors, err error) {
 	m, err := model()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	after := *m
 	after.Entries = maps.Clone(m.Entries)
@@ -156,7 +155,14 @@ func (r *run) publishedWarnings(model func() (*siteplan.Site, error), ent *conte
 	}
 	published.E.Status, published.E.PublishedRevision = content.StatusPublished, id
 	after.Entries[ent.ID] = published
-	problems, warnings, err := r.checkSite(&after, model)
+	return r.checkSite(&after, model)
+}
+
+// publishedWarnings returns the problems that the site would have if the entry ent, with the revision rev whose ID is id,
+// were published, which model is the model of the site without it, as warnings (Q4-A): those that the checks of the
+// build find in a site in which it is.
+func (r *run) publishedWarnings(model func() (*siteplan.Site, error), ent *content.Entry, id string, rev *content.Revision) (content.Errors, error) {
+	problems, warnings, err := r.publishedCheck(model, ent, id, rev)
 	if err != nil {
 		return nil, err
 	}

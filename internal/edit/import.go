@@ -35,17 +35,17 @@ var importKinds = []content.RefKind{
 var errNotEmpty = errors.New("the store is not empty: Import needs a store without documents")
 
 // Import imports the site that src reads into s, which must have no documents, as the user by: the settings, every
-// document, the revisions that its published entries publish and the original of every medium, with the IDs and the
-// numbers that its files have (Q12-A). The revisions that no entry publishes are not read, and the theme and the schema
-// file are read only to validate the site.
+// document, the revisions that its entries publish or schedule and the original of every medium, with the IDs and the
+// numbers that its files have (Q12-A). The revisions that no entry publishes or schedules are not read, and the theme and
+// the schema file are read only to validate the site.
 //
 // It runs in the stages of the build (4.3), each of which stops at its problems: reading the site; decoding its
 // documents; loading the settings and the theme; validating the documents and the revisions that the published entries
-// publish, as imports without the theme; and checking the originals of the media, which it saves in the store, against
-// their documents. Then one Update stores everything and checks the site across its documents with the code of the build
-// (internal/siteplan), on the model that the index of the store gives. It validates also the entries that are not
-// published, and normalizes the documents as a save does before it validates them; it stores them as their files have
-// them unless that changes them (Q14-B).
+// publish and the scheduled entries schedule, as imports without the theme; and checking the originals of the media,
+// which it saves in the store, against their documents. Then one Update stores everything and checks the site across its
+// documents with the code of the build (internal/siteplan), on the model that the index of the store gives. It validates
+// also the entries that are not published, and normalizes the documents as a save does before it validates them; it
+// stores them as their files have them unless that changes them (Q14-B).
 //
 // The problems are the error, content.Errors with the files, lines and columns of the files that the source gave. Where
 // the build finds the same problem in a stage that Import has too, they are the build's lines; the exceptions are the
@@ -94,7 +94,7 @@ func checkEmpty(tx *store.Tx) error {
 // imported is a document or a revision of the source that Import stores.
 type imported struct {
 	id    string
-	entry string           // of a revision: the entry that publishes it
+	entry string           // of a revision: the entry that publishes or schedules it
 	file  content.SiteFile // as the source gave it, but named as in a site directory
 	v     any              // the decoded document: *content.Entry, or the pointer that docKinds makes; nil for a revision
 	data  []byte           // what to store: the bytes of file, unless normalizing has changed what the document writes
@@ -236,9 +236,9 @@ func (im *importer) loadSite() (content.Errors, error) {
 	return nil, nil
 }
 
-// validate validates every entry and, for those that are published, the revision that they publish, which it reads; and
-// every other document. The revisions are validated as the build validates them: as imports that need what publishing
-// needs, without the theme.
+// validate validates every entry and, for those that are published or scheduled, the revision that they publish or
+// schedule, which it reads; and every other document. The revisions are validated as the build validates them: as imports
+// that need what publishing needs, without the theme.
 func (im *importer) validate() (content.Errors, error) {
 	var errs content.Errors
 	for _, d := range im.docs[content.RefEntry] {
@@ -250,10 +250,16 @@ func (im *importer) validate() (content.Errors, error) {
 			errs = append(errs, content.LocateErrors(err, d.file)...)
 			continue
 		}
-		if ent.Status != content.StatusPublished {
+		var problems content.Errors
+		var err error
+		switch ent.Status {
+		case content.StatusPublished:
+			problems, err = im.validateRevision(d, ent, ent.PublishedRevision, "/publishedRevision")
+		case content.StatusScheduled:
+			problems, err = im.validateRevision(d, ent, ent.ScheduledRevision, "/scheduledRevision")
+		case content.StatusDraft, content.StatusArchived:
 			continue
 		}
-		problems, err := im.validateRevision(d, ent)
 		if err != nil {
 			return nil, err
 		}
@@ -272,14 +278,13 @@ func (im *importer) validate() (content.Errors, error) {
 	return sorted(errs), nil
 }
 
-// validateRevision reads the revision that ent, the entry in d, publishes, normalizes and validates it, and keeps it to
-// store. A revision that two entries publish is kept once.
-func (im *importer) validateRevision(d *imported, ent *content.Entry) (content.Errors, error) {
-	id := ent.PublishedRevision
+// validateRevision reads the revision id, which ent, the entry in d, publishes or schedules, as pointer says, normalizes
+// and validates it, and keeps it to store. A revision that two entries name is kept once.
+func (im *importer) validateRevision(d *imported, ent *content.Entry, id, pointer string) (content.Errors, error) {
 	f, err := im.src.Revision(id)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return problemAt(d.file, "/publishedRevision", fmt.Sprintf("revision %q does not exist", id)), nil
+		return problemAt(d.file, pointer, fmt.Sprintf("revision %q does not exist", id)), nil
 	case err != nil:
 		return nil, err
 	}
@@ -292,7 +297,15 @@ func (im *importer) validateRevision(d *imported, ent *content.Entry) (content.E
 	if err != nil {
 		return nil, err
 	}
-	if err := validatePublished(im.site, ent, &rev, im.sp.Ref); err != nil {
+	// A post without a date is validated with the scheduled time as its date, as its scheduled publish publishes it; the
+	// bytes that are stored stay as they are.
+	checked := &rev
+	if ent.Status == content.StatusScheduled {
+		if checked, err = publishedAtSchedule(im.site, ent, &rev); err != nil {
+			return nil, err
+		}
+	}
+	if err := validatePublished(im.site, ent, checked, im.sp.Ref); err != nil {
 		return content.LocateErrors(err, f), nil
 	}
 	if !im.kept[id] {

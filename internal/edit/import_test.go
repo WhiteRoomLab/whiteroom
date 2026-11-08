@@ -345,7 +345,7 @@ func storedFiles(t *testing.T, s *store.Store) map[string]string {
 }
 
 // siteFiles returns the bytes of every file of the site directory dir that an Import stores: the settings, the documents and
-// the revisions that the published entries publish, by their names.
+// the revisions that the published entries publish and the scheduled entries schedule, by their names.
 func siteFiles(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	src := openSite(t, dir)
@@ -364,8 +364,12 @@ func siteFiles(t *testing.T, dir string) map[string]string {
 			if kind != content.RefEntry {
 				continue
 			}
-			if e := decodeEntry(t, f.Data); e.Status == content.StatusPublished {
-				rev, err := src.Revision(e.PublishedRevision)
+			e := decodeEntry(t, f.Data)
+			for status, id := range map[content.Status]string{content.StatusPublished: e.PublishedRevision, content.StatusScheduled: e.ScheduledRevision} {
+				if e.Status != status {
+					continue
+				}
+				rev, err := src.Revision(id)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -19,17 +19,55 @@ var aboutPageEntry = Entry{
 	CreatedBy:         testUser,
 }
 
+const (
+	testScheduledAt = "2026-11-10T09:00:00+09:00"
+
+	// aboutPageEntryJSON is aboutPageEntry as MarshalJSON writes it.
+	aboutPageEntryJSON = `{"schemaVersion":1,"id":"` + testAboutPage + `","number":2,"type":"page","language":"ja",` +
+		`"translationGroup":"` + testGroup + `","status":"published","publishedRevision":"` + testRevision +
+		`","createdAt":"2026-10-25T10:00:00+09:00","createdBy":"` + testUser + `"}`
+
+	// scheduledEntryJSON is scheduledEntry as MarshalJSON writes it.
+	scheduledEntryJSON = `{"schemaVersion":1,"id":"` + testAboutPage + `","number":2,"type":"page","language":"ja",` +
+		`"translationGroup":"` + testGroup + `","status":"scheduled","scheduledRevision":"` + testRevision +
+		`","scheduledAt":"` + testScheduledAt + `","createdAt":"2026-10-25T10:00:00+09:00","createdBy":"` + testUser + `"}`
+)
+
+// scheduledEntry is aboutPageEntry scheduled in place of published.
+var scheduledEntry = Entry{
+	ID:                testAboutPage,
+	Number:            2,
+	Type:              TypePage,
+	Language:          "ja",
+	TranslationGroup:  testGroup,
+	Status:            StatusScheduled,
+	ScheduledRevision: testRevision,
+	ScheduledAt:       testScheduledAt,
+	CreatedAt:         "2026-10-25T10:00:00+09:00",
+	CreatedBy:         testUser,
+}
+
 func TestEntryUnmarshalJSON(t *testing.T) {
-	in := readTestdata(t, "about-page-entry.json")
-	bothOrders(t, in, func(t *testing.T, in string) {
-		var got Entry
-		if err := json.Unmarshal([]byte(in), &got); err != nil {
-			t.Fatalf("Unmarshal(%s) = %v", in, err)
-		}
-		if !reflect.DeepEqual(got, aboutPageEntry) {
-			t.Errorf("Unmarshal(%s) = %#v, want %#v", in, got, aboutPageEntry)
-		}
-	})
+	for _, tt := range []struct {
+		name string
+		in   string
+		want Entry
+	}{
+		{"about page", readTestdata(t, "about-page-entry.json"), aboutPageEntry},
+		{"scheduled", scheduledEntryJSON, scheduledEntry},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bothOrders(t, tt.in, func(t *testing.T, in string) {
+				var got Entry
+				if err := json.Unmarshal([]byte(in), &got); err != nil {
+					t.Fatalf("Unmarshal(%s) = %v", in, err)
+				}
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("Unmarshal(%s) = %#v, want %#v", in, got, tt.want)
+				}
+			})
+		})
+	}
 }
 
 func TestEntryRoundTrip(t *testing.T) {
@@ -39,11 +77,17 @@ func TestEntryRoundTrip(t *testing.T) {
 		want string // "" if in is canonical
 	}{
 		{name: "about page", in: readTestdata(t, "about-page-entry.json")},
+		{name: "scheduled", in: scheduledEntryJSON},
 		{name: "schemaVersion only", in: `{"schemaVersion":1}`},
 		{
 			name: "any key order",
 			in:   `{"status":"draft","type":"post","schemaVersion":1,"number":10}`,
 			want: `{"schemaVersion":1,"number":10,"type":"post","status":"draft"}`,
+		},
+		{
+			name: "scheduled items in any key order",
+			in:   `{"scheduledAt":"` + testScheduledAt + `","status":"scheduled","scheduledRevision":"` + testRevision + `","schemaVersion":1}`,
+			want: `{"schemaVersion":1,"status":"scheduled","scheduledRevision":"` + testRevision + `","scheduledAt":"` + testScheduledAt + `"}`,
 		},
 	}
 	for _, tt := range tests {
@@ -58,12 +102,36 @@ func TestEntryRoundTrip(t *testing.T) {
 }
 
 func TestEntryMarshalJSON(t *testing.T) {
-	got, err := json.Marshal(Entry{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := `{"schemaVersion":1}`; string(got) != want {
-		t.Errorf("Marshal(Entry{}) = %s, want %s", got, want)
+	for _, tt := range []struct {
+		name string
+		in   Entry
+		want string
+	}{
+		{"empty", Entry{}, `{"schemaVersion":1}`},
+		// The bytes of an entry without the scheduled items are those of before they were added.
+		{"about page", aboutPageEntry, aboutPageEntryJSON},
+		{"scheduled", scheduledEntry, scheduledEntryJSON},
+		{
+			name: "scheduled items alone",
+			in:   Entry{ScheduledRevision: testRevision},
+			want: `{"schemaVersion":1,"scheduledRevision":"` + testRevision + `"}`,
+		},
+		{
+			name: "scheduled items after publishedRevision",
+			in:   Entry{Status: StatusPublished, PublishedRevision: testRevision, ScheduledRevision: testRevision, ScheduledAt: testScheduledAt, CreatedAt: testScheduledAt},
+			want: `{"schemaVersion":1,"status":"published","publishedRevision":"` + testRevision + `","scheduledRevision":"` +
+				testRevision + `","scheduledAt":"` + testScheduledAt + `","createdAt":"` + testScheduledAt + `"}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("Marshal(%#v) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -85,6 +153,11 @@ func TestEntryUnmarshalJSONError(t *testing.T) {
 		{name: "number with a fraction", in: `{"schemaVersion":1,"number":1.5}`, path: "/number", msg: "must be an integer"},
 		{name: "empty id", in: `{"schemaVersion":1,"id":""}`, path: "/id", msg: "empty string is not allowed"},
 		{name: "null status", in: `{"schemaVersion":1,"status":null}`, path: "/status", msg: "expected string, got null"},
+		{name: "scheduledRevision as a number", in: `{"schemaVersion":1,"scheduledRevision":1}`, path: "/scheduledRevision", msg: "expected string, got number"},
+		{name: "scheduledAt as a number", in: `{"schemaVersion":1,"scheduledAt":20261110}`, path: "/scheduledAt", msg: "expected string, got number"},
+		{name: "null scheduledAt", in: `{"schemaVersion":1,"scheduledAt":null}`, path: "/scheduledAt", msg: "expected string, got null"},
+		{name: "empty scheduledRevision", in: `{"schemaVersion":1,"scheduledRevision":""}`, path: "/scheduledRevision", msg: "empty string is not allowed"},
+		{name: "duplicate scheduledAt", in: `{"schemaVersion":1,"scheduledAt":"a","scheduledAt":"b"}`, path: "/scheduledAt", msg: "duplicate key"},
 		{name: "item of a revision", in: `{"schemaVersion":1,"slug":"about"}`, path: "/slug", msg: "unknown key"},
 		{name: "key case", in: `{"schemaVersion":1,"ID":"x"}`, path: "/ID", msg: "unknown key"},
 		{name: "duplicate key", in: `{"schemaVersion":1,"type":"post","type":"page"}`, path: "/type", msg: "duplicate key"},
@@ -108,6 +181,23 @@ func TestEntryValidate(t *testing.T) {
 		f(&e)
 		return e
 	}
+	// scheduled returns scheduledEntry changed by f.
+	scheduled := func(f func(e *Entry)) Entry {
+		e := scheduledEntry
+		f(&e)
+		return e
+	}
+	// with returns aboutPageEntry with the status s, and the published revision only if s is published, changed by f.
+	with := func(s Status, f func(e *Entry)) Entry {
+		return entry(func(e *Entry) {
+			e.Status = s
+			if s != StatusPublished {
+				e.PublishedRevision = ""
+			}
+			f(e)
+		})
+	}
+	const notScheduled = ": not allowed unless the status is scheduled"
 	tests := []struct {
 		name  string
 		in    Entry
@@ -116,7 +206,7 @@ func TestEntryValidate(t *testing.T) {
 	}{
 		{name: "about page", in: aboutPageEntry},
 		{name: "draft", in: entry(func(e *Entry) { e.Status, e.PublishedRevision = StatusDraft, "" })},
-		{name: "scheduled", in: entry(func(e *Entry) { e.Status, e.PublishedRevision = StatusScheduled, "" })},
+		{name: "scheduled", in: scheduledEntry},
 		{name: "archived", in: entry(func(e *Entry) { e.Status, e.PublishedRevision = StatusArchived, "" })},
 		{name: "post", in: entry(func(e *Entry) { e.Type = TypePost })},
 		{name: "custom type", in: entry(func(e *Entry) { e.Type, e.Language = "works", "en" })},
@@ -181,6 +271,96 @@ func TestEntryValidate(t *testing.T) {
 			in:    entry(func(e *Entry) { e.PublishedRevision = testUser }),
 			paths: []string{"/publishedRevision"},
 			msg:   `/publishedRevision: invalid revision ID "` + testUser + `"`,
+		},
+		{
+			name:  "scheduled without the scheduled items",
+			in:    with(StatusScheduled, func(e *Entry) {}),
+			paths: []string{"/scheduledRevision", "/scheduledAt"},
+			msg: "/scheduledRevision: missing scheduledRevision of a scheduled entry\n" +
+				"/scheduledAt: missing scheduledAt of a scheduled entry",
+		},
+		{
+			name:  "scheduled without scheduledRevision",
+			in:    scheduled(func(e *Entry) { e.ScheduledRevision = "" }),
+			paths: []string{"/scheduledRevision"},
+			msg:   "/scheduledRevision: missing scheduledRevision of a scheduled entry",
+		},
+		{
+			name:  "scheduled without scheduledAt",
+			in:    scheduled(func(e *Entry) { e.ScheduledAt = "" }),
+			paths: []string{"/scheduledAt"},
+			msg:   "/scheduledAt: missing scheduledAt of a scheduled entry",
+		},
+		{
+			name:  "scheduled with publishedRevision",
+			in:    scheduled(func(e *Entry) { e.PublishedRevision = testRevision }),
+			paths: []string{"/publishedRevision"},
+			msg:   "/publishedRevision: not allowed unless the status is published",
+		},
+		{
+			name:  "draft with scheduledRevision",
+			in:    with(StatusDraft, func(e *Entry) { e.ScheduledRevision = testRevision }),
+			paths: []string{"/scheduledRevision"},
+			msg:   "/scheduledRevision" + notScheduled,
+		},
+		{
+			name:  "draft with scheduledAt",
+			in:    with(StatusDraft, func(e *Entry) { e.ScheduledAt = testScheduledAt }),
+			paths: []string{"/scheduledAt"},
+			msg:   "/scheduledAt" + notScheduled,
+		},
+		{
+			name:  "published with scheduledRevision",
+			in:    with(StatusPublished, func(e *Entry) { e.ScheduledRevision = testRevision }),
+			paths: []string{"/scheduledRevision"},
+			msg:   "/scheduledRevision" + notScheduled,
+		},
+		{
+			name:  "published with scheduledAt",
+			in:    with(StatusPublished, func(e *Entry) { e.ScheduledAt = testScheduledAt }),
+			paths: []string{"/scheduledAt"},
+			msg:   "/scheduledAt" + notScheduled,
+		},
+		{
+			name:  "archived with scheduledRevision",
+			in:    with(StatusArchived, func(e *Entry) { e.ScheduledRevision = testRevision }),
+			paths: []string{"/scheduledRevision"},
+			msg:   "/scheduledRevision" + notScheduled,
+		},
+		{
+			name:  "archived with scheduledAt",
+			in:    with(StatusArchived, func(e *Entry) { e.ScheduledAt = testScheduledAt }),
+			paths: []string{"/scheduledAt"},
+			msg:   "/scheduledAt" + notScheduled,
+		},
+		{
+			name:  "draft with scheduled items that are invalid",
+			in:    with(StatusDraft, func(e *Entry) { e.ScheduledRevision, e.ScheduledAt = testUser, "tomorrow" }),
+			paths: []string{"/scheduledRevision", "/scheduledRevision", "/scheduledAt", "/scheduledAt"},
+		},
+		{
+			name:  "invalid scheduledRevision",
+			in:    scheduled(func(e *Entry) { e.ScheduledRevision = testUser }),
+			paths: []string{"/scheduledRevision"},
+			msg:   `/scheduledRevision: invalid revision ID "` + testUser + `"`,
+		},
+		{
+			name:  "scheduledRevision of another kind",
+			in:    scheduled(func(e *Entry) { e.ScheduledRevision = testAboutPage }),
+			paths: []string{"/scheduledRevision"},
+			msg:   `/scheduledRevision: invalid revision ID "` + testAboutPage + `"`,
+		},
+		{
+			name:  "scheduledAt with fractions of a second",
+			in:    scheduled(func(e *Entry) { e.ScheduledAt = "2026-11-10T09:00:00.5+09:00" }),
+			paths: []string{"/scheduledAt"},
+			msg:   `/scheduledAt: invalid date and time "2026-11-10T09:00:00.5+09:00"`,
+		},
+		{
+			name:  "scheduledAt without an offset",
+			in:    scheduled(func(e *Entry) { e.ScheduledAt = "2026-11-10T09:00:00" }),
+			paths: []string{"/scheduledAt"},
+			msg:   `/scheduledAt: invalid date and time "2026-11-10T09:00:00"`,
 		},
 		{
 			name:  "createdAt without an offset",

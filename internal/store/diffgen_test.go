@@ -187,8 +187,9 @@ var diffRevisionData = []struct {
 	{"with other references", 8, true, func(string) []byte { return diffRevisionRefs(1) }},
 }
 
-// diffPublishers is the number of the entries of the pool that publish a revision of their own in the data of
-// diffIndexData: the entry i publishes diffRevisions[i], which AddRevision adds to it, or to another entry.
+// diffPublishers is the number of the entries of the pool that publish or schedule a revision of their own in the data
+// of diffIndexData: the entry i publishes or schedules diffRevisions[i], which AddRevision adds to it, or to another
+// entry.
 const diffPublishers = 3
 
 // diffRevisionRefs returns the JSON of a revision with what the index reads of it, and the IDs of the pools.
@@ -203,8 +204,8 @@ func diffRevisionRefs(variant int) []byte {
 		ent[1] + `", "seo": {"ogImage": "` + med[0] + `"}}`)
 }
 
-// diffIndexData are valid data of the documents of a kind that the index reads more of: numbers, published revisions,
-// and strings that are the IDs of the pools.
+// diffIndexData are valid data of the documents of a kind that the index reads more of: numbers, published and
+// scheduled revisions, and strings that are the IDs of the pools.
 var diffIndexData = func() map[content.RefKind][]diffVariant {
 	ent, trm, med, aut := diffKinds[0].ids, diffKinds[1].ids, diffKinds[2].ids, diffKinds[3].ids
 	entry := func(id, fields string) []byte {
@@ -215,6 +216,13 @@ var diffIndexData = func() map[content.RefKind][]diffVariant {
 		return func(id string) []byte {
 			i := (max(slices.Index(ent, id), 0) + shift) % diffPublishers
 			return entry(id, `"number": 3, "status": "published", "publishedRevision": "`+diffRevisions[i]+`"`)
+		}
+	}
+	// scheduled is published for the entry that schedules the revision.
+	scheduled := func(shift int) func(id string) []byte {
+		return func(id string) []byte {
+			i := (max(slices.Index(ent, id), 0) + shift) % diffPublishers
+			return scheduledEntry(id, 3, diffRevisions[i])
 		}
 	}
 	other := func(ids []string, id string) string {
@@ -232,6 +240,11 @@ var diffIndexData = func() map[content.RefKind][]diffVariant {
 			{"publishes a revision that is never added", 3, func(id string) []byte {
 				return entry(id, `"number": 4, "status": "published", `+
 					`"publishedRevision": "rev_01JE0000000000000000009999"`)
+			}},
+			{"schedules its revision", 12, scheduled(0)},
+			{"schedules the revision of another entry", 4, scheduled(1)},
+			{"schedules a revision that is never added", 3, func(id string) []byte {
+				return scheduledEntry(id, 4, "rev_01JE0000000000000000009999")
 			}},
 		},
 		content.RefTerm: {

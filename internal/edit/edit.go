@@ -1,8 +1,11 @@
 // Package edit saves the documents of a site in a store as the admin screen does (6.7): it normalizes and validates
 // them, validates again the documents that a change makes invalid without changing them, checks them across the site as
 // the build does (internal/siteplan), and updates the store and its index in one Update. The files of media are saved as
-// originals before their documents, and their formats and sizes are read from their contents (internal/mediafile). Import
-// imports a whole site that a Source reads, such as a site directory, into a store that has no documents.
+// originals before their documents, and their formats and sizes are read from their contents (internal/mediafile). Publish,
+// Unpublish and Archive change the state of an entry with the same checks, and Publish redirects the old URL of an entry
+// whose URL it changes. Schedule sets the time at which an entry that is not published is published, with the checks of a
+// publish, and PublishScheduled publishes it then. A Result says whether an operation has changed what a build of the site
+// publishes. Import imports a whole site that a Source reads, such as a site directory, into a store that has no documents.
 package edit
 
 import (
@@ -32,6 +35,7 @@ type Editor struct {
 	theme  *theme.Theme
 	now    func() time.Time
 	ids    idSource
+	notify func(Result)
 	wrap   func(reader) reader // nil outside the tests, which make the reads of the index fail
 }
 
@@ -40,6 +44,17 @@ type Editor struct {
 func New(s *store.Store, schema content.SiteFile, th *theme.Theme) *Editor {
 	return &Editor{store: s, schema: schema, theme: th, now: time.Now, ids: idSource{rand: rand.Reader}}
 }
+
+// Notify makes the Editor call f with the Result of each operation whose Update has committed, after the Update and
+// outside it, in the goroutine of the caller of the operation, which waits for f: it should not block. An operation that
+// saved nothing is one of them, with Publishes false; a retry that returns a recorded result (Op.ID) and an operation
+// that failed are not. Notify must be called before the Editor is used.
+func (e *Editor) Notify(f func(Result)) { e.notify = f }
+
+// SetClock replaces the clock of the operations, which gives the times that they write (such as the creation time of an
+// entry and the date of a post that is published without one) and the time part of the IDs that they make; the IDs keep
+// growing whatever the clock does. SetClock must be called before the Editor is used.
+func (e *Editor) SetClock(now func() time.Time) { e.now = now }
 
 // Op says who does an operation, and which one it is.
 type Op struct {
@@ -52,12 +67,15 @@ type Op struct {
 
 // Result is what an operation has done.
 type Result struct {
-	Kind     content.RefKind
-	ID       string         // of the document that the operation made, changed or deleted; "" for the settings
-	Version  store.Version  // that it saved; the current one if it saved nothing, as when it added a revision to an entry
-	Revision string         // the revision that it added to an entry
-	Number   int            // the number of the entry that it made
-	Warnings content.Errors // problems that do not stop it, located as the build locates its own
+	Kind      content.RefKind
+	ID        string         // of the document that the operation made, changed or deleted; "" for the settings
+	Version   store.Version  // that it saved; the current one if it saved nothing, as when it added a revision to an entry
+	Revision  string         // the revision that it added to an entry, published or scheduled
+	Redirect  string         // the redirect that a publish has registered from the old URL of the entry
+	Number    int            // the number of the entry that it made
+	Warnings  content.Errors // problems that do not stop it, located as the build locates its own
+	Publishes bool           // it has changed what a build of the site publishes, so that a new build is due
+	Status    content.Status // of the entry after an operation that sets it (Publish, Unpublish, Archive, Schedule and PublishScheduled); "" for the others
 }
 
 // request is what a caller asked an operation to do, of which the record of an operation ID keeps the hash.
@@ -104,7 +122,9 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 		hash = q.hash(op.By)
 	}
 	var res Result
+	replayed := false
 	err := e.store.Update(ctx, func(tx *store.Tx) error {
+		replayed = false
 		if op.ID != "" {
 			data, ok, err := tx.Operation(op.ID)
 			if err != nil {
@@ -118,7 +138,7 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 				if rec.Request != hash {
 					return fmt.Errorf("operation ID %q was used for another request", op.ID)
 				}
-				res = rec.Result.result()
+				res, replayed = rec.Result.result(), true
 				return nil
 			}
 		}
@@ -138,6 +158,9 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 	if err != nil {
 		return Result{}, err
 	}
+	if e.notify != nil && !replayed {
+		e.notify(res)
+	}
 	return res, nil
 }
 
@@ -148,12 +171,15 @@ type record struct {
 }
 
 type recordResult struct {
-	Kind     content.RefKind `json:"kind"`
-	ID       string          `json:"id,omitempty"`
-	Version  recordVersion   `json:"version"`
-	Revision string          `json:"revision,omitempty"`
-	Number   int             `json:"number,omitzero"`
-	Warnings []recordProblem `json:"warnings,omitempty"`
+	Kind      content.RefKind `json:"kind"`
+	ID        string          `json:"id,omitempty"`
+	Version   recordVersion   `json:"version"`
+	Revision  string          `json:"revision,omitempty"`
+	Redirect  string          `json:"redirect,omitempty"`
+	Number    int             `json:"number,omitzero"`
+	Publishes bool            `json:"publishes,omitzero"`
+	Status    content.Status  `json:"status,omitempty"`
+	Warnings  []recordProblem `json:"warnings,omitempty"`
 }
 
 type recordVersion struct {
@@ -176,7 +202,7 @@ type recordProblem struct {
 func newRecordResult(r Result) recordResult {
 	v := r.Version
 	rec := recordResult{
-		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Number: r.Number,
+		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Redirect: r.Redirect, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
 		Version: recordVersion{Seq: v.Seq, Kind: v.Kind, ID: v.ID, Hash: v.Hash, SavedAt: v.SavedAt, SavedBy: v.SavedBy},
 	}
 	for _, w := range r.Warnings {
@@ -188,7 +214,7 @@ func newRecordResult(r Result) recordResult {
 func (r recordResult) result() Result {
 	v := r.Version
 	res := Result{
-		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Number: r.Number,
+		Kind: r.Kind, ID: r.ID, Revision: r.Revision, Redirect: r.Redirect, Number: r.Number, Publishes: r.Publishes, Status: r.Status,
 		Version: store.Version{Seq: v.Seq, Kind: v.Kind, ID: v.ID, Hash: v.Hash, SavedAt: v.SavedAt, SavedBy: v.SavedBy},
 	}
 	for _, w := range r.Warnings {

@@ -217,6 +217,17 @@ func TestImportParity(t *testing.T) {
 		{"a page at the path of the feed", `/slug: output path "/feed/" is also that of the feed in ja`, func(t *testing.T, dir string) {
 			addPage(t, dir, 1, "feed")
 		}},
+		// A scheduled post without a date has the scheduled time as its date (TestImportScheduled); a published one has none.
+		{"a published post without a date", `/date: missing date`, func(t *testing.T, dir string) {
+			post, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
+			writeSite(t, dir, docName(content.RefEntry, post),
+				storedEntry(post, 137, content.TypePost, "ja", testID(content.RefTranslationGroup, 1), content.StatusPublished, rev))
+			writeSite(t, dir, revisionName(rev), `{
+  "schemaVersion": 1,
+  "title": "Undated",
+  "slug": "undated"
+}`)
+		}},
 		// Validation, which the build runs before the checks across the documents: of a document that another changes.
 		{"a term in another language than the revisions that use it", `is in the language "en", not "ja"`, func(t *testing.T, dir string) {
 			changeSite(t, dir, docName(content.RefTerm, tagJA), `"language": "ja",`, `"language": "en",`)

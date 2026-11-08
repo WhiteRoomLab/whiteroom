@@ -266,7 +266,10 @@ func (e *Editor) ReplaceMedia(ctx context.Context, op Op, id string, base int64,
 		if err != nil {
 			return Result{}, err
 		}
-		res := Result{Kind: content.RefMedia, ID: id, Version: v, Warnings: declaredWarning(f, info.MIMEType, declaredType)}
+		res := Result{
+			Kind: content.RefMedia, ID: id, Version: v, Warnings: declaredWarning(f, info.MIMEType, declaredType),
+			Publishes: v.Seq != cur.Seq,
+		}
 		if v.Seq == cur.Seq {
 			return res, nil
 		}

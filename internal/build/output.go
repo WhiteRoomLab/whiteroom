@@ -19,8 +19,10 @@ import (
 
 // The output directory holds only what the build makes: the lock file; the directory of the releases, each a
 // directory named with 16 hex digits that has the public directory, server.json and nginx.conf; and the symbolic link
-// to the release that is published. What builds that did not end leave has names that start with tmpPrefix in the
-// directory of the releases, and with linkPrefix.
+// to the release that is published. A name of 16 hex digits in the directory of the releases is always a whole
+// release: a build writes a release under a name that starts with tmpPrefix and renames it, and renames a release the
+// same way before it removes it. What builds that did not end leave, a release that they were writing or removing,
+// has names that start with tmpPrefix in the directory of the releases, and with linkPrefix.
 const (
 	lockFile    = ".lock"
 	releasesDir = "releases"
@@ -239,10 +241,11 @@ func releaseName(ctx context.Context, rel *os.Root, workers int) (name string, f
 }
 
 // publish publishes the release in tmp, a temporary directory in the releases of root, an output directory, under its
-// name: it renames tmp to releases/<name>, or removes tmp if releases/<name> exists, which then has the same content.
-// Then, unless previous, the release that current points to, is name, it points current to releases/<name> by renaming
-// a new relative symbolic link over it, which replaces it at once. It reports whether current has changed. If it
-// fails, root is as it was, apart from tmp.
+// name: it renames tmp to releases/<name>, or removes tmp if releases/<name> exists, which is a whole release (see
+// removeRelease) and so has the same content. Then, unless previous, the release that current points to, is name, it
+// points current to releases/<name> by renaming a new relative symbolic link over it, which replaces it at once. It
+// reports whether current has changed. If it fails, root is as it was, apart from tmp, and from what is left of the
+// release that it has made and cannot remove, under a temporary name.
 func publish(root *os.Root, tmp, name, previous string) (changed bool, err error) {
 	dir := releasesDir + "/" + name
 	fi, err := root.Lstat(dir)
@@ -258,34 +261,57 @@ func publish(root *os.Root, tmp, name, previous string) (changed bool, err error
 	if err != nil || name == previous {
 		return false, outError(root, err)
 	}
-	link, err := unique(linkPrefix, func(link string) error { return root.Symlink(dir, link) })
-	if err == nil {
-		if err = root.Rename(link, currentLink); err != nil {
-			err = errors.Join(outError(root, err), outError(root, root.Remove(link)))
-		}
-	} else {
-		err = outError(root, err)
-	}
-	if err != nil {
+	if err = pointCurrent(root, name); err != nil {
 		if made {
-			err = errors.Join(err, outError(root, root.RemoveAll(dir)))
+			err = errors.Join(err, removeRelease(root, name))
 		}
 		return false, err
 	}
 	return true, nil
 }
 
-// removeOld removes from root, an output directory that held l, the releases of l other than keep, and what builds that
-// did not end left. It removes nothing else.
+// pointCurrent points current in root, an output directory, to the release releases/<name> by renaming a new relative
+// symbolic link over it, which replaces it at once. If it fails, current is as it was.
+func pointCurrent(root *os.Root, name string) error {
+	dir := releasesDir + "/" + name
+	link, err := unique(linkPrefix, func(link string) error { return root.Symlink(dir, link) })
+	if err != nil {
+		return outError(root, err)
+	}
+	if err := root.Rename(link, currentLink); err != nil {
+		return errors.Join(outError(root, err), outError(root, root.Remove(link)))
+	}
+	return nil
+}
+
+// removeOld removes from root, an output directory that held l, the releases of l other than keep (removeRelease, so
+// that one whose removal stops is no release any more), and what builds that did not end left. It removes nothing else.
 func removeOld(root *os.Root, l *layout, keep []string) error {
 	var errs []error
 	for _, name := range l.releases {
 		if !slices.Contains(keep, name) {
-			errs = append(errs, outError(root, root.RemoveAll(releasesDir+"/"+name)))
+			errs = append(errs, removeRelease(root, name))
 		}
 	}
 	for _, name := range l.stale {
 		errs = append(errs, outError(root, root.RemoveAll(name)))
 	}
 	return errors.Join(errs...)
+}
+
+// removeRelease removes the release releases/<name> from root, an output directory. It renames the release to
+// releases/.tmp-<16 random hex digits> and removes that, so that a removal that stops half way, by a crash or an error,
+// leaves nothing under the name of a release, where ListReleases, Rollback and publish would take it for a whole one:
+// checkLayout counts the temporary name as what a build that did not end left, which the next build removes. If the
+// rename fails, the release stays as it is.
+func removeRelease(root *os.Root, name string) error {
+	dir := releasesDir + "/" + name
+	tmp, err := unique(releasesDir+"/"+tmpPrefix, func(tmp string) error { return root.Rename(dir, tmp) })
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return outError(root, err)
+	}
+	return outError(root, root.RemoveAll(tmp))
 }

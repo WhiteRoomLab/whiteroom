@@ -48,6 +48,8 @@ const (
 	opCreateEntry  = "CreateEntry"
 	opSaveSettings = "SaveSettings"
 	opRefusedSave  = "SaveTermRefused"
+	opPublish      = "Publish"
+	opUnpublish    = "Unpublish"
 )
 
 var benchOps = []struct{ name, what string }{
@@ -56,6 +58,8 @@ var benchOps = []struct{ name, what string }{
 	{opCreateEntry, "CreateEntry of a post in ja"},
 	{opSaveSettings, "SaveSettings with another tagline (every document, every published revision and the latest revision of every entry is validated again)"},
 	{opRefusedSave, "Save of that category with the language en, which the published revision of every post refuses (nothing is saved)"},
+	{opPublish, "Publish of a new revision of a published post whose path stays (the revision is saved with SaveRevision before the run, which the time does not count)"},
+	{opUnpublish, "Unpublish of a published post (Publish of its latest revision puts it back after the run, which the time does not count)"},
 }
 
 // benchResult is one run of an operation, or the adding of the posts (the operation benchAdd, as one run).
@@ -409,6 +413,59 @@ func benchOperations(t *testing.T, ed *Editor, s *store.Store, posts int, bl *be
 		r.Problems = len(es)
 		bl.add(t, r)
 	}
+
+	// A published post that no redirect goes to, so that unpublishing it brings no warning: a post of the sample site if
+	// there are no others.
+	post := postEN
+	if posts > 0 {
+		post = benchID(content.RefEntry, 1)
+	}
+	// What the runs do outside their time fails the test if it fails or has a warning, as the runs do.
+	checked := func(what string, run int) func(Result, error) Result {
+		return func(res Result, err error) Result {
+			t.Helper()
+			if err != nil {
+				t.Fatalf("%s (run %d, %d posts) error = %s", what, run, posts, benchError(err))
+			}
+			if len(res.Warnings) > 0 {
+				t.Fatalf("%s (run %d, %d posts) has warnings:\n%s", what, run, posts, benchError(res.Warnings))
+			}
+			return res
+		}
+	}
+	for run := 1; run <= benchRuns; run++ {
+		data := benchRepublished(t, s, post, fmt.Sprintf("保存の時間を測る公開 %d", run))
+		saved := checked("SaveRevision before "+opPublish, run)(ed.SaveRevision(ctx, op, post, summaryOf(t, s, post).Latest, data))
+		seq := read(t, s, content.RefEntry, post).Seq
+		res := do(opPublish, run, func() (Result, error) { return ed.Publish(ctx, op, post, seq, saved.Revision) })
+		if res.Revision != saved.Revision || res.Version.Seq == seq || !res.Publishes || res.Status != content.StatusPublished {
+			t.Fatalf("%s (run %d, %d posts) has not published the revision: %+v", opPublish, run, posts, res)
+		}
+	}
+	for run := 1; run <= benchRuns; run++ {
+		seq := read(t, s, content.RefEntry, post).Seq
+		res := do(opUnpublish, run, func() (Result, error) { return ed.Unpublish(ctx, op, post, seq) })
+		if res.Version.Seq == seq || !res.Publishes || res.Status != content.StatusDraft {
+			t.Fatalf("%s (run %d, %d posts) has not unpublished the post: %+v", opUnpublish, run, posts, res)
+		}
+		back := checked("Publish after "+opUnpublish, run)(ed.Publish(ctx, op, post, res.Version.Seq, summaryOf(t, s, post).Latest))
+		if back.Status != content.StatusPublished {
+			t.Fatalf("%s (run %d, %d posts) has not published the post again: %+v", opUnpublish, run, posts, back)
+		}
+	}
+}
+
+// benchRepublished returns a revision of the published post id with the title title, and the rest of the revision that it
+// publishes, so that publishing it leaves the path of the post as it is.
+func benchRepublished(t *testing.T, s *store.Store, id, title string) []byte {
+	t.Helper()
+	rev := decodeRevision(t, revisionData(t, s, summaryOf(t, s, id).Entry.PublishedRevision))
+	rev.Title = title
+	data, err := rev.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // benchFirst returns the first line of the file name if key is "", else the value of the line of key; "" if there is none.
