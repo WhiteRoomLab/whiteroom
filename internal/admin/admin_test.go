@@ -12,12 +12,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const (
@@ -71,6 +76,12 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+func (c *fakeClock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = t
+}
+
 type reply struct {
 	OK bool `json:"ok"`
 }
@@ -79,16 +90,34 @@ type testIn struct {
 	Name string `json:"name"`
 }
 
-// testConfig returns the Config of the tests, for origin and the trusted proxies.
-func testConfig(origin string, proxies ...netip.Prefix) Config {
-	return Config{Origin: origin, TrustedProxies: proxies}
+// testAccounts returns a Manager for a store in a temporary directory, and the store. The hashes have 2 iterations: the
+// real count takes about a second under the race detector, and only account.NewWithIterations lets a test change it.
+func testAccounts(tb testing.TB) (*account.Manager, *store.Store) {
+	tb.Helper()
+	s, err := store.Create(filepath.Join(tb.TempDir(), "data"))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = s.Close() })
+	m, err := account.NewWithIterations(s, 2)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return m, s
 }
 
-// testServer is a Server with routes for the tests, and the buffer of its log.
+// testConfig returns the Config of the tests, for the Manager, origin and the trusted proxies.
+func testConfig(m *account.Manager, origin string, proxies ...netip.Prefix) Config {
+	return Config{Origin: origin, TrustedProxies: proxies, Accounts: m}
+}
+
+// testServer is a Server with routes for the tests, the buffer of its log, and the store of its Manager.
 type testServer struct {
 	*Server
 	logs    *syncBuffer
 	clock   *fakeClock
+	db      *store.Store
+	seen    *secretWatch
 	reached atomic.Int32 // the requests that POST and DELETE /api/test have taken
 	left    atomic.Int64 // the time left of the context of GET /api/deadline, in nanoseconds
 }
@@ -99,12 +128,15 @@ type testServer struct {
 // GET /api/abort, /api/halfway and /api/panic-after-* (which panic after they write something).
 func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 	t.Helper()
-	ts := &testServer{logs: new(syncBuffer), clock: newFakeClock()}
+	ts := &testServer{logs: new(syncBuffer), clock: newFakeClock(), seen: newSecretWatch()}
 	var prefixes []netip.Prefix
 	for _, p := range proxies {
 		prefixes = append(prefixes, netip.MustParsePrefix(p))
 	}
-	c := testConfig(origin, prefixes...)
+	m, db := testAccounts(t)
+	m.SetClock(ts.clock.now)
+	ts.db = db
+	c := testConfig(m, origin, prefixes...)
 	c.ErrorLog = log.New(ts.logs, "", 0)
 	c.Now = ts.clock.now
 	s, err := New(c)
@@ -112,6 +144,7 @@ func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 		t.Fatal(err)
 	}
 	ts.Server = s
+	t.Cleanup(func() { ts.seen.check(t, ts.logs.String()) })
 	route := func(pattern string, f http.HandlerFunc) { s.handle(pattern, f) }
 	route("GET /api/test", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, reply{OK: true})
@@ -171,24 +204,31 @@ func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 }
 
 // request returns a request for path to ts, as a server reads it. headers are names and values; the name Host sets the
-// Host of the request.
+// Host of the request, and the name RemoteAddr the address of the peer.
 func (ts *testServer) request(method, path, body string, headers ...string) *http.Request {
 	req := httptest.NewRequest(method, ts.origin+path, strings.NewReader(body))
 	req.RequestURI = path
 	for i := 0; i < len(headers); i += 2 {
-		if headers[i] == "Host" {
+		switch headers[i] {
+		case "Host":
 			req.Host = headers[i+1]
-		} else {
+		case "RemoteAddr":
+			req.RemoteAddr = headers[i+1]
+		default:
 			req.Header.Add(headers[i], headers[i+1])
 		}
 	}
 	return req
 }
 
-// send returns the response to the request that request returns.
+// send returns the response to the request that request returns. The test server watches what it answers for the secrets
+// of the test (see secretWatch).
 func (ts *testServer) send(method, path, body string, headers ...string) *http.Response {
+	req := ts.request(method, path, body, headers...)
+	ts.seen.watchRequest(req.Header)
 	rec := httptest.NewRecorder()
-	ts.ServeHTTP(rec, ts.request(method, path, body, headers...))
+	ts.ServeHTTP(rec, req)
+	ts.seen.record(method+" "+path, rec.Code, rec.Header(), rec.Body.Bytes())
 	return rec.Result()
 }
 
@@ -223,6 +263,9 @@ var problems = map[string]struct {
 	"too-large":              {http.StatusRequestEntityTooLarge, "the body is too large"},
 	"unsupported-media-type": {http.StatusUnsupportedMediaType, "the body must be application/json"},
 	"bad-request":            {http.StatusBadRequest, "the body is not the JSON that this resource takes"},
+	"too-many-attempts":      {http.StatusTooManyRequests, "too many failed logins; try again later"},
+	"bad-credentials":        {http.StatusUnauthorized, "wrong login name or password"},
+	"unauthenticated":        {http.StatusUnauthorized, "not logged in"},
 	"busy":                   {http.StatusServiceUnavailable, "the server could not answer in time; try again later"},
 	"internal":               {http.StatusInternalServerError, "the server failed to answer"},
 }
@@ -250,12 +293,29 @@ func checkProblem(t *testing.T, what string, res *http.Response, code string) {
 	if got, want := bodyOf(t, res), problemJSON(code); got != want {
 		t.Errorf("%s has the body %s, want %s", what, got, want)
 	}
-	wantRetry := ""
-	if code == "busy" {
-		wantRetry = "5"
+	retry := res.Header.Values("Retry-After")
+	switch code {
+	case "busy":
+		if !equalValues(retry, "5") {
+			t.Errorf("%s has the Retry-After %q, want 5", what, retry)
+		}
+	case "too-many-attempts":
+		// The wait is in whole seconds, without a sign or a unit.
+		if n, err := strconv.Atoi(strings.Join(retry, ",")); err != nil || len(retry) != 1 || n < 1 || retry[0] != strconv.Itoa(n) {
+			t.Errorf("%s has the Retry-After %q, want one number of seconds from 1", what, retry)
+		}
+	default:
+		if len(retry) != 0 {
+			t.Errorf("%s has the Retry-After %q, want none", what, retry)
+		}
 	}
-	if got := res.Header.Values("Retry-After"); wantRetry == "" && len(got) != 0 || wantRetry != "" && !equalValues(got, wantRetry) {
-		t.Errorf("%s has the Retry-After %q, want %q", what, got, wantRetry)
+	challenge := res.Header.Values("WWW-Authenticate")
+	if p.status == http.StatusUnauthorized {
+		if !equalValues(challenge, "Session") {
+			t.Errorf("%s has the WWW-Authenticate %q, want Session", what, challenge)
+		}
+	} else if len(challenge) != 0 {
+		t.Errorf("%s has the WWW-Authenticate %q, want none", what, challenge)
 	}
 }
 
@@ -332,6 +392,7 @@ func rawExchange(t *testing.T, addr, request string) *http.Response {
 }
 
 func TestNewOrigins(t *testing.T) {
+	m, _ := testAccounts(t)
 	for _, tt := range []struct{ in, want string }{
 		{"https://admin.example.com", "https://admin.example.com"},
 		{"https://admin.example.com/", "https://admin.example.com"},
@@ -355,7 +416,7 @@ func TestNewOrigins(t *testing.T) {
 		{"http://[::1]:8081", "http://[::1]:8081"},
 		{"http://[0:0:0:0:0:0:0:1]", "http://[::1]"},
 	} {
-		s, err := New(testConfig(tt.in))
+		s, err := New(testConfig(m, tt.in))
 		if err != nil {
 			t.Errorf("New(%q) failed: %v", tt.in, err)
 			continue
@@ -446,7 +507,7 @@ func TestNewOrigins(t *testing.T) {
 		{"http://localhost:99999", port},
 		{"http://admin.example.com:99999", port},
 	} {
-		_, err := New(testConfig(tt.in))
+		_, err := New(testConfig(m, tt.in))
 		want := fmt.Sprintf("admin: invalid origin %q: %s", tt.in, tt.reason)
 		if err == nil || err.Error() != want {
 			t.Errorf("New(%q) = %v, want the error %q", tt.in, err, want)
@@ -455,14 +516,15 @@ func TestNewOrigins(t *testing.T) {
 }
 
 func TestNewTrustedProxies(t *testing.T) {
-	_, err := New(testConfig(httpsOrigin, netip.MustParsePrefix("10.0.0.0/8"), netip.Prefix{}))
+	m, _ := testAccounts(t)
+	_, err := New(testConfig(m, httpsOrigin, netip.MustParsePrefix("10.0.0.0/8"), netip.Prefix{}))
 	if want := "admin: invalid trusted proxy invalid Prefix"; err == nil || err.Error() != want {
 		t.Errorf("New with an invalid prefix = %v, want the error %q", err, want)
 	}
 
 	// The Server has its own copy.
 	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
-	s, err := New(testConfig(httpsOrigin, proxies...))
+	s, err := New(testConfig(m, httpsOrigin, proxies...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,6 +585,9 @@ func TestProblem(t *testing.T) {
 	for code, p := range problems {
 		rec := httptest.NewRecorder()
 		rec.Header().Set("Content-Length", "123")
+		if code == "too-many-attempts" {
+			rec.Header().Set("Retry-After", "30")
+		}
 		writeProblem(rec, p.status, code, p.detail)
 		res := rec.Result()
 		checkProblem(t, code, res, code)
@@ -573,6 +638,9 @@ func TestHost(t *testing.T) {
 		{"https://[2001:db8::1]", "[2001:DB8::1]:443", true},
 		{"https://192.0.2.10", "192.0.2.10", true},
 		{"https://192.0.2.10", "192.0.2.11", false},
+		{"https://a_b-c.example.com", "a_b-c.example.com", true},
+		{"https://a_b-c.example.com", "A_B-C.EXAMPLE.COM", true},
+		{"https://a_b-c.example.com", "a_b-c.example.coM:443", true},
 	} {
 		ts := newTestServer(t, tt.origin)
 		what := fmt.Sprintf("GET with the Host %q for %s", tt.host, tt.origin)
@@ -1049,7 +1117,8 @@ func TestPanic(t *testing.T) {
 	}
 
 	// Without a log, a panic is answered all the same.
-	s, err := New(testConfig(httpsOrigin))
+	m, _ := testAccounts(t)
+	s, err := New(testConfig(m, httpsOrigin))
 	if err != nil {
 		t.Fatal(err)
 	}

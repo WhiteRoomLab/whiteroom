@@ -6,6 +6,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // The codes of the problems are for programs. The details are fixed sentences, with no value of the request and no
@@ -18,6 +20,9 @@ const (
 	codeTooLarge             = "too-large"
 	codeUnsupportedMediaType = "unsupported-media-type"
 	codeBadRequest           = "bad-request"
+	codeTooManyAttempts      = "too-many-attempts"
+	codeBadCredentials       = "bad-credentials"
+	codeUnauthenticated      = "unauthenticated"
 	codeBusy                 = "busy"
 	codeInternal             = "internal"
 
@@ -28,6 +33,9 @@ const (
 	detailTooLarge             = "the body is too large"
 	detailUnsupportedMediaType = "the body must be application/json"
 	detailBadRequest           = "the body is not the JSON that this resource takes"
+	detailTooManyAttempts      = "too many failed logins; try again later"
+	detailBadCredentials       = "wrong login name or password"
+	detailUnauthenticated      = "not logged in"
 	detailBusy                 = "the server could not answer in time; try again later"
 	detailInternal             = "the server failed to answer"
 )
@@ -41,7 +49,9 @@ type problem struct {
 	Code   string `json:"code"`
 }
 
-// writeProblem answers with the problem that has status, code and detail. A 503 asks for a retry in 5 seconds.
+// writeProblem answers with the problem that has status, code and detail. A 503 asks for a retry in 5 seconds, and a 401
+// has the challenge that RFC 9110 asks for, the scheme Session of the cookie of the login: it is not a registered scheme,
+// and a browser does not act on it.
 func writeProblem(w http.ResponseWriter, status int, code, detail string) {
 	body, err := json.Marshal(problem{
 		Type:   "about:blank",
@@ -57,11 +67,21 @@ func writeProblem(w http.ResponseWriter, status int, code, detail string) {
 	h := w.Header()
 	h.Del("Content-Length")
 	h.Set("Content-Type", "application/problem+json")
-	if status == http.StatusServiceUnavailable {
+	switch status {
+	case http.StatusServiceUnavailable:
 		h.Set("Retry-After", "5")
+	case http.StatusUnauthorized:
+		h.Set("WWW-Authenticate", "Session")
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// writeTooManyAttempts answers 429 and asks for a retry after wait, rounded up to whole seconds. The answer does not tell
+// which limit refused, or whether an account has the login name.
+func writeTooManyAttempts(w http.ResponseWriter, wait time.Duration) {
+	w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+	writeProblem(w, http.StatusTooManyRequests, codeTooManyAttempts, detailTooManyAttempts)
 }
 
 // writeJSON answers with status and v as JSON. It answers 500 if v has no JSON form.

@@ -249,7 +249,8 @@ func refClientAddr(s *Server, remote string, unix bool, lines []string) netip.Ad
 // FuzzClientAddr checks that clientAddr always returns a plain, valid address, with clientPrefix, and that it is what
 // the long way gives.
 func FuzzClientAddr(f *testing.F) {
-	s, err := New(testConfig(httpsOrigin,
+	m, _ := testAccounts(f)
+	s, err := New(testConfig(m, httpsOrigin,
 		netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8:ffff::/48"), netip.MustParsePrefix("192.0.2.0/24")))
 	if err != nil {
 		f.Fatal(err)

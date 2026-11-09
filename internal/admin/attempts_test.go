@@ -1209,7 +1209,8 @@ func TestAttemptsServer(t *testing.T) {
 	}
 
 	// Without Config.Now, it is time.Now.
-	s, err := New(testConfig(httpsOrigin))
+	m, _ := testAccounts(t)
+	s, err := New(testConfig(m, httpsOrigin))
 	if err != nil {
 		t.Fatal(err)
 	}

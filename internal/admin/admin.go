@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 )
 
 const (
@@ -23,12 +25,16 @@ const (
 	defaultDeadline         = 30 * time.Second
 )
 
+// Config is what New needs to make a Server. Only Origin and Accounts are required.
 type Config struct {
 	// Origin is the origin that browsers use: https with any host, or http with localhost, an IPv4 address in
 	// 127.0.0.0/8 or [::1]; with an optional port, and nothing else.
 	Origin string
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For header is read.
 	TrustedProxies []netip.Prefix
+	// Accounts does the logins and the sessions. It must be a Manager of a store that can write: a request that
+	// authenticates may write the time of its session. Its clock decides the times of the sessions.
+	Accounts *account.Manager
 	// ErrorLog gets the errors that requests run into; nil discards them.
 	ErrorLog *log.Logger
 	// Now is the clock of the limits of login attempts; nil is time.Now.
@@ -36,15 +42,18 @@ type Config struct {
 }
 
 type Server struct {
-	origin   string // as browsers send it
-	https    bool
-	hosts    []string // the values of Host that name the origin, in lower case
-	proxies  []netip.Prefix
-	log      *log.Logger
-	mux      *http.ServeMux
-	deadline time.Duration
-	attempts *attempts
-	handler  http.Handler // the check of cross-origin requests, then the routes
+	origin     string // as browsers send it
+	https      bool
+	hosts      []string // the values of Host that name the origin, in lower case
+	proxies    []netip.Prefix
+	accounts   *account.Manager
+	cookieName string // of the cookie of the session
+	log        *log.Logger
+	mux        *http.ServeMux
+	deadline   time.Duration
+	attempts   *attempts
+	logins     chan struct{} // a place for each login that attempts has allowed and that has not ended
+	handler    http.Handler  // the check of cross-origin requests, then the routes
 }
 
 func New(c Config) (*Server, error) {
@@ -57,14 +66,21 @@ func New(c Config) (*Server, error) {
 			return nil, fmt.Errorf("admin: invalid trusted proxy %v", p)
 		}
 	}
+	if c.Accounts == nil {
+		return nil, errors.New("admin: Config.Accounts is required")
+	}
+	https := o.scheme == "https"
 	s := &Server{
-		origin:   o.String(),
-		https:    o.scheme == "https",
-		hosts:    o.hosts(),
-		proxies:  slices.Clone(c.TrustedProxies),
-		log:      c.ErrorLog,
-		mux:      http.NewServeMux(),
-		deadline: defaultDeadline,
+		origin:     o.String(),
+		https:      https,
+		hosts:      o.hosts(),
+		proxies:    slices.Clone(c.TrustedProxies),
+		accounts:   c.Accounts,
+		cookieName: sessionCookieName(https),
+		log:        c.ErrorLog,
+		mux:        http.NewServeMux(),
+		deadline:   defaultDeadline,
+		logins:     make(chan struct{}, maxLogins),
 	}
 	if s.log == nil {
 		s.log = log.New(io.Discard, "", 0)
@@ -74,6 +90,9 @@ func New(c Config) (*Server, error) {
 		now = time.Now
 	}
 	s.attempts = newAttempts(now, attemptsCapacity, warnEveryMinute(s.log, now))
+	s.handle("POST /api/session", http.HandlerFunc(s.login))
+	s.handle("GET /api/session", s.withSession(s.showSession))
+	s.handle("DELETE /api/session", http.HandlerFunc(s.logout))
 	s.handler = s.csrf(http.HandlerFunc(s.serveRoutes))
 	return s, nil
 }
