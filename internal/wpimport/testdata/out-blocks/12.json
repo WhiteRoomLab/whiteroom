@@ -1,0 +1,29 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "heading",
+      "id": "b_zog1izjv",
+      "anchor": "details",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "詳細"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_vdv83dy8",
+      "content": [
+        {
+          "type": "text",
+          "text": "お知らせの本文です。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "form",
+      "id": "b_y8vo6kd0",
+      "attrs": {
+        "form": "frm_0000000000X90TSZ5WHWJDMVPM"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_78isgvt5",
+      "attrs": {
+        "html": "<!-- wp:contact-form-7/contact-form-selector {\"id\":99,\"hash\":\"ffffffff\",\"title\":\"取り込まないフォーム\"} -->\n<div class=\"wp-block-contact-form-7-contact-form-selector\">[contact-form-7 id=\"ffffffff\" title=\"取り込まないフォーム\"]</div>\n<!-- /wp:contact-form-7/contact-form-selector -->",
+        "reason": "the form \"取り込まないフォーム\" is not imported"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_9vtitqt7",
+      "content": [
+        {
+          "type": "text",
+          "text": "ご質問は、お気軽にどうぞ。"
+        }
+      ]
+    },
+    {
+      "type": "buttons",
+      "id": "b_nj0kxg9v",
+      "content": [
+        {
+          "type": "button",
+          "id": "b_cr9hpk8w",
+          "attrs": {
+            "label": "会社概要へ",
+            "link": {
+              "entry": "ent_0000000000DRCKCT351KA3BMTB"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_zp1pt7zz",
+      "attrs": {
+        "html": "<!-- wp:block {\"ref\":42} /-->",
+        "reason": "the synced pattern 42 is not published; WordPress shows nothing for it"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_jb84v7kr",
+      "attrs": {
+        "html": "<!-- wp:block {\"ref\":43} /-->",
+        "reason": "the synced pattern 43 has a password; WordPress shows nothing for it"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_x0al1ons",
+      "attrs": {
+        "html": "<!-- wp:block {\"ref\":99} /-->",
+        "reason": "the synced pattern 99 is not in the WXR"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_131o279i",
+      "attrs": {
+        "html": "<!-- wp:pattern {\"slug\":\"twentytwentyfive/cta-banner\"} /-->",
+        "reason": "the pattern \"twentytwentyfive/cta-banner\" of the theme is not in the WXR"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_qfqosa87",
+      "attrs": {
+        "html": "<!-- wp:latest-posts {\"postsToShow\":4,\"displayPostDate\":true} /-->",
+        "reason": "the block \"core/latest-posts\" is made by WordPress when the page is shown"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_j1jm05ui",
+      "attrs": {
+        "html": "<!-- wp:acme-shop/product-card {\"productId\":42,\"showPrice\":true} -->\n<div class=\"wp-block-acme-shop-product-card\"><span class=\"product-name\">サンプル商品</span></div>\n<!-- /wp:acme-shop/product-card -->",
+        "reason": "the block \"acme-shop/product-card\" is not converted"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_nsp7vyo1",
+      "attrs": {
+        "html": "<!-- wp:mytheme/hero {\"title\":\"ようこそ\"} -->\n<section class=\"wp-block-mytheme-hero\"><h2>ようこそ</h2></section>\n<!-- /wp:mytheme/hero -->",
+        "reason": "the block \"mytheme/hero\" is not converted"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_0pmj79c2",
+      "attrs": {
+        "html": "<!-- wp:video -->\n<figure class=\"wp-block-video\"><video controls src=\"https://example.com/wp-content/uploads/2026/10/movie.mp4\"></video></figure>\n<!-- /wp:video -->",
+        "reason": "whiteroom has no video blocks yet (stage 2)"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_yxxvfvj8",
+      "attrs": {
+        "html": "<!-- wp:audio -->\n<figure class=\"wp-block-audio\"><audio controls src=\"https://example.com/wp-content/uploads/2026/10/voice.mp3\"></audio></figure>\n<!-- /wp:audio -->",
+        "reason": "whiteroom has no audio blocks yet (stage 2)"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_4dq87fxc",
+      "attrs": {
+        "html": "<!-- wp:shortcode -->\n[gallery ids=\"50,51\" columns=\"2\"]\n<!-- /wp:shortcode -->",
+        "reason": "the shortcode block is not converted yet"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_iftgrd6b",
+      "attrs": {
+        "html": "<!-- wp:freeform -->\n<p>クラシックのブロックの中の段落です。</p>\n<!-- /wp:freeform -->",
+        "reason": "the HTML of the classic editor is not converted yet"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_m7879qhj",
+      "attrs": {
+        "html": "\n\n<p>ブロックの外にある、旧エディターの段落です。</p>\n\n",
+        "reason": "the HTML of the classic editor is not converted yet"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_f9x3ipz6",
+      "content": [
+        {
+          "type": "text",
+          "text": "属性の JSON が壊れた段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_ry0tpgfe",
+      "content": [
+        {
+          "type": "text",
+          "text": "この段落は、閉じられていません。"
+        }
+      ]
+    }
+  ]
+}

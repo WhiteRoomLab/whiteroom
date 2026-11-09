@@ -1,0 +1,88 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "embed",
+      "id": "b_qwpvysmu",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "caption": [
+          {
+            "type": "text",
+            "text": "動画の説明"
+          }
+        ]
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_q3umnk7x",
+      "attrs": {
+        "provider": "vimeo",
+        "url": "https://vimeo.com/76979871"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_6bzw6w6q",
+      "attrs": {
+        "provider": "x",
+        "url": "https://twitter.com/example/status/1234567890123456789"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_vs5tbnmh",
+      "attrs": {
+        "html": "<!-- wp:embed {\"url\":\"https://www.instagram.com/p/AbCdEfGhIjK/\",\"type\":\"rich\",\"providerNameSlug\":\"instagram\",\"responsive\":true} -->\n<figure class=\"wp-block-embed is-type-rich is-provider-instagram wp-block-embed-instagram\"><div class=\"wp-block-embed__wrapper\">\nhttps://www.instagram.com/p/AbCdEfGhIjK/\n</div></figure>\n<!-- /wp:embed -->",
+        "reason": "embeds of \"instagram\" are not allowed"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_rst6mepz",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_3499cs04",
+      "attrs": {
+        "provider": "vimeo",
+        "url": "https://player.vimeo.com/video/76979871"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_p66ucve4",
+      "attrs": {
+        "provider": "googleMaps",
+        "url": "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3240.8!2d139.76!3d35.68"
+      }
+    },
+    {
+      "type": "html",
+      "id": "b_ydtfxxyu",
+      "attrs": {
+        "html": "<iframe src=\"https://booking.example.net/widget\" width=\"600\" height=\"400\" title=\"予約\"></iframe>"
+      }
+    },
+    {
+      "type": "html",
+      "id": "b_vm1i8goi",
+      "attrs": {
+        "html": "<div class=\"promo-banner\"><span>期間限定のキャンペーン</span> <a href=\"https://example.com/campaign/\">詳しくはこちら</a></div>"
+      }
+    },
+    {
+      "type": "html",
+      "id": "b_qcwt7i87",
+      "attrs": {
+        "html": "<script>window.dataLayer = window.dataLayer || [];</script>"
+      }
+    }
+  ]
+}

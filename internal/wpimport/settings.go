@@ -29,7 +29,8 @@ type Settings struct {
 	URLs URLSettings  `json:"urls"`
 	// DefaultCategory is the slug, decoded, of the category that %category% takes for a post without one: "" if the
 	// permalink structure of the posts has no such tag.
-	DefaultCategory string `json:"defaultCategory"`
+	DefaultCategory string        `json:"defaultCategory"`
+	Blocks          BlockSettings `json:"blocks"`
 }
 
 // SiteSettings are the general settings of the site, in its language.
@@ -46,6 +47,8 @@ type SiteSettings struct {
 	PostsPage int64 `json:"postsPage"`
 	Logo      int64 `json:"logo"`
 	Icon      int64 `json:"icon"`
+	// AllowHTML is the site setting allowHtml (6.6.8): if it is false, custom HTML becomes a legacy block.
+	AllowHTML bool `json:"allowHtml"`
 }
 
 // URLSettings are the URL rules of the schema file (6.6.8) by the names in whiteroom. An empty rule is the default one.
@@ -60,6 +63,39 @@ type URLSettings struct {
 type TypeURLs struct {
 	URL     string `json:"url"`
 	Archive string `json:"archive"`
+}
+
+// BlockSettings tells how the blocks of the old site are named in the theme of the site (6.10.5): the keys are the names
+// in WordPress and the values the names in the theme. A name that is not a key is kept as it is, and a value of "" leaves
+// it out: a preset or a block style is not imported, and an inline element keeps only its text.
+type BlockSettings struct {
+	Presets PresetSettings `json:"presets"`
+	// Variants maps the block styles (the name after is-style-).
+	Variants map[string]string `json:"variants"`
+	// Marks maps the classes of the inline elements (mark and span) to the highlight variants.
+	Marks map[string]string `json:"marks"`
+	// ImageSizes maps the sizes of images.
+	ImageSizes map[string]string `json:"imageSizes"`
+}
+
+// PresetSettings maps the slugs of the presets of the theme of WordPress, by kind.
+type PresetSettings struct {
+	Color      map[string]string `json:"color"`
+	Gradient   map[string]string `json:"gradient"`
+	FontSize   map[string]string `json:"fontSize"`
+	FontFamily map[string]string `json:"fontFamily"`
+	Spacing    map[string]string `json:"spacing"`
+}
+
+// emptyBlockSettings returns BlockSettings with empty maps, as ProposeSettings writes them and ReadSettings reads them.
+func emptyBlockSettings() BlockSettings {
+	return BlockSettings{
+		Presets: PresetSettings{
+			Color: map[string]string{}, Gradient: map[string]string{}, FontSize: map[string]string{},
+			FontFamily: map[string]string{}, Spacing: map[string]string{},
+		},
+		Variants: map[string]string{}, Marks: map[string]string{}, ImageSizes: map[string]string{},
+	}
 }
 
 // WriteJSON writes the settings as JSON with every key, also those with no value, so that the file shows what can be
@@ -235,7 +271,9 @@ func (imp *Import) postSource(id int64) Source {
 
 // ProposeSettings guesses the settings of the site (6.10.1, 6.10.4) from the channel of the WXR, from the REST API in
 // imp.REST if there is one, and from the links of the old site, and records the grounds of the guess and the values to
-// check or to enter in the report. defs is the schema file of the developer, as UnmarshalSchema reads it, or nil. The
+// check or to enter in the report. The names that the bodies use (presets, block styles, image sizes, and the classes of
+// inline elements) are listed in Blocks, for the person who imports to map them (6.10.5). defs is the schema file of the
+// developer, as UnmarshalSchema reads it, or nil. The
 // URL rules in it are kept; the others are guessed. It is an error, and nothing is recorded, if the REST API is not that
 // of the site of the WXR, or does not say whose it is.
 func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
@@ -249,7 +287,7 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 		defs = &content.Site{}
 	}
 	ch := &imp.WXR.Channel
-	s := &Settings{URLs: URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}}}
+	s := &Settings{URLs: URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}}, Blocks: emptyBlockSettings()}
 	st := &s.Site
 	st.Name, st.Tagline = ch.Title, ch.Description
 	if st.Name == "" {
@@ -268,6 +306,7 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 		return nil, err
 	}
 	imp.reportSkippedTypes(defs)
+	imp.proposeBlocks(s, defs)
 	imp.reportSkippedTaxonomies(defs)
 	return s, nil
 }
@@ -709,6 +748,7 @@ func (imp *Import) Site(s *Settings, defs *content.Site) (*content.Site, error) 
 		DefaultLanguage: st.Language,
 		PostsPerPage:    st.PostsPerPage,
 		SEO:             content.SiteSEO{NoIndex: st.NoIndex},
+		AllowHTML:       st.AllowHTML,
 	}
 	if st.Name != "" {
 		site.Name = content.Localized{st.Language: st.Name}
@@ -747,6 +787,7 @@ func (imp *Import) Site(s *Settings, defs *content.Site) (*content.Site, error) 
 	}
 	site.AuthorURL = s.URLs.Author
 	setSchemaURLs(site, s, fail)
+	checkBlockNames(&s.Blocks, fail)
 
 	site.NormalizeSettings()
 	if err := site.Validate(imp.Ref); err != nil {
@@ -816,6 +857,31 @@ func setSchemaURLs(site *content.Site, s *Settings, fail func(pointer, format st
 			fail("/urls/taxonomies/"+pointerEscaper.Replace(name), "taxonomy %q is not in the schema file", name)
 		} else {
 			site.Taxonomies[i].URL = s.URLs.Taxonomies[name]
+		}
+	}
+}
+
+// checkBlockNames fails for each value of the maps that is neither empty nor a name that whiteroom accepts.
+func checkBlockNames(b *BlockSettings, fail func(pointer, format string, args ...any)) {
+	for _, m := range []struct {
+		pointer string
+		names   map[string]string
+	}{
+		{"/blocks/presets/color/", b.Presets.Color},
+		{"/blocks/presets/gradient/", b.Presets.Gradient},
+		{"/blocks/presets/fontSize/", b.Presets.FontSize},
+		{"/blocks/presets/fontFamily/", b.Presets.FontFamily},
+		{"/blocks/presets/spacing/", b.Presets.Spacing},
+		{"/blocks/variants/", b.Variants},
+		{"/blocks/marks/", b.Marks},
+		{"/blocks/imageSizes/", b.ImageSizes},
+	} {
+		for _, key := range slices.Sorted(maps.Keys(m.names)) {
+			if name := m.names[key]; name != "" {
+				if err := content.CheckName(name); err != nil {
+					fail(m.pointer+pointerEscaper.Replace(key), "%s", err.Error())
+				}
+			}
 		}
 	}
 }

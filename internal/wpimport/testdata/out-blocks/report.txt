@@ -1,0 +1,45 @@
+blocks.xml:82:2: skipped: item 20 (post "テキストのブロック"): 1 page break is removed; whiteroom has no page breaks -> revisions/rev_0000000000JW4F4DHQTQQS04AF.json#/body
+blocks.xml:82:2: skipped: item 20 (post "テキストのブロック"): the anchor "section-1" is not imported: another block has it -> revisions/rev_0000000000JW4F4DHQTQQS04AF.json#/body/10
+blocks.xml:82:2: skipped: item 20 (post "テキストのブロック"): the color preset "pale-pink" is not imported: blocks.presets.color maps it to nothing -> revisions/rev_0000000000JW4F4DHQTQQS04AF.json#/body/4
+blocks.xml:82:2: skipped: item 20 (post "テキストのブロック"): the spacer is removed: its height "var:preset|spacing|60" is not one that whiteroom accepts: blocks.presets.spacing maps it to nothing -> revisions/rev_0000000000JW4F4DHQTQQS04AF.json#/body
+blocks.xml:82:2: changed: item 20 (post "テキストのブロック"): the heading level 1 is 2 here; h1 is for the title -> revisions/rev_0000000000JW4F4DHQTQQS04AF.json#/body/0
+blocks.xml:189:2: skipped: item 21 (post "リストと引用"): the block style "solid-color" is not imported: a block has one style -> revisions/rev_00000000007AB4Z3RS1N07CRFN.json#/body/6
+blocks.xml:261:2: skipped: item 22 (post "表"): lost hasFixedLayout of the block "core/table"; whiteroom has no such settings -> revisions/rev_00000000005DX2F6YZ7BS0EEWK.json#/body/0
+blocks.xml:261:2: review: item 22 (post "表"): the text has <img>, which rich text cannot have; it is a legacy block -> revisions/rev_00000000005DX2F6YZ7BS0EEWK.json#/body/2
+blocks.xml:295:2: skipped: item 23 (post "画像とファイル"): the image size "medium_large" is not imported: blocks.imageSizes maps it to nothing -> revisions/rev_0000000000WP0YM3021CPXJSB1.json#/body/1
+blocks.xml:295:2: changed: item 23 (post "画像とファイル"): the gallery is 2 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_0000000000WP0YM3021CPXJSB1.json#/body/4
+blocks.xml:295:2: changed: item 23 (post "画像とファイル"): the gallery is 2 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_0000000000WP0YM3021CPXJSB1.json#/body/7
+blocks.xml:295:2: review: item 23 (post "画像とファイル"): the image has no alt; set alt, or decorative for a decorative image -> revisions/rev_0000000000WP0YM3021CPXJSB1.json#/body/1/attrs/alt
+blocks.xml:295:2: review: item 23 (post "画像とファイル"): the image is not an imported attachment; it is a legacy block -> revisions/rev_0000000000WP0YM3021CPXJSB1.json#/body/3
+blocks.xml:351:2: skipped: item 24 (post "レイアウトのブロック"): lost dimRatio, minHeight of the block "core/cover"; whiteroom has no such settings -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/8
+blocks.xml:351:2: skipped: item 24 (post "レイアウトのブロック"): the block style "outline" is not imported: blocks.variants maps it to nothing -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/0/content/0
+blocks.xml:351:2: changed: item 24 (post "レイアウトのブロック"): the accordion is groups here, always open; whiteroom has no accordion blocks -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/10
+blocks.xml:351:2: changed: item 24 (post "レイアウトのブロック"): the columns inside columns are a group here -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/2/content/0/content/0
+blocks.xml:351:2: changed: item 24 (post "レイアウトのブロック"): the cover is a group here; whiteroom has no cover blocks yet (stage 2) -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/8
+blocks.xml:351:2: changed: item 24 (post "レイアウトのブロック"): the details block is a group here, always open; whiteroom has no details blocks yet (stage 2) -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/9
+blocks.xml:351:2: changed: item 24 (post "レイアウトのブロック"): the media and text block is columns here -> revisions/rev_0000000000MNGTQDQT508G6M9Q.json#/body/3
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/4
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/5
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/6
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): custom HTML, which the site does not allow (site.allowHtml is false); it is a legacy block -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/7
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): custom HTML, which the site does not allow (site.allowHtml is false); it is a legacy block -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/8
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): custom HTML, which the site does not allow (site.allowHtml is false); it is a legacy block -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/9
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): embeds of "instagram" are not allowed; it is a legacy block -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/3
+blocks.xml:559:2: changed: item 26 (post "プラグインのブロックと再利用ブロック"): the attributes of the block "core/paragraph" are not valid JSON; they are ignored -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/16
+blocks.xml:559:2: changed: item 26 (post "プラグインのブロックと再利用ブロック"): the synced pattern 41 ("お問い合わせへの案内") is copied here; whiteroom has no shared blocks yet (stage 2) -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/2
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the HTML of the classic editor is not converted yet; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/14
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the HTML of the classic editor is not converted yet; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/15
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the block "acme-shop/product-card" is not converted; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/9
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the block "core/latest-posts" is made by WordPress when the page is shown; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/8
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the block "core/paragraph" is not closed; it ends at the end of the content -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/17
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the block "mytheme/hero" is not converted; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/10
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the form "取り込まないフォーム" is not imported; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/1
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the pattern "twentytwentyfive/cta-banner" of the theme is not in the WXR; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/7
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the shortcode block is not converted yet; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/13
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the synced pattern 42 is not published; WordPress shows nothing for it; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/4
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the synced pattern 43 has a password; WordPress shows nothing for it; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/5
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): the synced pattern 99 is not in the WXR; it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/6
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): whiteroom has no audio blocks yet (stage 2); it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/12
+blocks.xml:559:2: review: item 26 (post "プラグインのブロックと再利用ブロック"): whiteroom has no video blocks yet (stage 2); it is a legacy block -> revisions/rev_0000000000CFXHYQHKZMDBW1FD.json#/body/11
+blocks.xml:634:2: review: item 27 (post "旧エディターの本文"): the HTML of the classic editor is not converted yet; it is a legacy block -> revisions/rev_0000000000VKE1N4AZHH9BJ0CF.json#/body/0
+blocks.xml:665:2: review: item 28 (post "閉じる区切りだけがある本文"): a block closer without an opener ends the blocks; WordPress shows the rest as it is; it is a legacy block -> revisions/rev_00000000007Q66N6NNF62FCKXZ.json#/body/1

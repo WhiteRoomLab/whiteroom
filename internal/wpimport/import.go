@@ -22,6 +22,12 @@ type Import struct {
 	RESTFile string
 
 	refs map[string]importRef
+	urls *urlIndex // made when the links of a body are first converted
+	// patternBodies are the contents of the synced patterns, read when a body first copies the pattern, by its post ID.
+	patternBodies map[int64]*patternBody
+	// forms are the forms of Contact Form 7 in the WXR, collected when a body first looks for one; formsRead tells that.
+	forms     []*wxr.Item
+	formsRead bool
 }
 
 type importRef struct {

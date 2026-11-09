@@ -1,0 +1,407 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "buttons",
+      "id": "b_tvhj5qcn",
+      "content": [
+        {
+          "type": "button",
+          "id": "b_9fds5pnt",
+          "attrs": {
+            "label": "会社概要を見る",
+            "link": {
+              "entry": "ent_0000000000DRCKCT351KA3BMTB"
+            }
+          }
+        },
+        {
+          "type": "button",
+          "id": "b_sy3al20t",
+          "style": {
+            "backgroundColor": {
+              "preset": "accent"
+            }
+          },
+          "attrs": {
+            "label": "お問い合わせ",
+            "link": {
+              "href": "/contact/",
+              "newTab": true
+            },
+            "width": "50%"
+          }
+        }
+      ]
+    },
+    {
+      "type": "columns",
+      "id": "b_njyelkb1",
+      "content": [
+        {
+          "type": "column",
+          "id": "b_y1bs4zu6",
+          "attrs": {
+            "width": "33.33%"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_dg95krh7",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "左のカラム"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "column",
+          "id": "b_n0h2gzkn",
+          "attrs": {
+            "width": "66.66%"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_ayjlbin4",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "右のカラム"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "columns",
+      "id": "b_ctbj0zfj",
+      "content": [
+        {
+          "type": "column",
+          "id": "b_amnsaowz",
+          "content": [
+            {
+              "type": "group",
+              "id": "b_t3sj3ybx",
+              "attrs": {
+                "layout": {
+                  "type": "grid",
+                  "columns": 2
+                }
+              },
+              "content": [
+                {
+                  "type": "group",
+                  "id": "b_1i8xqx4k",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "id": "b_d8wc42hy",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "入れ子の左"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "group",
+                  "id": "b_39lodzc5",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "id": "b_nhsfc9g6",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "入れ子の右"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "column",
+          "id": "b_v1c4g2cl",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_yzewk1jh",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "外側の右"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "columns",
+      "id": "b_ljm5h52h",
+      "content": [
+        {
+          "type": "column",
+          "id": "b_vtlxny5e",
+          "attrs": {
+            "width": "60%"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_yqmgmkpi",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "メディアと文章の、文章の側です。"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "column",
+          "id": "b_y72q8ird",
+          "attrs": {
+            "width": "40%"
+          },
+          "content": [
+            {
+              "type": "image",
+              "id": "b_dxyy8n9g",
+              "attrs": {
+                "media": "med_0000000000SHPNF2S2S3ZAA14M",
+                "alt": "オフィス"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_agys59vy",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_o2ieiel3",
+          "content": [
+            {
+              "type": "text",
+              "text": "制約つきのレイアウトのグループです。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_9cxvsirr",
+      "variant": "box",
+      "attrs": {
+        "layout": {
+          "type": "row",
+          "justify": "spaceBetween",
+          "nowrap": true
+        }
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_7klntwtp",
+          "content": [
+            {
+              "type": "text",
+              "text": "横並びの左"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "id": "b_u3pu25p6",
+          "content": [
+            {
+              "type": "text",
+              "text": "横並びの右"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_f4natuyn",
+      "style": {
+        "padding": {
+          "top": {
+            "preset": "40"
+          },
+          "bottom": {
+            "preset": "40"
+          }
+        },
+        "blockGap": {
+          "preset": "20"
+        }
+      },
+      "attrs": {
+        "layout": {
+          "type": "stack"
+        },
+        "tagName": "section"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_4dph56wt",
+          "content": [
+            {
+              "type": "text",
+              "text": "縦積みの1つめ"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "id": "b_cjt9tjso",
+          "content": [
+            {
+              "type": "text",
+              "text": "縦積みの2つめ"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_ld8woqaq",
+      "attrs": {
+        "layout": {
+          "type": "grid",
+          "columns": 2
+        }
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_kzbv3oyr",
+          "content": [
+            {
+              "type": "text",
+              "text": "グリッドの1つめ"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "id": "b_bd1vglag",
+          "content": [
+            {
+              "type": "text",
+              "text": "グリッドの2つめ"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_m0ta5tqz",
+      "style": {
+        "backgroundColor": {
+          "preset": "black"
+        }
+      },
+      "attrs": {
+        "align": "full"
+      },
+      "content": [
+        {
+          "type": "image",
+          "id": "b_g4auxmsu",
+          "attrs": {
+            "media": "med_0000000000SHPNF2S2S3ZAA14M",
+            "decorative": true
+          }
+        },
+        {
+          "type": "paragraph",
+          "id": "b_rrbv20js",
+          "style": {
+            "fontSize": {
+              "preset": "large"
+            }
+          },
+          "attrs": {
+            "textAlign": "center"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "カバーの上の文章です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_87zanz6r",
+      "attrs": {
+        "label": "詳細の見出し"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_jxpqttzd",
+          "content": [
+            {
+              "type": "text",
+              "text": "詳細を開くと見える文章です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_l9pfoz4q",
+      "content": [
+        {
+          "type": "group",
+          "id": "b_p6h2t729",
+          "attrs": {
+            "label": "よくある質問"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_5ka2tgtq",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "答えの文章です。"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

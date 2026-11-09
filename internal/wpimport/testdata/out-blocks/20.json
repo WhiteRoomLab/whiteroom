@@ -1,0 +1,526 @@
+{
+  "more": 3,
+  "body": [
+    {
+      "type": "heading",
+      "id": "b_ic7cnehd",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "ブロックエディターの本文"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_jr6mfpx3",
+      "content": [
+        {
+          "type": "text",
+          "text": "文中の装飾は、"
+        },
+        {
+          "type": "text",
+          "text": "太字",
+          "marks": [
+            {
+              "type": "bold"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "斜体",
+          "marks": [
+            {
+              "type": "italic"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "下線",
+          "marks": [
+            {
+              "type": "underline"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "取り消し線",
+          "marks": [
+            {
+              "type": "strike"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "code",
+          "marks": [
+            {
+              "type": "code"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、H"
+        },
+        {
+          "type": "text",
+          "text": "2",
+          "marks": [
+            {
+              "type": "subscript"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "O、E=mc"
+        },
+        {
+          "type": "text",
+          "text": "2",
+          "marks": [
+            {
+              "type": "superscript"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、そして改行"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "のあとの文です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_wjx8adzg",
+      "content": [
+        {
+          "type": "text",
+          "text": "リンクは、"
+        },
+        {
+          "type": "text",
+          "text": "会社概要",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "entry": "ent_0000000000DRCKCT351KA3BMTB"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "（内部）、"
+        },
+        {
+          "type": "text",
+          "text": "お知らせの詳細",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "entry": "ent_0000000000EKS9NDW47QADB8B1",
+                "anchor": "details"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "（内部のアンカー）、"
+        },
+        {
+          "type": "text",
+          "text": "短い形のURL",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "entry": "ent_0000000000EKS9NDW47QADB8B1"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "（内部）、"
+        },
+        {
+          "type": "text",
+          "text": "外部の資料",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://www.example.org/docs/",
+                "newTab": true,
+                "rel": [
+                  "nofollow"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "カテゴリーの一覧",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "/category/news/"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "（旧サイトのほかのページ）、"
+        },
+        {
+          "type": "text",
+          "text": "電話番号",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "tel:+81312345678"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_ndmjns22",
+      "content": [
+        {
+          "type": "text",
+          "text": "赤い文字",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "color": {
+                  "value": "#cf2e2e"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "プリセットの文字色",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "color": {
+                  "preset": "accent"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "背景色つきの文字",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "color": {
+                  "value": "#000000"
+                },
+                "backgroundColor": {
+                  "value": "#fcb900"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "テーマ独自のマーカー",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "variant": "marker"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_1pluphg4",
+      "style": {
+        "textColor": {
+          "preset": "accent"
+        },
+        "fontSize": {
+          "preset": "large"
+        }
+      },
+      "attrs": {
+        "textAlign": "center"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "プリセットの文字色・背景色・文字サイズ"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_2iwg1ido",
+      "style": {
+        "textColor": {
+          "value": "#1e73be"
+        },
+        "backgroundColor": {
+          "value": "#f0f4f8"
+        },
+        "fontSize": {
+          "value": "20px"
+        },
+        "lineHeight": {
+          "value": 1.8
+        },
+        "padding": {
+          "top": {
+            "value": "16px"
+          },
+          "right": {
+            "value": "24px"
+          },
+          "bottom": {
+            "value": "16px"
+          },
+          "left": {
+            "value": "24px"
+          }
+        },
+        "margin": {
+          "bottom": {
+            "value": "32px"
+          }
+        },
+        "border": {
+          "width": {
+            "value": "2px"
+          },
+          "style": {
+            "value": "solid"
+          },
+          "color": {
+            "value": "#1e73be"
+          },
+          "radius": {
+            "value": "8px"
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "値で指定した文字色・背景色・文字サイズ・余白・枠線"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_e1kqf75n",
+      "variant": "lead",
+      "className": "intro-text",
+      "anchor": "intro",
+      "content": [
+        {
+          "type": "text",
+          "text": "ブロックスタイルと追加 CSS クラスと HTML アンカーを持つ段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_yxnzsi7s",
+      "content": [
+        {
+          "type": "text",
+          "text": "古池や"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "蛙飛びこむ"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "水の音"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "b_tu7wugpf",
+      "anchor": "section-1",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "アンカーつきの見出し"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "b_63rzsqpv",
+      "style": {
+        "gradient": {
+          "preset": "sunset"
+        },
+        "fontFamily": {
+          "preset": "body"
+        }
+      },
+      "attrs": {
+        "level": 3,
+        "textAlign": "center"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "中央にそろえた見出し"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "b_70pt8bug",
+      "attrs": {
+        "level": 4
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "同じアンカーの見出し"
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "id": "b_nktgy813",
+      "attrs": {
+        "language": "go"
+      },
+      "content": "func main() {\n    fmt.Println(\"hello\")\n}"
+    },
+    {
+      "type": "code",
+      "id": "b_jextgvqy",
+      "content": "整形済みの   テキスト\n2行目"
+    },
+    {
+      "type": "separator",
+      "id": "b_mx779p9h",
+      "variant": "wide"
+    },
+    {
+      "type": "spacer",
+      "id": "b_pwnc9bh5",
+      "attrs": {
+        "height": {
+          "value": "50px"
+        }
+      }
+    },
+    {
+      "type": "spacer",
+      "id": "b_mfizbq0o",
+      "attrs": {
+        "height": {
+          "preset": "40"
+        }
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_58t6wyd6",
+      "content": [
+        {
+          "type": "text",
+          "text": "改ページのあとの段落です。"
+        }
+      ]
+    }
+  ]
+}
