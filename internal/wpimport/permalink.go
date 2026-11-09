@@ -389,11 +389,24 @@ func linkPath(home *url.URL, link string) (string, bool) {
 		return "", false
 	}
 	u, err := url.Parse(link)
-	if err != nil || u.User != nil || u.Opaque != "" || (u.Scheme != "http" && u.Scheme != "https") ||
+	if err != nil {
+		return "", false
+	}
+	return sitePathOf(home, homeBase(home), u)
+}
+
+// homeBase returns the path of the home, in the canonical form of the from of a redirect and without a slash at its end.
+func homeBase(home *url.URL) string {
+	return strings.TrimRight(content.CanonicalFrom(cmp.Or(home.RawPath, home.EscapedPath())), "/")
+}
+
+// sitePathOf returns the path of u in the site at home, whose homeBase is base, as linkPath does for a link that has no
+// query or fragment, or false if u has no path of its own in the site.
+func sitePathOf(home *url.URL, base string, u *url.URL) (string, bool) {
+	if u.User != nil || u.Opaque != "" || (u.Scheme != "http" && u.Scheme != "https") ||
 		!strings.EqualFold(u.Hostname(), home.Hostname()) || !samePort(u, home) {
 		return "", false
 	}
-	base := strings.TrimRight(content.CanonicalFrom(cmp.Or(home.RawPath, home.EscapedPath())), "/")
 	path := content.CanonicalFrom(cmp.Or(u.RawPath, u.EscapedPath()))
 	switch {
 	case path == base:

@@ -1,0 +1,206 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "table",
+      "id": "b_u5byt6aw",
+      "attrs": {
+        "caption": [
+          {
+            "type": "text",
+            "text": "会社の基本情報"
+          }
+        ]
+      },
+      "content": [
+        {
+          "type": "tableRow",
+          "attrs": {
+            "section": "head"
+          },
+          "content": [
+            {
+              "type": "tableCell",
+              "attrs": {
+                "header": true
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "項目"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "attrs": {
+                "header": true
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "内容"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "所在地"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "東京都千代田区"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "設立"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "2010年",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": "4月"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "attrs": {
+            "section": "foot"
+          },
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "備考"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "表のフッターです"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": "b_b6cspjah",
+      "variant": "stripes",
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "A"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "attrs": {
+                "colspan": 2,
+                "textAlign": "center"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "結合したセル"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "B"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "1"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "2"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_275b6s8n",
+      "attrs": {
+        "html": "<!-- wp:table -->\n<figure class=\"wp-block-table\"><table><tbody><tr><td><img src=\"https://example.com/wp-content/uploads/2026/10/lobby.png\" alt=\"\" class=\"wp-image-51\"/></td><td>画像のあるセル</td></tr></tbody></table></figure>\n<!-- /wp:table -->",
+        "reason": "the text has <img>, which rich text cannot have"
+      }
+    }
+  ]
+}

@@ -24,7 +24,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
 )
 
-var update = flag.Bool("update", false, "rewrite the golden files in testdata/out")
+var update = flag.Bool("update", false, "rewrite the golden files in testdata/out and testdata/out-blocks")
 
 // sampleOut holds the golden files of TestImportSample, which go test -update writes: settings.json and propose.txt, the
 // settings that the proposal gives and its report; and what the import makes of them, which is site/settings.json,
@@ -296,6 +296,7 @@ func TestImportWithoutREST(t *testing.T) {
 			Taxonomies: map[string]string{"category": "/category/{path}/", "genre": "/genre/{slug}/", "tag": "/tag/{slug}/"},
 			Types:      map[string]TypeURLs{"works": {URL: "/works/{slug}/"}},
 		},
+		Blocks: emptyBlockSettings(),
 	}
 	if !reflect.DeepEqual(*proposed, want) {
 		t.Errorf("ProposeSettings = %+v, want %+v", *proposed, want)

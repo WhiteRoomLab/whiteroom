@@ -1,0 +1,122 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "image",
+      "id": "b_5v4ay7ay",
+      "attrs": {
+        "media": "med_0000000000SHPNF2S2S3ZAA14M",
+        "alt": "オフィスの外観",
+        "caption": [
+          {
+            "type": "text",
+            "text": "オフィスの"
+          },
+          {
+            "type": "text",
+            "text": "外観",
+            "marks": [
+              {
+                "type": "bold"
+              }
+            ]
+          }
+        ],
+        "link": {
+          "media": "med_0000000000SHPNF2S2S3ZAA14M"
+        },
+        "size": "large"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_8xcvi95u",
+      "variant": "rounded",
+      "attrs": {
+        "media": "med_0000000000M9HE4BHYHYW70J17",
+        "link": {
+          "href": "https://www.example.org/lobby/",
+          "newTab": true
+        },
+        "align": "center"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_badzit01",
+      "attrs": {
+        "media": "med_0000000000SHPNF2S2S3ZAA14M",
+        "alt": "元の大きさのオフィス",
+        "link": {
+          "media": "med_0000000000SHPNF2S2S3ZAA14M"
+        }
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_2na9lmi2",
+      "attrs": {
+        "html": "<!-- wp:image {\"sizeSlug\":\"full\",\"linkDestination\":\"none\"} -->\n<figure class=\"wp-block-image size-full\"><img src=\"https://images.example.net/photo.jpg\" alt=\"ほかのサイトの画像\"/></figure>\n<!-- /wp:image -->",
+        "reason": "the image is not an imported attachment"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_xrgbtue0",
+      "attrs": {
+        "media": "med_0000000000SHPNF2S2S3ZAA14M",
+        "alt": "オフィス",
+        "size": "large"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_ur80pp3m",
+      "attrs": {
+        "media": "med_0000000000M9HE4BHYHYW70J17",
+        "alt": "ロビー",
+        "size": "large"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_hpqh6owd",
+      "content": [
+        {
+          "type": "text",
+          "text": "社内の写真"
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "id": "b_ezcx4ke7",
+      "attrs": {
+        "media": "med_0000000000SHPNF2S2S3ZAA14M",
+        "alt": "オフィス"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_p9g5hvgz",
+      "attrs": {
+        "media": "med_0000000000M9HE4BHYHYW70J17",
+        "alt": "ロビー",
+        "caption": [
+          {
+            "type": "text",
+            "text": "ロビーの写真"
+          }
+        ]
+      }
+    },
+    {
+      "type": "file",
+      "id": "b_7owd9py1",
+      "attrs": {
+        "media": "med_0000000000QRD45TE708WCEF0H",
+        "label": "会社案内"
+      }
+    }
+  ]
+}

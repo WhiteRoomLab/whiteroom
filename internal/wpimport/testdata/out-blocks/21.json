@@ -1,0 +1,278 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "list",
+      "id": "b_w8sv6fmz",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_iajcqfjm",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "項目1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_y8f7gwh5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "項目2"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "id": "b_ff3si0dn",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "id": "b_wgcsmx7v",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "入れ子の項目"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "id": "b_hi313zfk",
+      "attrs": {
+        "ordered": true,
+        "start": 3
+      },
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_hy2jrwvl",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "3番目の項目"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_ij381crw",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "4番目の"
+                },
+                {
+                  "type": "text",
+                  "text": "項目",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "id": "b_ggy0fpiy",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_cmtkrpzw",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "6.1より前の形の項目1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_7tr7lman",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "項目2"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "id": "b_tgjbrrdd",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "id": "b_1xnf60ky",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "入れ子の項目"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "quote",
+      "id": "b_1lrlptxc",
+      "attrs": {
+        "citation": [
+          {
+            "type": "text",
+            "text": "出典の名前"
+          }
+        ]
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_437r2ki7",
+          "content": [
+            {
+              "type": "text",
+              "text": "引用の本文です。"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "id": "b_gv43z1su",
+          "content": [
+            {
+              "type": "text",
+              "text": "2つ目の段落です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "quote",
+      "id": "b_ih8v0whg",
+      "attrs": {
+        "citation": [
+          {
+            "type": "text",
+            "text": "古い出典"
+          }
+        ]
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_vx5rmowg",
+          "content": [
+            {
+              "type": "text",
+              "text": "古い形の引用です。"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "id": "b_rx6wt6gh",
+          "content": [
+            {
+              "type": "text",
+              "text": "2つ目の段落です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "quote",
+      "id": "b_k438ny71",
+      "variant": "pullquote",
+      "attrs": {
+        "citation": [
+          {
+            "type": "text",
+            "text": "発言した人"
+          }
+        ]
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_fw5x49du",
+          "content": [
+            {
+              "type": "text",
+              "text": "プルクオートの文です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "quote",
+      "id": "b_0pyoak87",
+      "variant": "pullquote",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_1xixz6ex",
+          "content": [
+            {
+              "type": "text",
+              "text": "色つきのプルクオートです。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -10,7 +10,8 @@
     "frontPage": 30,
     "postsPage": 31,
     "logo": 50,
-    "icon": 51
+    "icon": 51,
+    "allowHtml": false
   },
   "urls": {
     "post": "/{yyyy}/{mm}/{dd}/{slug}/",
@@ -28,5 +29,17 @@
       }
     }
   },
-  "defaultCategory": ""
+  "defaultCategory": "",
+  "blocks": {
+    "presets": {
+      "color": {},
+      "gradient": {},
+      "fontSize": {},
+      "fontFamily": {},
+      "spacing": {}
+    },
+    "variants": {},
+    "marks": {},
+    "imageSizes": {}
+  }
 }

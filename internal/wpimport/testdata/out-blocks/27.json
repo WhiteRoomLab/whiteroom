@@ -1,0 +1,13 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "legacy",
+      "id": "b_r35a2efk",
+      "attrs": {
+        "html": "旧エディターで書いた最初の段落です。<strong>太字</strong>もあります。\n\n<h2>旧エディターの見出し</h2>\n\n2つ目の段落です。\nこの改行は、表示のときに <br /> になります。\n\n[contact-form-7 id=\"a1b2c3d\" title=\"お問い合わせ\"]",
+        "reason": "the HTML of the classic editor is not converted yet"
+      }
+    }
+  ]
+}

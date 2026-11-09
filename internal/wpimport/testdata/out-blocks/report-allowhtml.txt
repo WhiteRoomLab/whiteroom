@@ -1,0 +1,7 @@
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/4
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/5
+blocks.xml:489:2: changed: item 25 (post "埋め込みとカスタム HTML"): the iframe of the custom HTML is an embed block here -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/6
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): embeds of "instagram" are not allowed; it is a legacy block -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/3
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): the custom HTML is an html block; check what it shows -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/7
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): the custom HTML is an html block; check what it shows -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/8
+blocks.xml:489:2: review: item 25 (post "埋め込みとカスタム HTML"): the custom HTML is an html block; check what it shows -> revisions/rev_0000000000AHX8E741FZ0XKKX9.json#/body/9

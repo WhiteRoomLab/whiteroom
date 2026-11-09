@@ -1,0 +1,23 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_k58fkbq4",
+      "content": [
+        {
+          "type": "text",
+          "text": "最初の段落です。"
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_udunjr2c",
+      "attrs": {
+        "html": "\n\n<!-- /wp:group -->\n\n<!-- wp:paragraph -->\n<p>この段落は、閉じる区切りのあとにあるので、ブロックとして読まれません。</p>\n<!-- /wp:paragraph -->",
+        "reason": "a block closer without an opener ends the blocks; WordPress shows the rest as it is"
+      }
+    }
+  ]
+}

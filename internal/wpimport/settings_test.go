@@ -837,7 +837,8 @@ func TestSettingsWriteJSON(t *testing.T) {
     "frontPage": 0,
     "postsPage": 0,
     "logo": 0,
-    "icon": 0
+    "icon": 0,
+    "allowHtml": false
   },
   "urls": {
     "post": "",
@@ -846,7 +847,19 @@ func TestSettingsWriteJSON(t *testing.T) {
     "taxonomies": {},
     "types": {}
   },
-  "defaultCategory": ""
+  "defaultCategory": "",
+  "blocks": {
+    "presets": {
+      "color": {},
+      "gradient": {},
+      "fontSize": {},
+      "fontFamily": {},
+      "spacing": {}
+    },
+    "variants": {},
+    "marks": {},
+    "imageSizes": {}
+  }
 }
 `
 	if b.String() != empty {
@@ -856,7 +869,7 @@ func TestSettingsWriteJSON(t *testing.T) {
 	full := &Settings{
 		Site: SiteSettings{
 			Name: "A <b> & \"C\"", Tagline: "手で書いた", URL: "https://example.com/blog", Language: "ja", TimeZone: "Asia/Tokyo",
-			PostsPerPage: 12, NoIndex: true, FrontPage: 30, PostsPage: 31, Logo: 50, Icon: 51,
+			PostsPerPage: 12, NoIndex: true, FrontPage: 30, PostsPage: 31, Logo: 50, Icon: 51, AllowHTML: true,
 		},
 		URLs: URLSettings{
 			Post: "/{slug}/", Page: "/{path}/", Author: "/a/{slug}/",
@@ -864,6 +877,18 @@ func TestSettingsWriteJSON(t *testing.T) {
 			Types:      map[string]TypeURLs{"works": {URL: "/w/{slug}/", Archive: "/w/"}, "book": {}},
 		},
 		DefaultCategory: "お知らせ",
+		Blocks: BlockSettings{
+			Presets: PresetSettings{
+				Color:      map[string]string{"vivid-red": "accent", "pale-pink": ""},
+				Gradient:   map[string]string{"blush-bordeaux": "warm"},
+				FontSize:   map[string]string{"x-large": "huge", "a/b": "ab"},
+				FontFamily: map[string]string{"system-font": "sans"},
+				Spacing:    map[string]string{"50": "small"},
+			},
+			Variants:   map[string]string{"rounded": "round", "fill": ""},
+			Marks:      map[string]string{"marker": "marker", "note~1": "note"},
+			ImageSizes: map[string]string{"large": "wide", "medium_large": ""},
+		},
 	}
 	b.Reset()
 	if err := full.WriteJSON(&b); err != nil {
@@ -881,7 +906,8 @@ func TestSettingsWriteJSON(t *testing.T) {
     "frontPage": 30,
     "postsPage": 31,
     "logo": 50,
-    "icon": 51
+    "icon": 51,
+    "allowHtml": true
   },
   "urls": {
     "post": "/{slug}/",
@@ -903,7 +929,40 @@ func TestSettingsWriteJSON(t *testing.T) {
       }
     }
   },
-  "defaultCategory": "お知らせ"
+  "defaultCategory": "お知らせ",
+  "blocks": {
+    "presets": {
+      "color": {
+        "pale-pink": "",
+        "vivid-red": "accent"
+      },
+      "gradient": {
+        "blush-bordeaux": "warm"
+      },
+      "fontSize": {
+        "a/b": "ab",
+        "x-large": "huge"
+      },
+      "fontFamily": {
+        "system-font": "sans"
+      },
+      "spacing": {
+        "50": "small"
+      }
+    },
+    "variants": {
+      "fill": "",
+      "rounded": "round"
+    },
+    "marks": {
+      "marker": "marker",
+      "note~1": "note"
+    },
+    "imageSizes": {
+      "large": "wide",
+      "medium_large": ""
+    }
+  }
 }
 `
 	if b.String() != want {
@@ -958,6 +1017,48 @@ func TestReadSettings(t *testing.T) {
 		} else if s.Site != (SiteSettings{}) {
 			t.Errorf("ReadSettings(%q) has the site settings %+v", in, s.Site)
 		}
+	}
+}
+
+func TestReadSettingsBlocks(t *testing.T) {
+	// A file from before the names of the blocks has none, and a file with some of them has only those.
+	s, err := ReadSettings("settings.json", []byte(`{"site": {"name": "A"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(s.Blocks, BlockSettings{}) || s.Site.AllowHTML {
+		t.Errorf("a file without them has the blocks %+v and allowHtml %v, want none", s.Blocks, s.Site.AllowHTML)
+	}
+	s, err = ReadSettings("settings.json", []byte(`{"site": {"allowHtml": true}, "blocks": {"presets": {"color": {"red": "accent", "pink": ""}}, "marks": {}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := BlockSettings{
+		Presets: PresetSettings{Color: map[string]string{"red": "accent", "pink": ""}},
+		Marks:   map[string]string{},
+	}
+	if !reflect.DeepEqual(s.Blocks, want) || !s.Site.AllowHTML {
+		t.Errorf("ReadSettings has the blocks %+v and allowHtml %v, want %+v and true", s.Blocks, s.Site.AllowHTML, want)
+	}
+}
+
+func TestProposeEmptyBlockNames(t *testing.T) {
+	// The proposal has every map of the names, empty, and allowHtml false, so that the file shows what can be corrected.
+	s, _ := proposeFrom(t, siteWXR("https://example.com", "ja"), nil, nil)
+	if !reflect.DeepEqual(s.Blocks, emptyBlockSettings()) {
+		t.Errorf("the proposal has the blocks %+v, want empty maps", s.Blocks)
+	}
+	for name, m := range map[string]map[string]string{
+		"color": s.Blocks.Presets.Color, "gradient": s.Blocks.Presets.Gradient, "fontSize": s.Blocks.Presets.FontSize,
+		"fontFamily": s.Blocks.Presets.FontFamily, "spacing": s.Blocks.Presets.Spacing, "variants": s.Blocks.Variants,
+		"marks": s.Blocks.Marks, "imageSizes": s.Blocks.ImageSizes,
+	} {
+		if m == nil || len(m) != 0 {
+			t.Errorf("the names of %s are %#v, want an empty map that is not nil", name, m)
+		}
+	}
+	if s.Site.AllowHTML {
+		t.Error("the proposal has allowHtml true")
 	}
 }
 
@@ -1033,6 +1134,30 @@ func TestReadSettingsErrors(t *testing.T) {
 		{"a second value", `{"site": {}} {}`, []settingsProblem{{at: "{}", nth: 2, msg: "unexpected data after value"}}},
 		{"a second value after white space", "{}\n\n  []", []settingsProblem{{at: "[]", msg: "unexpected data after value"}}},
 		{"truncated", `{"site":`, []settingsProblem{{at: "<end>", pointer: "/site", msg: "unexpected end of JSON input"}}},
+		{"unknown key in the blocks", `{"blocks": {"foo": {}}}`, []settingsProblem{{at: `"foo"`, pointer: "/blocks/foo", msg: "unknown key"}}},
+		{"unknown kind of preset", `{"blocks": {"presets": {"shadow": {}}}}`,
+			[]settingsProblem{{at: `"shadow"`, pointer: "/blocks/presets/shadow", msg: "unknown key"}}},
+		{"a preset in the blocks", `{"blocks": {"color": {}}}`, []settingsProblem{{at: `"color"`, pointer: "/blocks/color", msg: "unknown key"}}},
+		{"a number as a name", `{"blocks": {"variants": {"rounded": 5}}}`,
+			[]settingsProblem{{at: `"rounded"`, pointer: "/blocks/variants/rounded", msg: "expected string, got number"}}},
+		{"a boolean as a name", `{"blocks": {"presets": {"spacing": {"50": true}}}}`,
+			[]settingsProblem{{at: `"50"`, pointer: "/blocks/presets/spacing/50", msg: "expected string, got boolean"}}},
+		{"null as a name", `{"blocks": {"marks": {"marker": null}}}`,
+			[]settingsProblem{{at: `"marker"`, pointer: "/blocks/marks/marker", msg: "null is not allowed; omit the key"}}},
+		{"null as the names of a kind", `{"blocks": {"presets": {"color": null}}}`,
+			[]settingsProblem{{at: `"color"`, pointer: "/blocks/presets/color", msg: "null is not allowed; omit the key"}}},
+		{"an array where the names are", `{"blocks": {"imageSizes": []}}`,
+			[]settingsProblem{{at: `"imageSizes"`, pointer: "/blocks/imageSizes", msg: "expected object, got array"}}},
+		{"a string where the presets are", `{"blocks": {"presets": "red"}}`,
+			[]settingsProblem{{at: `"presets"`, pointer: "/blocks/presets", msg: "expected object, got string"}}},
+		{"a key that has a slash", `{"blocks": {"variants": {"a/b": 1}}}`,
+			[]settingsProblem{{at: `"a/b"`, pointer: "/blocks/variants/a~1b", msg: "expected string, got number"}}},
+		{"the same name twice", `{"blocks": {"variants": {"a": "b", "a": "c"}}}`,
+			[]settingsProblem{{at: `"a"`, nth: 2, pointer: "/blocks/variants/a", msg: "duplicate key"}}},
+		{"allowHtml as a string", `{"site": {"allowHtml": "yes"}}`,
+			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "expected boolean, got string"}}},
+		{"allowHtml as null", `{"site": {"allowHtml": null}}`,
+			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "null is not allowed; omit the key"}}},
 	} {
 		s, err := ReadSettings(file, []byte(tt.in))
 		if err == nil || s != nil {
@@ -1437,6 +1562,88 @@ func TestSiteLanguageErrors(t *testing.T) {
 	}
 }
 
+func TestSiteAllowHTML(t *testing.T) {
+	imp, defs := siteImport(t)
+	for _, allow := range []bool{false, true} {
+		s := sampleSettings()
+		s.Site.AllowHTML = allow
+		site, err := imp.Site(s, defs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if site.AllowHTML != allow {
+			t.Errorf("allowHtml %v in the settings, %v in the site", allow, site.AllowHTML)
+		}
+		settings, err := site.MarshalSettings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := strings.Contains(string(settings), `"allowHtml":true`); has != allow {
+			t.Errorf("the settings document %s has allowHtml true: %v, want %v", settings, has, allow)
+		}
+	}
+}
+
+func TestSiteBlockNames(t *testing.T) {
+	imp, defs := siteImport(t)
+	s := sampleSettings()
+	// Names that the theme can have, and the empty name, which leaves the thing out, are all right.
+	s.Blocks = BlockSettings{
+		Presets: PresetSettings{
+			Color: map[string]string{"vivid-red": "accent_1", "pale-pink": ""}, Gradient: map[string]string{"x": "Y-2"},
+			FontSize: map[string]string{"x-large": "huge"}, FontFamily: map[string]string{"serif": "serif"},
+			Spacing: map[string]string{"50": "s"},
+		},
+		Variants: map[string]string{"rounded": "round"}, Marks: map[string]string{"marker": ""}, ImageSizes: map[string]string{"large": "wide"},
+	}
+	if _, err := imp.Site(s, defs); err != nil {
+		t.Fatalf("Site with names that are right = %v", err)
+	}
+
+	// Each kind is checked, in the order of the file, and the keys of a kind in order; the pointer has the key escaped.
+	bad := func(key string) map[string]string { return map[string]string{key: "a b", "ok": "fine"} }
+	s = sampleSettings()
+	s.Blocks = BlockSettings{
+		Presets: PresetSettings{
+			Color: bad("c2"), Gradient: bad("g"), FontSize: bad("f/s"), FontFamily: bad("ff"), Spacing: bad("sp~"),
+		},
+		Variants: map[string]string{"v2": "-x y", "v1": "ü", "v0": "ok"}, Marks: bad("m"), ImageSizes: bad("i"),
+	}
+	s.Blocks.Presets.Color["c1"] = "1+1"
+	_, err := imp.Site(s, defs)
+	const invalid = `invalid name %q: use ASCII letters, digits, "-" and "_"`
+	sameStrings(t, "the errors", errorLines(t, err), []string{
+		"/blocks/presets/color/c1: " + fmt.Sprintf(invalid, "1+1"),
+		"/blocks/presets/color/c2: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/presets/gradient/g: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/presets/fontSize/f~1s: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/presets/fontFamily/ff: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/presets/spacing/sp~0: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/variants/v1: " + fmt.Sprintf(invalid, "ü"),
+		"/blocks/variants/v2: " + fmt.Sprintf(invalid, "-x y"),
+		"/blocks/marks/m: " + fmt.Sprintf(invalid, "a b"),
+		"/blocks/imageSizes/i: " + fmt.Sprintf(invalid, "a b"),
+	})
+	var errs content.Errors
+	_ = errors.As(err, &errs)
+	for _, e := range errs {
+		if e.File != "" || e.Line != 0 || e.Column != 0 {
+			t.Errorf("the error %+v has a place", *e)
+		}
+	}
+
+	// A name that is too long is an error too, and the others are not hidden by it.
+	s = sampleSettings()
+	s.Site.URL = ""
+	s.Blocks.Variants = map[string]string{"long": strings.Repeat("a", content.MaxTextBytes+1)}
+	_, err = imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || got[0] != fmt.Sprintf("/blocks/variants/long: too long: %d bytes (max %d)", content.MaxTextBytes+1, content.MaxTextBytes) ||
+		!strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %.300q, want one at /blocks/variants/long and one at /site/url", got)
+	}
+}
+
 func TestSiteUnknownDefinitions(t *testing.T) {
 	imp, defs := siteImport(t)
 	s := sampleSettings()
@@ -1685,6 +1892,8 @@ func FuzzReadSettings(f *testing.F) {
 	f.Add([]byte(`{"site":{"name":"A","language":"ja","url":"https://example.com","timeZone":"UTC","frontPage":30,"logo":-1}}`))
 	f.Add([]byte(`{"urls":{"post":"/{slug}/","types":{"works":{"url":"/w/{slug}/","archive":"/w/"},"post":{}},"taxonomies":{"genre":"/g/{slug}/","x":""}}}`))
 	f.Add([]byte("{\"site\":{\"name\":null,\"name\":\"\xff\"},\"foo\":[1,2]}"))
+	f.Add([]byte(`{"site":{"allowHtml":true},"blocks":{"presets":{"color":{"red":"accent","pink":""},"gradient":{"a b":"c d"},"fontSize":{},"fontFamily":{"x":"y"},"spacing":{"50":"s"}},"variants":{"rounded":"round"},"marks":{"a/b":"m"},"imageSizes":{"large":"wide"}}}`))
+	f.Add([]byte(`{"blocks":{"presets":{"shadow":{}},"variants":{"a":1,"a":null},"marks":[],"imageSizes":null}}`))
 
 	// One import serves every input: the sample site, in which the front page and the page of the posts are converted.
 	base, err := os.ReadFile(filepath.Join("testdata", "site.xml"))

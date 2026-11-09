@@ -4,10 +4,11 @@
 // gives each object of WordPress its ID in a Table, and records the entries and the media with AddRef; Site makes the
 // site settings from the corrected Settings, finding the front page, the logo and the like among those records; Terms and
 // Authors make the terms and the author profiles in that site; the conversion of the media and the entries then turns each
-// into an entity, finds the IDs of the others with the Table's Lookup and Ref, and drops from the Table what it cannot
-// import; the writing puts the entities into the site directory. Only reading, the settings, the IDs, the report of what
-// was not imported, Import (the state of an import), the conversion of the terms, of the authors and of the site
-// settings, and the guess of the permalinks are here so far.
+// into an entity, calling Body for the content of each entry to get its blocks, finds the IDs of the others with the
+// Table's Lookup and Ref, and drops from the Table what it cannot import; the writing puts the entities into the site
+// directory. Only reading, the settings, the IDs, the report of what was not imported, Import (the state of an import),
+// the conversion of the terms, of the authors and of the site settings, the conversion of the content of the block editor
+// into blocks (Body), and the guess of the permalinks are here so far.
 package wpimport
 
 import (

@@ -1,0 +1,17 @@
+20: /3/content/0/marks/0/attrs/color/value: the theme allows only presets for color; ignored
+20: /3/content/4/marks/0/attrs/color/value: the theme allows only presets for color; ignored
+20: /3/content/4/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+20: /5/style/textColor/value: the theme allows only presets for color; ignored
+20: /5/style/backgroundColor/value: the theme allows only presets for color; ignored
+20: /5/style/border/color/value: the theme allows only presets for color; ignored
+20: /13/variant: the theme has no separator variant "wide"; rendered without its class
+21: /5/variant: the theme has no quote variant "pullquote"; rendered without its class
+21: /6/variant: the theme has no quote variant "pullquote"; rendered without its class
+22: /1/variant: the theme has no table variant "stripes"; rendered without its class
+23: /1/variant: the theme has no image variant "rounded"; rendered without its class
+23: /1/attrs/alt: no alt in ja: neither the block nor its medium has one; rendered without the alt attribute
+24: /8/style/backgroundColor/preset: the theme has no color preset "black"; ignored
+25: /7/attrs/html: removed <iframe> element and its content
+25: /9/attrs/html: removed <script> element and its content
+26: /11/attrs/html: removed <video> element and its content
+26: /12/attrs/html: removed <audio> element and its content

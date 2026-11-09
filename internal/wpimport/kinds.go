@@ -1,6 +1,10 @@
 package wpimport
 
-import "github.com/WhiteRoomLab/whiteroom/internal/content"
+import (
+	"strings"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
+)
 
 // Taxonomies that other conversions handle: the conversion of the terms leaves them alone and says nothing.
 var ownedTaxonomies = map[string]bool{
@@ -55,4 +59,31 @@ func typeName(wp string, site *content.Site) string {
 		return ""
 	}
 	return wp
+}
+
+// Core blocks that WordPress makes the HTML of when the page is shown: the content only has their delimiters, or little
+// HTML. dynamicBlock tells these by their names, and by the beginnings of names for the families.
+var (
+	dynamicBlocks = map[string]bool{
+		"core/archives": true, "core/avatar": true, "core/breadcrumbs": true, "core/calendar": true, "core/categories": true,
+		"core/footnotes": true, "core/home-link": true, "core/latest-comments": true, "core/latest-posts": true,
+		"core/legacy-widget": true, "core/loginout": true, "core/read-more": true, "core/rss": true, "core/search": true,
+		"core/social-link": true, "core/social-links": true, "core/table-of-contents": true, "core/tag-cloud": true,
+		"core/template-part": true, "core/terms-query": true, "core/widget-group": true,
+	}
+	dynamicPrefixes = []string{
+		"core/comment", "core/navigation", "core/page-list", "core/post-", "core/query", "core/site-", "core/term-",
+	}
+)
+
+func dynamicBlock(name string) bool {
+	if dynamicBlocks[name] {
+		return true
+	}
+	for _, prefix := range dynamicPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
