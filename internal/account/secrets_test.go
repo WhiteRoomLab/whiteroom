@@ -71,6 +71,8 @@ func TestSecretsNotStored(t *testing.T) {
 		wrongTwo   = "marker seven wrong password"
 		tooShort   = "marker eight"
 		cafeThree  = "marker ten changed again"
+		// yamadaThree is the password that yamada changes to through its session.
+		yamadaThree = "marker eleven changed by itself"
 	)
 	cafeOne, cafeTwo := "Caf"+eAcute+" marker nine password", "Cafe"+acute+" marker nine password"
 	password("the first password", adminFirst)
@@ -83,6 +85,7 @@ func TestSecretsNotStored(t *testing.T) {
 	password("a short password", tooShort)
 	password("the password of cafe", cafeOne, cafeTwo)
 	password("the new password of cafe", cafeThree)
+	password("the password of yamada after the change through the session", yamadaThree)
 
 	admin, err := e.m.CreateFirst(ctx, mgrInput("admin", RoleAdmin), adminFirst)
 	keep(err)
@@ -177,11 +180,25 @@ func TestSecretsNotStored(t *testing.T) {
 	_, err = e.m.Authenticate(ctx, adminTok) // logged out
 	keep(err)
 
+	// A password that is changed through its session: the session that asked ends, and a new one takes its place.
+	_, _, err = e.m.ChangeOwnPassword(ctx, yamadaTok2, wrongOne, yamadaThree) // a wrong current password
+	keep(err)
+	_, _, err = e.m.ChangeOwnPassword(ctx, yamadaTok2, yamadaTwo, tooShort)
+	keep(err)
+	_, _, err = e.m.ChangeOwnPassword(ctx, tokSample, yamadaTwo, yamadaThree) // a token without a session
+	keep(err)
+	changed, yamadaTok3, err := e.m.ChangeOwnPassword(ctx, yamadaTok2, yamadaTwo, yamadaThree)
+	keep(err)
+	showPrincipal(changed)
+	session("the session of yamada after the password was changed", yamadaTok3)
+	_, err = e.m.Authenticate(ctx, yamadaTok2) // ended by the change
+	keep(err)
+
 	// What the rows keep, which no error and no printed account may show either.
 	var kept []mgrSecret
 	rows := e.rawSessions(t)
 	if len(rows) != 1 {
-		t.Fatalf("the store holds %d session rows, want the second session of yamada only", len(rows))
+		t.Fatalf("the store holds %d session rows, want the session of yamada after the password was changed only", len(rows))
 	}
 	for key, data := range rows {
 		s, err := decodeSession(key, []byte(data))
@@ -210,8 +227,8 @@ func TestSecretsNotStored(t *testing.T) {
 	if len(pendingTokens) != 2 || pendingTokens["pending"] != sumToken(tokenE) || pendingTokens["cafe"] != sumToken(tokenF) {
 		t.Fatalf("the rows hold the token hashes of %d accounts, want those of pending and cafe, for their tokens", len(pendingTokens))
 	}
-	if len(errTexts) != 10 {
-		t.Fatalf("the test kept %d error texts, want 10: those of the failed operations", len(errTexts))
+	if len(errTexts) != 14 {
+		t.Fatalf("the test kept %d error texts, want 14: those of the failed operations", len(errTexts))
 	}
 	for _, text := range append(append([]string{}, errTexts...), prints...) {
 		for _, sec := range append(append([]mgrSecret{}, secrets...), kept...) {

@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/parser"
 	gotoken "go/token"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -2018,6 +2020,7 @@ func TestHashGate(t *testing.T) {
 	t.Run("every kind of hash waits for a place", func(t *testing.T) {
 		e, active := newEnv(t, 1)
 		_, token := e.invite(t, "pending", RoleEditor)
+		_, session := e.login(t, "active")
 		e.m.hashes <- struct{}{} // the one place is taken
 		var hashing atomic.Int32
 		e.m.hook = func(point string) {
@@ -2044,6 +2047,10 @@ func TestHashGate(t *testing.T) {
 			}},
 			{"ChangePassword", func(ctx context.Context) error {
 				return e.m.ChangePassword(ctx, active.ID, mgrPassword("active"), "a new long password")
+			}},
+			{"ChangeOwnPassword", func(ctx context.Context) error {
+				_, _, err := e.m.ChangeOwnPassword(ctx, session, mgrPassword("active"), "a new long password")
+				return err
 			}},
 			{"SetPassword", func(ctx context.Context) error {
 				_, err := e.m.SetPassword(ctx, token, mgrPassword("pending"))
@@ -2113,6 +2120,7 @@ func TestHashGate(t *testing.T) {
 	// A typed password of more than 8 KiB is refused without a hash, so it needs no place.
 	t.Run("a typed password that is too long needs no place", func(t *testing.T) {
 		e, active := newEnv(t, 1)
+		_, session := e.login(t, "active")
 		e.m.hashes <- struct{}{}
 		long := strings.Repeat("a", maxTypedPasswordBytes+1)
 		probe := newGateProbe(t.Context(), true)
@@ -2122,6 +2130,10 @@ func TestHashGate(t *testing.T) {
 		probe = newGateProbe(t.Context(), true)
 		if err := e.m.ChangePassword(probe, active.ID, long, "a new long password"); !errors.Is(err, ErrBadCredentials) || probe.waited() {
 			t.Errorf("ChangePassword() with a current password of more than 8 KiB = %v, waited = %v, want ErrBadCredentials without a wait", err, probe.waited())
+		}
+		probe = newGateProbe(t.Context(), true)
+		if _, _, err := e.m.ChangeOwnPassword(probe, session, long, "a new long password"); !errors.Is(err, ErrBadCredentials) || probe.waited() {
+			t.Errorf("ChangeOwnPassword() with a current password of more than 8 KiB = %v, waited = %v, want ErrBadCredentials without a wait", err, probe.waited())
 		}
 	})
 }
@@ -2521,4 +2533,1597 @@ func TestConcurrentSessions(t *testing.T) {
 			}
 		}
 	})
+}
+
+// sessionsOf returns the stored session rows that name the account id, by key. A row that does not decode names nobody.
+func (e *mgrEnv) sessionsOf(t *testing.T, id string) map[string]sessionRow {
+	t.Helper()
+	got := make(map[string]sessionRow)
+	for key, data := range e.rawSessions(t) {
+		if s, err := decodeSession(key, []byte(data)); err == nil && s.Account == id {
+			got[key] = s
+		}
+	}
+	return got
+}
+
+// sessGone checks that the session of the token has no row, and that Authenticate refuses the token. It looks at the row
+// first, since Authenticate removes the row of a session that cannot work.
+func sessGone(t *testing.T, e *mgrEnv, token, what string) {
+	t.Helper()
+	if e.hasSession(t, token) {
+		t.Errorf("the row of the session %s stayed", what)
+	}
+	if got, err := e.m.Authenticate(t.Context(), token); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+		t.Errorf("Authenticate() of the session %s = %+v, %v, want ErrNoSession", what, got, err)
+	}
+}
+
+// sessLives checks that the session of the token has its row, and that Authenticate accepts the token.
+func sessLives(t *testing.T, e *mgrEnv, token, what string) {
+	t.Helper()
+	if !e.hasSession(t, token) {
+		t.Errorf("the row of the session %s is gone", what)
+	}
+	if _, err := e.m.Authenticate(t.Context(), token); err != nil {
+		t.Errorf("Authenticate() of the session %s = %v, want nil", what, err)
+	}
+}
+
+// ghostSession writes a row of a session that names the account id, which need not exist, with the store's own API.
+func (e *mgrEnv) ghostSession(t *testing.T, id, name string) {
+	t.Helper()
+	e.setSession(t, sessKey(name), sessionRow{
+		Account: id, CreatedAt: mgrTime, AuthenticatedAt: mgrTime, LastSeenAt: mgrTime, CredentialsChangedAt: mgrTime,
+		Factors: []Factor{FactorPassword},
+	})
+}
+
+// endFixture is a store with two administrators and two accounts that are not, each with sessions, and two rows that no
+// operation on an account may remove: one that does not decode and one of taro that has ended. The clock stands still, so
+// the time of the credentials is the same after a password is set again, and a session ends only if an operation
+// removes it.
+type endFixture struct {
+	e                         *mgrEnv
+	admin, boss, yamada, taro Account
+	tokens                    map[string][]string // by login name
+}
+
+func newEndFixture(t *testing.T) *endFixture {
+	t.Helper()
+	e := newMgr(t)
+	f := &endFixture{e: e, tokens: make(map[string][]string)}
+	f.admin = e.first(t)
+	f.boss = e.add(t, "boss", RoleAdmin)
+	f.yamada = e.add(t, "yamada", RoleEditor)
+	f.taro = e.add(t, "taro", RoleAuthor)
+	for _, login := range []string{"admin", "boss", "yamada", "yamada", "taro", "taro"} {
+		_, token := e.login(t, login)
+		f.tokens[login] = append(f.tokens[login], token)
+	}
+	e.setRawSession(t, sessKey("garbage"), "not json")
+	dead := sessionFor(e.row(t, f.taro.ID), mgrTime)
+	dead.CredentialsChangedAt = dead.CredentialsChangedAt.Add(time.Second)
+	e.setSession(t, sessKey("dead"), dead)
+	return f
+}
+
+// idOf returns the ID of the account with the login name.
+func (f *endFixture) idOf(login string) string {
+	return map[string]string{"admin": f.admin.ID, "boss": f.boss.ID, "yamada": f.yamada.ID, "taro": f.taro.ID}[login]
+}
+
+// ended checks that an operation removed every session row that names the account id and no other row, and that the
+// tokens of the fixture agree: those of the account are refused, and the others work. before is rawSessions from before
+// the operation.
+func (f *endFixture) ended(t *testing.T, id string, before map[string]string) {
+	t.Helper()
+	after := f.e.rawSessions(t)
+	named := 0
+	for key, data := range before {
+		s, err := decodeSession(key, []byte(data))
+		mine := err == nil && s.Account == id
+		got, there := after[key]
+		switch {
+		case mine && there:
+			t.Error("a session row of the account stayed")
+		case !mine && !there:
+			t.Error("a row that is no session of the account was removed")
+		case !mine && got != data:
+			t.Error("a row that is no session of the account changed")
+		}
+		if mine {
+			named++
+		}
+	}
+	if named == 0 {
+		t.Error("the account had no session row to end: the test checks nothing")
+	}
+	for key := range after {
+		if _, was := before[key]; !was {
+			t.Error("a session row is new")
+		}
+	}
+	for login, tokens := range f.tokens {
+		for i, token := range tokens {
+			what := fmt.Sprintf("%d of %s", i+1, login)
+			if f.idOf(login) == id {
+				sessGone(t, f.e, token, what)
+			} else {
+				sessLives(t, f.e, token, what)
+			}
+		}
+	}
+}
+
+// pend resets yamada by System and puts two session rows of the account, which the operations do not make for a pending
+// account: with the clock standing still, they work again as soon as the account has a password. It returns the token of
+// the reset.
+func (f *endFixture) pend(t *testing.T) string {
+	t.Helper()
+	token, err := f.e.m.Reset(t.Context(), System, f.yamada.ID)
+	if err != nil {
+		t.Fatalf("Reset() = %v", err)
+	}
+	f.tokens["yamada"] = []string{tokSample, strings.Repeat("A", tokenChars)}
+	for _, tok := range f.tokens["yamada"] {
+		f.e.setSession(t, sessKey(tok), sessionFor(f.e.row(t, f.yamada.ID), mgrTime))
+	}
+	return token
+}
+
+// dropBoss deletes the second administrator, so that admin is the last one.
+func (f *endFixture) dropBoss(t *testing.T) {
+	t.Helper()
+	if err := f.e.m.Delete(t.Context(), System, f.boss.ID); err != nil {
+		t.Fatalf("Delete() = %v", err)
+	}
+	delete(f.tokens, "boss")
+}
+
+const endPassword = "a new password for the tests"
+
+// TestOperationsEndSessions runs every operation that ends the sessions of an account, and checks that its sessions are
+// gone and the rows of every other account and of no account are as they were.
+func TestOperationsEndSessions(t *testing.T) {
+	type action = func() error
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, f *endFixture) action
+	}{
+		{"Disable by an administrator", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Disable(t.Context(), By(f.admin.ID), f.yamada.ID); return err }
+		}},
+		{"Disable by System", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Disable(t.Context(), System, f.yamada.ID); return err }
+		}},
+		{"Delete by an administrator", func(t *testing.T, f *endFixture) action {
+			return func() error { return f.e.m.Delete(t.Context(), By(f.admin.ID), f.yamada.ID) }
+		}},
+		{"Delete by System", func(t *testing.T, f *endFixture) action {
+			return func() error { return f.e.m.Delete(t.Context(), System, f.yamada.ID) }
+		}},
+		{"Delete of a row that cannot be read, by System", func(t *testing.T, f *endFixture) action {
+			f.e.putRaw(t, f.yamada.ID, "not json")
+			return func() error { return f.e.m.Delete(t.Context(), System, f.yamada.ID) }
+		}},
+		{"a change of the role by an administrator", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleViewer)})
+				return err
+			}
+		}},
+		{"a change of the role by System", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), System, f.yamada.ID, Change{Role: ptr(RoleAdmin)})
+				return err
+			}
+		}},
+		{"a change of the role and the name", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleAuthor), Name: ptr("New Name")})
+				return err
+			}
+		}},
+		{"ChangePassword", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				return f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), endPassword)
+			}
+		}},
+		{"ChangePassword to the same password", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				return f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), mgrPassword("yamada"))
+			}
+		}},
+		{"Reset by an administrator", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Reset(t.Context(), By(f.admin.ID), f.yamada.ID); return err }
+		}},
+		{"Reset by System", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Reset(t.Context(), System, f.yamada.ID); return err }
+		}},
+		{"SetPassword", func(t *testing.T, f *endFixture) action {
+			token := f.pend(t)
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), token, endPassword); return err }
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			act := tt.prepare(t, f)
+			before := f.e.rawSessions(t)
+			if err := act(); err != nil {
+				t.Fatalf("the operation = %v", err)
+			}
+			f.ended(t, f.yamada.ID, before)
+		})
+	}
+}
+
+// disable disables the account with the login name by System, which removes its sessions.
+func (f *endFixture) disable(t *testing.T, login string) {
+	t.Helper()
+	if _, err := f.e.m.Disable(t.Context(), System, f.idOf(login)); err != nil {
+		t.Fatalf("Disable() = %v", err)
+	}
+	delete(f.tokens, login)
+}
+
+// TestOperationsEndNothingWhenRefused runs the operations that end sessions with every kind of refusal, and checks that
+// the store is as it was: the rows of the accounts and of the sessions, and no commit.
+func TestOperationsEndNothingWhenRefused(t *testing.T) {
+	problems := func(err error) bool {
+		var errs content.Errors
+		return errors.As(err, &errs)
+	}
+	is := func(target error) func(error) bool {
+		return func(err error) bool { return errors.Is(err, target) }
+	}
+	disabled := func(err error) bool {
+		return err != nil && strings.HasSuffix(err.Error(), " is disabled: enable it first")
+	}
+	type action = func() error
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, f *endFixture) action
+		want    func(error) bool
+	}{
+		{"Disable by an editor", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Disable(t.Context(), By(f.yamada.ID), f.taro.ID); return err }
+		}, is(ErrForbidden)},
+		{"Disable of the last administrator", func(t *testing.T, f *endFixture) action {
+			f.dropBoss(t)
+			return func() error { _, err := f.e.m.Disable(t.Context(), System, f.admin.ID); return err }
+		}, is(ErrLastAdmin)},
+		{"Disable of an account that is not there", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error { _, err := f.e.m.Disable(t.Context(), System, mgrMissingID); return err }
+		}, is(fs.ErrNotExist)},
+		{"Disable of an account that is disabled", func(t *testing.T, f *endFixture) action {
+			f.disable(t, "taro")
+			f.e.ghostSession(t, f.taro.ID, "ghost")
+			return func() error { _, err := f.e.m.Disable(t.Context(), System, f.taro.ID); return err }
+		}, func(err error) bool { return err == nil }},
+		{"Delete by an editor", func(t *testing.T, f *endFixture) action {
+			return func() error { return f.e.m.Delete(t.Context(), By(f.yamada.ID), f.taro.ID) }
+		}, is(ErrForbidden)},
+		{"Delete of the last administrator", func(t *testing.T, f *endFixture) action {
+			f.dropBoss(t)
+			return func() error { return f.e.m.Delete(t.Context(), System, f.admin.ID) }
+		}, is(ErrLastAdmin)},
+		{"Delete of an account that is not there", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error { return f.e.m.Delete(t.Context(), By(f.admin.ID), mgrMissingID) }
+		}, is(fs.ErrNotExist)},
+		{"Delete of a row that is not there, by System", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error { return f.e.m.Delete(t.Context(), System, mgrMissingID) }
+		}, is(fs.ErrNotExist)},
+		{"the role by an editor", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.yamada.ID), f.yamada.ID, Change{Role: ptr(RoleAdmin)})
+				return err
+			}
+		}, is(ErrForbidden)},
+		{"the role of the last administrator", func(t *testing.T, f *endFixture) action {
+			f.dropBoss(t)
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), System, f.admin.ID, Change{Role: ptr(RoleEditor)})
+				return err
+			}
+		}, is(ErrLastAdmin)},
+		{"a role that is none", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(Role("owner"))})
+				return err
+			}
+		}, problems},
+		{"a role and a login name that is not one", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleViewer), Login: ptr("Not A Login")})
+				return err
+			}
+		}, problems},
+		{"a role and a login name that another account has", func(t *testing.T, f *endFixture) action {
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleViewer), Login: ptr("taro")})
+				return err
+			}
+		}, problems},
+		{"the role of an account that is not there", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error {
+				_, err := f.e.m.Update(t.Context(), System, mgrMissingID, Change{Role: ptr(RoleViewer)})
+				return err
+			}
+		}, is(fs.ErrNotExist)},
+		{"ChangePassword with a wrong password", func(t *testing.T, f *endFixture) action {
+			return func() error { return f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("other"), endPassword) }
+		}, is(ErrBadCredentials)},
+		{"ChangePassword to a password that is too short", func(t *testing.T, f *endFixture) action {
+			return func() error { return f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), "short") }
+		}, problems},
+		{"ChangePassword of an account that is not there", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error {
+				return f.e.m.ChangePassword(t.Context(), mgrMissingID, mgrPassword("yamada"), endPassword)
+			}
+		}, is(fs.ErrNotExist)},
+		{"Reset by an editor", func(t *testing.T, f *endFixture) action {
+			return func() error { _, err := f.e.m.Reset(t.Context(), By(f.yamada.ID), f.taro.ID); return err }
+		}, is(ErrForbidden)},
+		{"Reset of the last administrator by an administrator", func(t *testing.T, f *endFixture) action {
+			f.dropBoss(t)
+			return func() error { _, err := f.e.m.Reset(t.Context(), By(f.admin.ID), f.admin.ID); return err }
+		}, is(ErrLastAdmin)},
+		{"Reset of an account that is disabled", func(t *testing.T, f *endFixture) action {
+			f.disable(t, "taro")
+			f.e.ghostSession(t, f.taro.ID, "ghost")
+			return func() error { _, err := f.e.m.Reset(t.Context(), System, f.taro.ID); return err }
+		}, disabled},
+		{"Reset of an account that is not there", func(t *testing.T, f *endFixture) action {
+			f.e.ghostSession(t, mgrMissingID, "ghost")
+			return func() error { _, err := f.e.m.Reset(t.Context(), System, mgrMissingID); return err }
+		}, is(fs.ErrNotExist)},
+		{"SetPassword with a password that is too short", func(t *testing.T, f *endFixture) action {
+			token := f.pend(t)
+			delete(f.tokens, "yamada") // the rows are of a pending account: they cannot work, and the test compares the rows
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), token, "short"); return err }
+		}, problems},
+		{"SetPassword with a token that is none", func(t *testing.T, f *endFixture) action {
+			f.pend(t)
+			delete(f.tokens, "yamada")
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), tokSample, endPassword); return err }
+		}, is(ErrInvalidToken)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			act := tt.prepare(t, f)
+			before := f.e.mark(t)
+			err := act()
+			if !tt.want(err) {
+				t.Errorf("the operation = %v, which is not the refusal that the test expects", err)
+			}
+			f.e.unchanged(t, before)
+			for login, tokens := range f.tokens {
+				for i, token := range tokens {
+					sessLives(t, f.e, token, fmt.Sprintf("%d of %s", i+1, login))
+				}
+			}
+		})
+	}
+
+	// The password changes after it was checked and before the Update: the Update finds it out and writes nothing.
+	t.Run("ChangePassword with a password that changed meanwhile", func(t *testing.T) {
+		f := newEndFixture(t)
+		var after mgrMark
+		f.e.m.hook = func(point string) {
+			if point == "hashed" {
+				f.e.m.hook = nil
+				f.e.edit(t, f.yamada.ID, func(r *row) { r.Password = mgrHashed(t, "a password that someone set") })
+				after = f.e.mark(t)
+			}
+		}
+		err := f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), endPassword)
+		if !errors.Is(err, ErrConflict) {
+			t.Errorf("ChangePassword() = %v, want ErrConflict", err)
+		}
+		f.e.unchanged(t, after)
+		for i, token := range f.tokens["yamada"] {
+			sessLives(t, f.e, token, fmt.Sprintf("%d of yamada", i+1))
+		}
+	})
+}
+
+// TestDisableEnableRevivesNone checks that a session made before a Disable does not work after the account is enabled
+// again, though Disable leaves CredentialsChangedAt as it is, and that a login after the Enable does.
+func TestDisableEnableRevivesNone(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		by   func(f *endFixture) Actor
+	}{
+		{"an administrator", func(f *endFixture) Actor { return By(f.admin.ID) }},
+		{"System", func(f *endFixture) Actor { return System }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			e, ctx, actor := f.e, t.Context(), tt.by(f)
+			before := e.rawSessions(t)
+			if _, err := e.m.Disable(ctx, actor, f.yamada.ID); err != nil {
+				t.Fatal(err)
+			}
+			f.ended(t, f.yamada.ID, before)
+			if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
+				t.Errorf("Login() of a disabled account = %v, want ErrBadCredentials", err)
+			}
+			if _, err := e.m.Enable(ctx, actor, f.yamada.ID); err != nil {
+				t.Fatal(err)
+			}
+			for i, token := range f.tokens["yamada"] {
+				sessGone(t, e, token, fmt.Sprintf("%d of yamada after the account is enabled", i+1))
+			}
+			if rows := e.sessionsOf(t, f.yamada.ID); len(rows) != 0 {
+				t.Errorf("the account has %d session rows after Enable, want none", len(rows))
+			}
+			p, token, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), "")
+			if err != nil || p.Account.ID != f.yamada.ID {
+				t.Fatalf("Login() after Enable = %+v, %v, want a session of yamada", p, err)
+			}
+			sessLives(t, e, token, "of the login after Enable")
+			for i, token := range f.tokens["yamada"] {
+				sessGone(t, e, token, fmt.Sprintf("%d of yamada, again after the login", i+1))
+			}
+		})
+	}
+
+	// Enable and a second Disable remove nothing: a row that names the account stays.
+	t.Run("only a Disable that disables removes", func(t *testing.T) {
+		f := newEndFixture(t)
+		e, ctx := f.e, t.Context()
+		if _, err := e.m.Disable(ctx, System, f.yamada.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.ghostSession(t, f.yamada.ID, "ghost")
+		before := e.mark(t)
+		if _, err := e.m.Disable(ctx, System, f.yamada.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.unchanged(t, before)
+		if _, err := e.m.Enable(ctx, System, f.yamada.ID); err != nil {
+			t.Fatal(err)
+		}
+		if !maps.Equal(e.rawSessions(t), before.sessions) {
+			t.Error("Enable removed or changed a session row")
+		}
+		before = e.mark(t)
+		if _, err := e.m.Enable(ctx, System, f.yamada.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.unchanged(t, before)
+	})
+}
+
+// TestRoleChangeEndsSessions checks that a change of the role ends the sessions of the account, whichever way it goes and
+// whoever makes it, and that the next login is the new role.
+func TestRoleChangeEndsSessions(t *testing.T) {
+	tests := []struct {
+		name   string
+		login  string
+		to     Role
+		by     func(f *endFixture) Actor
+		change func(to Role) Change
+	}{
+		{"an editor is made a viewer", "yamada", RoleViewer, func(f *endFixture) Actor { return By(f.admin.ID) },
+			func(to Role) Change { return Change{Role: &to} }},
+		{"an editor is made an administrator", "yamada", RoleAdmin, func(f *endFixture) Actor { return By(f.admin.ID) },
+			func(to Role) Change { return Change{Role: &to} }},
+		{"an author is made an editor by System", "taro", RoleEditor, func(f *endFixture) Actor { return System },
+			func(to Role) Change { return Change{Role: &to} }},
+		{"an administrator is made an editor", "boss", RoleEditor, func(f *endFixture) Actor { return By(f.admin.ID) },
+			func(to Role) Change { return Change{Role: &to} }},
+		{"an administrator is made a viewer by itself", "boss", RoleViewer, func(f *endFixture) Actor { return By(f.boss.ID) },
+			func(to Role) Change { return Change{Role: &to} }},
+		{"the role and the name", "yamada", RoleAuthor, func(f *endFixture) Actor { return By(f.admin.ID) },
+			func(to Role) Change { return Change{Role: &to, Name: ptr("Another Name")} }},
+		{"the role and the login name", "yamada", RoleAuthor, func(f *endFixture) Actor { return System },
+			func(to Role) Change { return Change{Role: &to, Login: ptr("yamada.new")} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			e, ctx := f.e, t.Context()
+			id := f.idOf(tt.login)
+			before := e.rawSessions(t)
+			a, err := e.m.Update(ctx, tt.by(f), id, tt.change(tt.to))
+			if err != nil || a.Role != tt.to {
+				t.Fatalf("Update() = %+v, %v, want the account with the role %s", a, err, tt.to)
+			}
+			f.ended(t, id, before)
+			p, token, err := e.m.Login(ctx, a.Login, mgrPassword(tt.login), "")
+			if err != nil || p.Account.Role != tt.to {
+				t.Fatalf("Login() after the change = %+v, %v, want a session with the role %s", p, err, tt.to)
+			}
+			if got, err := e.m.Authenticate(ctx, token); err != nil || got.Account.Role != tt.to {
+				t.Errorf("Authenticate() = %+v, %v, want the role %s", got, err, tt.to)
+			}
+		})
+	}
+
+	// A session that is made after the change is the new role's, and the permissions follow.
+	t.Run("the permissions follow the role", func(t *testing.T) {
+		f := newEndFixture(t)
+		e, ctx := f.e, t.Context()
+		_, token := f.e.login(t, "yamada")
+		p, err := e.m.Authenticate(ctx, token)
+		if err != nil || Allowed(p, EditSettings, Target{}) {
+			t.Fatalf("an editor before the change: Authenticate() = %v, allowed to edit the settings = %v", err, Allowed(p, EditSettings, Target{}))
+		}
+		if _, err := e.m.Update(ctx, By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleAdmin)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.m.Authenticate(ctx, token); !errors.Is(err, ErrNoSession) {
+			t.Errorf("Authenticate() of the session before the change = %v, want ErrNoSession", err)
+		}
+		p, _ = e.login(t, "yamada")
+		if !Allowed(p, EditSettings, Target{}) {
+			t.Error("an administrator after the change is not allowed to edit the settings")
+		}
+	})
+}
+
+// TestOtherChangesKeepSessions checks the changes that leave the sessions of an account alone: another field of the
+// account, a role that stays, an Enable, a change that changes nothing, and every operation on another account.
+func TestOtherChangesKeepSessions(t *testing.T) {
+	tests := []struct {
+		name   string
+		victim string // the login name whose sessions the operation ends, if any: it is an operation on another account
+		do     func(t *testing.T, f *endFixture) error
+	}{
+		{"the login name", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Login: ptr("yamada.new")})
+			return err
+		}},
+		{"the name by itself", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.yamada.ID), f.yamada.ID, Change{Name: ptr("New Name")})
+			return err
+		}},
+		{"the email address by itself", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.yamada.ID), f.yamada.ID, Change{Email: ptr("new.address@example.com")})
+			return err
+		}},
+		{"the name and the email address by an administrator", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Name: ptr("New Name"), Email: ptr("other@example.com")})
+			return err
+		}},
+		{"the link to an author profile", "", func(t *testing.T, f *endFixture) error {
+			f.e.putAuthor(t, mgrAuthorID)
+			_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Author: ptr(mgrAuthorID)})
+			return err
+		}},
+		{"the role set to the one it is", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleEditor)})
+			return err
+		}},
+		{"a change that changes nothing", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{})
+			return err
+		}},
+		{"Enable of an account that is enabled", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Enable(t.Context(), System, f.yamada.ID)
+			return err
+		}},
+		{"an invitation and its SetPassword", "", func(t *testing.T, f *endFixture) error {
+			_, token, err := f.e.m.Invite(t.Context(), System, mgrInput("newcomer", RoleViewer))
+			if err != nil {
+				return err
+			}
+			_, err = f.e.m.SetPassword(t.Context(), token, endPassword)
+			return err
+		}},
+		{"VerifyPasswordFactor", "", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada"))
+			return err
+		}},
+		{"the role of another account", "taro", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Update(t.Context(), System, f.taro.ID, Change{Role: ptr(RoleViewer)})
+			return err
+		}},
+		{"Disable of another account", "taro", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Disable(t.Context(), System, f.taro.ID)
+			return err
+		}},
+		{"Delete of another account", "taro", func(t *testing.T, f *endFixture) error {
+			return f.e.m.Delete(t.Context(), System, f.taro.ID)
+		}},
+		{"Reset of another account", "taro", func(t *testing.T, f *endFixture) error {
+			_, err := f.e.m.Reset(t.Context(), System, f.taro.ID)
+			return err
+		}},
+		{"ChangePassword of another account", "taro", func(t *testing.T, f *endFixture) error {
+			return f.e.m.ChangePassword(t.Context(), f.taro.ID, mgrPassword("taro"), endPassword)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			before := f.e.rawSessions(t)
+			if err := tt.do(t, f); err != nil {
+				t.Fatalf("the operation = %v", err)
+			}
+			after := f.e.rawSessions(t)
+			for _, token := range f.tokens["yamada"] {
+				if key := sessKey(token); before[key] == "" || after[key] != before[key] {
+					t.Error("the row of a session of yamada changed or is gone")
+				}
+				sessLives(t, f.e, token, "of yamada")
+			}
+			if tt.victim != "" {
+				// The operation ended the sessions of the other account, which shows that this test would see an end.
+				f.ended(t, f.idOf(tt.victim), before)
+				return
+			}
+			if !maps.Equal(before, after) {
+				t.Error("a session row changed or is gone")
+			}
+			for login, tokens := range f.tokens {
+				for i, token := range tokens {
+					sessLives(t, f.e, token, fmt.Sprintf("%d of %s", i+1, login))
+				}
+			}
+		})
+	}
+
+	// A logout ends the one session and no other of the account.
+	t.Run("a logout", func(t *testing.T) {
+		f := newEndFixture(t)
+		if err := f.e.m.Logout(t.Context(), f.tokens["yamada"][0]); err != nil {
+			t.Fatal(err)
+		}
+		sessGone(t, f.e, f.tokens["yamada"][0], "that logged out")
+		sessLives(t, f.e, f.tokens["yamada"][1], "that did not")
+	})
+}
+
+// ownNext is the password that the tests of ChangeOwnPassword change to: it passes every rule.
+const ownNext = "my own new password"
+
+// craftSession writes a live row of a session of the account r under a token that the test makes of the byte b, with the
+// store's own API, and returns the token. A login would sweep the rows that cannot work.
+func (e *mgrEnv) craftSession(t *testing.T, r row, b byte) string {
+	t.Helper()
+	token, _, err := newToken(bytes.NewReader(bytes.Repeat([]byte{b}, tokenBytes)))
+	if err != nil {
+		t.Fatalf("newToken() = %v", err)
+	}
+	e.setSession(t, sessKey(token), sessionFor(r, mgrTime))
+	return token
+}
+
+// hashCounter makes the Manager count the hashes it computes, and returns the counter.
+func hashCounter(e *mgrEnv) *int {
+	n := new(int)
+	e.m.hook = func(point string) {
+		if point == "hashing" {
+			*n++
+		}
+	}
+	return n
+}
+
+func TestChangeOwnPassword(t *testing.T) {
+	t.Run("the session goes on", func(t *testing.T) {
+		f := newEndFixture(t)
+		e, ctx := f.e, t.Context()
+		// Three more sessions of yamada, written so that they do not sweep the rows that cannot work.
+		for i := range 3 {
+			f.tokens["yamada"] = append(f.tokens["yamada"], e.craftSession(t, e.row(t, f.yamada.ID), byte(0x21+i)))
+		}
+		// A token that is pending is used up by the change of the password, as it is by ChangePassword.
+		e.edit(t, f.yamada.ID, func(r *row) {
+			r.Token = tokenRow{Purpose: PurposeReset, Hash: testTokenHash(0xcd), ExpiresAt: mgrTime.Add(time.Hour)}
+		})
+		old := e.row(t, f.yamada.ID)
+		oldTokens := slices.Clone(f.tokens["yamada"])
+		e.clock.add(10 * time.Minute)
+		now := mgrTime.Add(10 * time.Minute)
+		before := e.rawSessions(t)
+		hashes := hashCounter(e)
+
+		p, token, err := e.m.ChangeOwnPassword(ctx, oldTokens[2], mgrPassword("yamada"), ownNext)
+		if err != nil {
+			t.Fatalf("ChangeOwnPassword() = %v", err)
+		}
+		if *hashes != 2 {
+			t.Errorf("ChangeOwnPassword() computed %d hashes, want 2: the current password and the new one", *hashes)
+		}
+
+		// The account has the new hash and the time of the change, and no token; nothing else of it changed.
+		r := e.row(t, f.yamada.ID)
+		want := old
+		want.Password, want.CredentialsChangedAt, want.Token = r.Password, now, tokenRow{}
+		if !reflect.DeepEqual(r, want) {
+			t.Errorf("the stored row of the account is not the old row with the time of the change, now %v, and no token", now)
+		}
+		if n, _, _, perr := parseHash(r.Password); perr != nil || n != pwLow || r.Password == old.Password {
+			t.Errorf("the new hash has %d iterations, %v, and is the old hash = %v, want a new one with %d", n, perr, r.Password == old.Password, pwLow)
+		}
+		if ok, _, err := matchHash(r.Password, ownNext, pwLow); !ok || err != nil {
+			t.Errorf("the new hash does not match the new password: %v", err)
+		}
+
+		// The Principal and the token are those of the new session, which is authenticated now.
+		wantP := Principal{
+			Account: r.account(),
+			Session: Session{AuthenticatedAt: now, ExpiresAt: now.Add(SessionLifetime), Factors: []Factor{FactorPassword}},
+		}
+		if !reflect.DeepEqual(p, wantP) {
+			t.Errorf("ChangeOwnPassword() returned the Principal\n%+v\nwant\n%+v", p, wantP)
+		}
+		if _, ok := tokenHash(token); !ok || slices.Contains(oldTokens, token) {
+			t.Error("ChangeOwnPassword() returned a token that is not a new token")
+		}
+		rows := e.sessionsOf(t, f.yamada.ID)
+		wantRow := sessionJSON(f.yamada.ID, "2026-11-08T12:10:00.123456Z", "2026-11-08T12:10:00.123456Z", "2026-11-08T12:10:00.123456Z",
+			"2026-11-08T12:10:00.123456Z")
+		if _, ok := rows[sessKey(token)]; !ok || len(rows) != 1 || e.rawSessions(t)[sessKey(token)] != wantRow {
+			t.Errorf("yamada has %d session rows, want only the row of the new token, in the form %s", len(rows), wantRow)
+		}
+
+		// Every other session of the account ended, the one that asked too; the rows of the others are as they were, but those
+		// that cannot work, which a new session sweeps as a login does.
+		after := e.rawSessions(t)
+		for key, data := range before {
+			s, err := decodeSession(key, []byte(data))
+			switch {
+			case err == nil && s.Account == f.yamada.ID:
+				if _, there := after[key]; there {
+					t.Error("a session row of yamada stayed")
+				}
+			case key == sessKey("garbage") || key == sessKey("dead"):
+				if _, there := after[key]; there {
+					t.Error("a row that cannot work stayed")
+				}
+			case after[key] != data:
+				t.Error("a session row of another account changed or is gone")
+			}
+		}
+		if len(after) != len(before)-len(oldTokens)-2+1 {
+			t.Errorf("there are %d session rows after, want the %d before, less 5 of yamada and 2 that cannot work, and the new one", len(after), len(before))
+		}
+		for i, tok := range oldTokens {
+			sessGone(t, e, tok, fmt.Sprintf("%d of yamada before the change", i+1))
+		}
+		if got, err := e.m.Authenticate(ctx, token); err != nil || !reflect.DeepEqual(got, p) {
+			t.Errorf("Authenticate() of the new token = %+v, %v, want the Principal that ChangeOwnPassword returned", got, err)
+		}
+		for login, tokens := range f.tokens {
+			if login != "yamada" {
+				for i, tok := range tokens {
+					sessLives(t, e, tok, fmt.Sprintf("%d of %s", i+1, login))
+				}
+			}
+		}
+
+		// The new password logs in, the old one does not.
+		if _, _, err := e.m.Login(ctx, "yamada", ownNext, ""); err != nil {
+			t.Errorf("Login() with the new password = %v", err)
+		}
+		if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
+			t.Errorf("Login() with the old password = %v, want ErrBadCredentials", err)
+		}
+	})
+
+	// The Update reads the clock once: the time of the change of the password and the times of the new session are the same.
+	t.Run("one reading of the clock", func(t *testing.T) {
+		f := newEndFixture(t)
+		e := f.e
+		var ticks atomic.Int64
+		e.m.SetClock(func() time.Time { return mgrTime.Add(time.Duration(ticks.Add(1)) * time.Second) })
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		if err != nil {
+			t.Fatalf("ChangeOwnPassword() = %v", err)
+		}
+		s, ok := e.sessionOf(t, token)
+		changed := e.row(t, f.yamada.ID).CredentialsChangedAt
+		if !ok || !s.CreatedAt.Equal(changed) || !s.AuthenticatedAt.Equal(changed) || !s.LastSeenAt.Equal(changed) || !s.CredentialsChangedAt.Equal(changed) ||
+			!p.Session.AuthenticatedAt.Equal(changed) || !p.Account.CredentialsChangedAt.Equal(changed) {
+			t.Errorf("the time of the change is %v, and the new session has %v, %v, %v and %v: want one time for all", changed, s.CreatedAt, s.AuthenticatedAt, s.LastSeenAt, s.CredentialsChangedAt)
+		}
+	})
+
+	t.Run("every role", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		for _, role := range Roles() {
+			login := "r-" + string(role)
+			e.add(t, login, role)
+			p, token := e.login(t, login)
+			got, fresh, err := e.m.ChangeOwnPassword(t.Context(), token, mgrPassword(login), ownNext)
+			if err != nil || got.Account.ID != p.Account.ID || got.Account.Role != role {
+				t.Errorf("ChangeOwnPassword() of %s = %+v, %v, want a session of the same account", role, got, err)
+			}
+			sessLives(t, e, fresh, "of the role "+string(role))
+		}
+	})
+
+	t.Run("a text that is no session", func(t *testing.T) {
+		f := newEndFixture(t)
+		e := f.e
+		hashes := hashCounter(e)
+		before := e.mark(t)
+		for _, text := range []string{"", "junk", tokSample[:42], tokSample + "A", strings.Repeat("!", tokenChars), tokSample, strings.Repeat("A", tokenChars)} {
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), text, mgrPassword("yamada"), ownNext)
+			if !errors.Is(err, ErrNoSession) || err.Error() != "no valid session" || !reflect.DeepEqual(p, Principal{}) || token != "" {
+				t.Errorf("ChangeOwnPassword() of a text with no session (%d bytes) = %+v, %v, want ErrNoSession and no token", len(text), p, err)
+			}
+		}
+		e.unchanged(t, before)
+		if *hashes != 0 {
+			t.Errorf("%d hashes were computed for tokens without a session, want none", *hashes)
+		}
+	})
+
+	t.Run("a session that ended", func(t *testing.T) {
+		ends := []struct {
+			name string
+			end  func(t *testing.T, f *endFixture)
+		}{
+			{"a logout", func(t *testing.T, f *endFixture) {
+				if err := f.e.m.Logout(t.Context(), f.tokens["yamada"][0]); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"the idle timeout", func(t *testing.T, f *endFixture) { f.e.clock.add(SessionIdleTimeout) }},
+			{"the lifetime", func(t *testing.T, f *endFixture) { f.e.clock.add(SessionLifetime) }},
+			{"a disabled account", func(t *testing.T, f *endFixture) {
+				f.e.edit(t, f.yamada.ID, func(r *row) { r.Disabled = true })
+			}},
+			{"other credentials", func(t *testing.T, f *endFixture) {
+				f.e.edit(t, f.yamada.ID, func(r *row) { r.CredentialsChangedAt = r.CredentialsChangedAt.Add(time.Second) })
+			}},
+			{"an account that is gone", func(t *testing.T, f *endFixture) { f.e.deleteRow(t, f.yamada.ID) }},
+			{"a row that cannot be read", func(t *testing.T, f *endFixture) { f.e.putRaw(t, f.yamada.ID, "not json") }},
+		}
+		for _, tt := range ends {
+			t.Run(tt.name, func(t *testing.T) {
+				f := newEndFixture(t)
+				e := f.e
+				hashes := hashCounter(e)
+				tt.end(t, f)
+				accounts := e.raw(t)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+				if !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(p, Principal{}) || token != "" {
+					t.Errorf("ChangeOwnPassword() = %+v, %v, want ErrNoSession and no token", p, err)
+				}
+				if !maps.Equal(e.raw(t), accounts) {
+					t.Error("an account row changed")
+				}
+				if *hashes != 0 {
+					t.Errorf("%d hashes were computed for a session that had ended, want none", *hashes)
+				}
+			})
+		}
+	})
+
+	t.Run("the reasons to refuse", func(t *testing.T) {
+		long := strings.Repeat("a", maxTypedPasswordBytes+1)
+		wrong := []struct {
+			name, current string
+		}{
+			{"a wrong password", mgrPassword("other")},
+			{"an empty password", ""},
+			{"the password of another account", mgrPassword("taro")},
+			{"the new password", ownNext},
+			{"a password of more than 8 KiB", long},
+		}
+		for _, tt := range wrong {
+			t.Run(tt.name, func(t *testing.T) {
+				f := newEndFixture(t)
+				e := f.e
+				hashes := hashCounter(e)
+				before := e.mark(t)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], tt.current, ownNext)
+				if !errors.Is(err, ErrBadCredentials) || err.Error() != sessWrong || !reflect.DeepEqual(p, Principal{}) || token != "" {
+					t.Errorf("ChangeOwnPassword() = %+v, %v, want ErrBadCredentials and no token", p, err)
+				}
+				// The current password is the one hash, and a text that cannot be a password takes none.
+				if want := map[bool]int{true: 0, false: 1}[tt.current == long]; *hashes != want {
+					t.Errorf("%d hashes were computed, want %d", *hashes, want)
+				}
+				e.unchanged(t, before)
+				sessLives(t, e, f.tokens["yamada"][0], "that asked")
+			})
+		}
+
+		bad := []struct {
+			name, next, msg string
+		}{
+			{"too short", "short", "too short: 5 characters (min 15)"},
+			{"the email address", "yamada@example.com", "the same as the login name, the email address or the name"},
+			{"one character repeated", strings.Repeat("a", 20), "one character repeated"},
+			{"a control character", "a password with\ttab", "contains control characters"},
+			{"invalid UTF-8", "a password with " + string([]byte{0xff}) + " in it", "invalid UTF-8"},
+			{"more than 8 KiB", long, "too long: 8193 bytes (max 8192)"},
+		}
+		for _, tt := range bad {
+			t.Run("a new password that is "+tt.name, func(t *testing.T) {
+				f := newEndFixture(t)
+				e := f.e
+				hashes := hashCounter(e)
+				before := e.mark(t)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), tt.next)
+				mgrProblems(t, err, problem{"/password", tt.msg})
+				if !reflect.DeepEqual(p, Principal{}) || token != "" {
+					t.Errorf("ChangeOwnPassword() returned %+v and a token that is not empty, want neither", p)
+				}
+				if *hashes != 1 {
+					t.Errorf("%d hashes were computed, want 1: the current password, and not the new one", *hashes)
+				}
+				e.unchanged(t, before)
+				sessLives(t, e, f.tokens["yamada"][0], "that asked")
+			})
+		}
+
+		// A row that cannot be read stops every operation that writes, as it does ChangePassword, before a hash is made.
+		t.Run("a row of another account that cannot be read", func(t *testing.T) {
+			f := newEndFixture(t)
+			e := f.e
+			e.putRaw(t, f.taro.ID, "not json")
+			hashes := hashCounter(e)
+			before := e.mark(t)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			if want := `accounts "` + f.taro.ID + `": invalid value`; err == nil || err.Error() != want || !reflect.DeepEqual(p, Principal{}) || token != "" {
+				t.Errorf("ChangeOwnPassword() = %+v, %v, want the error %q and no token", p, err, want)
+			}
+			if *hashes != 0 {
+				t.Errorf("%d hashes were computed before the row that cannot be read stopped the call, want none", *hashes)
+			}
+			e.unchanged(t, before)
+		})
+
+		// Check does not allow an account with a role it does not know to edit itself, and no hash is made for it.
+		t.Run("an account that Check does not allow", func(t *testing.T) {
+			f := newEndFixture(t)
+			e := f.e
+			f.e.edit(t, f.yamada.ID, func(r *row) { r.Role = "owner" })
+			hashes := hashCounter(e)
+			before := e.mark(t)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			mgrError(t, err, ErrForbidden, mgrNotAllowed(e.row(t, f.yamada.ID).account(), "edit its own account"))
+			if !reflect.DeepEqual(p, Principal{}) || token != "" || *hashes != 0 {
+				t.Errorf("ChangeOwnPassword() = %+v after %d hashes, want no Principal, no token and no hash", p, *hashes)
+			}
+			e.unchanged(t, before)
+		})
+	})
+
+	// The clock gives a time that a session cannot hold, so the Update fails when it writes the new session: the new hash,
+	// and the end of the old sessions, are not written either.
+	t.Run("a session that cannot be written", func(t *testing.T) {
+		f := newEndFixture(t)
+		e := f.e
+		e.clock.set(time.Time{})
+		before := e.mark(t)
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoSession) || !strings.Contains(err.Error(), "cannot write a session of "+f.yamada.ID) ||
+			!reflect.DeepEqual(p, Principal{}) || token != "" {
+			t.Errorf("ChangeOwnPassword() = %+v, %v, want the error of the session and no token", p, err)
+		}
+		e.unchanged(t, before)
+		for i, tok := range f.tokens["yamada"] {
+			sessLives(t, e, tok, fmt.Sprintf("%d of yamada", i+1))
+		}
+	})
+
+	t.Run("no random bits", func(t *testing.T) {
+		boom := errors.New("no random bits")
+		for name, tt := range map[string]struct {
+			r    io.Reader
+			text string
+		}{
+			"for the salt":  {iotest.ErrReader(boom), "cannot read a salt"},
+			"for the token": {io.MultiReader(bytes.NewReader(make([]byte, saltBytes)), iotest.ErrReader(boom)), "cannot read a token"},
+		} {
+			f := newEndFixture(t)
+			e := f.e
+			e.m.rand = tt.r
+			before := e.mark(t)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			if !errors.Is(err, boom) || !strings.Contains(err.Error(), tt.text) || !reflect.DeepEqual(p, Principal{}) || token != "" {
+				t.Errorf("ChangeOwnPassword() without random bits %s = %+v, %v, want an error that wraps the reader's and says %q", name, p, err, tt.text)
+			}
+			e.unchanged(t, before)
+		}
+	})
+
+	t.Run("the token is already in use", func(t *testing.T) {
+		f := newEndFixture(t)
+		e := f.e
+		e.m.rand = sessSame{}
+		e.setSession(t, sessKey(tokSample), sessionFor(e.row(t, f.taro.ID), mgrTime))
+		before := e.mark(t)
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(p, Principal{}) || token != "" {
+			t.Errorf("ChangeOwnPassword() with a token that is in use = %+v, %v, want an error and no token", p, err)
+		}
+		e.unchanged(t, before)
+	})
+
+	t.Run("the store", func(t *testing.T) {
+		f := newEndFixture(t)
+		e := f.e
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		before := e.mark(t)
+		if _, _, err := e.m.ChangeOwnPassword(ctx, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
+			t.Errorf("ChangeOwnPassword() with a canceled context = %v, want context.Canceled", err)
+		}
+		e.unchanged(t, before)
+
+		// The context ends after both hashes: the Update fails, and nothing is written.
+		ctx, cancel = context.WithCancel(t.Context())
+		e.m.hook = func(point string) {
+			if point == "hashed" {
+				cancel()
+			}
+		}
+		if _, _, err := e.m.ChangeOwnPassword(ctx, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
+			t.Errorf("ChangeOwnPassword() with a context that ends after the hashes = %v, want context.Canceled", err)
+		}
+		e.unchanged(t, before)
+
+		if err := e.s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := e.m.ChangeOwnPassword(t.Context(), "junk", mgrPassword("yamada"), ownNext); !errors.Is(err, ErrNoSession) {
+			t.Errorf("ChangeOwnPassword() of a text that is no token on a closed store = %v, want ErrNoSession", err)
+		}
+		if _, _, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); err == nil || errors.Is(err, ErrNoSession) {
+			t.Errorf("ChangeOwnPassword() on a closed store = %v, want the error of the store", err)
+		}
+	})
+}
+
+// deleteRowOfSession removes the session row under the key that sessKey makes of name, with the store's own API.
+func (e *mgrEnv) deleteRowOfSession(t *testing.T, name string) {
+	t.Helper()
+	if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.DeleteSession(sessKey(name)) }); err != nil {
+		t.Fatalf("DeleteSession() = %v", err)
+	}
+}
+
+// TestChangeOwnPasswordGaps runs another operation after both hashes are made and before the Update, and checks that the
+// Update goes by the state it finds: a session that ended is ErrNoSession, which comes before every other reason, a
+// password that changed without ending the session is ErrConflict, and an operation on another account changes nothing.
+func TestChangeOwnPasswordGaps(t *testing.T) {
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("the operation in the gap = %v", err)
+		}
+	}
+	tests := []struct {
+		name  string
+		gap   func(t *testing.T, f *endFixture)
+		works bool
+		is    error                                    // what the error wraps
+		text  func(t *testing.T, f *endFixture) string // the text of the error, if it says more than that
+	}{
+		{name: "Reset", gap: func(t *testing.T, f *endFixture) {
+			_, err := f.e.m.Reset(t.Context(), System, f.yamada.ID)
+			check(t, err)
+		}, is: ErrNoSession},
+		{name: "ChangePassword by ID", gap: func(t *testing.T, f *endFixture) {
+			check(t, f.e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), "a password that won the race"))
+		}, is: ErrNoSession},
+		{name: "Disable", gap: func(t *testing.T, f *endFixture) {
+			_, err := f.e.m.Disable(t.Context(), System, f.yamada.ID)
+			check(t, err)
+		}, is: ErrNoSession},
+		{name: "Delete", gap: func(t *testing.T, f *endFixture) {
+			check(t, f.e.m.Delete(t.Context(), System, f.yamada.ID))
+		}, is: ErrNoSession},
+		{name: "a change of the role", gap: func(t *testing.T, f *endFixture) {
+			_, err := f.e.m.Update(t.Context(), System, f.yamada.ID, Change{Role: ptr(RoleViewer)})
+			check(t, err)
+		}, is: ErrNoSession},
+		{name: "a logout of the session", gap: func(t *testing.T, f *endFixture) {
+			check(t, f.e.m.Logout(t.Context(), f.tokens["yamada"][0]))
+		}, is: ErrNoSession},
+		{name: "the row of the session removed", gap: func(t *testing.T, f *endFixture) {
+			f.e.deleteRowOfSession(t, f.tokens["yamada"][0])
+		}, is: ErrNoSession},
+		{name: "the idle timeout", gap: func(t *testing.T, f *endFixture) { f.e.clock.add(SessionIdleTimeout) }, is: ErrNoSession},
+		{name: "a disabled account, with the sessions left", gap: func(t *testing.T, f *endFixture) {
+			f.e.edit(t, f.yamada.ID, func(r *row) { r.Disabled = true })
+		}, is: ErrNoSession},
+		{name: "other credentials, with the sessions left", gap: func(t *testing.T, f *endFixture) {
+			f.e.edit(t, f.yamada.ID, func(r *row) { r.CredentialsChangedAt = r.CredentialsChangedAt.Add(time.Second) })
+		}, is: ErrNoSession},
+		{name: "ChangeOwnPassword from another session", gap: func(t *testing.T, f *endFixture) {
+			_, _, err := f.e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][1], mgrPassword("yamada"), "a password that won the race")
+			check(t, err)
+		}, is: ErrNoSession},
+		{name: "another password, with the sessions left", gap: func(t *testing.T, f *endFixture) {
+			f.e.edit(t, f.yamada.ID, func(r *row) { r.Password = mgrHashed(t, "a password that someone set") })
+		}, is: ErrConflict, text: func(t *testing.T, f *endFixture) string {
+			return "the password of " + f.yamada.ID + " changed since it was read"
+		}},
+		{name: "a role that Check does not allow, with the sessions left", gap: func(t *testing.T, f *endFixture) {
+			f.e.edit(t, f.yamada.ID, func(r *row) { r.Role = "owner" })
+		}, is: ErrForbidden, text: func(t *testing.T, f *endFixture) string {
+			return mgrNotAllowed(f.e.row(t, f.yamada.ID).account(), "edit its own account")
+		}},
+		{name: "a row of another account that cannot be read", gap: func(t *testing.T, f *endFixture) {
+			f.e.putRaw(t, f.taro.ID, "not json")
+		}, text: func(t *testing.T, f *endFixture) string { return `accounts "` + f.taro.ID + `": invalid value` }},
+		{name: "operations on other accounts", gap: func(t *testing.T, f *endFixture) {
+			_, err := f.e.m.Disable(t.Context(), System, f.taro.ID)
+			check(t, err)
+			check(t, f.e.m.ChangePassword(t.Context(), f.boss.ID, mgrPassword("boss"), "a password that boss set"))
+			_, _, err = f.e.m.Invite(t.Context(), System, mgrInput("newcomer", RoleViewer))
+			check(t, err)
+		}, works: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEndFixture(t)
+			e := f.e
+			var after mgrMark
+			e.m.hook = func(point string) {
+				if point == "hashed" {
+					e.m.hook = nil
+					tt.gap(t, f)
+					after = e.mark(t)
+				}
+			}
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			if tt.works {
+				if err != nil || p.Account.ID != f.yamada.ID {
+					t.Fatalf("ChangeOwnPassword() = %+v, %v, want a session of yamada", p, err)
+				}
+				sessLives(t, e, token, "of the new password")
+				return
+			}
+			switch {
+			case err == nil:
+				t.Fatalf("ChangeOwnPassword() = %+v, nil, want an error", p)
+			case tt.is != nil && !errors.Is(err, tt.is):
+				t.Errorf("ChangeOwnPassword() = %v, want an error that wraps %v", err, tt.is)
+			case tt.text != nil && err.Error() != tt.text(t, f):
+				t.Errorf("ChangeOwnPassword() = %q, want %q", err, tt.text(t, f))
+			}
+			if !reflect.DeepEqual(p, Principal{}) || token != "" {
+				t.Errorf("ChangeOwnPassword() returned a Principal %+v or a token with an error", p)
+			}
+			e.unchanged(t, after)
+		})
+	}
+}
+
+// useHash makes the stored hash of the account id the hash of the password with this many iterations, with the store's
+// own API, and returns it.
+func (e *mgrEnv) useHash(t *testing.T, id, password string, iterations int) string {
+	t.Helper()
+	hash, err := hashPassword(password, iterations, rand.Reader)
+	if err != nil {
+		t.Fatalf("hashPassword() = %v", err)
+	}
+	e.edit(t, id, func(r *row) { r.Password = hash })
+	return hash
+}
+
+// iterationsOf returns the iteration count of the stored hash of the account id.
+func (e *mgrEnv) iterationsOf(t *testing.T, id string) int {
+	t.Helper()
+	n, _, _, err := parseHash(e.row(t, id).Password)
+	if err != nil {
+		t.Fatalf("the stored hash does not parse: %v", err)
+	}
+	return n
+}
+
+// TestLoginRehash checks that a login makes a password hash with fewer iterations than the Manager's again, in the Update
+// that writes the session, and changes nothing else of the account.
+func TestLoginRehash(t *testing.T) {
+	// setup makes yamada with a session and the hash of its password with this many iterations; the Manager's count is pwLow.
+	setup := func(t *testing.T, iterations int) (e *mgrEnv, a Account, session string) {
+		t.Helper()
+		e = newMgr(t)
+		e.first(t)
+		a = e.add(t, "yamada", RoleEditor)
+		_, session = e.login(t, "yamada")
+		e.useHash(t, a.ID, mgrPassword("yamada"), iterations)
+		e.clock.add(time.Minute)
+		return e, a, session
+	}
+
+	t.Run("a hash with fewer iterations is made again", func(t *testing.T) {
+		e, a, session := setup(t, pwLow-1)
+		old := e.row(t, a.ID)
+		hashes := hashCounter(e)
+		p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		if err != nil {
+			t.Fatalf("Login() = %v", err)
+		}
+		if *hashes != 2 {
+			t.Errorf("Login() computed %d hashes, want 2: the one that matched and the new one, both through the gate", *hashes)
+		}
+		now := e.row(t, a.ID)
+		want := old
+		want.Password = now.Password
+		if !reflect.DeepEqual(now, want) {
+			t.Error("the stored row changed in more than the hash: CredentialsChangedAt and the other fields must stay")
+		}
+		if now.Password == old.Password || e.iterationsOf(t, a.ID) != pwLow {
+			t.Errorf("the stored hash has %d iterations, and is the old one = %v, want a new one with %d", e.iterationsOf(t, a.ID), now.Password == old.Password, pwLow)
+		}
+		if ok, _, err := matchHash(now.Password, mgrPassword("yamada"), pwLow); !ok || err != nil {
+			t.Errorf("the new hash does not match the password: %v", err)
+		}
+		if !reflect.DeepEqual(p.Account, now.account()) {
+			t.Errorf("Login() returned the account %+v, want the stored one %+v", p.Account, now.account())
+		}
+		// The sessions of the account go on: the one made before, and the new one.
+		sessLives(t, e, session, "made before the hash was made again")
+		sessLives(t, e, token, "of the login")
+		if rows := e.sessionsOf(t, a.ID); len(rows) != 2 {
+			t.Errorf("the account has %d session rows, want 2", len(rows))
+		}
+		s, _ := e.sessionOf(t, token)
+		if !s.CredentialsChangedAt.Equal(old.CredentialsChangedAt) {
+			t.Error("the new session keeps another time of the credentials than the account has")
+		}
+
+		// A hash with the Manager's count is not made again.
+		*hashes = 0
+		before := e.raw(t)
+		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+			t.Fatal(err)
+		}
+		if *hashes != 1 || !maps.Equal(e.raw(t), before) {
+			t.Errorf("the next login computed %d hashes and left the rows as they were = %v, want 1 and true", *hashes, maps.Equal(e.raw(t), before))
+		}
+	})
+
+	t.Run("the count of the Manager", func(t *testing.T) {
+		e, a, _ := setup(t, pwLow)
+		e.m.iterations = pwLow + 3
+		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.iterationsOf(t, a.ID); got != pwLow+3 {
+			t.Errorf("the stored hash has %d iterations, want the Manager's, %d", got, pwLow+3)
+		}
+	})
+
+	t.Run("a hash that is not older is not written", func(t *testing.T) {
+		for _, iterations := range []int{pwLow, pwLow + 1, 50} {
+			e, _, _ := setup(t, iterations)
+			hashes := hashCounter(e)
+			before := e.raw(t)
+			if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(e.raw(t), before) || *hashes != 1 {
+				t.Errorf("a login with a hash of %d iterations left the rows as they were = %v after %d hashes, want true and 1",
+					iterations, maps.Equal(e.raw(t), before), *hashes)
+			}
+		}
+	})
+
+	// The rules for a new password do not apply: the hash is of the password that was typed and matched.
+	t.Run("a password that the rules refuse now", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		a := e.add(t, "yamada", RoleEditor)
+		e.useHash(t, a.ID, "short", 1)
+		if _, _, err := e.m.Login(t.Context(), "yamada", "short", ""); err != nil {
+			t.Fatalf("Login() = %v", err)
+		}
+		if ok, _, err := matchHash(e.row(t, a.ID).Password, "short", pwLow); !ok || err != nil || e.iterationsOf(t, a.ID) != pwLow {
+			t.Errorf("the new hash matches the password = %v, %v, with %d iterations, want true and %d", ok, err, e.iterationsOf(t, a.ID), pwLow)
+		}
+	})
+
+	t.Run("a password in another form", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		a := e.add(t, "yamada", RoleEditor)
+		composed, decomposed := "Caf"+eAcute+" marker nine password", "Cafe"+acute+" marker nine password"
+		e.useHash(t, a.ID, composed, 1)
+		if _, _, err := e.m.Login(t.Context(), "yamada", decomposed, ""); err != nil {
+			t.Fatalf("Login() = %v", err)
+		}
+		for _, typed := range []string{composed, decomposed} {
+			if ok, _, err := matchHash(e.row(t, a.ID).Password, typed, pwLow); !ok || err != nil {
+				t.Errorf("the new hash does not match a form of the password: %v", err)
+			}
+		}
+	})
+
+	t.Run("a login that fails writes no hash", func(t *testing.T) {
+		e, _, _ := setup(t, pwLow-1)
+		off := e.add(t, "off", RoleEditor)
+		e.useHash(t, off.ID, mgrPassword("off"), pwLow-1)
+		e.edit(t, off.ID, func(r *row) { r.Disabled = true })
+		before := e.mark(t)
+		fails := []struct{ name, login, password string }{
+			{"a wrong password", "yamada", mgrPassword("other")},
+			{"a disabled account", "off", mgrPassword("off")},
+		}
+		for _, tt := range fails {
+			if _, _, err := e.m.Login(t.Context(), tt.login, tt.password, ""); !errors.Is(err, ErrBadCredentials) {
+				t.Errorf("Login() with %s = %v, want ErrBadCredentials", tt.name, err)
+			}
+		}
+		e.unchanged(t, before)
+	})
+
+	t.Run("VerifyPasswordFactor does not make it again", func(t *testing.T) {
+		e, _, _ := setup(t, pwLow-1)
+		hashes := hashCounter(e)
+		before := e.mark(t)
+		if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada")); err != nil {
+			t.Fatal(err)
+		}
+		if *hashes != 1 {
+			t.Errorf("VerifyPasswordFactor() computed %d hashes, want 1", *hashes)
+		}
+		e.unchanged(t, before)
+	})
+
+	// The new hash is written with the session or not at all.
+	t.Run("the context ends before the Update", func(t *testing.T) {
+		e, _, _ := setup(t, pwLow-1)
+		ctx, cancel := context.WithCancel(t.Context())
+		e.m.hook = func(point string) {
+			if point == "session" {
+				cancel()
+			}
+		}
+		before := e.mark(t)
+		if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, context.Canceled) {
+			t.Errorf("Login() = %v, want context.Canceled", err)
+		}
+		e.unchanged(t, before)
+	})
+
+	t.Run("no random bits for the new hash", func(t *testing.T) {
+		e, _, _ := setup(t, pwLow-1)
+		boom := errors.New("no random bits")
+		e.m.rand = iotest.ErrReader(boom)
+		before := e.mark(t)
+		p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		if !errors.Is(err, boom) || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
+			t.Errorf("Login() = %+v, %v, want the error of the reader and no token", p, err)
+		}
+		e.unchanged(t, before)
+	})
+
+	// A session cannot be written, so the hash is not written either.
+	t.Run("a session that cannot be written", func(t *testing.T) {
+		e, _, _ := setup(t, pwLow-1)
+		e.m.rand = sessSame{}
+		taro := e.add(t, "taro", RoleEditor)
+		e.setSession(t, sessKey(tokSample), sessionFor(e.row(t, taro.ID), e.clock.now()))
+		before := e.mark(t)
+		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err == nil || errors.Is(err, ErrBadCredentials) {
+			t.Errorf("Login() with a token that is in use = %v, want the error of the session", err)
+		}
+		e.unchanged(t, before)
+	})
+
+	t.Run("the account is read again for the new hash", func(t *testing.T) {
+		e, a, _ := setup(t, pwLow-1)
+		var ran bool
+		e.m.hook = func(point string) {
+			if point == "session" && !ran {
+				ran = true
+				if _, err := e.m.Update(t.Context(), By(a.ID), a.ID, Change{Name: ptr("New Name")}); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		p, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		if err != nil || p.Account.Name != "New Name" {
+			t.Fatalf("Login() = %+v, %v, want the account with the new name", p.Account, err)
+		}
+		if got := e.row(t, a.ID); got.Name != "New Name" || e.iterationsOf(t, a.ID) != pwLow {
+			t.Errorf("the stored row has the name %q and a hash of %d iterations, want the new name and %d iterations", got.Name, e.iterationsOf(t, a.ID), pwLow)
+		}
+	})
+
+	// A check that follows a match of the old hash fails once the new hash is written: the password changed since it matched.
+	t.Run("a call that matched the old hash fails once", func(t *testing.T) {
+		calls := []struct {
+			name string
+			do   func(e *mgrEnv) error
+		}{
+			{"VerifyPasswordFactor", func(e *mgrEnv) error {
+				_, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada"))
+				return err
+			}},
+			{"Login", func(e *mgrEnv) error {
+				_, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+				return err
+			}},
+		}
+		for _, point := range []string{"verified", "session"} {
+			for _, tt := range calls {
+				if tt.name == "VerifyPasswordFactor" && point == "session" {
+					continue // a point that only Login has
+				}
+				t.Run(tt.name+" at "+point, func(t *testing.T) {
+					e, a, _ := setup(t, pwLow-1)
+					ran := false
+					var inner error
+					e.m.hook = func(p string) {
+						if p == point && !ran {
+							ran = true
+							_, _, inner = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+						}
+					}
+					rows := len(e.rawSessions(t))
+					if err := tt.do(e); !errors.Is(err, ErrBadCredentials) {
+						t.Errorf("%s that matched the old hash = %v, want ErrBadCredentials", tt.name, err)
+					}
+					if inner != nil || e.iterationsOf(t, a.ID) != pwLow {
+						t.Errorf("the login in the gap = %v, the stored hash has %d iterations, want nil and %d", inner, e.iterationsOf(t, a.ID), pwLow)
+					}
+					// Only the login in the gap made a session, and the hash that it wrote is not written over.
+					if got := len(e.rawSessions(t)); got != rows+1 {
+						t.Errorf("there are %d session rows, want %d: the login in the gap made one", got, rows+1)
+					}
+					e.m.hook = nil
+					if err := tt.do(e); err != nil {
+						t.Errorf("%s again = %v, want nil: the new hash matches the password", tt.name, err)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("logins at the same time", func(t *testing.T) {
+		const n = 6
+		rounds := 15
+		if testing.Short() {
+			rounds = 4
+		}
+		e, a, _ := setup(t, pwLow-1)
+		for round := range rounds {
+			e.useHash(t, a.ID, mgrPassword("yamada"), pwLow-1)
+			old := e.row(t, a.ID)
+			calls := make([]func() error, n)
+			for i := range calls {
+				calls[i] = func() error {
+					_, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+					return err
+				}
+			}
+			succeeded := 0
+			for _, err := range mgrRunTogether(calls...) {
+				switch {
+				case err == nil:
+					succeeded++
+				case !errors.Is(err, ErrBadCredentials):
+					t.Errorf("round %d: Login() = %v, want nil or ErrBadCredentials", round, err)
+				}
+			}
+			now := e.row(t, a.ID)
+			want := old
+			want.Password = now.Password
+			if succeeded == 0 || e.iterationsOf(t, a.ID) != pwLow || !reflect.DeepEqual(now, want) {
+				t.Errorf("round %d: %d logins succeeded, the hash has %d iterations and the rest of the row is as it was = %v, want at least one, %d and true",
+					round, succeeded, e.iterationsOf(t, a.ID), reflect.DeepEqual(now, want), pwLow)
+			}
+		}
+	})
+}
+
+// TestRemoveSessions checks which rows removeSessions removes: every row that decodes and names the account, live or not,
+// and no other.
+func TestRemoveSessions(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	yamada := e.row(t, e.add(t, "yamada", RoleEditor).ID)
+	taro := e.row(t, e.add(t, "taro", RoleEditor).ID)
+	expired := sessionFor(yamada, mgrTime.Add(-3*time.Hour))
+	changed := sessionFor(yamada, mgrTime)
+	changed.CredentialsChangedAt = changed.CredentialsChangedAt.Add(time.Second)
+	rows := []struct {
+		name    string
+		session sessionRow
+		raw     string
+		removed bool
+	}{
+		{name: "a live session of yamada", session: sessionFor(yamada, mgrTime), removed: true},
+		{name: "a session of yamada that has expired", session: expired, removed: true},
+		{name: "a session of yamada with other credentials", session: changed, removed: true},
+		{name: "a live session of taro", session: sessionFor(taro, mgrTime)},
+		{name: "a session of an account that is not there", session: sessionRow{
+			Account: mgrMissingID, CreatedAt: mgrTime, AuthenticatedAt: mgrTime, LastSeenAt: mgrTime, Factors: []Factor{FactorPassword},
+		}},
+		{name: "a row that is not JSON", raw: "not json"},
+		{name: "a row of yamada with a key that is not known", raw: `{"account":"` + yamada.ID + `","extra":1}`},
+	}
+	for _, r := range rows {
+		if r.raw != "" {
+			e.setRawSession(t, sessKey(r.name), r.raw)
+		} else {
+			e.setSession(t, sessKey(r.name), r.session)
+		}
+	}
+	removeFor := func(id string) error {
+		return e.s.Update(t.Context(), func(tx *store.Tx) error { return removeSessions(tx, id) })
+	}
+	if err := removeFor(yamada.ID); err != nil {
+		t.Fatalf("removeSessions() = %v", err)
+	}
+	got := e.rawSessions(t)
+	for _, r := range rows {
+		if _, there := got[sessKey(r.name)]; there == r.removed {
+			t.Errorf("%s: has a row = %v, want %v", r.name, there, !r.removed)
+		}
+	}
+
+	// Nothing to remove writes nothing.
+	before := e.mark(t)
+	nobody := content.FormatID(content.RefUser, [16]byte{0: 0x02, 15: 0xfe}) // that no row names
+	for _, id := range []string{yamada.ID, nobody} {
+		if err := removeFor(id); err != nil {
+			t.Fatalf("removeSessions() with nothing to remove = %v", err)
+		}
+	}
+	e.unchanged(t, before)
+
+	// The errors of the store are returned: a transaction that has ended, and one that cannot write.
+	var ended *store.Tx
+	if err := e.s.View(t.Context(), func(tx *store.Tx) error { ended = tx; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSessions(ended, yamada.ID); err == nil || err.Error() != "the transaction has ended" {
+		t.Errorf("removeSessions() in a transaction that has ended = %v, want an error that it has ended", err)
+	}
+	view := func(id string) error {
+		return e.s.View(t.Context(), func(tx *store.Tx) error { return removeSessions(tx, id) })
+	}
+	if err := view(taro.ID); err == nil || err.Error() != "read-only transaction" {
+		t.Errorf("removeSessions() of a row to remove in a View = %v, want the error of the store", err)
+	}
+	if err := view(yamada.ID); err != nil {
+		t.Errorf("removeSessions() of no row in a View = %v, want nil: it writes nothing", err)
+	}
+}
+
+// TestChangePasswordWithAClockTheRowCannotHold makes ChangePassword write a time that the row cannot hold, and checks that
+// nothing is written: the account is not changed and its sessions stay.
+func TestChangePasswordWithAClockTheRowCannotHold(t *testing.T) {
+	f := newEndFixture(t)
+	e := f.e
+	e.clock.set(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))
+	before := e.mark(t)
+	err := e.m.ChangePassword(t.Context(), f.taro.ID, mgrPassword("taro"), endPassword)
+	if err == nil || errors.Is(err, ErrBadCredentials) || !strings.Contains(err.Error(), "year outside of range") {
+		t.Errorf("ChangePassword() with a clock the row cannot hold = %v, want the error of the encoding of the row", err)
+	}
+	e.unchanged(t, before)
+}
+
+// TestChangePasswordRefusesBeforeAHash checks that a row that cannot be read stops ChangePassword before it makes a hash, as
+// it stops every operation that writes.
+func TestChangePasswordRefusesBeforeAHash(t *testing.T) {
+	f := newEndFixture(t)
+	e := f.e
+	e.putRaw(t, f.taro.ID, "not json")
+	hashes := hashCounter(e)
+	before := e.mark(t)
+	err := e.m.ChangePassword(t.Context(), f.yamada.ID, mgrPassword("yamada"), endPassword)
+	if want := `accounts "` + f.taro.ID + `": invalid value`; err == nil || err.Error() != want {
+		t.Errorf("ChangePassword() = %v, want the error %q", err, want)
+	}
+	if *hashes != 0 {
+		t.Errorf("%d hashes were computed before the row that cannot be read stopped the call, want none", *hashes)
+	}
+	e.unchanged(t, before)
 }

@@ -209,6 +209,25 @@ func sweepSessions(tx *store.Tx, now time.Time) ([]storedSession, error) {
 	return live, nil
 }
 
+// removeSessions removes every row of the table sessions that decodes and names the account id. An operation that
+// changes what the sessions of an account rely on calls it in the Update that writes the change, after every check of
+// the operation has passed, so that no session outlives the state it was made for, and a refused operation writes
+// nothing. A row that does not decode names nobody, and stays for the next sweep.
+func removeSessions(tx *store.Tx, id string) error {
+	stored, err := tx.Sessions()
+	if err != nil {
+		return err
+	}
+	for _, st := range stored {
+		if s, err := decodeSession(st.Key, st.Data); err == nil && s.Account == id {
+			if err := tx.DeleteSession(st.Key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Login checks the password of the account with the login name, which it normalizes, as VerifyPasswordFactor does, and
 // starts a session for it: the Principal of the account and its session, and the token that the client holds, which is
 // the only secret of the session, since the store keeps its SHA-256. If previous is a token, its session is removed,
@@ -217,13 +236,23 @@ func sweepSessions(tx *store.Tx, now time.Time) ([]storedSession, error) {
 // cannot work any more goes, of any account. Every reason for a login to fail is ErrBadCredentials, and then nothing is
 // written; only an error of the store, or the end of ctx, is another. The account is read again when the session is
 // written, so that a password change or a disabling that committed after the hash was checked fails the login.
+//
+// A password hash with fewer iterations than the Manager's is made again, with the password that matched, and written in
+// the Update that writes the session: CredentialsChangedAt and the account's other sessions stay as they are. A login
+// or a VerifyPasswordFactor that matched the old hash and reads the account after that fails, once.
 func (m *Manager) Login(ctx context.Context, login, password, previous string) (Principal, string, error) {
-	found, ok, _, err := m.verify(ctx, login, password)
+	found, ok, rehash, err := m.verify(ctx, login, password)
 	if err != nil {
 		return Principal{}, "", err
 	}
 	if !ok {
 		return Principal{}, "", ErrBadCredentials
+	}
+	var upgraded string
+	if rehash {
+		if upgraded, err = m.newHash(ctx, password); err != nil {
+			return Principal{}, "", err
+		}
 	}
 	token, key, err := newSession(m.rand)
 	if err != nil {
@@ -238,6 +267,12 @@ func (m *Manager) Login(ctx context.Context, login, password, previous string) (
 			return err
 		case !ok:
 			return ErrBadCredentials
+		}
+		if rehash {
+			r.Password = upgraded
+			if err := putRow(tx, r); err != nil {
+				return err
+			}
 		}
 		out, err = startSession(tx, r, key, previous, m.now())
 		return err
@@ -380,4 +415,78 @@ func (m *Manager) Logout(ctx context.Context, token string) error {
 		}
 		return nil
 	})
+}
+
+// ChangeOwnPassword changes the password of the account that the session with this token belongs to, to next, if current
+// is its password, as ChangePassword does, and returns the Principal and the token of a new session that goes on in
+// place of the old one: it is authenticated now, and every session of the account ends in the same Update, the one that
+// asked too, so that a Cookie that was stolen does not outlive the change. A text that is no token, and a session that
+// does not work (see Authenticate), at the first look or in the Update, are ErrNoSession, which comes before every other
+// reason to refuse, since the session and the account are read together; an account that Check does not allow to edit
+// itself is refused with an error that wraps ErrForbidden. The hashes are made outside the Update, and wait for their
+// places as in ChangePassword. A call that is refused writes nothing, and leaves every session as it was.
+func (m *Manager) ChangeOwnPassword(ctx context.Context, token, current, next string) (Principal, string, error) {
+	oldKey, ok := sessionKey(token)
+	if !ok {
+		return Principal{}, "", ErrNoSession
+	}
+	var stored row
+	err := m.st.View(ctx, func(tx *store.Tx) (err error) {
+		_, stored, _, err = lookAtOwnAccount(tx, oldKey, m.now())
+		return err
+	})
+	if err != nil {
+		return Principal{}, "", err
+	}
+	hash, err := m.hashNewPassword(ctx, stored, current, next)
+	if err != nil {
+		return Principal{}, "", err
+	}
+	fresh, key, err := newSession(m.rand)
+	if err != nil {
+		return Principal{}, "", err
+	}
+	var out Principal
+	err = m.st.Update(ctx, func(tx *store.Tx) error {
+		now := m.now()
+		_, r, rows, err := lookAtOwnAccount(tx, oldKey, now)
+		if err != nil {
+			return err
+		}
+		changed, err := rewritePassword(tx, rows, r.ID, stored, next, hash, now)
+		if err != nil {
+			return err
+		}
+		if err := removeSessions(tx, r.ID); err != nil {
+			return err
+		}
+		out, err = startSession(tx, changed, key, "", now)
+		return err
+	})
+	if err != nil {
+		return Principal{}, "", err
+	}
+	return out, fresh, nil
+}
+
+// lookAtOwnAccount is what ChangeOwnPassword reads, first and again in its Update, from one state of the store: the
+// session with this key and the row of its account, if the session works at now, and every row of the accounts, as an
+// operation that writes reads them. It is ErrNoSession if the session does not work, and else an error that wraps
+// ErrForbidden if Check does not allow the account to edit itself.
+func lookAtOwnAccount(tx *store.Tx, key string, now time.Time) (sessionRow, row, []row, error) {
+	s, r, state, err := readSession(tx, key, now)
+	switch {
+	case err != nil:
+		return sessionRow{}, row{}, nil, err
+	case state != sessionLive:
+		return sessionRow{}, row{}, nil, ErrNoSession
+	}
+	rows, err := loadRows(tx)
+	if err != nil {
+		return sessionRow{}, row{}, nil, err
+	}
+	if err := Check(s.principal(r), EditSelf, Target{Account: r.ID}); err != nil {
+		return sessionRow{}, row{}, nil, err
+	}
+	return s, r, rows, nil
 }
