@@ -32,6 +32,9 @@
             # For the tests of the server files of internal/build.
             pkgs.nginx
             pkgs.apacheHttpd
+            # For the tests of internal/wpblock against the PHP of WordPress, with WHITEROOM_WP_PARSER.
+            # Only the out output: the dev output pulls in the build tools of phpize.
+            pkgs.php.unwrapped.out
           ]
           # For the dm-log-writes check of internal/store (mke2fs, e2fsck, debugfs); Linux only.
           ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.e2fsprogs ];
