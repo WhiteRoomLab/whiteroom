@@ -235,7 +235,9 @@ func removeSessions(tx *store.Tx, id string) error {
 // sessions, the one used least recently goes when there would be more than SessionsPerAccount, and every session that
 // cannot work any more goes, of any account. Every reason for a login to fail is ErrBadCredentials, and then nothing is
 // written; only an error of the store, or the end of ctx, is another. The account is read again when the session is
-// written, so that a password change or a disabling that committed after the hash was checked fails the login.
+// written, so that a password change or a disabling that committed after the hash was checked fails the login. An error
+// that comes after the password was compared with the hash, such as the end of ctx while the session is written, is
+// marked for PasswordCompared and keeps its text and its chain.
 //
 // A password hash with fewer iterations than the Manager's is made again, with the password that matched, and written in
 // the Update that writes the session: CredentialsChangedAt and the account's other sessions stay as they are. A login
@@ -251,12 +253,12 @@ func (m *Manager) Login(ctx context.Context, login, password, previous string) (
 	var upgraded string
 	if rehash {
 		if upgraded, err = m.newHash(ctx, password); err != nil {
-			return Principal{}, "", err
+			return Principal{}, "", compared(err)
 		}
 	}
 	token, key, err := newSession(m.rand)
 	if err != nil {
-		return Principal{}, "", err
+		return Principal{}, "", compared(err)
 	}
 	m.at("session")
 	var out Principal
@@ -278,9 +280,36 @@ func (m *Manager) Login(ctx context.Context, login, password, previous string) (
 		return err
 	})
 	if err != nil {
-		return Principal{}, "", err
+		return Principal{}, "", compared(err)
 	}
 	return out, token, nil
+}
+
+// comparedError is an error of Login that came after the typed password was compared with the stored hash. It has the
+// text and the chain of the error it wraps.
+type comparedError struct{ err error }
+
+func (e comparedError) Error() string { return e.err.Error() }
+
+func (e comparedError) Unwrap() error { return e.err }
+
+// compared marks err, which Login met after the comparison. ErrBadCredentials is the answer to a password that does not
+// match, and stays as it is.
+func compared(err error) error {
+	if errors.Is(err, ErrBadCredentials) {
+		return err
+	}
+	return comparedError{err}
+}
+
+// PasswordCompared reports whether an attempt whose Login ended with err must stay counted against a limit on the guesses of
+// a password, which it must once the password was compared with a hash: err is ErrBadCredentials, which is also the answer
+// to a password that is too long (see PasswordTooLong), or Login met it after the comparison, as when ctx ends while the
+// session is written. An attempt that was given back then would let a client that hangs up after a right password tell it
+// from a wrong one. An error of the store, or the end of ctx, before the comparison is not compared.
+func PasswordCompared(err error) bool {
+	var c comparedError
+	return errors.Is(err, ErrBadCredentials) || errors.As(err, &c)
 }
 
 // startSession writes the session with the key for the account r in tx, after the removals that Login describes.

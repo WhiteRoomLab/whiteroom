@@ -42,6 +42,7 @@ func (s *Server) clientAddr(r *http.Request) netip.Addr {
 		}
 		peer = canonicalAddr(ap.Addr())
 		if !s.trusted(peer) {
+			s.noteForwardedFor(r)
 			return peer
 		}
 	}
@@ -63,6 +64,16 @@ func (s *Server) clientAddr(r *http.Request) netip.Addr {
 		return unspecified
 	}
 	return peer
+}
+
+// noteForwardedFor logs, at most once a minute, that r has an X-Forwarded-For header that is not read, since its peer is not
+// a trusted proxy: the usual cause is a reverse proxy that TrustedProxies does not list, and then every client counts as the
+// proxy. The line holds nothing of the request.
+func (s *Server) noteForwardedFor(r *http.Request) {
+	if len(r.Header.Values("X-Forwarded-For")) > 0 && s.forwardedDue() {
+		s.log.Print("X-Forwarded-For comes from a peer that is not in TrustedProxies, and is not read; " +
+			"if a reverse proxy sends it, add the proxy to TrustedProxies")
+	}
 }
 
 func (s *Server) trusted(a netip.Addr) bool {

@@ -12,9 +12,9 @@ import (
 
 // model is a plain version of attempts, with maps that it searches, for the tests to compare attempts with. It keeps
 // only the entries that have not expired, and the level of a login name and of a client as whole units that come back
-// from the time of the entry.
+// from the time of the entry. The order in which entries are used is a number that grows with each use.
 type model struct {
-	capacity  int
+	capacity  int // of each table; of pairs, at least 1
 	now       time.Duration
 	seq       uint64
 	pairs     map[[2]int]*modelPair
@@ -31,10 +31,14 @@ type modelPair struct {
 	use   uint64
 }
 
-// modelLevel is a count of attempts, level, of which one comes back every leak after at.
+// modelLevel is a count of attempts, level, of which one comes back every leak after at. listed says that the entry may be
+// dropped before it expires, which is so if its level was below 5 when it was last counted or given back; use is when it was
+// last counted, or put in the list.
 type modelLevel struct {
-	level int
-	at    time.Duration
+	level  int
+	at     time.Duration
+	listed bool
+	use    uint64
 }
 
 func newModel(capacity, names, clients int) *model {
@@ -98,12 +102,27 @@ func (m *model) advance(d time.Duration) {
 	}
 }
 
-// leastRecentlyUsed returns the pair that may be dropped and was used least recently, or false.
-func (m *model) leastRecentlyUsed() ([2]int, bool) {
+// pairVictim returns the pair to drop for a new pair when the table is full: the one with fewer than 5 attempts that was
+// used least recently, else the one that waits and was used least recently.
+func (m *model) pairVictim() [2]int {
 	var best [2]int
-	found := false
+	found, foundIdle := false, false
 	for id, p := range m.pairs {
-		if p.count < 5 && (!found || p.use < m.pairs[best].use) {
+		idle := p.count < 5
+		switch {
+		case !found, idle && !foundIdle, idle == foundIdle && p.use < m.pairs[best].use:
+			best, found, foundIdle = id, true, idle
+		}
+	}
+	return best
+}
+
+// levelVictim returns the entry of levels to drop for a new key when the table is full: the one in the list that was used
+// least recently, or false if the list is empty.
+func levelVictim(levels map[int]*modelLevel) (int, bool) {
+	best, found := 0, false
+	for id, l := range levels {
+		if l.listed && (!found || l.use < levels[best].use) {
 			best, found = id, true
 		}
 	}
@@ -119,6 +138,12 @@ func levelWait(l *modelLevel, burst int, leak, now time.Duration) time.Duration 
 	return 0
 }
 
+// levelFull reports whether a new key is refused by the table of levels: it is full and nothing in it may be dropped.
+func (m *model) levelFull(levels map[int]*modelLevel) bool {
+	_, droppable := levelVictim(levels)
+	return len(levels) >= m.capacity && !droppable
+}
+
 func (m *model) begin(name, client int) (retry time.Duration, ok bool, warned []string) {
 	pairID := [2]int{name, client}
 	var byPair, byName, byClient time.Duration
@@ -126,19 +151,16 @@ func (m *model) begin(name, client int) (retry time.Duration, ok bool, warned []
 		if until := p.last + modelWait(p.count); p.count >= 5 && until > m.now {
 			byPair = until - m.now
 		}
-	} else if _, free := m.leastRecentlyUsed(); len(m.pairs) >= m.capacity && !free {
-		byPair = time.Minute
-		warned = append(warned, whatPairs)
 	}
 	if l, ok := m.names[name]; ok {
 		byName = levelWait(l, 100, 15*time.Minute, m.now)
-	} else if len(m.names) >= m.capacity {
+	} else if m.levelFull(m.names) {
 		byName = time.Minute
 		warned = append(warned, whatNames)
 	}
 	if l, ok := m.clients[client]; ok {
 		byClient = levelWait(l, 30, 30*time.Second, m.now)
-	} else if len(m.clients) >= m.capacity {
+	} else if m.levelFull(m.clients) {
 		byClient = time.Minute
 		warned = append(warned, whatClients)
 	}
@@ -148,9 +170,8 @@ func (m *model) begin(name, client int) (retry time.Duration, ok bool, warned []
 
 	p, ok := m.pairs[pairID]
 	if !ok {
-		if len(m.pairs) >= m.capacity {
-			victim, _ := m.leastRecentlyUsed()
-			delete(m.pairs, victim)
+		if len(m.pairs) >= max(m.capacity, 1) {
+			delete(m.pairs, m.pairVictim())
 		}
 		p = &modelPair{}
 		m.pairs[pairID] = p
@@ -166,27 +187,41 @@ func (m *model) begin(name, client int) (retry time.Duration, ok bool, warned []
 	}{{m.names, name}, {m.clients, client}} {
 		l, ok := level.levels[level.id]
 		if !ok {
+			if len(level.levels) >= m.capacity {
+				victim, _ := levelVictim(level.levels)
+				delete(level.levels, victim)
+			}
 			l = &modelLevel{at: m.now}
 			level.levels[level.id] = l
 		}
 		l.level++
+		l.listed = l.level < 5
+		m.seq++
+		l.use = m.seq
 	}
 	return 0, true, warned
 }
 
-func giveBackLevel(levels map[int]*modelLevel, id int) {
-	if l, ok := levels[id]; ok {
-		l.level--
-		if l.level == 0 {
-			delete(levels, id)
-		}
+func (m *model) giveBackLevel(levels map[int]*modelLevel, id int) {
+	l, ok := levels[id]
+	if !ok {
+		return
+	}
+	l.level--
+	switch {
+	case l.level == 0:
+		delete(levels, id)
+	case !l.listed && l.level < 5:
+		l.listed = true
+		m.seq++
+		l.use = m.seq
 	}
 }
 
 func (m *model) succeeded(name, client int) {
 	delete(m.pairs, [2]int{name, client})
-	giveBackLevel(m.names, name)
-	giveBackLevel(m.clients, client)
+	m.giveBackLevel(m.names, name)
+	m.giveBackLevel(m.clients, client)
 }
 
 func (m *model) aborted(name, client int) {
@@ -201,8 +236,8 @@ func (m *model) aborted(name, client int) {
 			p.use = m.seq
 		}
 	}
-	giveBackLevel(m.names, name)
-	giveBackLevel(m.clients, client)
+	m.giveBackLevel(m.names, name)
+	m.giveBackLevel(m.clients, client)
 }
 
 // compareLevels reports how the levels of the model differ from the expiry times of the entries that attempts keep, of
@@ -270,23 +305,65 @@ func (m *model) compare(a *attempts) error {
 		return err
 	}
 
-	var order [][2]int
-	for _, k := range st.idle {
-		if live(st.pairs[k][1]) {
-			order = append(order, m.idOf[k])
+	// The pairs that may be dropped, and those that wait, from the most recently used.
+	for _, list := range []struct {
+		what string
+		keys []pairKey
+		in   func(p *modelPair) bool
+	}{{"idle", st.idle, func(p *modelPair) bool { return p.count < 5 }}, {"held", st.held, func(p *modelPair) bool { return p.count >= 5 }}} {
+		var order, want [][2]int
+		for _, k := range list.keys {
+			if live(st.pairs[k][1]) {
+				order = append(order, m.idOf[k])
+			}
+		}
+		for id, p := range m.pairs {
+			if list.in(p) {
+				want = append(want, id)
+			}
+		}
+		slices.SortFunc(want, func(x, y [2]int) int { return int(m.pairs[y].use) - int(m.pairs[x].use) })
+		if !slices.Equal(order, want) {
+			return fmt.Errorf("the pairs in the list %q are in the order %v, the model says %v", list.what, order, want)
 		}
 	}
-	var want [][2]int
-	for id, p := range m.pairs {
-		if p.count < 5 {
-			want = append(want, id)
+
+	// The login names and the clients that may be dropped, from the most recently used.
+	for _, list := range []struct {
+		what    string
+		order   []int
+		levels  map[int]*modelLevel
+		expires func(id int) int64
+	}{
+		{"login names", idsOf(st.namesIdle, m.nameKey), m.names, func(id int) int64 { return st.names[m.nameKey[id]] }},
+		{"clients", idsOf(st.clientsIdle, m.clientKey), m.clients, func(id int) int64 { return st.clients[m.clientKey[id]] }},
+	} {
+		var order, want []int
+		for _, id := range list.order {
+			if live(list.expires(id)) {
+				order = append(order, id)
+			}
 		}
-	}
-	slices.SortFunc(want, func(x, y [2]int) int { return int(m.pairs[y].use) - int(m.pairs[x].use) })
-	if !slices.Equal(order, want) {
-		return fmt.Errorf("pairs are dropped in the order %v, the model says %v", order, want)
+		for id, l := range list.levels {
+			if l.listed {
+				want = append(want, id)
+			}
+		}
+		slices.SortFunc(want, func(x, y int) int { return int(list.levels[y].use) - int(list.levels[x].use) })
+		if !slices.Equal(order, want) {
+			return fmt.Errorf("the %s that may be dropped are in the order %v, the model says %v", list.what, order, want)
+		}
 	}
 	return nil
+}
+
+// idsOf returns the ids of the keys, which are the places of keys in the list of all the keys of the model.
+func idsOf[K comparable](keys []K, all []K) []int {
+	var ids []int
+	for _, k := range keys {
+		ids = append(ids, slices.Index(all, k))
+	}
+	return ids
 }
 
 func TestAttemptsModel(t *testing.T) {
@@ -310,6 +387,16 @@ func TestAttemptsModel(t *testing.T) {
 		{1, 3, 3, long, 4},
 		{2, 2, 2, long, 4},
 		{5, 20, 20, long, 4},
+		// Few login names and clients, and a table of pairs that is smaller than all the pairs: the pairs reach five attempts, and
+		// the table drops pairs that wait.
+		{3, 2, 2, long, 4},
+		{3, 2, 2, long, 1},
+		{5, 3, 3, mid, 2},
+		// Tables of login names and of clients that are smaller than the keys, with attempts enough to make some of them keep
+		// their entries: new ones are refused when every entry is kept.
+		{2, 6, 3, mid, 2},
+		{2, 3, 6, short, 2},
+		{3, 8, 8, short, 1},
 		// Few clients and many login names, and the time standing still: the clients come to their limit.
 		{50, 200, 3, short, 1},
 		{4, 200, 6, short, 1},

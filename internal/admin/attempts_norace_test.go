@@ -10,8 +10,8 @@ import (
 )
 
 // TestAttemptsMemory fills the three tables with the most that an attack can make them keep, pairs, login names and
-// clients that all wait, and measures the memory and the time. The race detector makes both of them larger, so it does
-// not run under it.
+// clients that all have five attempts, and measures the memory and the time. The race detector makes both of them larger,
+// so it does not run under it.
 func TestAttemptsMemory(t *testing.T) {
 	const n = attemptsCapacity
 	const maxGrowth = 64 << 20
@@ -55,7 +55,8 @@ func TestAttemptsMemory(t *testing.T) {
 			len(a.pairs.entries), len(a.names.entries), len(a.clients.entries), n)
 	}
 
-	// New pairs, login names and clients, when the tables are full of ones that wait: all are refused.
+	// New login names and clients, when their tables are full of ones with five attempts: all are refused, and say which
+	// tables are full. The pairs are not what refuses them, and the table of pairs does not change.
 	refusing := time.Now()
 	for i := n; i < 2*n; i++ {
 		if retry, ok := a.begin(names[i], clients[i]); ok || retry != time.Minute {
@@ -68,7 +69,7 @@ func TestAttemptsMemory(t *testing.T) {
 	if refused > time.Second {
 		t.Errorf("%d attempts on full tables took %v, want less than 1s", n, refused)
 	}
-	if want := 3 * n; len(warned) != want {
+	if want := 2 * n; len(warned) != want {
 		t.Errorf("warn was called %d times, want %d", len(warned), want)
 	}
 	if len(a.pairs.entries) != n || len(a.names.entries) != n || len(a.clients.entries) != n {
@@ -90,8 +91,8 @@ func TestAttemptsMemory(t *testing.T) {
 		t.Errorf("%d attempts on full tables of ones that are forgotten took %v, want less than %v", n, dropped, maxDropping)
 	}
 
-	// When the login names and the clients have left but the pairs have not, the pairs are the ones that wait, and the
-	// least recently used of them is dropped.
+	// When the login names and the clients have left but the pairs have not, the pairs are the ones that may be dropped, and
+	// the least recently used of them is.
 	clock.advance(16 * time.Minute)
 	replacing := time.Now()
 	for i := range n {

@@ -23,7 +23,7 @@ const (
 	clientHeadroom = (clientBurst - 1) * clientLeak
 
 	attemptsCapacity = 100000
-	fullRetry        = time.Minute // for a new key when its table has no room for it
+	fullRetry        = time.Minute // for a new login name or client when its table has no room for it
 )
 
 // attempts counts the attempts to log in, before the password is checked, three ways: by login name and client
@@ -31,6 +31,14 @@ const (
 // all login names, which are levels that rise with each attempt and leak out. It tells nothing about the accounts: a
 // login name is counted whether or not an account has it. The counts are in memory only, as hashes of login names and
 // address prefixes, and a restart forgets them.
+//
+// Each table is bounded, and filling one must not refuse everybody. A pair is never refused: when the table is full, the
+// pair that is forgotten is one that has expired, else the least recently used one with fewer than freeAttempts attempts,
+// else the least recently used of those that wait, which is the one whose last attempt is the oldest. A login name and a
+// client are forgotten when they have expired, else the least recently used one whose level was below freeAttempts when it
+// was last counted or given back. A level of freeAttempts or more is kept until it expires, since it caps the guesses on a
+// login name; forgetting a level of fewer lifts that cap by fewer than freeAttempts attempts. A new login name or client is
+// refused, with a warning, only when every entry of its table is kept.
 type attempts struct {
 	mu      sync.Mutex
 	clock   func() time.Time
@@ -54,16 +62,16 @@ func newPairKey(name [32]byte, client netip.Prefix) pairKey {
 	return sha256.Sum256(b[:])
 }
 
-// newAttempts returns attempts that keep count of at most capacity pairs, login names and clients each. When a new one
-// is refused for lack of room, warn gets the name of what is full.
+// newAttempts returns attempts that keep count of at most capacity login names and clients, and of as many pairs, but of
+// one at least. When a new login name or client is refused for lack of room, warn gets the name of what is full.
 func newAttempts(now func() time.Time, capacity int, warn func(string)) *attempts {
 	return &attempts{
 		clock:   now,
 		start:   now(),
 		warn:    warn,
-		pairs:   newTable[pairKey]("login name and client pairs", capacity),
-		names:   newTable[[32]byte]("login names", capacity),
-		clients: newTable[netip.Prefix]("clients", capacity),
+		pairs:   newTable[pairKey](max(capacity, 1)),
+		names:   newTable[[32]byte](capacity),
+		clients: newTable[netip.Prefix](capacity),
 	}
 }
 
@@ -82,7 +90,7 @@ func (a *attempts) begin(name [32]byte, client netip.Prefix) (retry time.Duratio
 	a.mu.Lock()
 	now := a.elapsed()
 	p, n, c := a.pairs.entries[pair], a.names.entries[name], a.clients.entries[client]
-	byPair, pairsFull := a.pairWait(p, now)
+	byPair := pairWait(p, now)
 	byName, namesFull := bucketWait(a.names, n, now, nameHeadroom)
 	byClient, clientsFull := bucketWait(a.clients, c, now, clientHeadroom)
 	wait := max(byPair, byName, byClient)
@@ -94,14 +102,11 @@ func (a *attempts) begin(name [32]byte, client netip.Prefix) (retry time.Duratio
 	a.mu.Unlock()
 
 	// Outside the lock: warn writes to a log.
-	if pairsFull {
-		a.warn(a.pairs.what)
-	}
 	if namesFull {
-		a.warn(a.names.what)
+		a.warn("login names")
 	}
 	if clientsFull {
-		a.warn(a.clients.what)
+		a.warn("clients")
 	}
 	if wait > 0 {
 		return (wait + time.Second - 1) / time.Second * time.Second, false
@@ -143,20 +148,14 @@ func (a *attempts) aborted(name [32]byte, client netip.Prefix) {
 	giveBack(a.clients, client, now, clientLeak)
 }
 
-// pairWait returns how long an attempt of the pair has to wait, for its entry p if it has one. full reports that the
-// pair has no entry and the table no room for one.
-func (a *attempts) pairWait(p *entry[pairKey], now time.Duration) (wait time.Duration, full bool) {
-	switch {
-	case p == nil:
-		if !a.pairs.room(now) {
-			return fullRetry, true
-		}
-	case p.expires > now && p.count >= freeAttempts:
+// pairWait returns how long an attempt of the pair has to wait, for its entry p if it has one.
+func pairWait(p *entry[pairKey], now time.Duration) time.Duration {
+	if p != nil && p.expires > now && p.count >= freeAttempts {
 		if until := p.expires - pairForget + waitAfter(p.count); until > now {
-			return until - now, false
+			return until - now
 		}
 	}
-	return 0, false
+	return 0
 }
 
 // waitAfter returns how long a pair makes the next attempt wait after count attempts.
@@ -174,7 +173,7 @@ func waitAfter(count int32) time.Duration {
 // bucketWait is pairWait for a level, the login name's or the client's, in the table t. Every attempt adds the leak of
 // the level to when the entry expires, so its level, the attempts that have not come back yet, is (expires - now) / leak
 // rounded up. An attempt is refused when the level is at its burst, which is when the entry expires more than headroom
-// from now.
+// from now. full reports that there is no entry and the table has no room for one.
 func bucketWait[K comparable](t *table[K], e *entry[K], now, headroom time.Duration) (wait time.Duration, full bool) {
 	switch {
 	case e == nil:
@@ -204,16 +203,21 @@ func (a *attempts) countPair(key pairKey, p *entry[pairKey], now time.Duration) 
 	if p.count < freeAttempts {
 		a.pairs.idle.pushFront(p)
 	} else {
-		a.pairs.idle.unlink(p)
+		a.pairs.held.pushFront(p)
 	}
 }
 
 func countBucket[K comparable](t *table[K], key K, e *entry[K], now, leak time.Duration) {
 	if e == nil {
-		t.insert(key, now+leak, now)
-		return
+		e = t.insert(key, now+leak, now)
+	} else {
+		t.update(e, max(e.expires, now)+leak)
 	}
-	t.update(e, max(e.expires, now)+leak)
+	if mayDrop(e, now, leak) {
+		t.idle.pushFront(e)
+	} else {
+		e.unlink()
+	}
 }
 
 func giveBack[K comparable](t *table[K], key K, now, leak time.Duration) {
@@ -227,21 +231,39 @@ func giveBack[K comparable](t *table[K], key K, now, leak time.Duration) {
 		return
 	}
 	t.update(e, expires)
+	// The level only fell: an entry that is in the list stays where it is.
+	if e.prev == nil && mayDrop(e, now, leak) {
+		t.idle.pushFront(e)
+	}
+}
+
+// mayDrop reports whether the level of e, which leaks every leak, is below freeAttempts, so that a table that is full may
+// drop it before it expires.
+func mayDrop[K comparable](e *entry[K], now, leak time.Duration) bool {
+	return e.expires-now <= (freeAttempts-1)*leak
+}
+
+// everyMinute returns a function that is true at most once a minute by the clock now.
+func everyMinute(now func() time.Time) func() bool {
+	var mu sync.Mutex
+	var next time.Time
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		t := now()
+		if t.Before(next) {
+			return false
+		}
+		next = t.Add(time.Minute)
+		return true
+	}
 }
 
 // warnEveryMinute returns a warn for newAttempts that logs at most one line a minute.
 func warnEveryMinute(l *log.Logger, now func() time.Time) func(string) {
-	var mu sync.Mutex
-	var next time.Time
+	due := everyMinute(now)
 	return func(what string) {
-		mu.Lock()
-		t := now()
-		due := !t.Before(next)
-		if due {
-			next = t.Add(time.Minute)
-		}
-		mu.Unlock()
-		if due {
+		if due() {
 			l.Printf("too many %s to keep count of; refusing new ones", what)
 		}
 	}

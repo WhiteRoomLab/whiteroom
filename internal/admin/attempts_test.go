@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,7 +39,6 @@ func (w *warnings) take() []string {
 
 // The names that warn gets.
 const (
-	whatPairs   = "login name and client pairs"
 	whatNames   = "login names"
 	whatClients = "clients"
 )
@@ -49,6 +50,8 @@ type harness struct {
 	clock   *fakeClock
 	warned  *warnings
 	clients int
+	names   int
+	back    bool // the clock has been moved back, which can make a level higher than it was when it was counted
 }
 
 func newHarness(t *testing.T, capacity int) *harness {
@@ -79,11 +82,22 @@ func (h *harness) fresh() netip.Prefix {
 	return testClient(1000000 + h.clients)
 }
 
-func (h *harness) advance(d time.Duration) { h.clock.advance(d) }
+// freshName returns a login name that has not been used.
+func (h *harness) freshName() [32]byte {
+	h.names++
+	return testName(1000000 + h.names)
+}
+
+func (h *harness) advance(d time.Duration) {
+	if d < 0 {
+		h.back = true
+	}
+	h.clock.advance(d)
+}
 
 func (h *harness) check() {
 	h.t.Helper()
-	if err := h.a.check(); err != nil {
+	if err := h.a.checkLevels(!h.back); err != nil {
 		h.t.Fatalf("the tables are not consistent: %v", err)
 	}
 }
@@ -184,24 +198,63 @@ func (h *harness) clientLevel(i int) int {
 	return level(e.expires, h.a.elapsed(), clientLeak)
 }
 
-// check reports how the tables are not consistent: the entries, the queue by expiry and the list of the entries that
-// may be dropped have to agree.
-func (a *attempts) check() error {
+// The lists that a table has, as checkTable tells a rule where an entry is.
+const (
+	inNoList = iota
+	inIdle
+	inHeld
+)
+
+// check reports how the tables are not consistent: the entries, the queue by expiry and the lists have to agree, and each
+// kind of table has its rule for the list that an entry is in.
+func (a *attempts) check() error { return a.checkLevels(true) }
+
+// checkLevels is check, and checks that the entries in the list of those that may be dropped have a level below
+// freeAttempts only if the time has not been moved back, since a level can only fall as time goes forward.
+func (a *attempts) checkLevels(monotonic bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := checkTable(a.pairs, true); err != nil {
+	now := a.elapsed()
+	pairRule := func(e *entry[pairKey], list int) error {
+		switch {
+		case e.count < 1:
+			return fmt.Errorf("an entry has the count %d", e.count)
+		case e.count < freeAttempts && list != inIdle:
+			return fmt.Errorf("an entry with the count %d is not in the list of those that may be dropped", e.count)
+		case e.count >= freeAttempts && list != inHeld:
+			return fmt.Errorf("an entry with the count %d is not in the list of those that wait", e.count)
+		}
+		return nil
+	}
+	if err := checkTable(a.pairs, pairRule); err != nil {
 		return fmt.Errorf("pairs: %w", err)
 	}
-	if err := checkTable(a.names, false); err != nil {
+	if err := checkTable(a.names, levelRule[[32]byte](monotonic, now, nameLeak)); err != nil {
 		return fmt.Errorf("login names: %w", err)
 	}
-	if err := checkTable(a.clients, false); err != nil {
+	if err := checkTable(a.clients, levelRule[netip.Prefix](monotonic, now, clientLeak)); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
 	return nil
 }
 
-func checkTable[K comparable](t *table[K], counted bool) error {
+// levelRule is the rule for the table of a level: no count, never in the list of those that wait, and in the list of those
+// that may be dropped only while the level is below freeAttempts, which it can only fall to without being counted.
+func levelRule[K comparable](monotonic bool, now, leak time.Duration) func(*entry[K], int) error {
+	return func(e *entry[K], list int) error {
+		switch {
+		case e.count != 0:
+			return fmt.Errorf("an entry of a level has the count %d", e.count)
+		case list == inHeld:
+			return fmt.Errorf("an entry of a level is in the list of those that wait")
+		case monotonic && list == inIdle && !mayDrop(e, now, leak):
+			return fmt.Errorf("an entry in the list of those that may be dropped has the level %d", level(e.expires, now, leak))
+		}
+		return nil
+	}
+}
+
+func checkTable[K comparable](t *table[K], rule func(e *entry[K], list int) error) error {
 	if len(t.entries) > t.capacity {
 		return fmt.Errorf("%d entries, capacity %d", len(t.entries), t.capacity)
 	}
@@ -218,45 +271,54 @@ func checkTable[K comparable](t *table[K], counted bool) error {
 			return fmt.Errorf("the queue is not ordered at %d", i)
 		}
 	}
-	listed := 0
-	for e := t.idle.root.next; e != &t.idle.root; e = e.next {
-		listed++
-		switch {
-		case listed > len(t.entries):
-			return fmt.Errorf("the list of entries that may be dropped has more than %d", len(t.entries))
-		case e.next.prev != e || e.prev.next != e:
-			return fmt.Errorf("the links of the list of entries that may be dropped are broken")
-		case t.entries[e.key] != e:
-			return fmt.Errorf("an entry in the list of entries that may be dropped is not that of its key")
+	where := map[*entry[K]]int{}
+	for which, l := range map[int]*list[K]{inIdle: &t.idle, inHeld: &t.held} {
+		listed := 0
+		for e := l.root.next; e != &l.root; e = e.next {
+			listed++
+			switch {
+			case listed > len(t.entries):
+				return fmt.Errorf("a list has more than %d entries", len(t.entries))
+			case e.next.prev != e || e.prev.next != e:
+				return fmt.Errorf("the links of a list are broken")
+			case t.entries[e.key] != e:
+				return fmt.Errorf("an entry in a list is not that of its key")
+			case where[e] != inNoList:
+				return fmt.Errorf("an entry is in both lists")
+			}
+			where[e] = which
 		}
 	}
-	idle := 0
 	for _, e := range t.entries {
-		mayDrop := counted && e.count >= 1 && e.count < freeAttempts
-		switch {
-		case counted && e.count < 1:
-			return fmt.Errorf("an entry has the count %d", e.count)
-		case !counted && e.count != 0:
-			return fmt.Errorf("an entry of a level has the count %d", e.count)
-		case (e.prev != nil) != mayDrop || (e.next != nil) != mayDrop:
-			return fmt.Errorf("an entry with the count %d is in the list of entries that may be dropped: %v", e.count, e.prev != nil)
+		list := where[e]
+		if (e.prev != nil) != (list != inNoList) || (e.next != nil) != (list != inNoList) {
+			return fmt.Errorf("the links of an entry do not say whether it is in a list")
 		}
-		if mayDrop {
-			idle++
+		if err := rule(e, list); err != nil {
+			return err
 		}
-	}
-	if idle != listed {
-		return fmt.Errorf("%d entries may be dropped, %d are in the list", idle, listed)
 	}
 	return nil
 }
 
-// state is what attempts remember, in a form that tests compare.
+// state is what attempts remember, in a form that tests compare. The lists are from the most recently used.
 type state struct {
-	pairs   map[pairKey][2]int64 // the count and when the entry expires
-	names   map[[32]byte]int64
-	clients map[netip.Prefix]int64
-	idle    []pairKey // from the most recently used
+	pairs       map[pairKey][2]int64 // the count and when the entry expires
+	names       map[[32]byte]int64
+	clients     map[netip.Prefix]int64
+	idle        []pairKey // the pairs that may be dropped
+	held        []pairKey // the pairs that wait
+	namesIdle   [][32]byte
+	clientsIdle []netip.Prefix
+}
+
+// keysOf returns the keys of the entries of l, from the front.
+func keysOf[K comparable](l *list[K]) []K {
+	var keys []K
+	for e := l.root.next; e != &l.root; e = e.next {
+		keys = append(keys, e.key)
+	}
+	return keys
 }
 
 func (a *attempts) state() state {
@@ -272,37 +334,15 @@ func (a *attempts) state() state {
 	for k, e := range a.clients.entries {
 		s.clients[k] = int64(e.expires)
 	}
-	for e := a.pairs.idle.root.next; e != &a.pairs.idle.root; e = e.next {
-		s.idle = append(s.idle, e.key)
-	}
+	s.idle, s.held = keysOf(&a.pairs.idle), keysOf(&a.pairs.held)
+	s.namesIdle, s.clientsIdle = keysOf(&a.names.idle), keysOf(&a.clients.idle)
 	return s
 }
 
 func equalStates(x, y state) bool {
-	if len(x.pairs) != len(y.pairs) || len(x.names) != len(y.names) || len(x.clients) != len(y.clients) || len(x.idle) != len(y.idle) {
-		return false
-	}
-	for k, v := range x.pairs {
-		if w, ok := y.pairs[k]; !ok || w != v {
-			return false
-		}
-	}
-	for k, v := range x.names {
-		if w, ok := y.names[k]; !ok || w != v {
-			return false
-		}
-	}
-	for k, v := range x.clients {
-		if w, ok := y.clients[k]; !ok || w != v {
-			return false
-		}
-	}
-	for i := range x.idle {
-		if x.idle[i] != y.idle[i] {
-			return false
-		}
-	}
-	return true
+	return maps.Equal(x.pairs, y.pairs) && maps.Equal(x.names, y.names) && maps.Equal(x.clients, y.clients) &&
+		slices.Equal(x.idle, y.idle) && slices.Equal(x.held, y.held) &&
+		slices.Equal(x.namesIdle, y.namesIdle) && slices.Equal(x.clientsIdle, y.clientsIdle)
 }
 
 func TestAttemptsNameKey(t *testing.T) {
@@ -1170,14 +1210,14 @@ func TestAttemptsWarnsWithoutTheLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		a.begin(testName(3), testClient(1))
+		a.begin(testName(3), testClient(2))
 	}()
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("begin does not return: warn is called with the lock held")
 	}
-	// The pair and the login name are new, and their tables are full.
+	// The login name and the client are new, and their tables are full of ones with five attempts.
 	if got := calls.Load(); got != 2 {
 		t.Errorf("warn was called %d times, want 2", got)
 	}
@@ -1224,53 +1264,48 @@ func TestAttemptsServer(t *testing.T) {
 
 func TestAttemptsServerWarnsOncePerMinute(t *testing.T) {
 	ts := newTestServer(t, httpsOrigin)
-	// One table at a time has no room: its capacity is 1, with its first entry in it.
-	ts.attempts.pairs.capacity = 1
+	// One table at a time has no room: its capacity is 1, with its first entry in it, which has five attempts.
+	ts.attempts.names.capacity = 1
 	for range 5 {
 		ts.attempts.begin(testName(1), testClient(1))
 	}
 	const (
-		pairs   = "too many login name and client pairs to keep count of; refusing new ones\n"
 		names   = "too many login names to keep count of; refusing new ones\n"
 		clients = "too many clients to keep count of; refusing new ones\n"
 	)
 
 	if retry, ok := ts.attempts.begin(testName(2), testClient(1)); ok || retry != time.Minute {
-		t.Fatalf("a new pair when the table is full = %v, %v, want 1m0s, false", retry, ok)
+		t.Fatalf("a new login name when the table is full = %v, %v, want 1m0s, false", retry, ok)
 	}
-	if got := ts.logs.String(); got != pairs {
-		t.Errorf("the log says %q, want %q", got, pairs)
+	if got := ts.logs.String(); got != names {
+		t.Errorf("the log says %q, want %q", got, names)
 	}
 	ts.attempts.begin(testName(3), testClient(1))
 	ts.attempts.begin(testName(2), testClient(2))
-	if got := ts.logs.String(); got != pairs {
-		t.Errorf("the log within the minute says %q, want the one line %q", got, pairs)
+	if got := ts.logs.String(); got != names {
+		t.Errorf("the log within the minute says %q, want the one line %q", got, names)
 	}
 
 	ts.clock.advance(time.Minute - 1)
 	ts.attempts.begin(testName(2), testClient(2))
-	if got := ts.logs.String(); got != pairs {
-		t.Errorf("the log a nanosecond early says %q, want the one line %q", got, pairs)
+	if got := ts.logs.String(); got != names {
+		t.Errorf("the log a nanosecond early says %q, want the one line %q", got, names)
 	}
 
-	// After the minute, the tables of login names and of clients are the ones that are full, one after the other.
+	// After the minute, the table of clients is the one that is full: of one client with five attempts, counted just now.
 	ts.clock.advance(1)
-	ts.attempts.pairs.capacity = 100000
-	ts.attempts.names.capacity = 1
-	if retry, ok := ts.attempts.begin(testName(2), testClient(1)); ok || retry != time.Minute {
-		t.Fatalf("a new login name when the table is full = %v, %v, want 1m0s, false", retry, ok)
-	}
-	if got := ts.logs.String(); got != pairs+names {
-		t.Errorf("the log after the minute says %q, want %q", got, pairs+names)
-	}
-	ts.clock.advance(time.Minute)
 	ts.attempts.names.capacity = 100000
 	ts.attempts.clients.capacity = 1
+	for i := range 5 {
+		if retry, ok := ts.attempts.begin(testName(10+i), testClient(1)); !ok {
+			t.Fatalf("an attempt of the client that fills the table is refused for %v", retry)
+		}
+	}
 	if retry, ok := ts.attempts.begin(testName(1), testClient(2)); ok || retry != time.Minute {
 		t.Fatalf("a new client when the table is full = %v, %v, want 1m0s, false", retry, ok)
 	}
-	if got := ts.logs.String(); got != pairs+names+clients {
-		t.Errorf("the log after another minute says %q, want %q", got, pairs+names+clients)
+	if got := ts.logs.String(); got != names+clients {
+		t.Errorf("the log after the minute says %q, want %q", got, names+clients)
 	}
 }
 
@@ -1295,9 +1330,9 @@ func TestAttemptsWarnEveryMinute(t *testing.T) {
 		t.Errorf("the log says %q, want %q", got, want)
 	}
 	clock.advance(time.Hour)
-	warn(whatPairs)
+	warn("things")
 	if got, want := logs.String(), "too many login names to keep count of; refusing new ones\ntoo many clients to keep count of; refusing new ones\n"+
-		"too many login name and client pairs to keep count of; refusing new ones\n"; got != want {
+		"too many things to keep count of; refusing new ones\n"; got != want {
 		t.Errorf("the log says %q, want %q", got, want)
 	}
 

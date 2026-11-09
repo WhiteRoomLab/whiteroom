@@ -382,6 +382,183 @@ func TestLoginFailures(t *testing.T) {
 	})
 }
 
+// TestPasswordCompared checks PasswordCompared on the errors it is asked about.
+func TestPasswordCompared(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no error", nil, false},
+		{"an error", boom, false},
+		{"the end of a context", context.Canceled, false},
+		{"a deadline, wrapped", fmt.Errorf("waiting: %w", context.DeadlineExceeded), false},
+		{"ErrBadCredentials", ErrBadCredentials, true},
+		{"ErrBadCredentials, wrapped", fmt.Errorf("login: %w", ErrBadCredentials), true},
+		{"ErrBadCredentials, joined", errors.Join(boom, ErrBadCredentials), true},
+		{"an error after the comparison", comparedError{boom}, true},
+		{"an error after the comparison, wrapped", fmt.Errorf("login: %w", comparedError{boom}), true},
+		{"an error after the comparison, joined", errors.Join(context.Canceled, comparedError{boom}), true},
+		{"compared() of an error", compared(boom), true},
+		{"compared() of the end of a context", compared(context.Canceled), true},
+		{"compared() of ErrBadCredentials", compared(ErrBadCredentials), true},
+	} {
+		if got := PasswordCompared(tt.err); got != tt.want {
+			t.Errorf("PasswordCompared() of %s = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+
+	// compared() keeps the text and the chain of the error, and leaves ErrBadCredentials as it is.
+	marked := compared(boom)
+	var c comparedError
+	if !errors.As(marked, &c) || !errors.Is(marked, boom) || c.err != boom || marked.Error() != "boom" { //nolint:errorlint // the chain is what is tested
+		t.Errorf("compared() of an error = %#v, want one that says boom, is boom and unwraps to it", marked)
+	}
+	if kept := compared(ErrBadCredentials); errors.As(kept, &c) || !errors.Is(kept, ErrBadCredentials) || kept.Error() != sessWrong {
+		t.Errorf("compared() of ErrBadCredentials = %v, want ErrBadCredentials as it is", kept)
+	}
+}
+
+// TestLoginPasswordCompared checks which errors of Login say that the password was compared, and that they keep their text and
+// their chain: the errors before the comparison do not, and neither does the store that fails then.
+func TestLoginPasswordCompared(t *testing.T) {
+	boom := errors.New("no random bits")
+	right, wrong := mgrPassword("yamada"), mgrPassword("other")
+	type fixture struct {
+		e      *mgrEnv
+		yamada Account
+	}
+	// ends returns a context that ends at the point of the hooks of the Manager.
+	ends := func(f fixture, point string) context.Context {
+		ctx, cancel := context.WithCancel(t.Context())
+		f.e.m.hook = func(p string) {
+			if p == point {
+				cancel()
+			}
+		}
+		return ctx
+	}
+	login := func(ctx context.Context, f fixture, login, password string) error {
+		_, _, err := f.e.m.Login(ctx, login, password, "")
+		return err
+	}
+	// stale makes the hash of yamada one that a login makes again.
+	stale := func(f fixture) { f.e.useHash(t, f.yamada.ID, right, pwLow-1) }
+
+	for _, tt := range []struct {
+		name     string
+		run      func(f fixture) error
+		compared bool
+		is       error  // what the error is, if anything
+		text     string // its text, or what it contains if it starts with ~, or anything if it is only ~
+	}{
+		{"a wrong password", func(f fixture) error { return login(t.Context(), f, "yamada", wrong) }, true, ErrBadCredentials, sessWrong},
+		{"no such login name", func(f fixture) error { return login(t.Context(), f, "nobody", right) }, true, ErrBadCredentials, sessWrong},
+		{"a password of more than 8 KiB", func(f fixture) error {
+			return login(t.Context(), f, "yamada", strings.Repeat("a", maxTypedPasswordBytes+1))
+		}, true, ErrBadCredentials, sessWrong},
+		{"a closed store", func(f fixture) error {
+			if err := f.e.s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return login(t.Context(), f, "yamada", right)
+		}, false, nil, "~"},
+		{"a context that has ended", func(f fixture) error {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			return login(ctx, f, "yamada", right)
+		}, false, context.Canceled, "context canceled"},
+		{"a context that ends while the password is hashed", func(f fixture) error {
+			ctx, cancel := context.WithCancel(t.Context())
+			f.e.m.hook = func(p string) {
+				if p == "hashing" {
+					cancel()
+				}
+			}
+			return login(ctx, f, "yamada", right)
+		}, true, context.Canceled, "context canceled"},
+		{"a context that ends after the match", func(f fixture) error {
+			return login(ends(f, "verified"), f, "yamada", right)
+		}, true, context.Canceled, "context canceled"},
+		{"a context that ends before the session is written", func(f fixture) error {
+			return login(ends(f, "session"), f, "yamada", right)
+		}, true, context.Canceled, "context canceled"},
+		{"no random bits for the token", func(f fixture) error {
+			f.e.m.rand = iotest.ErrReader(boom)
+			return login(t.Context(), f, "yamada", right)
+		}, true, boom, "cannot read a token: no random bits"},
+		{"a token that is in use", func(f fixture) error {
+			f.e.m.rand = sessSame{}
+			if err := login(t.Context(), f, "admin", mgrPassword("admin")); err != nil {
+				t.Fatal(err)
+			}
+			return login(t.Context(), f, "yamada", right)
+		}, true, nil, "cannot make a session: the token is already in use"},
+		{"a clock the row cannot hold", func(f fixture) error {
+			f.e.clock.set(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))
+			return login(t.Context(), f, "yamada", right)
+		}, true, nil, "~year outside of range"},
+		{"a password that changes after the match", func(f fixture) error {
+			f.e.m.hook = func(p string) {
+				if p == "session" {
+					if err := f.e.m.ChangePassword(t.Context(), f.yamada.ID, right, "yamada has a new password"); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			return login(t.Context(), f, "yamada", right)
+		}, true, ErrBadCredentials, sessWrong},
+		{"no random bits for a new hash", func(f fixture) error {
+			stale(f)
+			f.e.m.rand = iotest.ErrReader(boom)
+			return login(t.Context(), f, "yamada", right)
+		}, true, boom, "cannot read a salt: no random bits"},
+		{"a context that ends before a new hash", func(f fixture) error {
+			stale(f)
+			return login(ends(f, "verified"), f, "yamada", right)
+		}, true, context.Canceled, "context canceled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newMgr(t)
+			e.first(t)
+			f := fixture{e, e.add(t, "yamada", RoleEditor)}
+			err := tt.run(f)
+			if err == nil {
+				t.Fatal("Login() succeeded, want an error")
+			}
+			if got := PasswordCompared(err); got != tt.compared {
+				t.Errorf("PasswordCompared(%q) = %v, want %v", err, got, tt.compared)
+			}
+			if tt.is != nil && !errors.Is(err, tt.is) {
+				t.Errorf("the error %q is not %q", err, tt.is)
+			}
+			if errors.Is(err, ErrBadCredentials) != errors.Is(tt.is, ErrBadCredentials) {
+				t.Errorf("the error %q is ErrBadCredentials = %v, want %v", err, !errors.Is(tt.is, ErrBadCredentials), errors.Is(tt.is, ErrBadCredentials))
+			}
+			switch {
+			case tt.text == "~":
+			case strings.HasPrefix(tt.text, "~"):
+				if !strings.Contains(err.Error(), tt.text[1:]) {
+					t.Errorf("the error says %q, want it to contain %q", err, tt.text[1:])
+				}
+			case err.Error() != tt.text:
+				t.Errorf("the error says %q, want %q", err, tt.text)
+			}
+			// An error after the comparison is marked, keeps its text, and unwraps to the error that it marks. ErrBadCredentials
+			// is the answer to a password that does not match, and is not wrapped.
+			var c comparedError
+			marked := errors.As(err, &c)
+			if want := tt.compared && !errors.Is(err, ErrBadCredentials); marked != want {
+				t.Errorf("the error %q is marked = %v, want %v", err, marked, want)
+			}
+			if marked && (c.err == nil || errors.Unwrap(err) != c.err || err.Error() != c.err.Error()) { //nolint:errorlint // the chain is what is tested
+				t.Errorf("the marked error %q does not unwrap to the error that it marks", err)
+			}
+		})
+	}
+}
+
 // TestLoginChecksAgain runs another operation after the password has matched and before the session is written, and
 // checks that the login goes by the account as it is then: a new password, a reset, a disabling and a deletion fail it,
 // and nothing is written; a change of another field shows in the account that it returns.

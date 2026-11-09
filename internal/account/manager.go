@@ -116,7 +116,7 @@ func (m *Manager) gated(ctx context.Context, f func()) error {
 // match is matchHash with the Manager's iteration count, through the gate. A typed password that matchHash refuses
 // without hashing it takes no place.
 func (m *Manager) match(ctx context.Context, encoded, p string) (ok, rehash bool, err error) {
-	if len(p) > maxTypedPasswordBytes {
+	if PasswordTooLong(p) {
 		return matchHash(encoded, p, m.iterations)
 	}
 	var matchErr error
@@ -135,9 +135,9 @@ func (m *Manager) newHash(ctx context.Context, p string) (hash string, err error
 	return hash, hashErr
 }
 
-// Actor is who does an account operation: an account, by By, or the commands on the server, System. #46 will let an
-// Actor carry how its session was authenticated, for the account operations that will ask for a recent
-// re-authentication (7.3). The zero Actor, which By("") is too, may do nothing.
+// Actor is who does an account operation: an account, by By, or the commands on the server, System. It does not carry how
+// the session of the account was authenticated; 7.3 keeps that path for the operations that will ask for a recent
+// re-authentication. The zero Actor, which By("") is too, may do nothing.
 type Actor struct {
 	id     string
 	system bool

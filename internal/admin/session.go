@@ -92,11 +92,27 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, s.newCookie("", -1))
 }
 
+// fromAnotherSite reports whether r says, by Sec-Fetch-Site, that a page of another origin made it, which includes a page
+// of another site of the same domain: a browser sends same-site or cross-site then. A request without the header is not
+// told apart from one that a program sends.
+func fromAnotherSite(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		return false
+	}
+	return true
+}
+
 // withSession returns the handler that calls h with the Principal of the session in the cookie of the request, and else
 // answers 401, and clears the cookie if the request had one. It is the one place that turns the cookie into a Principal:
-// the routes of #48 that need a login go through it.
+// the routes of #48 that need a login go through it. A request from a page of another origin gets 403 before the cookie
+// is read, whatever its method: a GET reads nothing across origins, but it would keep a session from going idle.
 func (s *Server) withSession(h func(http.ResponseWriter, *http.Request, account.Principal)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromAnotherSite(r) {
+			writeProblem(w, http.StatusForbidden, codeCrossOrigin, detailCrossOrigin)
+			return
+		}
 		token, sent := s.sessionCookie(r)
 		p, err := s.accounts.Authenticate(r.Context(), token)
 		switch {
@@ -137,11 +153,13 @@ func (s *Server) startLogin(ctx context.Context, login, password, previous strin
 	return s.accounts.Login(ctx, login, password, previous)
 }
 
-// login is POST /api/session. The order is fixed: the body, then attempts.begin, then a place among the logins, then
-// Login, and then succeeded or aborted. begin comes before the hash of the password and counts the login whether or not
-// an account has the name. After a wrong password nothing is called and the attempt stays counted: Login answers a wrong
-// password with ErrBadCredentials even if the context ends while it is hashed, so a client that hangs up cannot get its
-// attempt back. Any other failure means that the password was not compared, or was right: aborted gives the attempt back.
+// login is POST /api/session. The order is fixed: the body, then the length of the password, then attempts.begin, then a
+// place among the logins, then Login, and then succeeded or aborted. A password that no account can have is answered as a
+// wrong one before begin, and counts nothing: it costs no hash, and would fill the tables for nothing. begin comes before
+// the hash of the password and counts the login whether or not an account has the name. Once the password has been
+// compared, the attempt stays counted whatever becomes of the login: after a wrong password, and after a right one that
+// could not be answered, as when the client hangs up, so that no refund tells the two apart. Only when it was not compared
+// does aborted give the attempt back: the places were taken, or Login failed before the comparison.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in loginRequest
 	if !readJSON(w, r, loginBodyLimit, &in) {
@@ -149,6 +167,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Login == nil || in.Password == nil {
 		writeProblem(w, http.StatusBadRequest, codeBadRequest, detailBadRequest)
+		return
+	}
+	if account.PasswordTooLong(*in.Password) {
+		writeProblem(w, http.StatusUnauthorized, codeBadCredentials, detailBadCredentials)
 		return
 	}
 	name, client := nameKey(account.NormalizeLogin(*in.Login)), clientPrefix(s.clientAddr(r))
@@ -169,7 +191,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.attempts.aborted(name, client)
 		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
 	default:
-		s.attempts.aborted(name, client)
+		if !account.PasswordCompared(err) {
+			s.attempts.aborted(name, client)
+		}
 		s.fail(w, r, err)
 	}
 }
