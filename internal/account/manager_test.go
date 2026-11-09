@@ -11,6 +11,7 @@ import (
 	mathrand "math/rand/v2"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -173,11 +174,30 @@ func (e *mgrEnv) raw(t *testing.T) map[string]string {
 	return got
 }
 
-// mgrMark is what the store keeps of the accounts at a time: the bytes of every row, and the size of the data directory,
-// which grows with every commit, also one that writes the bytes that were there.
+// rawSessions returns the bytes of every stored session row by key, as raw does for the accounts. A key is the hash of a
+// token, so tests that compare rows never print one.
+func (e *mgrEnv) rawSessions(t *testing.T) map[string]string {
+	t.Helper()
+	got := make(map[string]string)
+	err := e.s.View(t.Context(), func(tx *store.Tx) error {
+		stored, err := tx.Sessions()
+		for _, s := range stored {
+			got[s.Key] = string(s.Data)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatalf("Sessions() = %v", err)
+	}
+	return got
+}
+
+// mgrMark is what the store keeps of the accounts and the sessions at a time: the bytes of every row, and the size of the
+// data directory, which grows with every commit, also one that writes the bytes that were there.
 type mgrMark struct {
-	rows map[string]string
-	size int64
+	rows     map[string]string
+	sessions map[string]string
+	size     int64
 }
 
 func (e *mgrEnv) mark(t *testing.T) mgrMark {
@@ -197,10 +217,11 @@ func (e *mgrEnv) mark(t *testing.T) mgrMark {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mgrMark{rows: e.raw(t), size: size}
+	return mgrMark{rows: e.raw(t), sessions: e.rawSessions(t), size: size}
 }
 
-// unchanged checks that the store is as it was at before, which mark returned: the same rows, and no commit since.
+// unchanged checks that the store is as it was at before, which mark returned: the same rows of the accounts and of the
+// sessions, and no commit since. It names a session row by its place in the order of the keys, never by its key.
 func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
 	t.Helper()
 	after := e.mark(t)
@@ -215,6 +236,16 @@ func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
 		if _, ok := before.rows[id]; !ok {
 			t.Errorf("the row of %s is new", id)
 		}
+	}
+	for i, key := range slices.Sorted(maps.Keys(before.sessions)) {
+		if got, ok := after.sessions[key]; !ok {
+			t.Errorf("session row %d of %d is gone", i+1, len(before.sessions))
+		} else if got != before.sessions[key] {
+			t.Errorf("session row %d of %d changed", i+1, len(before.sessions))
+		}
+	}
+	if n := len(after.sessions) - len(before.sessions); n > 0 {
+		t.Errorf("%d session rows are new", n)
 	}
 	if after.size != before.size {
 		t.Errorf("the data directory changed from %d to %d bytes: something was committed", before.size, after.size)
@@ -316,6 +347,9 @@ func TestNew(t *testing.T) {
 	}
 	if m.st != s || m.iterations != 600000 || m.rand == nil || m.ids == nil || m.hook != nil {
 		t.Errorf("New() = %+v, want the store, 600000 iterations, random bits, an ID source and no hook", m)
+	}
+	if got, want := cap(m.hashes), max(1, runtime.GOMAXPROCS(0)/4); got != want {
+		t.Errorf("New() has %d places for hashes, want %d: a quarter of GOMAXPROCS, and one at least", got, want)
 	}
 	// The hash for a login that no account can use is made here, with the count of the Manager.
 	if n, salt, key, err := parseHash(m.unknownHash); err != nil || n != 600000 || len(salt) != saltBytes || len(key) != keyBytes {

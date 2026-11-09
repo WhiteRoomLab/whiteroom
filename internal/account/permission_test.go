@@ -601,21 +601,33 @@ func TestRulesWellFormed(t *testing.T) {
 	}
 }
 
-// TestCheckReadsOnlyThePrincipalsRoleStatusAndLinks checks that the other fields of the account change no answer.
+// TestCheckReadsOnlyThePrincipalsRoleStatusAndLinks checks that the other fields of the account, and the session of the
+// principal, change no answer.
 func TestCheckReadsOnlyThePrincipalsRoleStatusAndLinks(t *testing.T) {
 	targets := permissionTargets()
+	sessions := []Session{
+		{},
+		{AuthenticatedAt: testTime, ExpiresAt: testTime.Add(SessionLifetime), Factors: []Factor{FactorPassword}},
+		{AuthenticatedAt: testTime.Add(-48 * time.Hour), ExpiresAt: testTime.Add(-36 * time.Hour), Factors: []Factor{"totp", "passkey", ""}},
+		{ExpiresAt: testTime},
+	}
 	for _, status := range []Status{StatusActive, StatusPending, StatusDisabled} {
 		for _, role := range permAllRoles() {
 			for _, linked := range []string{testAuthorID, ""} {
 				full := permissionAccount(role, linked)
 				full.Status = status
 				bare := Account{ID: full.ID, Role: full.Role, Status: full.Status, Author: full.Author}
-				for _, row := range permissionTable {
-					for _, tg := range targets {
-						a, b := Check(Principal{Account: full}, row.action, tg), Check(Principal{Account: bare}, row.action, tg)
-						if (a == nil) != (b == nil) || a != nil && a.Error() != b.Error() {
-							t.Fatalf("%s %s linked to %q, %s, %+v: %v with every field, %v with only the ID, role, status and link",
-								status, role, linked, row.action, tg, a, b)
+				for _, session := range sessions {
+					for _, row := range permissionTable {
+						for _, tg := range targets {
+							a, b := Check(Principal{Account: full, Session: session}, row.action, tg), Check(Principal{Account: bare}, row.action, tg)
+							if (a == nil) != (b == nil) || a != nil && a.Error() != b.Error() {
+								t.Fatalf("%s %s linked to %q, %s, %+v, session %+v: %v with every field, %v with only the ID, role, status and link",
+									status, role, linked, row.action, tg, session, a, b)
+							}
+							if Allowed(Principal{Account: full, Session: session}, row.action, tg) != (b == nil) {
+								t.Fatalf("%s %s, %s, %+v, session %+v: Allowed() is not whether Check() allows", status, role, row.action, tg, session)
+							}
 						}
 					}
 				}

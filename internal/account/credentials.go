@@ -40,7 +40,7 @@ func (m *Manager) SetPassword(ctx context.Context, token, password string) (Acco
 	if err := passwordErrors(password, target); err != nil {
 		return Account{}, err
 	}
-	hash, err := hashPassword(password, m.iterations, m.rand)
+	hash, err := m.newHash(ctx, password)
 	if err != nil {
 		return Account{}, err
 	}
@@ -147,7 +147,7 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 	if stored.status() != StatusActive || stored.Password == "" {
 		return ErrBadCredentials
 	}
-	ok, _, err := matchHash(stored.Password, current, m.iterations)
+	ok, _, err := m.match(ctx, stored.Password, current)
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,7 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 	if err := passwordErrors(next, stored); err != nil {
 		return err
 	}
-	hash, err := hashPassword(next, m.iterations, m.rand)
+	hash, err := m.newHash(ctx, next)
 	if err != nil {
 		return err
 	}
@@ -187,21 +187,49 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 }
 
 // VerifyPasswordFactor checks the password of the account with the login name, which it normalizes: one factor of a
-// login, which signs nobody in. #46 combines it with the other factors that the account has (none yet), the limits of
-// attempts and the session. After the password matches it reads the account again, since a change of the password or a
-// disabling may have committed meanwhile: it succeeds only if the account still has the password that matched and is
-// still active, and returns the account as it is then. A session that #46 makes keeps the CredentialsChangedAt of that
-// Account and ends when the account's value differs from it (see Account). Every reason for a login to fail is
-// ErrBadCredentials; only an error of the store is another. Every call costs one hash of the Manager's count: when no
-// active account with a password has the login name it checks a hash that no password matches, so that the time does
-// not tell the cases apart. Only a password of more than maxTypedPasswordBytes bytes costs none, for every login alike.
-// A row that cannot be read is no account, and does not stop the others from logging in. It does not limit attempts and
-// does not hash again (#46).
+// login, which signs nobody in (Login does, with the session). After the password matches it reads the account again,
+// since a change of the password or a disabling may have committed meanwhile: it succeeds only if the account still has
+// the password that matched and is still active, and returns the account as it is then. Every reason for a login to fail
+// is ErrBadCredentials; only an error of the store, or the end of ctx, is another. Every call costs one hash of the
+// Manager's count, which waits for its place among the hashes that run (see gated): when no active account with a
+// password has the login name it checks a hash that no password matches, so that the time does not tell the cases
+// apart. Only a password of more than maxTypedPasswordBytes bytes costs none, for every login alike. A row that cannot be
+// read is no account, and does not stop the others from logging in. It does not limit attempts and does not hash again.
 func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password string) (Account, error) {
-	login = normalizeLogin(login)
-	var found row
+	found, ok, _, err := m.verify(ctx, login, password)
+	if err != nil {
+		return Account{}, err
+	}
+	if !ok {
+		return Account{}, ErrBadCredentials
+	}
+	var out Account
+	var kept bool
+	err = m.st.View(ctx, func(tx *store.Tx) error {
+		r, ok, err := stillMatches(tx, found)
+		if err == nil && ok {
+			out, kept = r.account(), true
+		}
+		return err
+	})
+	if err != nil {
+		return Account{}, err
+	}
+	if !kept {
+		return Account{}, ErrBadCredentials
+	}
+	return out, nil
+}
+
+// verify is the first part of VerifyPasswordFactor and of Login: it finds the row of the account with the login name,
+// which it normalizes, and checks the password against its hash, or against the hash for nobody if no active account
+// with a password has the login name. ok is true only for an active account with a password that matches; found is then
+// its row as the look found it, and rehash says that its hash has fewer iterations than the Manager's. The reasons to
+// fail are not told apart: only an error of the store, or the end of ctx, is an error.
+func (m *Manager) verify(ctx context.Context, login, password string) (found row, ok, rehash bool, err error) {
+	login = NormalizeLogin(login)
 	var usable bool
-	err := m.st.View(ctx, func(tx *store.Tx) error {
+	err = m.st.View(ctx, func(tx *store.Tx) error {
 		rows, err := readableRows(tx)
 		if err != nil {
 			return err
@@ -213,37 +241,30 @@ func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password stri
 		return nil
 	})
 	if err != nil {
-		return Account{}, err
+		return row{}, false, false, err
 	}
 	stored := m.unknownHash
 	if usable {
 		stored = found.Password
 	}
-	ok, _, err := matchHash(stored, password, m.iterations)
+	matched, rehash, err := m.match(ctx, stored, password)
 	m.at("verified")
 	if err != nil {
-		return Account{}, err
+		return row{}, false, false, err
 	}
-	if !usable || !ok {
-		return Account{}, ErrBadCredentials
+	if !usable || !matched {
+		return row{}, false, false, nil
 	}
-	var out Account
-	var kept bool
-	err = m.st.View(ctx, func(tx *store.Tx) error {
-		data, exists, err := tx.Account(found.ID)
-		if err != nil || !exists {
-			return err
-		}
-		if r, err := decodeRow(found.ID, data); err == nil && r.Password == found.Password && r.status() == StatusActive {
-			out, kept = r.account(), true
-		}
-		return nil
-	})
-	if err != nil {
-		return Account{}, err
+	return found, true, rehash, nil
+}
+
+// stillMatches reads the row of the account that verify found again, and returns it if it is still active and has the
+// password hash that matched. A row that is gone or cannot be read, and any other change of the password or the status,
+// is not a match. Of an error of the store it returns the error.
+func stillMatches(tx *store.Tx, found row) (row, bool, error) {
+	r, ok, err := readAccount(tx, found.ID)
+	if err != nil || !ok || r.Password != found.Password || r.status() != StatusActive {
+		return row{}, false, err
 	}
-	if !kept {
-		return Account{}, ErrBadCredentials
-	}
-	return out, nil
+	return r, true, nil
 }

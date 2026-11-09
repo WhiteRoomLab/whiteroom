@@ -63,12 +63,14 @@ type Target struct {
 	Account string
 }
 
-// Principal is who asks to do an action. For now it is only the account, and Check reads its ID, role, status and link
-// to an author profile. #46 adds how the session was authenticated, such as the factors that it used and the time of
-// its last re-authentication, which Check may then require for some actions (7.3); callers pass the principal on as it
-// is.
+// Principal is who asks to do an action: the account, as it is, and the session that it asks with. Check reads the
+// account's ID, role, status and link to an author profile, and nothing of the session yet. The Session tells how the
+// account's session was authenticated, which later rules may require for some actions (7.3 on stronger authentication);
+// callers pass the principal on as it is. A Principal that no session made, as in a test or a command, has the zero
+// Session.
 type Principal struct {
 	Account Account
+	Session Session
 }
 
 var ErrForbidden = errors.New("not allowed")

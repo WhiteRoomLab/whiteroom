@@ -102,12 +102,12 @@ func TestNormalizeLogin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeLogin(tt.in)
+			got := NormalizeLogin(tt.in)
 			if got != tt.want {
-				t.Errorf("normalizeLogin(%q) = %q, want %q", tt.in, got, tt.want)
+				t.Errorf("NormalizeLogin(%q) = %q, want %q", tt.in, got, tt.want)
 			}
-			if again := normalizeLogin(got); again != got {
-				t.Errorf("normalizeLogin(%q) = %q, want it unchanged", got, again)
+			if again := NormalizeLogin(got); again != got {
+				t.Errorf("NormalizeLogin(%q) = %q, want it unchanged", got, again)
 			}
 		})
 	}

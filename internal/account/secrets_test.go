@@ -49,6 +49,17 @@ func TestSecretsNotStored(t *testing.T) {
 			prints = append(prints, fmt.Sprintf(verb, a), fmt.Sprintf(verb, &a), fmt.Sprintf(verb, []Account{a}))
 		}
 	}
+	var sessions []mgrSecret // the tokens of the sessions, which are in the secrets too
+	session := func(name, tok string) {
+		token(name, tok)
+		sessions = append(sessions, mgrSecret{name, tok})
+	}
+	showPrincipal := func(p Principal) {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+			prints = append(prints, fmt.Sprintf(verb, p), fmt.Sprintf(verb, &p), fmt.Sprintf(verb, []Principal{p}),
+				fmt.Sprintf(verb, p.Session), fmt.Sprintf(verb, &p.Session))
+		}
+	}
 
 	const (
 		adminFirst = "marker one first password"
@@ -141,8 +152,47 @@ func TestSecretsNotStored(t *testing.T) {
 		show(acc)
 	}
 
+	// Two accounts log in, one of them twice, with its first session replaced by the second. The requests and the logout
+	// are of the sessions that end up there, and of one that ended.
+	adminSession, adminTok, err := e.m.Login(ctx, "admin", adminFirst, "")
+	keep(err)
+	showPrincipal(adminSession)
+	session("the session of admin", adminTok)
+	yamadaSession, yamadaTok1, err := e.m.Login(ctx, "yamada", yamadaTwo, "")
+	keep(err)
+	showPrincipal(yamadaSession)
+	session("the first session of yamada", yamadaTok1)
+	_, yamadaTok2, err := e.m.Login(ctx, "yamada", yamadaTwo, yamadaTok1)
+	keep(err)
+	session("the second session of yamada", yamadaTok2)
+	_, _, err = e.m.Login(ctx, "yamada", wrongTwo, yamadaTok2) // fails, and keeps the session that it is given
+	keep(err)
+	got, err := e.m.Authenticate(ctx, yamadaTok2)
+	keep(err)
+	showPrincipal(got)
+	_, err = e.m.Authenticate(ctx, yamadaTok1) // replaced
+	keep(err)
+	keep(e.m.Logout(ctx, adminTok))
+	keep(e.m.Logout(ctx, yamadaTok1))
+	_, err = e.m.Authenticate(ctx, adminTok) // logged out
+	keep(err)
+
 	// What the rows keep, which no error and no printed account may show either.
 	var kept []mgrSecret
+	rows := e.rawSessions(t)
+	if len(rows) != 1 {
+		t.Fatalf("the store holds %d session rows, want the second session of yamada only", len(rows))
+	}
+	for key, data := range rows {
+		s, err := decodeSession(key, []byte(data))
+		if err != nil {
+			t.Fatal("a session row does not decode")
+		}
+		kept = append(kept, mgrSecret{"the key of a session row", key})
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+			prints = append(prints, fmt.Sprintf(verb, s), fmt.Sprintf(verb, &s), fmt.Sprintf(verb, []sessionRow{s}))
+		}
+	}
 	pendingTokens := make(map[string]string) // the hash of a pending token by the name of its token
 	for i, r := range e.rows(t) {
 		n := strconv.Itoa(i)
@@ -160,8 +210,8 @@ func TestSecretsNotStored(t *testing.T) {
 	if len(pendingTokens) != 2 || pendingTokens["pending"] != sumToken(tokenE) || pendingTokens["cafe"] != sumToken(tokenF) {
 		t.Fatalf("the rows hold the token hashes of %d accounts, want those of pending and cafe, for their tokens", len(pendingTokens))
 	}
-	if len(errTexts) != 7 {
-		t.Fatalf("the test kept %d error texts, want 7: those of the failed operations", len(errTexts))
+	if len(errTexts) != 10 {
+		t.Fatalf("the test kept %d error texts, want 10: those of the failed operations", len(errTexts))
 	}
 	for _, text := range append(append([]string{}, errTexts...), prints...) {
 		for _, sec := range append(append([]mgrSecret{}, secrets...), kept...) {
@@ -215,6 +265,12 @@ func TestSecretsNotStored(t *testing.T) {
 	for name, hash := range pendingTokens {
 		if !has(`"hash":"` + hash + `"`) {
 			t.Errorf("no file has the hash of the token of %s", name)
+		}
+	}
+	// The key of a session is the SHA-256 of its token, also when the session has ended: the log keeps what it wrote.
+	for _, sec := range sessions {
+		if !has(sessKey(sec.text)) {
+			t.Errorf("no file has the key of %s", sec.name)
 		}
 	}
 }

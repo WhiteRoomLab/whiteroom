@@ -16,10 +16,11 @@ const (
 	maxNameChars  = 256
 )
 
-// normalizeLogin removes the control characters and the surrounding spaces of s and maps the ASCII upper case letters
-// to lower case. It does not use strings.ToLower, which maps U+212A KELVIN SIGN to "k": a login name that checkLogin
+// NormalizeLogin removes the control characters and the surrounding spaces of s and maps the ASCII upper case letters
+// to lower case, which is how every operation reads a login name. A text that is not a login name stays one that no
+// account has. It does not use strings.ToLower, which maps U+212A KELVIN SIGN to "k": a login name that checkLogin
 // refuses would turn into another one.
-func normalizeLogin(s string) string {
+func NormalizeLogin(s string) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsControl(r):
@@ -122,7 +123,7 @@ func addProblem(errs content.Errors, path string, err error) content.Errors {
 }
 
 func (in *Input) normalize() {
-	in.Login = normalizeLogin(in.Login)
+	in.Login = NormalizeLogin(in.Login)
 	in.Name = content.NormalizeLine(in.Name)
 	in.Email = content.NormalizeEmail(in.Email)
 	in.Author = strings.TrimSpace(in.Author)
@@ -141,7 +142,7 @@ func (in Input) check() content.Errors {
 // normalize points the fields that c sets to their normalized values, and leaves the values that they pointed to.
 func (c *Change) normalize() {
 	if c.Login != nil {
-		v := normalizeLogin(*c.Login)
+		v := NormalizeLogin(*c.Login)
 		c.Login = &v
 	}
 	if c.Name != nil {

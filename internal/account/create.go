@@ -31,7 +31,7 @@ func (m *Manager) CreateFirst(ctx context.Context, in Input, password string) (A
 	if len(errs) > 0 {
 		return Account{}, errs
 	}
-	hash, err := hashPassword(password, m.iterations, m.rand)
+	hash, err := m.newHash(ctx, password)
 	if err != nil {
 		return Account{}, err
 	}
