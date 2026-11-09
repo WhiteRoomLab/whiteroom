@@ -1,9 +1,11 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	mathrand "math/rand/v2"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -70,14 +73,19 @@ func newMgr(t *testing.T) *mgrEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return newMgrOn(s, dir)
+	return newMgrOn(t, s, dir)
 }
 
-func newMgrOn(s *store.Store, dir string) *mgrEnv {
+// newMgrOn makes a Manager of the store s whose hashes have pwLow iterations, the hash for nobody too, so that only
+// TestNew and TestDefaultIterations pay for a hash of the real count.
+func newMgrOn(t *testing.T, s *store.Store, dir string) *mgrEnv {
+	t.Helper()
+	m, err := newManager(s, pwLow, rand.Reader)
+	if err != nil {
+		t.Fatalf("newManager() = %v", err)
+	}
 	clock := &mgrClock{t: mgrTime}
-	m := New(s)
 	m.SetClock(clock.now)
-	m.iterations = pwLow
 	m.ids = content.NewIDSource(mathrand.NewChaCha8(mgrSeed))
 	return &mgrEnv{m: m, s: s, dir: dir, clock: clock}
 }
@@ -302,9 +310,17 @@ func TestNew(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	m := New(s)
+	m, err := New(s)
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
 	if m.st != s || m.iterations != 600000 || m.rand == nil || m.ids == nil || m.hook != nil {
 		t.Errorf("New() = %+v, want the store, 600000 iterations, random bits, an ID source and no hook", m)
+	}
+	// The hash for a login that no account can use is made here, with the count of the Manager.
+	if n, salt, key, err := parseHash(m.unknownHash); err != nil || n != 600000 || len(salt) != saltBytes || len(key) != keyBytes {
+		t.Errorf("the hash for an unknown login has %d iterations, a salt of %d bytes and a key of %d, %v, want 600000, %d, %d, nil",
+			n, len(salt), len(key), err, saltBytes, keyBytes)
 	}
 	before := time.Now()
 	got := m.now()
@@ -317,6 +333,98 @@ func TestNew(t *testing.T) {
 	}
 	if _, err := m.rand.Read(make([]byte, 8)); err != nil {
 		t.Errorf("reading random bits = %v", err)
+	}
+}
+
+// mgrCountingReader reads from r and counts the bytes that it gives.
+type mgrCountingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *mgrCountingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// TestNewManager checks, with a low count and known bytes, what the constructor makes: the hash for nobody is of the
+// text of a token and a salt, which are the only 48 bytes that it reads, and has the count that it is given.
+func TestNewManager(t *testing.T) {
+	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	counter := &mgrCountingReader{r: &pwSequence{}}
+	m, err := newManager(s, 3, counter)
+	if err != nil {
+		t.Fatalf("newManager() = %v", err)
+	}
+	if m.st != s || m.iterations != 3 || m.rand != counter || m.ids == nil || m.hook != nil || m.now == nil {
+		t.Errorf("newManager() = %+v, want the store, 3 iterations, the reader, an ID source, the clock and no hook", m)
+	}
+	if got := counter.n.Load(); got != tokenBytes+saltBytes {
+		t.Errorf("newManager() read %d bytes, want %d: the bytes of a token and a salt", got, tokenBytes+saltBytes)
+	}
+	n, salt, _, err := parseHash(m.unknownHash)
+	if err != nil || n != 3 || !bytes.Equal(salt, tokBytes(tokenBytes + saltBytes)[tokenBytes:]) {
+		t.Errorf("the hash for an unknown login has %d iterations, a salt that follows the token, %v, want 3 and the salt", n, err)
+	}
+	// It is the hash of the text of the token that the first bytes make, which a person is never given.
+	if ok, _, err := matchHash(m.unknownHash, tokSample, 3); !ok || err != nil {
+		t.Errorf("matchHash() of the hash for an unknown login and the text of its token = %v, %v, want true, nil", ok, err)
+	}
+	if ok, _, err := matchHash(m.unknownHash, mgrPassword("nobody"), 3); ok || err != nil {
+		t.Errorf("matchHash() of the hash for an unknown login and a password = %v, %v, want false, nil", ok, err)
+	}
+	// The other reads, of IDs, salts and tokens, go to the same reader.
+	if _, err := m.ids.NewID(content.RefUser, mgrTime); err != nil || counter.n.Load() <= tokenBytes+saltBytes {
+		t.Errorf("NewID() = %v after %d bytes read, want the ID source to read from the reader too", err, counter.n.Load())
+	}
+
+	// Two Managers do not share a hash for nobody.
+	a, err := newManager(s, pwLow, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newManager(s, pwLow, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.unknownHash == b.unknownHash {
+		t.Error("two Managers have the same hash for an unknown login")
+	}
+}
+
+func TestNewFailures(t *testing.T) {
+	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	boom := errors.New("no random bits")
+	tests := []struct {
+		name       string
+		r          io.Reader
+		iterations int
+		is         error
+		want       string
+	}{
+		{"no random bits", iotest.ErrReader(boom), pwLow, boom, "cannot read a token: no random bits"},
+		{"a token that is cut", bytes.NewReader(tokBytes(31)), pwLow, io.ErrUnexpectedEOF, "cannot read a token: unexpected EOF"},
+		{"the salt", io.MultiReader(bytes.NewReader(tokBytes(32)), iotest.ErrReader(boom)), pwLow, boom, "cannot read a salt: no random bits"},
+		{"a salt that is cut", io.LimitReader(&pwSequence{}, 47), pwLow, io.ErrUnexpectedEOF, "cannot read a salt: unexpected EOF"},
+		{"no iterations", rand.Reader, 0, nil, "invalid iteration count 0"},
+		{"too many iterations", rand.Reader, maxIterations + 1, nil, "invalid iteration count 10000001"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := newManager(s, tt.iterations, tt.r)
+			if m != nil || err == nil || err.Error() != tt.want || tt.is != nil && !errors.Is(err, tt.is) {
+				t.Errorf("newManager() = %v, %v, want no Manager and the error %q", m, err, tt.want)
+			}
+		})
 	}
 }
 
@@ -584,10 +692,44 @@ func TestStoreErrorsAreReturned(t *testing.T) {
 		t.Errorf("loadRows() = %v, %v, want an error that the transaction has ended", rows, err)
 	}
 	// A problem that is not that the profile is missing is not one of the input.
-	err := rowProblems(ended, nil, "", "", "", mgrAuthorID)
+	err := rowProblems(ended, nil, "", "", "", mgrAuthorID, true)
 	var problems content.Errors
 	if err == nil || err.Error() != text || errors.As(err, &problems) {
 		t.Errorf("rowProblems() = %v, want the error of the store", err)
+	}
+}
+
+// TestRowProblemsOwner checks that the problem of a login name or an email address that another account has says which
+// account only if it is asked to.
+func TestRowProblemsOwner(t *testing.T) {
+	e := newMgr(t)
+	rows := []row{mgrRow(1, "yamada", RoleEditor), mgrRow(2, "taro", RoleEditor)}
+	err := e.s.View(t.Context(), func(tx *store.Tx) error {
+		for _, tt := range []struct {
+			name   string
+			showID bool
+			owner  string
+		}{
+			{"with the ID", true, rows[0].ID},
+			{"without the ID", false, "another account"},
+		} {
+			err := rowProblems(tx, rows, rows[1].ID, "yamada", "YAMADA@example.com", "", tt.showID)
+			mgrProblems(t, err,
+				problem{"/login", `login name "yamada" is already used by ` + tt.owner},
+				problem{"/email", `email address "YAMADA@example.com" is already used by ` + tt.owner},
+			)
+			if err != nil && tt.showID != strings.Contains(err.Error(), "usr_") {
+				t.Errorf("the problems %s are %q, want the ID of the account to be there = %v", tt.name, err, tt.showID)
+			}
+			// The account that is excluded is not another account.
+			if err := rowProblems(tx, rows, rows[0].ID, "yamada", "yamada@example.com", "", tt.showID); err != nil {
+				t.Errorf("rowProblems() %s with the account itself = %v, want nil", tt.name, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -810,7 +952,7 @@ func TestInviteFailures(t *testing.T) {
 		e := newMgr(t)
 		first, _ := e.invite(t, "first", RoleViewer)
 		// Another Manager of the store with the same random bits makes the same ID.
-		other := newMgrOn(e.s, e.dir)
+		other := newMgrOn(t, e.s, e.dir)
 		before := e.mark(t)
 		_, _, err := other.m.Invite(t.Context(), System, mgrInput("second", RoleViewer))
 		if err == nil || err.Error() != "cannot make an ID: "+first.ID+" is already used" {
@@ -1767,7 +1909,7 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := newMgrOn(s, dir)
+	e := newMgrOn(t, s, dir)
 	admin := e.first(t)
 	pending, token := e.invite(t, "pending", RoleEditor)
 	author := e.add(t, "author", RoleAuthor)
@@ -1793,7 +1935,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s2.Close() }()
-	e2 := newMgrOn(s2, dir)
+	e2 := newMgrOn(t, s2, dir)
 	e2.clock.set(mgrTime.Add(time.Hour))
 	if got := e2.raw(t); !maps.Equal(got, rows) {
 		t.Error("the rows are not those that were closed")
@@ -1824,7 +1966,10 @@ func TestDefaultIterations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	m := New(s)
+	m, err := New(s)
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
 	a, err := m.CreateFirst(t.Context(), mgrInput("admin", RoleAdmin), mgrPassword("admin"))
 	if err != nil {
 		t.Fatalf("CreateFirst() = %v", err)
@@ -1851,12 +1996,13 @@ func TestDefaultIterations(t *testing.T) {
 	if _, err := m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("other")); !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("VerifyPasswordFactor() with a wrong password = %v, want ErrBadCredentials", err)
 	}
-	// A login that no account has is checked against a hash of the same cost.
+	// A login that no account has is checked against a hash of the same cost, which New made.
+	made := m.unknownHash
 	if _, err := m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("VerifyPasswordFactor() of an unknown login = %v, want ErrBadCredentials", err)
 	}
-	if n, _, _, err := parseHash(m.unknownHash); err != nil || n != 600000 {
-		t.Errorf("the hash for an unknown login has %d iterations, %v, want 600000", n, err)
+	if n, _, _, err := parseHash(m.unknownHash); err != nil || n != 600000 || m.unknownHash != made {
+		t.Errorf("the hash for an unknown login has %d iterations, %v, or changed, want 600000 and the hash that New made", n, err)
 	}
 }
 

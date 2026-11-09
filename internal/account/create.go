@@ -44,7 +44,7 @@ func (m *Manager) CreateFirst(ctx context.Context, in Input, password string) (A
 		if len(rows) > 0 {
 			return errors.New("the store has accounts: CreateFirst needs a store without any")
 		}
-		if err := rowProblems(tx, rows, "", in.Login, in.Email, in.Author); err != nil {
+		if err := rowProblems(tx, rows, "", in.Login, in.Email, in.Author, true); err != nil {
 			return err
 		}
 		now := m.now()
@@ -83,7 +83,7 @@ func (m *Manager) Invite(ctx context.Context, by Actor, in Input) (Account, stri
 		if errs := in.check(); len(errs) > 0 {
 			return errs
 		}
-		if err := rowProblems(tx, rows, "", in.Login, in.Email, in.Author); err != nil {
+		if err := rowProblems(tx, rows, "", in.Login, in.Email, in.Author, true); err != nil {
 			return err
 		}
 		now := m.now()
@@ -125,9 +125,16 @@ func (m *Manager) newRow(rows []row, in Input, now time.Time) (row, error) {
 
 // rowProblems returns the problems that need the store, as content.Errors, or another error if it cannot tell: a login
 // name or an email address, which ignores the case of ASCII letters, that a row other than the account exclude has, and
-// an author profile that is not a document. It checks only the values that are not "".
-func rowProblems(tx *store.Tx, rows []row, exclude, login, email, author string) error {
+// an author profile that is not a document. It checks only the values that are not "". The problem of a login name or an
+// email address says which account has it only if showID is true.
+func rowProblems(tx *store.Tx, rows []row, exclude, login, email, author string, showID bool) error {
 	var errs content.Errors
+	owner := func(id string) string {
+		if showID {
+			return id
+		}
+		return "another account"
+	}
 	// usedBy returns the ID of the first row other than exclude for which same is true, or "".
 	usedBy := func(same func(r row) bool) string {
 		for _, r := range rows {
@@ -139,12 +146,12 @@ func rowProblems(tx *store.Tx, rows []row, exclude, login, email, author string)
 	}
 	if login != "" {
 		if id := usedBy(func(r row) bool { return r.Login == login }); id != "" {
-			errs = addProblem(errs, "/login", fmt.Errorf("login name %q is already used by %s", login, id))
+			errs = addProblem(errs, "/login", fmt.Errorf("login name %q is already used by %s", login, owner(id)))
 		}
 	}
 	if email != "" {
 		if id := usedBy(func(r row) bool { return strings.EqualFold(r.Email, email) }); id != "" {
-			errs = addProblem(errs, "/email", fmt.Errorf("email address %q is already used by %s", email, id))
+			errs = addProblem(errs, "/email", fmt.Errorf("email address %q is already used by %s", email, owner(id)))
 		}
 	}
 	if author != "" {

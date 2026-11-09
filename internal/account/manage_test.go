@@ -248,6 +248,55 @@ func TestUpdateProblems(t *testing.T) {
 	}
 }
 
+// TestUpdateEmailAddressTaken checks that an account that changes its own email address to one that another account
+// has is not told which account that is, while the same change by an administrator of another account, or by System,
+// names it.
+func TestUpdateEmailAddressTaken(t *testing.T) {
+	e := newMgr(t)
+	admin := e.first(t)
+	yamada := e.add(t, "yamada", RoleEditor)
+	pending, _ := e.invite(t, "pending", RoleViewer)
+	writer := e.add(t, "writer", RoleAuthor)
+	before := e.mark(t)
+	anonymous := func(email string) problem {
+		return problem{"/email", `email address "` + email + `" is already used by another account`}
+	}
+	named := func(email, id string) problem {
+		return problem{"/email", `email address "` + email + `" is already used by ` + id}
+	}
+	tests := []struct {
+		name   string
+		by     Actor
+		id     string
+		change Change
+		want   problem
+	}{
+		{"an author changes its own", By(writer.ID), writer.ID, Change{Email: ptr("yamada@example.com")}, anonymous("yamada@example.com")},
+		{"the address of a pending account", By(writer.ID), writer.ID, Change{Email: ptr("Pending@Example.com")}, anonymous("Pending@example.com")},
+		{"the address in another case", By(writer.ID), writer.ID, Change{Email: ptr("YAMADA@EXAMPLE.COM")}, anonymous("YAMADA@example.com")},
+		{"the name and the address", By(writer.ID), writer.ID, Change{Name: ptr("New Name"), Email: ptr("yamada@example.com")}, anonymous("yamada@example.com")},
+		{"an editor changes its own", By(yamada.ID), yamada.ID, Change{Email: ptr("writer@example.com")}, anonymous("writer@example.com")},
+		{"an administrator changes its own", By(admin.ID), admin.ID, Change{Email: ptr("yamada@example.com")}, anonymous("yamada@example.com")},
+		{"an administrator changes another", By(admin.ID), writer.ID, Change{Email: ptr("yamada@example.com")}, named("yamada@example.com", yamada.ID)},
+		{"an administrator changes another to a pending address", By(admin.ID), writer.ID, Change{Email: ptr("pending@example.com")}, named("pending@example.com", pending.ID)},
+		{"an administrator changes its own address and its role", By(admin.ID), admin.ID, Change{Email: ptr("yamada@example.com"), Role: ptr(RoleAdmin)}, named("yamada@example.com", yamada.ID)},
+		{"System changes", System, writer.ID, Change{Email: ptr("yamada@example.com")}, named("yamada@example.com", yamada.ID)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := e.m.Update(t.Context(), tt.by, tt.id, tt.change)
+			mgrProblems(t, err, tt.want)
+			if got != (Account{}) {
+				t.Errorf("Update() returned %+v with an error", got)
+			}
+			if err != nil && strings.HasSuffix(tt.want.msg, "another account") && strings.Contains(err.Error(), "usr_") {
+				t.Errorf("the error %q has the ID of an account", err)
+			}
+			e.unchanged(t, before)
+		})
+	}
+}
+
 func TestUpdateAuthorProfile(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)

@@ -1,13 +1,12 @@
 package account
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
-	"io"
 	"io/fs"
 	"maps"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -101,6 +100,8 @@ func TestSetPasswordWrongTokens(t *testing.T) {
 		{"a letter", "x"},
 		{"one character short", token[:len(token)-1]},
 		{"one character more", token + "A"},
+		{"twice the token", token + token},
+		{"a megabyte of letters", strings.Repeat("A", 1<<20)},
 		{"a line feed at the end", token + "\n"},
 		{"a space at the start", " " + token},
 		{"the hash of the token", hash},
@@ -1193,20 +1194,17 @@ func TestVerifyPasswordFactorChecksAHash(t *testing.T) {
 			verified++
 		}
 	}
+	// The hash for a login that no account can use is the Manager's, made with its count, and is never made again.
+	made := e.m.unknownHash
+	if n, _, _, err := parseHash(made); err != nil || n != pwLow {
+		t.Errorf("the hash for an unknown login has %d iterations, %v, want %d", n, err, pwLow)
+	}
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil || verified != 1 {
 		t.Errorf("VerifyPasswordFactor() = %v after %d checks, want nil after 1", err, verified)
-	}
-	if e.m.unknownHash != "" {
-		t.Error("a hash for an unknown login was made for a login that exists")
 	}
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("admin")); !errors.Is(err, ErrBadCredentials) || verified != 2 {
 		t.Errorf("VerifyPasswordFactor() = %v after %d checks, want ErrBadCredentials after 2", err, verified)
 	}
-	made := e.m.unknownHash
-	if n, _, _, err := parseHash(made); err != nil || n != pwLow || e.m.unknownIterations != pwLow {
-		t.Errorf("the hash for an unknown login has %d iterations, %v, want %d", n, err, pwLow)
-	}
-	// It is made once, and again when the iterations change.
 	for range 3 {
 		if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("admin")); !errors.Is(err, ErrBadCredentials) {
 			t.Fatal(err)
@@ -1215,14 +1213,8 @@ func TestVerifyPasswordFactorChecksAHash(t *testing.T) {
 	if e.m.unknownHash != made {
 		t.Error("the hash for an unknown login changed")
 	}
+	// The passwords that were set with an earlier count still work, whatever the count of the Manager is now.
 	e.m.iterations = pwLow + 1
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("admin")); !errors.Is(err, ErrBadCredentials) {
-		t.Fatal(err)
-	}
-	if n, _, _, err := parseHash(e.m.unknownHash); err != nil || n != pwLow+1 || e.m.unknownHash == made {
-		t.Errorf("the hash for an unknown login has %d iterations, %v, want a new one with %d", n, err, pwLow+1)
-	}
-	// The passwords that were set with the earlier count still work.
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
 		t.Errorf("VerifyPasswordFactor() after the change of the iterations = %v, want nil", err)
 	}
@@ -1240,7 +1232,7 @@ func TestVerifyPasswordFactorUsesNothingUnusable(t *testing.T) {
 		t.Fatal(err)
 	}
 	const guess = "the password of the hash for nobody"
-	e.m.unknownHash, e.m.unknownIterations = mgrHashed(t, guess), e.m.iterations
+	e.m.unknownHash = mgrHashed(t, guess)
 	for _, login := range []string{"nobody", "pending", "off", ""} {
 		got, err := e.m.VerifyPasswordFactor(t.Context(), login, guess)
 		if !errors.Is(err, ErrBadCredentials) || got != (Account{}) {
@@ -1282,26 +1274,295 @@ func TestVerifyPasswordFactorFailures(t *testing.T) {
 	if _, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin")); !errors.Is(err, context.Canceled) {
 		t.Errorf("VerifyPasswordFactor() with a canceled context = %v, want context.Canceled", err)
 	}
-	// The hash for a login that nobody has cannot be made: that is an error, not a failure to log in.
-	boom := errors.New("no random bits")
-	e.m.rand = iotest.ErrReader(boom)
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, boom) || errors.Is(err, ErrBadCredentials) {
-		t.Errorf("VerifyPasswordFactor() = %v, want the error of the reader", err)
+	// The context ends after the password matched: that is an error of the look at the account again, not a failure to
+	// log in.
+	ctx, cancel = context.WithCancel(t.Context())
+	e.m.hook = func(point string) {
+		if point == "verified" {
+			cancel()
+		}
 	}
-	// A login that exists needs no random bits.
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
-		t.Errorf("VerifyPasswordFactor() of a login that exists = %v, want nil", err)
+	got, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin"))
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) || got != (Account{}) {
+		t.Errorf("VerifyPasswordFactor() with a context that ends after the match = %+v, %v, want context.Canceled", got, err)
 	}
-	// The random text that the hash is made of is read, and then the salt fails.
-	e.m.rand = io.MultiReader(bytes.NewReader(make([]byte, 32)), iotest.ErrReader(boom))
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, boom) || !strings.Contains(err.Error(), "cannot read a salt") {
-		t.Errorf("VerifyPasswordFactor() = %v, want the error of the reader as a salt", err)
-	}
-	if e.m.unknownHash != "" {
-		t.Error("a hash for an unknown login was kept after a failure")
-	}
-	e.m.rand = rand.Reader
+	e.m.hook = nil
+	// It needs no random bits for any login: the hash for a login that nobody has was made with the Manager.
+	e.m.rand = iotest.ErrReader(errors.New("no random bits"))
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, ErrBadCredentials) {
-		t.Errorf("VerifyPasswordFactor() = %v, want ErrBadCredentials", err)
+		t.Errorf("VerifyPasswordFactor() of an unknown login without random bits = %v, want ErrBadCredentials", err)
 	}
+	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
+		t.Errorf("VerifyPasswordFactor() of a login that exists without random bits = %v, want nil", err)
+	}
+}
+
+// TestVerifyPasswordFactorReadsNoRandomBits checks that no call makes the hash for a login that no account can use: the
+// Manager has it from the start, so even the first call for such a login costs one hash and reads nothing.
+func TestVerifyPasswordFactorReadsNoRandomBits(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	e.add(t, "active", RoleEditor)
+	e.invite(t, "pending", RoleEditor)
+	off := e.add(t, "off", RoleEditor)
+	if _, err := e.m.Disable(t.Context(), System, off.ID); err != nil {
+		t.Fatal(err)
+	}
+	counter := &mgrCountingReader{r: rand.Reader}
+	e.m.rand = counter
+	for _, tt := range []struct {
+		login string
+		works bool
+	}{
+		{"nobody", false}, {"nobody", false}, {"pending", false}, {"off", false}, {"active", true}, {"admin", true},
+		{"nobody-else", false}, {"active", true},
+	} {
+		_, err := e.m.VerifyPasswordFactor(t.Context(), tt.login, mgrPassword(tt.login))
+		if (err == nil) != tt.works || err != nil && !errors.Is(err, ErrBadCredentials) {
+			t.Errorf("VerifyPasswordFactor() of %q = %v, want nil = %v, and else ErrBadCredentials", tt.login, err, tt.works)
+		}
+		if n := counter.n.Load(); n != 0 {
+			t.Fatalf("VerifyPasswordFactor() of %q has read %d random bytes in all, want none", tt.login, n)
+		}
+	}
+}
+
+// TestVerifyPasswordFactorChecksAgain runs another operation after the password has matched and before
+// VerifyPasswordFactor looks at the account again, and checks that the login goes by the account as it is then: a new
+// password, a disabling and a deletion fail it, and a change of another field shows in the account that it returns.
+func TestVerifyPasswordFactorChecksAgain(t *testing.T) {
+	const second = "yamada has a new password now"
+	setup := func(t *testing.T) (e *mgrEnv, admin, a Account) {
+		e = newMgr(t)
+		admin = e.first(t)
+		a = e.add(t, "yamada", RoleEditor)
+		return e, admin, a
+	}
+	// verify logs in as yamada with the right password and runs gap once, after the password matched. The login must
+	// write nothing.
+	verify := func(t *testing.T, e *mgrEnv, gap func()) (Account, error) {
+		t.Helper()
+		var ran bool
+		var after mgrMark
+		e.m.hook = func(point string) {
+			if point == "verified" && !ran {
+				ran = true
+				gap()
+				after = e.mark(t)
+			}
+		}
+		got, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada"))
+		if !ran {
+			t.Fatal("the password was not checked")
+		}
+		e.unchanged(t, after)
+		return got, err
+	}
+	type gap func(t *testing.T, e *mgrEnv, admin, a Account)
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("the operation between the match and the second look = %v", err)
+		}
+	}
+
+	fails := []struct {
+		name string
+		gap  gap
+	}{
+		{"the password is changed", func(t *testing.T, e *mgrEnv, _, a Account) {
+			check(t, e.m.ChangePassword(t.Context(), a.ID, mgrPassword("yamada"), second))
+		}},
+		{"the password is changed to the same one", func(t *testing.T, e *mgrEnv, _, a Account) {
+			check(t, e.m.ChangePassword(t.Context(), a.ID, mgrPassword("yamada"), mgrPassword("yamada")))
+		}},
+		{"the password is reset by an administrator", func(t *testing.T, e *mgrEnv, admin, a Account) {
+			_, err := e.m.Reset(t.Context(), By(admin.ID), a.ID)
+			check(t, err)
+		}},
+		{"the password is reset by System", func(t *testing.T, e *mgrEnv, _, a Account) {
+			_, err := e.m.Reset(t.Context(), System, a.ID)
+			check(t, err)
+		}},
+		{"the password is reset and set again", func(t *testing.T, e *mgrEnv, _, a Account) {
+			token, err := e.m.Reset(t.Context(), System, a.ID)
+			check(t, err)
+			_, err = e.m.SetPassword(t.Context(), token, second)
+			check(t, err)
+		}},
+		{"the account is disabled by an administrator", func(t *testing.T, e *mgrEnv, admin, a Account) {
+			_, err := e.m.Disable(t.Context(), By(admin.ID), a.ID)
+			check(t, err)
+		}},
+		{"the account is disabled by System", func(t *testing.T, e *mgrEnv, _, a Account) {
+			_, err := e.m.Disable(t.Context(), System, a.ID)
+			check(t, err)
+		}},
+		{"the account is deleted by an administrator", func(t *testing.T, e *mgrEnv, admin, a Account) {
+			check(t, e.m.Delete(t.Context(), By(admin.ID), a.ID))
+		}},
+		{"the account is deleted by System", func(t *testing.T, e *mgrEnv, _, a Account) {
+			check(t, e.m.Delete(t.Context(), System, a.ID))
+		}},
+		{"the row cannot be read", func(t *testing.T, e *mgrEnv, _, a Account) {
+			e.putRaw(t, a.ID, "not json")
+		}},
+	}
+	for _, tt := range fails {
+		t.Run(tt.name, func(t *testing.T) {
+			e, admin, a := setup(t)
+			got, err := verify(t, e, func() { tt.gap(t, e, admin, a) })
+			if got != (Account{}) || !errors.Is(err, ErrBadCredentials) || err.Error() != "wrong login name or password" {
+				t.Errorf("VerifyPasswordFactor() = %+v, %v, want ErrBadCredentials", got, err)
+			}
+		})
+	}
+
+	works := []struct {
+		name    string
+		gap     gap
+		differs bool // the account that is returned is not the one that the first look found
+	}{
+		{"the name is changed", func(t *testing.T, e *mgrEnv, _, a Account) {
+			_, err := e.m.Update(t.Context(), By(a.ID), a.ID, Change{Name: ptr("New Name")})
+			check(t, err)
+		}, true},
+		{"the role is changed", func(t *testing.T, e *mgrEnv, admin, a Account) {
+			_, err := e.m.Update(t.Context(), By(admin.ID), a.ID, Change{Role: ptr(RoleViewer)})
+			check(t, err)
+		}, true},
+		{"the email address is changed", func(t *testing.T, e *mgrEnv, _, a Account) {
+			_, err := e.m.Update(t.Context(), By(a.ID), a.ID, Change{Email: ptr("new.address@example.com")})
+			check(t, err)
+		}, true},
+		{"the login name is changed", func(t *testing.T, e *mgrEnv, admin, a Account) {
+			_, err := e.m.Update(t.Context(), By(admin.ID), a.ID, Change{Login: ptr("taro")})
+			check(t, err)
+		}, true},
+		{"the time of the credentials changes and the password does not", func(t *testing.T, e *mgrEnv, _, a Account) {
+			r := e.row(t, a.ID)
+			r.CredentialsChangedAt = r.CredentialsChangedAt.Add(time.Hour)
+			e.set(t, r)
+		}, true},
+		{"the account is disabled and enabled again", func(t *testing.T, e *mgrEnv, _, a Account) {
+			_, err := e.m.Disable(t.Context(), System, a.ID)
+			check(t, err)
+			_, err = e.m.Enable(t.Context(), System, a.ID)
+			check(t, err)
+		}, false},
+		{"another account is invited", func(t *testing.T, e *mgrEnv, _, _ Account) {
+			_, _, err := e.m.Invite(t.Context(), System, mgrInput("taro", RoleViewer))
+			check(t, err)
+		}, false},
+		{"the password of another account is changed", func(t *testing.T, e *mgrEnv, admin, _ Account) {
+			check(t, e.m.ChangePassword(t.Context(), admin.ID, mgrPassword("admin"), second))
+		}, false},
+	}
+	for _, tt := range works {
+		t.Run(tt.name, func(t *testing.T) {
+			e, admin, a := setup(t)
+			got, err := verify(t, e, func() { tt.gap(t, e, admin, a) })
+			if want := e.row(t, a.ID).account(); err != nil || got != want {
+				t.Errorf("VerifyPasswordFactor() = %+v, %v, want the account as it is now, %+v", got, err, want)
+			}
+			if tt.differs && got == a {
+				t.Error("VerifyPasswordFactor() returned the account as the first look found it")
+			}
+		})
+	}
+}
+
+// TestTypedPasswordBound checks the bound on a typed password for each operation that takes one: more than 8 KiB is
+// refused before it is put in NFC or hashed, and 8 KiB are judged by the other rules.
+func TestTypedPasswordBound(t *testing.T) {
+	over := strings.Repeat("a", maxTypedPasswordBytes+1)
+	at := strings.Repeat("a", maxTypedPasswordBytes)
+	tooLong := problem{"/password", pwBytes(len(over))}
+
+	t.Run("VerifyPasswordFactor", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		before := e.mark(t)
+		// The same for a login that exists and one that does not: the length is the caller's, not the account's.
+		for _, login := range []string{"admin", "nobody"} {
+			for _, p := range []string{over, at, over + mgrPassword("admin"), mgrPassword("admin") + over} {
+				got, err := e.m.VerifyPasswordFactor(t.Context(), login, p)
+				if got != (Account{}) || !errors.Is(err, ErrBadCredentials) || err.Error() != "wrong login name or password" {
+					t.Errorf("VerifyPasswordFactor() of %q with %d bytes = %+v, %v, want ErrBadCredentials", login, len(p), got, err)
+				}
+			}
+		}
+		e.unchanged(t, before)
+		if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
+			t.Errorf("VerifyPasswordFactor() with the right password = %v, want nil", err)
+		}
+		// A megabyte of combining marks is not put in NFC, which would allocate about ten times as much.
+		marks := strings.Repeat(acute, 1<<19)
+		var start, end runtime.MemStats
+		runtime.ReadMemStats(&start)
+		_, err := e.m.VerifyPasswordFactor(t.Context(), "admin", marks)
+		runtime.ReadMemStats(&end)
+		if allocated := end.TotalAlloc - start.TotalAlloc; !errors.Is(err, ErrBadCredentials) || allocated > 256<<10 {
+			t.Errorf("VerifyPasswordFactor() with %d bytes = %v after %d bytes allocated, want ErrBadCredentials after at most 256 KiB", len(marks), err, allocated)
+		}
+	})
+	t.Run("the current password of ChangePassword", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		a := e.add(t, "yamada", RoleEditor)
+		var hashed int
+		e.m.hook = func(point string) {
+			if point == "hashed" {
+				hashed++
+			}
+		}
+		before := e.mark(t)
+		for _, current := range []string{over, at} {
+			if err := e.m.ChangePassword(t.Context(), a.ID, current, "the new long password"); !errors.Is(err, ErrBadCredentials) {
+				t.Errorf("ChangePassword() with a current password of %d bytes = %v, want ErrBadCredentials", len(current), err)
+			}
+		}
+		e.unchanged(t, before)
+		if hashed != 0 {
+			t.Errorf("%d passwords were hashed for the current passwords that do not work, want none", hashed)
+		}
+	})
+	t.Run("SetPassword", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		_, token := e.invite(t, "yamada", RoleEditor)
+		before := e.mark(t)
+		_, err := e.m.SetPassword(t.Context(), token, over)
+		mgrProblems(t, err, tooLong)
+		_, err = e.m.SetPassword(t.Context(), token, at)
+		mgrProblems(t, err, problem{"/password", pwLong(len(at))})
+		e.unchanged(t, before)
+		if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+			t.Errorf("SetPassword() after the refusals = %v, want the token to work", err)
+		}
+	})
+	t.Run("the new password of ChangePassword", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		a := e.add(t, "yamada", RoleEditor)
+		before := e.mark(t)
+		err := e.m.ChangePassword(t.Context(), a.ID, mgrPassword("yamada"), over)
+		mgrProblems(t, err, tooLong)
+		err = e.m.ChangePassword(t.Context(), a.ID, mgrPassword("yamada"), at)
+		mgrProblems(t, err, problem{"/password", pwLong(len(at))})
+		e.unchanged(t, before)
+		if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada")); err != nil {
+			t.Errorf("VerifyPasswordFactor() with the old password = %v, want nil", err)
+		}
+	})
+	t.Run("CreateFirst", func(t *testing.T) {
+		e := newMgr(t)
+		_, err := e.m.CreateFirst(t.Context(), mgrInput("admin", RoleAdmin), over)
+		mgrProblems(t, err, tooLong)
+		if rows := e.raw(t); len(rows) != 0 {
+			t.Errorf("CreateFirst() left %d rows", len(rows))
+		}
+		_, err = e.m.CreateFirst(t.Context(), mgrInput("admin", RoleAdmin), at)
+		mgrProblems(t, err, problem{"/password", pwLong(len(at))})
+	})
 }

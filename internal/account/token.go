@@ -11,6 +11,7 @@ import (
 
 const (
 	tokenBytes      = 32
+	tokenChars      = 43 // the length of the text of a token: 32 bytes in base64url without padding
 	tokenHashPrefix = "sha256:"
 )
 
@@ -26,9 +27,9 @@ func newToken(r io.Reader) (token, hash string, err error) {
 }
 
 // tokenHash returns the hash of token, or false if token is not what newToken returns: 43 characters of base64url that
-// decode to 32 bytes.
+// decode to 32 bytes. A text of another length is refused before it is decoded, so that a long one costs nothing.
 func tokenHash(token string) (string, bool) {
-	if len(decodeBase64(base64.RawURLEncoding, token)) != tokenBytes {
+	if len(token) != tokenChars || len(decodeBase64(base64.RawURLEncoding, token)) != tokenBytes {
 		return "", false
 	}
 	return sumToken(token), true

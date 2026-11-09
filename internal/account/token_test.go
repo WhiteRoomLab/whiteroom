@@ -58,6 +58,16 @@ func TestNewToken(t *testing.T) {
 	}
 }
 
+func TestTokenChars(t *testing.T) {
+	if want := base64.RawURLEncoding.EncodedLen(tokenBytes); tokenChars != want || tokenChars != len(tokSample) {
+		t.Errorf("tokenChars = %d, want %d: the length of %d bytes in base64url without padding", tokenChars, want, tokenBytes)
+	}
+	token, _, err := newToken(rand.Reader)
+	if err != nil || len(token) != tokenChars {
+		t.Errorf("newToken() = a token of %d characters, %v, want %d", len(token), err, tokenChars)
+	}
+}
+
 func TestNewTokenKnown(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -159,6 +169,8 @@ func TestTokenHashRejects(t *testing.T) {
 		{"a space", " "},
 		{"42 characters", tokSample[:42]},
 		{"44 characters", tokSample + "A"},
+		{"a megabyte of letters", strings.Repeat("A", 1<<20)},
+		{"a megabyte that is the token again and again", strings.Repeat(tokSample, 1<<20/len(tokSample))},
 		{"a character of 4 bytes less", tokSample[:39]},
 		{"twice the token", tokSample + tokSample},
 		{"a trailing padding sign", tokSample + "="},
@@ -186,6 +198,17 @@ func TestTokenHashRejects(t *testing.T) {
 				t.Errorf("tokenHash() of a text of %d bytes was accepted", len(tt.s))
 			}
 		})
+	}
+
+	// A text of another length is refused before it is decoded: whatever its length, it allocates nothing.
+	for _, long := range []string{strings.Repeat("A", 1<<20), strings.Repeat(tokSample, 1000), tokSample + tokSample} {
+		var accepted bool
+		if allocs := testing.AllocsPerRun(5, func() {
+			_, ok := tokenHash(long)
+			accepted = accepted || ok
+		}); allocs != 0 || accepted {
+			t.Errorf("tokenHash() of a text of %d bytes allocated %v times and accepted = %v, want 0 and false", len(long), allocs, accepted)
+		}
 	}
 
 	// A character that is not in the alphabet, at every place of a token.

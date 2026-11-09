@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"slices"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -39,20 +38,33 @@ type Manager struct {
 	now        func() time.Time
 	ids        *content.IDSource
 	rand       io.Reader // for salts and tokens; safe for concurrent use
-	iterations int       // of the new password hashes, and of the hash for a login that no account has
+	iterations int       // of the new password hashes
+	// unknownHash is a hash of a text that nobody knows, with iterations when the Manager was made. It is set once.
+	unknownHash string
 	// hook is nil outside the tests, which run another operation at a point of one.
 	hook func(point string)
-
-	unknownMu         sync.Mutex
-	unknownHash       string
-	unknownIterations int
 }
 
-// New returns a Manager for s that reads the time from the system clock and random bits from crypto/rand.
-func New(s *store.Store) *Manager {
-	return &Manager{
-		st: s, now: time.Now, ids: content.NewIDSource(rand.Reader), rand: rand.Reader, iterations: defaultIterations,
+// New returns a Manager for s that reads the time from the system clock and random bits from crypto/rand. It makes here,
+// and not at the first call, the hash that VerifyPasswordFactor checks for a login that no account can use, so that every
+// call costs one hash of the Manager's count, the first one too. It fails only if the random bits cannot be read.
+func New(s *store.Store) (*Manager, error) {
+	return newManager(s, defaultIterations, rand.Reader)
+}
+
+// newManager is New with the iteration count of the hashes and the source of the random bits, which the tests change.
+func newManager(s *store.Store, iterations int, r io.Reader) (*Manager, error) {
+	secret, _, err := newToken(r)
+	if err != nil {
+		return nil, err
 	}
+	hash, err := hashPassword(secret, iterations, r)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{
+		st: s, now: time.Now, ids: content.NewIDSource(r), rand: r, iterations: iterations, unknownHash: hash,
+	}, nil
 }
 
 // SetClock sets the clock of the operations, which must be safe for concurrent use. It must be called before the

@@ -9,7 +9,8 @@ import (
 // Update changes the fields of the account id that c sets, and returns the account. The name and the email address of
 // one's own account need EditSelf; the login name, the role and the link to an author profile, and any field of another
 // account, need ManageAccounts (or System). The role of the last active administrator cannot be changed. A Change that
-// changes nothing writes nothing. The problems of c are content.Errors.
+// changes nothing writes nothing. The problems of c are content.Errors; for a change that needs only EditSelf, the
+// problem of an email address that another account has does not say which.
 func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Account, error) {
 	c.normalize()
 	var out Account
@@ -64,7 +65,7 @@ func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Ac
 		if next.Author != cur.Author {
 			author = next.Author
 		}
-		if err := rowProblems(tx, rows, id, login, email, author); err != nil {
+		if err := rowProblems(tx, rows, id, login, email, author, act != EditSelf); err != nil {
 			return err
 		}
 		return put(tx, rows, next, "its role cannot be changed")
@@ -75,8 +76,9 @@ func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Ac
 	return out, nil
 }
 
-// Disable makes the account id unable to log in. It keeps everything of the account but its token. The last active
-// administrator cannot be disabled, also not by System. Only an administrator, or System, may.
+// Disable makes the account id unable to log in. It keeps everything of the account but its token, CredentialsChangedAt
+// too, so #46 removes the sessions of the account (see Account.CredentialsChangedAt). The last active administrator
+// cannot be disabled, also not by System. Only an administrator, or System, may.
 func (m *Manager) Disable(ctx context.Context, by Actor, id string) (Account, error) {
 	return m.setDisabled(ctx, by, id, true)
 }

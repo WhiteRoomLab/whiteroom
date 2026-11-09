@@ -26,14 +26,22 @@ const (
 	hashPrefix        = "$pbkdf2-sha256$"
 )
 
+// maxTypedPasswordBytes is the most bytes of a typed password that anything works on. A text that is canonically
+// equivalent to a password of at most maxPasswordChars code points in NFC has at most four times as many code points,
+// since no code point decomposes into more than four, so at most 16 * maxPasswordChars bytes, which is half of this.
+const maxTypedPasswordBytes = 8 << 10
+
 var errUnreadableHash = errors.New("unreadable password hash")
 
 // checkPassword returns the first problem of the password p of an account with this login name, email address and name,
-// or nil. It refuses, in this order: invalid UTF-8, control characters, a code point that unicode.Version has not
-// assigned, and then on the NFC form of p a length outside minPasswordChars and maxPasswordChars, the same text as the
-// login name, the email address or the name, and one character repeated. It keeps spaces and has no rule of character
-// classes. Its messages show nothing of p.
+// or nil. It refuses, in this order: more than maxTypedPasswordBytes bytes, invalid UTF-8, control characters, a code
+// point that unicode.Version has not assigned, and then on the NFC form of p a length outside minPasswordChars and
+// maxPasswordChars, the same text as the login name, the email address or the name, and one character repeated. It keeps
+// spaces and has no rule of character classes. Its messages show nothing of p.
 func checkPassword(p, login, email, name string) error {
+	if len(p) > maxTypedPasswordBytes {
+		return fmt.Errorf("too long: %d bytes (max %d)", len(p), maxTypedPasswordBytes)
+	}
 	if !utf8.ValidString(p) {
 		return errors.New("invalid UTF-8")
 	}
@@ -144,8 +152,13 @@ func decodeBase64(enc *base64.Encoding, text string) []byte {
 
 // matchHash reports whether the NFC form of p is the password of encoded, derived with the salt and the iteration count
 // that encoded names, and compared in constant time. rehash is true only for a match, when encoded has fewer iterations
-// than the iterations that new hashes get. A hash that does not parse is the error of parseHash.
+// than the iterations that new hashes get. A hash that does not parse is the error of parseHash. A p of more than
+// maxTypedPasswordBytes bytes is no match, whatever encoded is: no password that checkPassword accepted is canonically
+// equivalent to it, so encoded is not even parsed, and p is not put in NFC.
 func matchHash(encoded, p string, iterations int) (ok, rehash bool, err error) {
+	if len(p) > maxTypedPasswordBytes {
+		return false, false, nil
+	}
 	n, salt, key, err := parseHash(encoded)
 	if err != nil {
 		return false, false, err

@@ -42,11 +42,12 @@ const (
 // pwMessage matches every message that checkPassword can return, and nothing else.
 var pwMessage = regexp.MustCompile(`^(` + strings.Join([]string{
 	pwInvalidUTF8, pwControl, regexp.QuoteMeta(pwUnassigned), pwSame, pwRepeated,
-	`too short: [0-9]+ characters \(min 15\)`, `too long: [0-9]+ characters \(max 256\)`,
+	`too short: [0-9]+ characters \(min 15\)`, `too long: [0-9]+ characters \(max 256\)`, `too long: [0-9]+ bytes \(max 8192\)`,
 }, "|") + `)$`)
 
 func pwShort(n int) string { return fmt.Sprintf("too short: %d characters (min 15)", n) }
 func pwLong(n int) string  { return fmt.Sprintf("too long: %d characters (max 256)", n) }
+func pwBytes(n int) string { return fmt.Sprintf("too long: %d bytes (max 8192)", n) }
 
 // pwSequence is a reader of the bytes 0, 1, 2, ... (wrapping at 256) that goes on where its last read stopped.
 type pwSequence struct{ next int }
@@ -189,6 +190,11 @@ func TestHashCostConstants(t *testing.T) {
 	}
 	if got, want := [4]int{minPasswordChars, maxPasswordChars, saltBytes, keyBytes}, [4]int{15, 256, 16, 32}; got != want {
 		t.Errorf("the lengths of the passwords, the salt and the key = %v, want %v", got, want)
+	}
+	// A typed password that is canonically equivalent to one of maxPasswordChars characters in NFC has at most four times
+	// as many code points of at most four bytes, and the bound leaves room for that.
+	if maxTypedPasswordBytes != 8192 || maxTypedPasswordBytes < 16*maxPasswordChars {
+		t.Errorf("maxTypedPasswordBytes = %d, want 8192, and not below %d bytes", maxTypedPasswordBytes, 16*maxPasswordChars)
 	}
 }
 
@@ -403,6 +409,76 @@ func TestMatchHashKeyPadding(t *testing.T) {
 	}
 	if err := checkPassword(pwGood+"\x00", "", "", ""); err == nil || err.Error() != pwControl {
 		t.Errorf("checkPassword() of the password and a NUL = %v, want %q", err, pwControl)
+	}
+}
+
+// TestMatchHashTypedPasswordBound checks that a typed password of more than maxTypedPasswordBytes bytes is no match,
+// even for a hash that it was made into, and costs nothing: the hash is not parsed and the text is not put in NFC.
+func TestMatchHashTypedPasswordBound(t *testing.T) {
+	at := strings.Repeat("a", maxTypedPasswordBytes)
+	over := at + "a"
+	for _, tt := range []struct {
+		name string
+		p    string
+		ok   bool
+	}{
+		{"the bound", at, true}, {"one byte over", over, false},
+		// The bound is on the text as it is typed: NFC would make these shorter.
+		{"8190 bytes that NFC makes shorter", pwAcutes(2730), true}, {"9000 bytes that NFC makes shorter", pwAcutes(3000), false},
+	} {
+		hash, err := hashPassword(tt.p, pwLow, rand.Reader) // hashPassword has no bound: only the match has
+		if err != nil {
+			t.Fatalf("hashPassword() = %v", err)
+		}
+		ok, rehash, err := matchHash(hash, tt.p, pwLow+1)
+		if ok != tt.ok || rehash != tt.ok || err != nil {
+			t.Errorf("matchHash() of a text of %s that the hash was made of = %v, %v, %v, want %v, %v, nil", tt.name, ok, rehash, err, tt.ok, tt.ok)
+		}
+	}
+	// The hash is not parsed: a hash that does not parse is an error for a text in the bound, and not over it.
+	if _, _, err := matchHash("not a hash", at, pwLow); !errors.Is(err, errUnreadableHash) {
+		t.Errorf("matchHash() of an unreadable hash and a text of the bound = %v, want %q", err, pwUnreadable)
+	}
+	if ok, rehash, err := matchHash("not a hash", over, pwLow); ok || rehash || err != nil {
+		t.Errorf("matchHash() of an unreadable hash and a text over the bound = %v, %v, %v, want false, false, nil", ok, rehash, err)
+	}
+
+	// It allocates nothing, for a text that NFC would work on for a long time.
+	marks := strings.Repeat(acute, 1<<19) // a megabyte
+	var matched bool
+	if allocs := testing.AllocsPerRun(5, func() {
+		ok, _, _ := matchHash(pwKnown, marks, pwLow)
+		matched = matched || ok
+	}); allocs != 0 || matched {
+		t.Errorf("matchHash() of a text of %d bytes allocated %v times and matched = %v, want 0 and false", len(marks), allocs, matched)
+	}
+}
+
+// TestTypedPasswordBoundLeavesRoom checks that the bound is above the longest text that is canonically equivalent to a
+// password that checkPassword accepts: 256 characters that NFC keeps whole and that decompose into four code points each.
+func TestTypedPasswordBoundLeavesRoom(t *testing.T) {
+	composed := string(rune(0x1f82)) // GREEK SMALL LETTER ALPHA WITH PSILI AND VARIA AND YPOGEGRAMMENI
+	decomposed := string([]rune{0x3b1, 0x313, 0x300, 0x345})
+	if nfc.Normalize(decomposed) != composed || nfc.Normalize(composed) != composed {
+		t.Fatal("the test characters are not the composed and decomposed forms of one character")
+	}
+	password := strings.Repeat(composed, maxPasswordChars-1) + "a"
+	typed := strings.Repeat(decomposed, maxPasswordChars-1) + "a"
+	if err := checkPassword(password, "", "", ""); err != nil {
+		t.Fatalf("checkPassword() of the longest password = %v, want nil", err)
+	}
+	if err := checkPassword(typed, "", "", ""); err != nil {
+		t.Fatalf("checkPassword() of the longest form of it = %v, want nil", err)
+	}
+	if len(typed) > maxTypedPasswordBytes/2 {
+		t.Errorf("the longest form is %d bytes, which is more than half of the bound of %d", len(typed), maxTypedPasswordBytes)
+	}
+	hash, err := hashPassword(password, pwLow, rand.Reader)
+	if err != nil {
+		t.Fatalf("hashPassword() = %v", err)
+	}
+	if ok, _, err := matchHash(hash, typed, pwLow); !ok || err != nil {
+		t.Errorf("matchHash() of the longest form of the password = %v, %v, want true, nil", ok, err)
 	}
 }
 
@@ -689,6 +765,23 @@ func TestPasswordRules(t *testing.T) {
 		{name: "257 characters of four bytes", p: pwEmoji(257), want: pwLong(257)},
 		{name: "257 times a", p: strings.Repeat("a", 257), want: pwLong(257)},
 
+		{name: "8192 bytes are judged by the characters", p: strings.Repeat("a", 8192), want: pwLong(8192)},
+		{name: "8192 bytes of characters of four bytes", p: pwEmoji(2048), want: pwLong(2048)},
+		{name: "8193 bytes", p: strings.Repeat("a", 8193), want: pwBytes(8193)},
+		{name: "8193 bytes of characters of four bytes and a letter", p: pwEmoji(2048) + "a", want: pwBytes(8193)},
+		{name: "8193 bytes of hiragana", p: pwFill(hiragana, 2731), want: pwBytes(8193)},
+		{name: "a megabyte", p: strings.Repeat("a", 1<<20), want: pwBytes(1 << 20)},
+		{name: "a megabyte of combining marks", p: strings.Repeat(acute, 1<<19), want: pwBytes(1 << 20)},
+		{name: "9000 bytes that NFC makes fewer of", p: pwAcutes(3000), want: pwBytes(9000)},
+		{name: "8190 bytes that NFC makes fewer of", p: pwAcutes(2730), want: pwLong(2730)},
+		{name: "8193 bytes of invalid UTF-8", p: strings.Repeat("\xff", 8193), want: pwBytes(8193)},
+		{name: "8192 bytes of invalid UTF-8", p: strings.Repeat("\xff", 8192), want: pwInvalidUTF8},
+		{name: "8193 bytes of control characters", p: strings.Repeat("\n", 8193), want: pwBytes(8193)},
+		{name: "8192 bytes of control characters", p: strings.Repeat("\n", 8192), want: pwControl},
+		{name: "8193 bytes with an unassigned code point", p: strings.Repeat("a", 8193-len(unassigned)) + unassigned, want: pwBytes(8193)},
+		{name: "8192 bytes with an unassigned code point", p: strings.Repeat("a", 8192-len(unassigned)) + unassigned, want: pwUnassigned},
+		{name: "8193 bytes that are the login name", p: strings.Repeat("a", 8193), want: pwBytes(8193), who: &who{login: strings.Repeat("a", 8193)}},
+
 		{name: "15 letters with an accent, decomposed (30 code points)", p: pwAcutes(15)},
 		{name: "14 letters with an accent, decomposed (28 code points)", p: pwAcutes(14), want: pwShort(14)},
 		{name: "256 letters with an accent, decomposed (512 code points)", p: pwAcutes(256)},
@@ -837,6 +930,10 @@ func TestPasswordRulesOrder(t *testing.T) {
 		p    string
 		want string
 	}{
+		{"the bytes before invalid UTF-8", strings.Repeat("\xff", 8193), pwBytes(8193)},
+		{"the bytes before control characters", strings.Repeat("\x00", 8193), pwBytes(8193)},
+		{"the bytes before an unassigned code point", strings.Repeat(unassigned, 2731), pwBytes(2731 * len(unassigned))},
+		{"the bytes before the length", strings.Repeat("a", 8193), pwBytes(8193)},
 		{"invalid UTF-8 before control characters", "\xff\x00", pwInvalidUTF8},
 		{"invalid UTF-8 before the length", "\xff", pwInvalidUTF8},
 		{"invalid UTF-8 before an unassigned code point", "\xff" + unassigned, pwInvalidUTF8},
@@ -884,6 +981,7 @@ func TestPasswordMessagesShowNothing(t *testing.T) {
 		{"an unassigned code point", marker + unassigned + marker, ""},
 		{"too short", marker[:8], ""},
 		{"too long", strings.Repeat(marker, 30), ""},
+		{"too many bytes", strings.Repeat(marker, 500), ""},
 		{"the login name", marker + marker, marker + marker},
 	}
 	for _, tt := range tests {
@@ -935,7 +1033,8 @@ func FuzzPasswordRules(f *testing.F) {
 		pwGood, "", "a", strings.Repeat("a", 15), strings.Repeat("a", 257), pwAcutes(15), pwAcutes(14), pwJamo(15),
 		"\xff", "a\tb", strings.Repeat("a", 14) + "\x00", "taro.yamada.2026", "Taro.Yamada.2026", strings.Repeat("e"+acute, 15),
 		strings.Repeat(string(rune(0x958)), 8), pwFill("abcdefghij", 14) + string(unassignedFrom(f, 0x1ade)),
-		pwFill("abcdefghij", 14) + string(rune(0xfffe)),
+		pwFill("abcdefghij", 14) + string(rune(0xfffe)), strings.Repeat("ab", 4096), strings.Repeat("ab", 4096) + "c",
+		strings.Repeat("\xff", 8193),
 	} {
 		f.Add(s, "taro.yamada.2026", "taro.yamada@example.com", "Ren"+eAcute+" Zellweger Jr")
 	}
@@ -950,6 +1049,9 @@ func FuzzPasswordRules(f *testing.F) {
 		norm := nfc.Normalize(p)
 		if n := utf8.RuneCountInString(norm); !utf8.ValidString(p) || strings.IndexFunc(p, unicode.IsControl) >= 0 || n < 15 || n > 256 {
 			t.Fatalf("checkPassword() accepted a password of %d bytes that is invalid, has control characters or has %d characters", len(p), n)
+		}
+		if len(p) > maxTypedPasswordBytes {
+			t.Fatalf("checkPassword() accepted a password of %d bytes", len(p))
 		}
 		if strings.IndexFunc(p, func(r rune) bool { return unicode.Is(unicode.Cn, r) }) >= 0 {
 			t.Fatalf("checkPassword() accepted a password of %d bytes that has a code point that is not assigned", len(p))

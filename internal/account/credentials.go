@@ -188,10 +188,15 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 
 // VerifyPasswordFactor checks the password of the account with the login name, which it normalizes: one factor of a
 // login, which signs nobody in. #46 combines it with the other factors that the account has (none yet), the limits of
-// attempts and the session. Every failure is ErrBadCredentials. When no active account with a password has the login
-// name it still checks a hash that no password matches, so that the time does not tell the cases apart. A row that
-// cannot be read is no account, and does not stop the others from logging in. It does not limit attempts and does not
-// hash again (#46).
+// attempts and the session. After the password matches it reads the account again, since a change of the password or a
+// disabling may have committed meanwhile: it succeeds only if the account still has the password that matched and is
+// still active, and returns the account as it is then. A session that #46 makes keeps the CredentialsChangedAt of that
+// Account and ends when the account's value differs from it (see Account). Every reason for a login to fail is
+// ErrBadCredentials; only an error of the store is another. Every call costs one hash of the Manager's count: when no
+// active account with a password has the login name it checks a hash that no password matches, so that the time does
+// not tell the cases apart. Only a password of more than maxTypedPasswordBytes bytes costs none, for every login alike.
+// A row that cannot be read is no account, and does not stop the others from logging in. It does not limit attempts and
+// does not hash again (#46).
 func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password string) (Account, error) {
 	login = normalizeLogin(login)
 	var found row
@@ -210,11 +215,9 @@ func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password stri
 	if err != nil {
 		return Account{}, err
 	}
-	stored := found.Password
-	if !usable {
-		if stored, err = m.unknownPasswordHash(); err != nil {
-			return Account{}, err
-		}
+	stored := m.unknownHash
+	if usable {
+		stored = found.Password
 	}
 	ok, _, err := matchHash(stored, password, m.iterations)
 	m.at("verified")
@@ -224,23 +227,23 @@ func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password stri
 	if !usable || !ok {
 		return Account{}, ErrBadCredentials
 	}
-	return found.account(), nil
-}
-
-// unknownPasswordHash returns a hash of a text that nobody knows, made with the iterations of m.
-func (m *Manager) unknownPasswordHash() (string, error) {
-	m.unknownMu.Lock()
-	defer m.unknownMu.Unlock()
-	if m.unknownHash == "" || m.unknownIterations != m.iterations {
-		secret, _, err := newToken(m.rand)
-		if err != nil {
-			return "", err
+	var out Account
+	var kept bool
+	err = m.st.View(ctx, func(tx *store.Tx) error {
+		data, exists, err := tx.Account(found.ID)
+		if err != nil || !exists {
+			return err
 		}
-		hash, err := hashPassword(secret, m.iterations, m.rand)
-		if err != nil {
-			return "", err
+		if r, err := decodeRow(found.ID, data); err == nil && r.Password == found.Password && r.status() == StatusActive {
+			out, kept = r.account(), true
 		}
-		m.unknownHash, m.unknownIterations = hash, m.iterations
+		return nil
+	})
+	if err != nil {
+		return Account{}, err
 	}
-	return m.unknownHash, nil
+	if !kept {
+		return Account{}, ErrBadCredentials
+	}
+	return out, nil
 }

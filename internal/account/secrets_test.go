@@ -25,7 +25,7 @@ func TestSecretsNotStored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := newMgrOn(s, dir)
+	e := newMgrOn(t, s, dir)
 	ctx := t.Context()
 
 	var secrets []mgrSecret // the passwords in every form that the test used, and the tokens

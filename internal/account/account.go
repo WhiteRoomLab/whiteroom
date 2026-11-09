@@ -52,7 +52,10 @@ type Account struct {
 	// CreatedBy is the ID of the account that invited this one, or "" for the first account and for a command on the server.
 	CreatedBy string
 	// CredentialsChangedAt is the last time that a credential was set, changed or removed, which for now is the
-	// password; it is zero if the account has never had one. Sessions made before it end (#46).
+	// password; it is zero if the account has never had one. A session of #46 keeps the value that VerifyPasswordFactor
+	// returned and ends when the account's value differs from it; it is not compared with the time of the session.
+	// Disable does not change it, so #46 removes the sessions of an account that is disabled, and enabling the account
+	// again revives none.
 	CredentialsChangedAt time.Time
 	Token                TokenInfo
 }
