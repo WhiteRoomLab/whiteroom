@@ -41,7 +41,8 @@ import (
 // schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
 // summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
 // the schema 3. The schema 4 adds the table accounts, which a store of an older schema has no rows of: Open sets the
-// schema 4 in a store of the schema 2 or 3 with no other write, and builds the index of one of the schema 1 as before.
+// schema 4 in a store of the schema 2 or 3 with no other write, and without reading a document, and builds the index of
+// one of the schema 1 as before.
 const logSchemaVersion = 4
 
 // indexSchema is the first schema that has the index tables.
@@ -144,14 +145,17 @@ func checkSchema(name string) func(*logdb.Tx) error {
 	}
 }
 
-// upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion: a store of the
-// schema 1 gets its index, and the schema 4, and one of the schema 2 or 3 gets the schema 4, in one Update, so that a
-// failure leaves the store as it was. name is that of its logdb/ in errors.
+// upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
+// that a failure leaves the store as it was. A store of the schema 1 gets its index and the schema 4. One of the schema
+// 2 or 3 has the index of the schema 4 already: it gets only the schema 4, and no document, revision or object is read,
+// so a damaged one does not stop Open, and only the reads that use it fail. name is that of its logdb/ in errors.
 func upgradeLog(b *logBackend, name string) error {
+	var version uint64
 	upgrade := false
 	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
 		v, _ := tx.Get(tableMeta, []byte(metaSchema))
-		version, ok := decodeUint(v)
+		var ok bool
+		version, ok = decodeUint(v)
 		upgrade = ok && version < logSchemaVersion
 		return nil
 	}); err != nil || !upgrade {
@@ -161,6 +165,10 @@ func upgradeLog(b *logBackend, name string) error {
 		// The schema first, so that the index methods find the schema that they need.
 		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
+		}
+		// The index of the schema 2 or 3 is that of the schema 4, and making it again would read every document.
+		if version >= indexSchema {
+			return nil
 		}
 		return (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() })
 	}); err != nil {

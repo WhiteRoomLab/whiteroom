@@ -14,10 +14,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 )
 
@@ -1738,8 +1740,9 @@ func TestIndexUndecodable(t *testing.T) {
 // TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
 // for its index by a reader, gets its index, equal to the one that it would have had, and the schema 4 when its writer
 // opens it, once; that a store of the schema 2, which has the index without the scheduled items, or of the schema 3,
-// which has no accounts, gets the schema 4 in one commit that writes nothing else; and that a failure of any of them
-// leaves the store as it was.
+// which has no accounts, gets the schema 4 in one commit that writes nothing else and reads no document; and that a
+// failure of any of them leaves the store as it was. A damaged object stops the upgrade of the schema 1, which makes the
+// index from the documents, and not that of the schema 2 or 3, which leaves the object to the reads that use it.
 func TestIndexUpgrade(t *testing.T) {
 	ops := []string{"op_A", "op_B"}
 	// clearTables deletes every row of the tables.
@@ -1783,7 +1786,7 @@ func TestIndexUpgrade(t *testing.T) {
 			})
 		}
 	}
-	toSchema2, toSchema3 := toSchemaWithIndex(2), toSchemaWithIndex(3)
+	toOlder := map[uint64]func(t *testing.T, s *Store){2: toSchemaWithIndex(2), 3: toSchemaWithIndex(3)}
 	schemaOf := func(t *testing.T, s *Store) uint64 {
 		t.Helper()
 		var version uint64
@@ -1815,6 +1818,36 @@ func TestIndexUpgrade(t *testing.T) {
 		}
 		return tables
 	}
+	// upgradedTablesOf returns the rows of the tables of s, a store of the schema 2 or 3, as its upgrade must leave them:
+	// as they are, but for the schema 4. It returns the last commit of s too.
+	upgradedTablesOf := func(t *testing.T, s *Store) (map[uint32][][2]string, uint64) {
+		t.Helper()
+		tables := tablesOf(t, s)
+		for i, kv := range tables[tableMeta] {
+			if kv[0] == metaSchema {
+				tables[tableMeta][i][1] = string(binary.AppendUvarint(nil, logSchemaVersion))
+			}
+		}
+		return tables, seqOf(t, s)
+	}
+	// checkOnlySchema checks that s, which has just upgraded a store of the schema 2 or 3 whose last commit was seq, has
+	// the schema 4 in one commit more, and the rows of the tables that upgradedTablesOf has returned.
+	checkOnlySchema := func(t *testing.T, s *Store, want map[uint32][][2]string, seq uint64) {
+		t.Helper()
+		if v := schemaOf(t, s); v != logSchemaVersion {
+			t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
+		}
+		if after := seqOf(t, s); after != seq+1 {
+			t.Errorf("the last commit after Open() is %d, want %d: one commit more", after, seq+1)
+		}
+		if got := tablesOf(t, s); !reflect.DeepEqual(got, want) {
+			for table := tableMeta; table <= tableAccounts; table++ {
+				if !reflect.DeepEqual(got[table], want[table]) {
+					t.Errorf("table %d after Open() = %q, want %q: only the schema changes", table, got[table], want[table])
+				}
+			}
+		}
+	}
 	// acceptsAccounts checks that s, a store that has been upgraded, takes a row in accounts and reads it.
 	acceptsAccounts := func(t *testing.T, s *Store) {
 		t.Helper()
@@ -1826,23 +1859,26 @@ func TestIndexUpgrade(t *testing.T) {
 			return nil
 		})
 	}
-	// secondOpen closes s, which has just upgraded the store in dir, and opens the store again: that commits nothing,
-	// and changes no file but head, which every Open writes.
-	secondOpen := func(t *testing.T, s *Store, dir string, tb testBackend) {
+	// secondOpen closes s, which has just upgraded the store in dir, and opens the store again with o: that commits
+	// nothing, and changes no file but head, which every Open writes. It checks the index against the documents only if
+	// indexed is true, which a damaged object makes fail.
+	secondOpen := func(t *testing.T, s *Store, dir string, o logdb.Options, indexed bool) {
 		t.Helper()
 		seq := seqOf(t, s)
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() = %v", err)
 		}
 		first := snapshot(t, dir)
-		s = reopenLog(t, dir, *tb.log)
+		s = reopenLog(t, dir, o)
 		if v := schemaOf(t, s); v != logSchemaVersion {
 			t.Errorf("the schema after a second Open() = %d, want %d", v, logSchemaVersion)
 		}
 		if again := seqOf(t, s); again != seq {
 			t.Errorf("the last commit after a second Open() is %d, want %d, that of the first", again, seq)
 		}
-		checkConsistent(t, s)
+		if indexed {
+			checkConsistent(t, s)
+		}
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() = %v", err)
 		}
@@ -1920,17 +1956,13 @@ func TestIndexUpgrade(t *testing.T) {
 				t.Errorf("the operations after Open() = %q, want none: a store of the schema 1 has none", got.ops)
 			}
 			acceptsAccounts(t, s)
-			secondOpen(t, s, dir, tb)
+			secondOpen(t, s, dir, *tb.log, true)
 		})
 	})
 
 	// A store of the schema 2, which has the index without the scheduled items, and one of the schema 3, which has no
 	// accounts, get the schema 4 with the index that they have.
 	for _, schema := range []uint64{2, 3} {
-		toOlder := toSchema2
-		if schema == 3 {
-			toOlder = toSchema3
-		}
 		t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 			forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 				s, dir := newStore(t, tb)
@@ -1940,13 +1972,8 @@ func TestIndexUpgrade(t *testing.T) {
 				putAll(t, s, indexDoc{content.RefEntry, page2, entryJSON(page2, `"number": 20, "status": "scheduled"`)})
 				injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
 				want := readIndexState(t, s, ops...)
-				toOlder(t, s)
-				wantTables, seq := tablesOf(t, s), seqOf(t, s)
-				for i, kv := range wantTables[tableMeta] {
-					if kv[0] == metaSchema {
-						wantTables[tableMeta][i][1] = string(binary.AppendUvarint(nil, logSchemaVersion))
-					}
-				}
+				toOlder[schema](t, s)
+				wantTables, seq := upgradedTablesOf(t, s)
 				if err := s.Close(); err != nil {
 					t.Fatalf("Close() = %v", err)
 				}
@@ -1977,20 +2004,7 @@ func TestIndexUpgrade(t *testing.T) {
 
 				// Its writer sets the schema 4 in one commit, and writes nothing else.
 				s = reopenLog(t, dir, *tb.log)
-				if v := schemaOf(t, s); v != logSchemaVersion {
-					t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
-				}
-				if after := seqOf(t, s); after != seq+1 {
-					t.Errorf("the last commit after Open() is %d, want %d: one commit more", after, seq+1)
-				}
-				if gotTables := tablesOf(t, s); !reflect.DeepEqual(gotTables, wantTables) {
-					for table := tableMeta; table <= tableAccounts; table++ {
-						if !reflect.DeepEqual(gotTables[table], wantTables[table]) {
-							t.Errorf("table %d after Open() = %q, want %q: only the schema changes", table, gotTables[table],
-								wantTables[table])
-						}
-					}
-				}
+				checkOnlySchema(t, s, wantTables, seq)
 				checkConsistent(t, s)
 				checkIntegrity(t, s)
 				got = readIndexState(t, s, ops...)
@@ -2000,34 +2014,86 @@ func TestIndexUpgrade(t *testing.T) {
 						"the operations %q, want %q", problem, got.number, want.number, got.ops, want.ops)
 				}
 				acceptsAccounts(t, s)
-				secondOpen(t, s, dir, tb)
+				secondOpen(t, s, dir, *tb.log, true)
 			})
 		})
 	}
 
 	t.Run("failure", func(t *testing.T) {
-		for _, schema := range []uint64{1, 2, 3} {
-			t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
-				o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
-				s, dir := newLogStore(t, o)
-				fillIndexStore(t, s)
-				switch schema {
-				case 1:
-					toSchema1(t, s)
-				case 2:
-					toSchema2(t, s)
-				default:
-					toSchema3(t, s)
+		// A damaged object stops the upgrade of the schema 1, which makes its index from the documents.
+		t.Run("schema 1", func(t *testing.T) {
+			o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
+			s, dir := newLogStore(t, o)
+			fillIndexStore(t, s)
+			toSchema1(t, s)
+			corruptObjects(t, s)
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+			// The error says where the upgrade failed, and wraps the cause.
+			upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 4, so the store is unchanged: "
+			var first string
+			for i := range 2 {
+				c, err := open(dir, logOpts(o))
+				if err == nil {
+					_ = c.Close()
 				}
-				corruptObjects(t, s)
-				if err := s.Close(); err != nil {
-					t.Fatalf("Close() = %v", err)
+				var cause string
+				if u := errors.Unwrap(err); u != nil {
+					cause = u.Error()
 				}
-				// The error says where the upgrade failed, and wraps the cause.
-				upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 4, so the store is unchanged: "
-				var first string
-				for i := range 2 {
-					c, err := open(dir, logOpts(o))
+				// The second failure is the same: the first has released the lock.
+				switch {
+				case err == nil || err.Error() != upgrade+cause || !strings.HasPrefix(cause, "object sha256:") ||
+					!strings.Contains(cause, ": the data has the hash "):
+					t.Fatalf("open() of a store of the schema 1 with a changed object = %v, want the error of its "+
+						"upgrade and, after it, the error of its hash", err)
+				case i == 0:
+					first = err.Error()
+				case err.Error() != first:
+					t.Errorf("the second open() = %v, want the error of the first, %v", err, first)
+				}
+			}
+			r, err := openLogReader(dir, logOpts(o))
+			if err != nil {
+				t.Fatalf("openLogReader() after the failures = %v", err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+			if v := schemaOf(t, r); v != 1 {
+				t.Errorf("the schema after the failed Open() = %d, want 1", v)
+			}
+			view(t, r, func(tx *Tx) error {
+				if _, err := tx.Summary(content.RefEntry, entryID); !errors.Is(err, ErrNoIndex) {
+					t.Errorf("Summary() = %v, want ErrNoIndex", err)
+				}
+				return nil
+			})
+		})
+
+		// A write to the log that fails in the Update of the upgrade fails Open, and leaves the store as it was.
+		t.Run("write fault", func(t *testing.T) {
+			for _, schema := range []uint64{2, 3} {
+				t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
+					o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
+					fsys := simfs.New("data")
+					s, err := create("data", options{log: &o, fs: fsys})
+					if err != nil {
+						t.Fatalf("create() = %v", err)
+					}
+					t.Cleanup(func() { _ = s.Close() })
+					fillIndexStore(t, s)
+					toOlder[schema](t, s)
+					wantTables, seq := upgradedTablesOf(t, s)
+					want := readIndexState(t, s, ops...)
+					if err := s.Close(); err != nil {
+						t.Fatalf("Close() = %v", err)
+					}
+
+					// Open of the engine writes nothing to the log, so the first write is that of the Update of the upgrade.
+					fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+						return op.Kind == simfs.OpWrite && strings.HasPrefix(op.Path, "logdb/log/")
+					}, Err: syscall.EIO, Times: 1})
+					c, err := open("data", options{log: &o, fs: fsys})
 					if err == nil {
 						_ = c.Close()
 					}
@@ -2035,32 +2101,77 @@ func TestIndexUpgrade(t *testing.T) {
 					if u := errors.Unwrap(err); u != nil {
 						cause = u.Error()
 					}
-					// The second failure is the same: the first has released the lock.
-					switch {
-					case err == nil || err.Error() != upgrade+cause || !strings.HasPrefix(cause, "object sha256:") ||
-						!strings.Contains(cause, ": the data has the hash "):
-						t.Fatalf("open() of a store of the schema %d with a changed object = %v, want the error of its "+
-							"upgrade and, after it, the error of its hash", schema, err)
-					case i == 0:
-						first = err.Error()
-					case err.Error() != first:
-						t.Errorf("the second open() = %v, want the error of the first, %v", err, first)
+					upgrade := "data/logdb: cannot upgrade the table schema to 4, so the store is unchanged: "
+					if err == nil || !errors.Is(err, syscall.EIO) || err.Error() != upgrade+cause {
+						t.Fatalf("open() with a write that fails = %v, want the error of its upgrade, which wraps EIO", err)
 					}
-				}
-				r, err := openLogReader(dir, logOpts(o))
-				if err != nil {
-					t.Fatalf("openLogReader() after the failures = %v", err)
-				}
-				t.Cleanup(func() { _ = r.Close() })
-				if v := schemaOf(t, r); v != schema {
-					t.Errorf("the schema after the failed Open() = %d, want %d", v, schema)
-				}
-				view(t, r, func(tx *Tx) error {
-					_, err := tx.Summary(content.RefEntry, entryID)
-					if schema == 1 && !errors.Is(err, ErrNoIndex) || schema > 1 && err != nil {
-						t.Errorf("Summary() = %v, want ErrNoIndex for the schema 1, and none for the schemas 2 and 3", err)
+
+					// A reader sees the store as it was.
+					r, err := openLogReader("data", options{log: &o, fs: fsys})
+					if err != nil {
+						t.Fatalf("openLogReader() after the failure = %v", err)
 					}
-					return nil
+					if v := schemaOf(t, r); v != schema {
+						t.Errorf("the schema after the failed Open() = %d, want %d", v, schema)
+					}
+					if after := seqOf(t, r); after != seq {
+						t.Errorf("the last commit after the failed Open() is %d, want %d: nothing is committed", after, seq)
+					}
+					checkIndexState(t, r, want, ops...)
+					if err := r.Close(); err != nil {
+						t.Fatalf("Close() of the reader = %v", err)
+					}
+
+					// An Open without the fault upgrades it.
+					again, err := open("data", options{log: &o, fs: fsys})
+					if err != nil {
+						t.Fatalf("open() after the failure = %v", err)
+					}
+					t.Cleanup(func() { _ = again.Close() })
+					checkOnlySchema(t, again, wantTables, seq)
+					checkConsistent(t, again)
+					checkIntegrity(t, again)
+					checkIndexState(t, again, want, ops...)
+					acceptsAccounts(t, again)
+				})
+			}
+		})
+	})
+
+	// A damaged object does not stop the upgrade of the schema 2 or 3, which reads no document: the reads that use the
+	// object fail as before.
+	t.Run("damaged object", func(t *testing.T) {
+		for _, schema := range []uint64{2, 3} {
+			t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
+				forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+					s, dir := newStore(t, tb)
+					fillIndexStore(t, s)
+					toOlder[schema](t, s)
+					var doc Document
+					view(t, s, func(tx *Tx) (err error) {
+						doc, err = tx.Document(content.RefEntry, entryID)
+						return err
+					})
+					wantTables, seq := upgradedTablesOf(t, s)
+					want := readIndexState(t, s, ops...)
+					corrupt := corruptObjects(t, s)
+					if err := s.Close(); err != nil {
+						t.Fatalf("Close() = %v", err)
+					}
+
+					// Its writer sets the schema 4 in one commit, and writes nothing else.
+					s = reopenLog(t, dir, *tb.log)
+					checkOnlySchema(t, s, wantTables, seq)
+					checkIndexState(t, s, want, ops...)
+					view(t, s, func(tx *Tx) error {
+						wantErr := "object " + doc.Hash + ": the data has the hash " + sum(corrupt(doc.Data))
+						if _, err := tx.Document(content.RefEntry, entryID); err == nil || err.Error() != wantErr {
+							t.Errorf("Document() of a damaged object = %v, want %q", err, wantErr)
+						}
+						return nil
+					})
+					acceptsAccounts(t, s)
+					secondOpen(t, s, dir, *tb.log, false)
 				})
 			})
 		}
