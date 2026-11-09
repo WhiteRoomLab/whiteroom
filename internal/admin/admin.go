@@ -31,6 +31,8 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 	// ErrorLog gets the errors that requests run into; nil discards them.
 	ErrorLog *log.Logger
+	// Now is the clock of the limits of login attempts; nil is time.Now.
+	Now func() time.Time
 }
 
 type Server struct {
@@ -41,6 +43,7 @@ type Server struct {
 	log      *log.Logger
 	mux      *http.ServeMux
 	deadline time.Duration
+	attempts *attempts
 	handler  http.Handler // the check of cross-origin requests, then the routes
 }
 
@@ -66,6 +69,11 @@ func New(c Config) (*Server, error) {
 	if s.log == nil {
 		s.log = log.New(io.Discard, "", 0)
 	}
+	now := c.Now
+	if now == nil {
+		now = time.Now
+	}
+	s.attempts = newAttempts(now, attemptsCapacity, warnEveryMinute(s.log, now))
 	s.handler = s.csrf(http.HandlerFunc(s.serveRoutes))
 	return s, nil
 }

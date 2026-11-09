@@ -49,6 +49,28 @@ func (b *syncBuffer) Reset() {
 	b.b.Reset()
 }
 
+// fakeClock is a clock that moves only when a test says so.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{t: time.Date(2026, time.November, 9, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
 type reply struct {
 	OK bool `json:"ok"`
 }
@@ -66,6 +88,7 @@ func testConfig(origin string, proxies ...netip.Prefix) Config {
 type testServer struct {
 	*Server
 	logs    *syncBuffer
+	clock   *fakeClock
 	reached atomic.Int32 // the requests that POST and DELETE /api/test have taken
 	left    atomic.Int64 // the time left of the context of GET /api/deadline, in nanoseconds
 }
@@ -76,13 +99,14 @@ type testServer struct {
 // GET /api/abort, /api/halfway and /api/panic-after-* (which panic after they write something).
 func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 	t.Helper()
-	ts := &testServer{logs: new(syncBuffer)}
+	ts := &testServer{logs: new(syncBuffer), clock: newFakeClock()}
 	var prefixes []netip.Prefix
 	for _, p := range proxies {
 		prefixes = append(prefixes, netip.MustParsePrefix(p))
 	}
 	c := testConfig(origin, prefixes...)
 	c.ErrorLog = log.New(ts.logs, "", 0)
+	c.Now = ts.clock.now
 	s, err := New(c)
 	if err != nil {
 		t.Fatal(err)
