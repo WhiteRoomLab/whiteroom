@@ -14,7 +14,7 @@
 - systemdユニットを同梱し、Linuxの標準ディレクトリ体系に合わせて配置する。
 - 内蔵HTTP/HTTPSサーバーを標準とし、必要に応じてNginx/Apache/Caddy等の背後でも動作させる。公開用の内蔵サーバー（9.5）は、いまはHTTPだけ（HTTPSは9.3）。
 - **公開用と管理用を別プロセス・別Unixユーザー**で起動できるようにする。
-- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（`whiteroom` のサブコマンドにすることは決定済み。9.1。名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。ほかは、まだ無い（`doctor` は、索引を作ってから作る。6.9）。`init` は、最初の管理者のアカウントも作る（案。7.3。#49）。
+- `whiteroom init`、`whiteroom build`、`whiteroom serve public`、`whiteroom serve admin`、`whiteroom backup`、`whiteroom doctor` などのコマンドを設ける（`whiteroom` のサブコマンドにすることは決定済み。9.1。名前は9.4）。`build` と `serve public` は作った（9.4・9.5）。`serve admin` の土台（管理用のサーバー。`internal/admin`）は作ったが（9.6）、コマンドは、まだ無い（#49）。ほかも、まだ無い（`doctor` は、索引を作ってから作る。6.9）。`init` は、最初の管理者のアカウントも作る（案。7.3。#49）。
 - Ubuntu、Debian、Fedora、NixOSなどへの配布形式を検討する。
 - 本番運用時にPHP、Node.js、外部DBサーバーなどを必須としない構成を目指す。
 
@@ -28,7 +28,7 @@
 
 ### 9.4 コマンド（案）
 
-コマンド `whiteroom` を、`cmd/whiteroom` に作った。サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）がある。9.2のほかのコマンドは、まだ無い。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。
+コマンド `whiteroom` を、`cmd/whiteroom` に作った。サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）がある。9.2のほかのコマンドは、まだ無い（`whiteroom serve admin` の土台の管理用のサーバーは9.6に作ったが、コマンドは #49）。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。
 
 **名前とサブコマンド**
 
@@ -40,7 +40,7 @@
 | `whiteroom build [フラグ] [SITE]` | ディレクトリ `SITE` のサイトをビルドして、公開する（下記） |
 | `whiteroom serve public [フラグ] [OUT]` | 出力先 `OUT` の公開中のリリースを、内蔵サーバー（9.5）で配信する（下記） |
 | `whiteroom help` | 使い方を示す（`whiteroom -h`・`-help`・`--help` も同じ） |
-| `whiteroom init`・`whiteroom doctor`・`whiteroom backup`・`whiteroom serve admin` | まだ無い（9.2。`init` で作るものは6.12の69と、最初の管理者の7.3、`doctor` は6.9） |
+| `whiteroom init`・`whiteroom doctor`・`whiteroom backup`・`whiteroom serve admin` | まだ無い（9.2。`init` で作るものは6.12の69と、最初の管理者の7.3、`doctor` は6.9、`serve admin` の土台は9.6で、コマンドは #49） |
 
 前のリリースに戻す操作は、Goの関数としてある（`build.Rollback`・`build.ListReleases`と、ビルドを止めて再開する `publish.Publisher` の `Rollback`・`Resume`。4.4）が、そのコマンドは、保存先からのビルドのコマンドとともに、まだ無い（#49。6.12の108）。ビルドの後にNginxに設定を読み込み直させるコマンド（6.12の113）も、まだ無い。
 
