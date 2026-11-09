@@ -1,7 +1,6 @@
 package account
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -187,10 +186,10 @@ func TestRowRoundTripPasswordHashes(t *testing.T) {
 	}
 }
 
+// TestDecodeRowRejects checks what the stored format refuses. The values that the rules for an account refuse are not
+// here: decodeRow reads them (TestDecodeRowAccepts).
 func TestDecodeRowRejects(t *testing.T) {
 	full := jsonOf(t, testRow())
-	// The escape of a character in a JSON string, written out here so that the source holds no such escape.
-	escape := string(rune(0x5c)) + "u0061"
 	otherID := "usr_01JB8T7H4MA2C5E8G1J4K7N3P8"
 	const (
 		zero      = `"0001-01-01T00:00:00Z"`
@@ -225,8 +224,14 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a member of the wrong type", data: edit(`"role":"editor"`, `"role":5`)},
 		{name: "a string that is an object", data: edit(`"login":"yamada"`, `"login":{}`)},
 		{name: "disabled of the wrong type", data: edit(`"login":`, `"disabled":"yes","login":`)},
+		{name: "a password of the wrong type", data: edit(password, `"password":5`)},
+		{name: "a token of the wrong type", data: edit(token, `"token":"x"`)},
 		{name: "a time of the wrong type", data: edit(createdAt, `"createdAt":5`)},
 		{name: "a time without a zone", data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.456789"`)},
+		{name: "a time that is no time", data: edit(createdAt, `"createdAt":"yesterday"`)},
+		{name: "a month that does not exist", data: edit(createdAt, `"createdAt":"2026-13-08T01:02:03Z"`)},
+		{name: "a time of the credentials that is no time", data: edit(changedAt, `"credentialsChangedAt":"yesterday"`)},
+		{name: "an expiry that is no time", data: edit(expiresAt, `"expiresAt":"tomorrow"`)},
 		{name: "invalid UTF-8", data: edit(`"login":"yamada"`, "\"login\":\"yama\xffda\"")},
 		{name: "a byte order mark", data: "\xef\xbb\xbf" + full},
 
@@ -236,6 +241,8 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "no email key", data: edit(`"email":"yamada@example.com",`, "")},
 		{name: "no role key", data: edit(`"role":"editor",`, "")},
 		{name: "no createdAt key", data: edit(createdAt+",", "")},
+		{name: "a null login", data: edit(`"login":"yamada"`, `"login":null`)},
+		{name: "a null creation time", data: edit(createdAt, `"createdAt":null`)},
 
 		{name: "an unknown key", data: edit(`"login":`, `"extra":1,"login":`)},
 		{name: "an unknown key at the end", data: full[:len(full)-1] + `,"extra":null}`},
@@ -244,31 +251,9 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a duplicate key", data: edit(`"login":"yamada"`, `"login":"yamada","login":"yamada"`)},
 		{name: "a duplicate key with another value", data: edit(`"login":"yamada"`, `"login":"yamada","login":"taro"`)},
 		{name: "a duplicate key in the token", data: edit(`"purpose":"reset"`, `"purpose":"reset","purpose":"reset"`)},
-		{name: "login and name in another order", data: edit(`"login":"yamada","name":"山田 太郎"`, `"name":"山田 太郎","login":"yamada"`)},
-		{name: "id after login", data: edit(`"id":"`+testUserID+`","login":"yamada"`, `"login":"yamada","id":"`+testUserID+`"`)},
-		{name: "password and credentialsChangedAt in another order", data: edit(password+`,`+changedAt, changedAt+`,`+password)},
-		{
-			name: "the keys of the token in another order",
-			data: edit(`{"purpose":"reset","hash":"`+testTokenHash(0xcd)+`"`, `{"hash":"`+testTokenHash(0xcd)+`","purpose":"reset"`),
-		},
-		{name: "a space after a colon", data: edit(`"id":`, `"id": `)},
-		{name: "a space after a comma", data: edit(`,"login"`, `, "login"`)},
-		{name: "a line break between members", data: edit(`,"login"`, ",\n\"login\"")},
-		{name: "a tab before a colon", data: edit(`"login":`, "\"login\"\t:")},
-		{name: "a leading space", data: " " + full},
-		{name: "a trailing line break", data: full + "\n"},
 		{name: "a trailing value", data: full + " {}"},
 		{name: "two rows", data: full + full},
-		{name: "an escaped character", data: edit(`"login":"yamada"`, `"login":"yamad`+escape+`"`)},
-
-		{name: "an empty author", data: edit(`"author":"`+testAuthorID+`",`, `"author":"",`)},
-		{name: "an empty creator", data: edit(`"createdBy":"`+testCreatorID+`",`, `"createdBy":"",`)},
-		{name: "an empty password", data: edit(password+`,`, `"password":"",`)},
-		{name: "disabled false", data: edit(`"login":`, `"disabled":false,"login":`)},
-		{name: "a zero time of the credentials", data: edit(changedAt, `"credentialsChangedAt":`+zero)},
-		{name: "an empty token", data: edit(token, `"token":{}`)},
-		{name: "a null token", data: edit(token, `"token":null`)},
-		{name: "a token of empty values", data: edit(token, `"token":{"purpose":"","hash":"","expiresAt":`+zero+`}`)},
+		{name: "a trailing comma", data: full[:len(full)-1] + ",}"},
 
 		{name: "the ID of another account", id: otherID, data: full},
 		{name: "a key that is not an ID", id: "usr_x", data: with(func(r *row) { r.ID = "usr_x" })},
@@ -276,24 +261,9 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a key in lower case", id: strings.ToLower(testUserID), data: with(func(r *row) { r.ID = strings.ToLower(testUserID) })},
 
 		{name: "no login", data: with(func(r *row) { r.Login = "" })},
-		{name: "a login in upper case", data: with(func(r *row) { r.Login = "Yamada" })},
-		{name: "a login of 65 bytes", data: with(func(r *row) { r.Login = strings.Repeat("a", 65) })},
-		{name: "a login starting with a dot", data: with(func(r *row) { r.Login = ".yamada" })},
-		{name: "a login with a surrounding space", data: with(func(r *row) { r.Login = "yamada " })},
-		{name: "a login with the kelvin sign", data: with(func(r *row) { r.Login = kelvin })},
 		{name: "no name", data: with(func(r *row) { r.Name = "" })},
-		{name: "a name of 257 characters", data: with(func(r *row) { r.Name = strings.Repeat("あ", 257) })},
-		{name: "a name in NFD", data: with(func(r *row) { r.Name = "Cafe" + acute })},
-		{name: "a name with a tab", data: with(func(r *row) { r.Name = "a\tb" })},
-		{name: "a name with a line break", data: with(func(r *row) { r.Name = "a\nb" })},
-		{name: "a name with a control character", data: with(func(r *row) { r.Name = "a" + ctrl + "b" })},
 		{name: "no email", data: with(func(r *row) { r.Email = "" })},
-		{name: "an email that is not one", data: with(func(r *row) { r.Email = "yamada" })},
-		{name: "an email with a domain in upper case", data: with(func(r *row) { r.Email = "yamada@Example.com" })},
-		{name: "an email with a surrounding space", data: with(func(r *row) { r.Email = " yamada@example.com" })},
 		{name: "no role", data: with(func(r *row) { r.Role = "" })},
-		{name: "an unknown role", data: with(func(r *row) { r.Role = "root" })},
-		{name: "a role in upper case", data: with(func(r *row) { r.Role = "Editor" })},
 		{name: "an author that is not an ID", data: with(func(r *row) { r.Author = "x" })},
 		{name: "an author of another kind", data: with(func(r *row) { r.Author = testUserID })},
 		{name: "an author with a surrounding space", data: with(func(r *row) { r.Author = " " + testAuthorID })},
@@ -301,13 +271,10 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a creator of another kind", data: with(func(r *row) { r.CreatedBy = testAuthorID })},
 		{name: "no creation time", data: with(func(r *row) { r.CreatedAt = time.Time{} })},
 		{name: "a creation time of the zero value", data: edit(createdAt, `"createdAt":`+zero)},
-
-		{name: "a time in another zone", data: edit(createdAt, `"createdAt":"2026-11-08T10:02:03.456789+09:00"`)},
-		{name: "a time with an offset of zero", data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.456789+00:00"`)},
-		{name: "a time with a zero at the end", data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.4567890Z"`)},
-		{name: "a time with a zero fraction", data: edit(changedAt, `"credentialsChangedAt":"2026-11-08T11:02:03.000Z"`)},
-		{name: "a time of the credentials in another zone", data: edit(changedAt, `"credentialsChangedAt":"2026-11-08T20:02:03.456789+09:00"`)},
-		{name: "an expiry in another zone", data: edit(expiresAt, `"expiresAt":"2026-11-09T20:02:03.456789+09:00"`)},
+		{name: "a creation time before the year 0 in UTC", data: edit(createdAt, `"createdAt":"0000-01-01T00:00:00+01:00"`)},
+		{name: "a creation time after the year 9999 in UTC", data: edit(createdAt, `"createdAt":"9999-12-31T23:59:59-01:00"`)},
+		{name: "a time of the credentials after the year 9999 in UTC", data: edit(changedAt, `"credentialsChangedAt":"9999-12-31T23:59:59-01:00"`)},
+		{name: "an expiry before the year 0 in UTC", data: edit(expiresAt, `"expiresAt":"0000-01-01T00:00:00+01:00"`)},
 
 		{name: "a token without a purpose", data: with(func(r *row) { r.Token.Purpose = "" })},
 		{name: "a token of an unknown purpose", data: with(func(r *row) { r.Token.Purpose = "login" })},
@@ -322,7 +289,6 @@ func TestDecodeRowRejects(t *testing.T) {
 		{name: "a token hash of 65 digits", data: with(func(r *row) { r.Token.Hash += "0" })},
 		{name: "a token hash with a digit that is not hexadecimal", data: with(func(r *row) { r.Token.Hash = "sha256:" + strings.Repeat("g", 64) })},
 		{name: "a token without an expiry", data: with(func(r *row) { r.Token.ExpiresAt = time.Time{} })},
-		{name: "a disabled account with a token", data: with(func(r *row) { r.Disabled = true })},
 
 		{name: "a password that is not a hash", data: with(func(r *row) { r.Password = "not a password hash" })},
 		{name: "a password that is only a prefix", data: with(func(r *row) { r.Password = "$pbkdf2-sha256$" })},
@@ -370,6 +336,134 @@ func TestDecodeRowRejects(t *testing.T) {
 	}
 }
 
+// TestDecodeRowAccepts checks the forms that decodeRow reads although encodeRow does not write them, and the values
+// that it reads although the rules for an account would refuse them: it checks the stored format, and nothing else.
+func TestDecodeRowAccepts(t *testing.T) {
+	full := jsonOf(t, testRow())
+	// The escape of a character in a JSON string, written out here so that the source holds no such escape.
+	backslash := string(rune(0x5c))
+	const (
+		zero      = `"0001-01-01T00:00:00Z"`
+		createdAt = `"createdAt":"2026-11-08T01:02:03.456789Z"`
+		changedAt = `"credentialsChangedAt":"2026-11-08T11:02:03.456789Z"`
+		expiresAt = `"expiresAt":"2026-11-09T11:02:03.456789Z"`
+	)
+	password := `"password":"` + testPasswordHash(0xab) + `"`
+	token := `"token":{"purpose":"reset","hash":"` + testTokenHash(0xcd) + `",` + expiresAt + `}`
+	unassigned := string(unassignedFrom(t, 0x1ade))
+
+	// edit returns the JSON of the full row with new in place of old.
+	edit := func(old, new string) string { return replaceOnce(t, full, old, new) }
+	// with returns the full row after f.
+	with := func(f func(*row)) row {
+		r := testRow()
+		f(&r)
+		return r
+	}
+	if strings.Count(full, `,"`) < 8 {
+		t.Fatalf("the full row has too few members to be indented: %s", full)
+	}
+	indented := "{\n  " + strings.ReplaceAll(full[1:len(full)-1], `,"`, ",\n  \"") + "\n}\n"
+	whole := time.Date(2026, 11, 8, 11, 2, 3, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		data string // the JSON to read, or the one form of want if ""
+		want row
+	}{
+		// The same row in other forms.
+		{name: "the row as encodeRow writes it", data: full, want: testRow()},
+		{name: "login and name in another order", data: edit(`"login":"yamada","name":"山田 太郎"`, `"name":"山田 太郎","login":"yamada"`), want: testRow()},
+		{name: "id after login", data: edit(`"id":"`+testUserID+`","login":"yamada"`, `"login":"yamada","id":"`+testUserID+`"`), want: testRow()},
+		{name: "password and credentialsChangedAt in another order", data: edit(password+`,`+changedAt, changedAt+`,`+password), want: testRow()},
+		{
+			name: "the keys of the token in another order",
+			data: edit(`{"purpose":"reset","hash":"`+testTokenHash(0xcd)+`"`, `{"hash":"`+testTokenHash(0xcd)+`","purpose":"reset"`),
+			want: testRow(),
+		},
+		{name: "a space after a colon", data: edit(`"id":`, `"id": `), want: testRow()},
+		{name: "a space after a comma", data: edit(`,"login"`, `, "login"`), want: testRow()},
+		{name: "a line break between members", data: edit(`,"login"`, ",\n\"login\""), want: testRow()},
+		{name: "a tab before a colon", data: edit(`"login":`, "\"login\"\t:"), want: testRow()},
+		{name: "a leading space", data: " " + full, want: testRow()},
+		{name: "a trailing line break", data: full + "\n", want: testRow()},
+		{name: "an indented row", data: indented, want: testRow()},
+		{name: "an escaped character", data: edit(`"login":"yamada"`, `"login":"yamad`+backslash+`u0061"`), want: testRow()},
+		{name: "an escaped key", data: edit(`"login":`, `"l`+backslash+`u006fgin":`), want: testRow()},
+		{name: "an escaped slash", data: edit(`"login":"yamada"`, `"login":"yamad`+backslash+`/"`), want: with(func(r *row) { r.Login = "yamad/" })},
+
+		// Values that are empty.
+		{name: "an empty author", data: edit(`"author":"`+testAuthorID+`",`, `"author":"",`), want: with(func(r *row) { r.Author = "" })},
+		{name: "a null author", data: edit(`"author":"`+testAuthorID+`",`, `"author":null,`), want: with(func(r *row) { r.Author = "" })},
+		{name: "an empty creator", data: edit(`"createdBy":"`+testCreatorID+`",`, `"createdBy":"",`), want: with(func(r *row) { r.CreatedBy = "" })},
+		{name: "an empty password", data: edit(password+`,`, `"password":"",`), want: with(func(r *row) { r.Password = "" })},
+		{name: "disabled false", data: edit(`"login":`, `"disabled":false,"login":`), want: testRow()},
+		{name: "a zero time of the credentials", data: edit(changedAt, `"credentialsChangedAt":`+zero), want: with(func(r *row) { r.CredentialsChangedAt = time.Time{} })},
+		{name: "an empty token", data: edit(token, `"token":{}`), want: with(func(r *row) { r.Token = tokenRow{} })},
+		{name: "a null token", data: edit(token, `"token":null`), want: with(func(r *row) { r.Token = tokenRow{} })},
+		{name: "a token of empty values", data: edit(token, `"token":{"purpose":"","hash":"","expiresAt":`+zero+`}`), want: with(func(r *row) { r.Token = tokenRow{} })},
+
+		// Times in other zones and with other fractions.
+		{name: "a time in another zone", data: edit(createdAt, `"createdAt":"2026-11-08T10:02:03.456789+09:00"`), want: testRow()},
+		{name: "a time with an offset of zero", data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.456789+00:00"`), want: testRow()},
+		{name: "a time with a zero at the end", data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.4567890Z"`), want: testRow()},
+		{name: "a time with a zero fraction", data: edit(changedAt, `"credentialsChangedAt":"2026-11-08T11:02:03.000Z"`), want: with(func(r *row) { r.CredentialsChangedAt = whole })},
+		{name: "a time without a fraction", data: edit(changedAt, `"credentialsChangedAt":"2026-11-08T11:02:03Z"`), want: with(func(r *row) { r.CredentialsChangedAt = whole })},
+		{
+			name: "a time with nine digits",
+			data: edit(createdAt, `"createdAt":"2026-11-08T01:02:03.456789123Z"`),
+			want: with(func(r *row) { r.CreatedAt = time.Date(2026, 11, 8, 1, 2, 3, 456789123, time.UTC) }),
+		},
+		{name: "a time of the credentials in another zone", data: edit(changedAt, `"credentialsChangedAt":"2026-11-08T20:02:03.456789+09:00"`), want: testRow()},
+		{name: "an expiry in another zone", data: edit(expiresAt, `"expiresAt":"2026-11-09T20:02:03.456789+09:00"`), want: testRow()},
+		{name: "the first moment of the year 0 in UTC", data: edit(createdAt, `"createdAt":"0000-01-01T00:00:00Z"`), want: with(func(r *row) { r.CreatedAt = time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC) })},
+		{
+			name: "the last moment of the year 9999 in UTC",
+			data: edit(createdAt, `"createdAt":"9999-12-31T23:59:59.999999999Z"`),
+			want: with(func(r *row) { r.CreatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC) }),
+		},
+
+		// Values that the rules for an account refuse when they are written.
+		{name: "a login in upper case", want: with(func(r *row) { r.Login = "Yamada" })},
+		{name: "a login of 65 bytes", want: with(func(r *row) { r.Login = strings.Repeat("a", 65) })},
+		{name: "a login starting with a dot", want: with(func(r *row) { r.Login = ".yamada" })},
+		{name: "a login with surrounding spaces", want: with(func(r *row) { r.Login = " yamada " })},
+		{name: "a login with the kelvin sign", want: with(func(r *row) { r.Login = kelvin })},
+		{name: "a name in NFD", want: with(func(r *row) { r.Name = "Cafe" + acute })},
+		{name: "a name with a tab", want: with(func(r *row) { r.Name = "a\tb" })},
+		{name: "a name with a line break", want: with(func(r *row) { r.Name = "a\nb" })},
+		{name: "a name with a control character", want: with(func(r *row) { r.Name = "a" + ctrl + "b" })},
+		{name: "a name of 257 characters", want: with(func(r *row) { r.Name = strings.Repeat("あ", 257) })},
+		{name: "a name of one space", want: with(func(r *row) { r.Name = " " })},
+		{name: "a name with a code point that is not assigned", want: with(func(r *row) { r.Name = "a" + unassigned + "b" })},
+		{name: "an email that is not one", want: with(func(r *row) { r.Email = "yamada" })},
+		{name: "an email with a domain in upper case", want: with(func(r *row) { r.Email = "yamada@Example.com" })},
+		{name: "an email with a surrounding space", want: with(func(r *row) { r.Email = " yamada@example.com" })},
+		{name: "an unknown role", want: with(func(r *row) { r.Role = "root" })},
+		{name: "a role in upper case", want: with(func(r *row) { r.Role = "Editor" })},
+		{name: "a disabled account with a token", want: with(func(r *row) { r.Disabled = true })},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.data
+			if data == "" {
+				data = jsonOf(t, tt.want)
+			}
+			got, err := decodeRow(testUserID, []byte(data))
+			if err != nil {
+				t.Fatalf("decodeRow(%s) = %v", data, err)
+			}
+			if got.account() != tt.want.account() {
+				t.Errorf("account() of the row that was read = %+v, want %+v", got.account(), tt.want.account())
+			}
+			// Nothing else differs either: encodeRow writes the same form for both.
+			if enc, want := jsonOf(t, got), jsonOf(t, tt.want); enc != want {
+				t.Errorf("encodeRow() of the row that was read =\n%s\nwant\n%s", enc, want)
+			}
+		})
+	}
+}
+
 // TestDecodeRowNoID checks the key of a row that is not an ID: the error names the key as it is.
 func TestDecodeRowNoID(t *testing.T) {
 	r := testRow()
@@ -384,21 +478,32 @@ func TestDecodeRowNoID(t *testing.T) {
 
 // TestDecodeRowErrorHidesData checks that nothing of a row is in the error that its reading returns.
 func TestDecodeRowErrorHidesData(t *testing.T) {
-	r := testRow()
-	r.Role = Role("root-" + testPasswordHash(0xab) + testTokenHash(0xcd))
-	for _, data := range []string{jsonOf(t, r), strings.Replace(jsonOf(t, testRow()), `"login":"yamada"`, `"login":"yamada","login":"yamada"`, 1)} {
-		_, err := decodeRow(testUserID, []byte(data))
-		if err == nil {
-			t.Fatal("decodeRow() accepted a row that is not valid")
-		}
-		for _, secret := range []string{"yamada", "root", "example.com", "pbkdf2", "sha256", testPasswordHash(0xab), testTokenHash(0xcd), "山田"} {
-			if strings.Contains(err.Error(), secret) {
-				t.Errorf("the error %q contains %q", err, secret)
+	full := jsonOf(t, testRow())
+	unreadablePassword, unreadableToken := testRow(), testRow()
+	unreadablePassword.Password += "x"
+	unreadableToken.Token.Hash += "0"
+	for name, data := range map[string]string{
+		"an unreadable password": jsonOf(t, unreadablePassword),
+		"an unreadable token":    jsonOf(t, unreadableToken),
+		"a duplicate key":        strings.Replace(full, `"login":"yamada"`, `"login":"yamada","login":"yamada"`, 1),
+		"an unknown key":         strings.Replace(full, `"login":`, `"extra":"yamada","login":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeRow(testUserID, []byte(data))
+			if err == nil {
+				t.Fatal("decodeRow() accepted a row that is not valid")
 			}
-		}
+			for _, secret := range []string{"yamada", "example.com", "pbkdf2", "sha256", testPasswordHash(0xab), testTokenHash(0xcd), "山田"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("the error %q contains %q", err, secret)
+				}
+			}
+		})
 	}
 }
 
+// FuzzDecodeRow checks that every error is the one text, and that a row that is read can be written again in the one
+// form, which reads as the same row.
 func FuzzDecodeRow(f *testing.F) {
 	seed := func(r row) string {
 		b, err := encodeRow(r)
@@ -412,6 +517,10 @@ func FuzzDecodeRow(f *testing.F) {
 		full, seed(testMinimalRow()), "", "null", "{}", full + "\n", " " + full,
 		strings.Replace(full, `"login":"yamada"`, `"login":"yamada","login":"yamada"`, 1),
 		strings.Replace(full, `"role":"editor"`, `"role":"root"`, 1),
+		strings.Replace(full, `"createdAt":"2026-11-08T01:02:03.456789Z"`, `"createdAt":"2026-11-08T10:02:03.456789+09:00"`, 1),
+		strings.Replace(full, `"createdAt":"2026-11-08T01:02:03.456789Z"`, `"createdAt":"9999-12-31T23:59:59-01:00"`, 1),
+		strings.Replace(full, `"login":`, `"disabled":true,"login":`, 1),
+		strings.Replace(full, `"author":"`+testAuthorID+`",`, `"author":"",`, 1),
 	} {
 		f.Add([]byte(s))
 	}
@@ -423,10 +532,16 @@ func FuzzDecodeRow(f *testing.F) {
 			}
 			return
 		}
-		// What decodeRow accepts is what encodeRow writes.
 		enc, err := encodeRow(r)
-		if err != nil || !bytes.Equal(enc, data) {
-			t.Fatalf("encodeRow() of the row read from %q = %q, %v", data, enc, err)
+		if err != nil {
+			t.Fatalf("encodeRow() of the row read from %q = %v", data, err)
+		}
+		again, err := decodeRow(testUserID, enc)
+		if err != nil {
+			t.Fatalf("decodeRow() of %q, which encodeRow wrote for the row read from %q = %v", enc, data, err)
+		}
+		if again.account() != r.account() || again.Password != r.Password || again.Token.Hash != r.Token.Hash {
+			t.Fatalf("the row read from %q and the row read from %q differ", data, enc)
 		}
 		if a := r.account(); a.ID != testUserID || a.Status == "" {
 			t.Fatalf("account() of the row read from %q = %+v", data, a)

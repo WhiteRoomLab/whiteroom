@@ -1,9 +1,11 @@
 package account
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
@@ -30,6 +32,24 @@ var (
 
 func badLogin(v string) string {
 	return "invalid login name " + strconv.Quote(v) + ": " + loginRule
+}
+
+// unassignedFrom returns the first code point at or after from that unicode.Version has not assigned. The tests choose
+// theirs at run time, so that they keep working after a later Unicode version assigns the ones that they would name.
+func unassignedFrom(tb testing.TB, from rune) rune {
+	tb.Helper()
+	for r := from; r <= unicode.MaxRune; r++ {
+		if unicode.Is(unicode.Cn, r) {
+			return r
+		}
+	}
+	tb.Fatalf("every code point from %U on is assigned", from)
+	return 0
+}
+
+// notAssigned is the problem with a name that has the code point r, which is not assigned.
+func notAssigned(r rune) string {
+	return fmt.Sprintf("contains %U, which is not assigned in Unicode %s", r, unicode.Version)
 }
 
 // problem is the path and the message of one of the problems of an Input or a Change.
@@ -147,6 +167,12 @@ func TestInputNormalize(t *testing.T) {
 
 func TestInputCheck(t *testing.T) {
 	long := func(n int, s string) string { return strings.Repeat(s, n) }
+	x := unassignedFrom(t, 0x1ade)
+	y := unassignedFrom(t, x+1)
+	unassigned := string(x)
+	// The names that have an unassigned code point, and the same names with an assigned one in its place.
+	atStart, afterMark, atEnd := unassigned+"Yamada", "q"+acute+unassigned+" Yamada", "Yamada"+unassigned
+	assigned := func(name string) string { return strings.ReplaceAll(name, unassigned, "x") }
 	tests := []struct {
 		name   string
 		modify func(*Input)
@@ -222,6 +248,65 @@ func TestInputCheck(t *testing.T) {
 			name:   "name with invalid UTF-8",
 			modify: func(in *Input) { in.Name = "a\xffb" },
 			want:   []problem{{"/name", "invalid UTF-8"}},
+		},
+		{
+			name:   "name with an unassigned code point at the start",
+			modify: func(in *Input) { in.Name = atStart },
+			want:   []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name:   "name with an unassigned code point after a mark",
+			modify: func(in *Input) { in.Name = afterMark },
+			want:   []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name:   "name with an unassigned code point at the end",
+			modify: func(in *Input) { in.Name = atEnd },
+			want:   []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name:   "name that is an unassigned code point",
+			modify: func(in *Input) { in.Name = unassigned },
+			want:   []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name:   "name with two unassigned code points names the first",
+			modify: func(in *Input) { in.Name = "a" + string(y) + "b" + unassigned },
+			want:   []problem{{"/name", notAssigned(y)}},
+		},
+		{
+			name:   "name with a noncharacter",
+			modify: func(in *Input) { in.Name = "a" + string(rune(0xfffe)) },
+			want:   []problem{{"/name", notAssigned(0xfffe)}},
+		},
+		{name: "name at the start with an assigned code point", modify: func(in *Input) { in.Name = assigned(atStart) }},
+		{name: "name after a mark with an assigned code point", modify: func(in *Input) { in.Name = assigned(afterMark) }},
+		{name: "name at the end with an assigned code point", modify: func(in *Input) { in.Name = assigned(atEnd) }},
+		{name: "name with a private use character", modify: func(in *Input) { in.Name = "a" + string(rune(0xe000)) }},
+		{
+			name:   "name with an unassigned code point and a tab: the line rule comes first",
+			modify: func(in *Input) { in.Name = "a\t" + unassigned },
+			want:   []problem{{"/name", "contains a line break or tab"}},
+		},
+		{
+			name:   "name with an unassigned code point and a control character: the control rule comes first",
+			modify: func(in *Input) { in.Name = "a" + ctrl + unassigned },
+			want:   []problem{{"/name", "contains control characters; normalize it first"}},
+		},
+		{
+			name:   "name with an unassigned code point in NFD: the NFC rule comes first",
+			modify: func(in *Input) { in.Name = "Cafe" + acute + unassigned },
+			want:   []problem{{"/name", "not in Unicode NFC; normalize it first"}},
+		},
+		{
+			name:   "name of 257 characters with an unassigned code point: the unassigned code point comes first",
+			modify: func(in *Input) { in.Name = long(256, "あ") + unassigned },
+			want:   []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name:   "name of 257 characters that are assigned",
+			modify: func(in *Input) { in.Name = long(256, "あ") + "x" },
+			want:   []problem{{"/name", "too long: 257 characters (max 256)"}},
 		},
 		{
 			name:   "email without @",
@@ -321,7 +406,7 @@ func TestInputCheckAfterNormalize(t *testing.T) {
 }
 
 // FuzzInputNormalize checks that normalizing twice is normalizing once, and that an Input with no problems is one that
-// normalize leaves as it is, which row.check relies on.
+// normalize leaves as it is.
 func FuzzInputNormalize(f *testing.F) {
 	f.Add("  Yamada ", "Cafe"+acute, " A@B.COM ", "admin", " "+testAuthorID+" ")
 	f.Add("yamada", "山田 太郎", "yamada@example.com", "editor", testAuthorID)
@@ -376,6 +461,8 @@ func TestChangeNormalize(t *testing.T) {
 
 func TestChangeCheck(t *testing.T) {
 	long := func(n int, s string) string { return strings.Repeat(s, n) }
+	x := unassignedFrom(t, 0x1ade)
+	unassigned := string(x)
 	tests := []struct {
 		name string
 		c    Change
@@ -397,6 +484,15 @@ func TestChangeCheck(t *testing.T) {
 		{name: "empty name", c: Change{Name: ptr("")}, want: []problem{{"/name", "missing name"}}},
 		{name: "name of 257 characters", c: Change{Name: ptr(long(257, "あ"))}, want: []problem{{"/name", "too long: 257 characters (max 256)"}}},
 		{name: "name with a tab", c: Change{Name: ptr("a\tb")}, want: []problem{{"/name", "contains a line break or tab"}}},
+		{
+			name: "name with an unassigned code point", c: Change{Name: ptr("Yamada" + unassigned)},
+			want: []problem{{"/name", notAssigned(x)}},
+		},
+		{
+			name: "name with an unassigned code point after a mark", c: Change{Name: ptr("q" + acute + unassigned + " Yamada")},
+			want: []problem{{"/name", notAssigned(x)}},
+		},
+		{name: "name with an assigned code point in its place", c: Change{Name: ptr("q" + acute + "x Yamada")}},
 		{name: "empty email", c: Change{Email: ptr("")}, want: []problem{{"/email", "missing email"}}},
 		{
 			name: "email without @", c: Change{Email: ptr("hanako")},
@@ -433,5 +529,52 @@ func TestChangeCheckSameMessages(t *testing.T) {
 	asChange := Change{Login: &bad.Login, Name: &bad.Name, Email: &bad.Email, Role: &bad.Role, Author: &bad.Author}.check()
 	if asInput.Error() != asChange.Error() || len(asInput) != 5 {
 		t.Errorf("Change.check() = %q, Input.check() = %q, want the same 5 problems", asChange.Error(), asInput.Error())
+	}
+	unassigned := Input{Login: "a", Name: "a" + string(unassignedFrom(t, 0x1ade)), Email: "a@example.com", Role: RoleViewer}
+	asInput, asChange = unassigned.check(), Change{Name: &unassigned.Name}.check()
+	if asInput.Error() != asChange.Error() || len(asInput) != 1 {
+		t.Errorf("Change.check() = %q, Input.check() = %q, want the same problem with the name", asChange.Error(), asInput.Error())
+	}
+}
+
+func TestFirstUnassigned(t *testing.T) {
+	x, y := unassignedFrom(t, 0x1ade), unassignedFrom(t, 0x20f1)
+	tests := []struct {
+		name string
+		s    string
+		want rune // 0 if there is none
+	}{
+		{"empty", "", 0},
+		{"ASCII", "Yamada Taro", 0},
+		{"Japanese", "山田 太郎", 0},
+		{"a letter and a mark", "e" + acute, 0},
+		{"a private use character", "a" + string(rune(0xe000)), 0},
+		{"the replacement character", replacement, 0},
+		{"invalid UTF-8, which is read as the replacement character", "a\xffb", 0},
+		{"only one", string(x), x},
+		{"at the start", string(x) + "a", x},
+		{"in the middle", "a" + string(x) + "b", x},
+		{"at the end", "a" + string(x), x},
+		{"the first of two", "a" + string(x) + "b" + string(y), x},
+		{"the first of two, the later one first in the code points", "a" + string(y) + "b" + string(x), y},
+		{"a noncharacter", "a" + string(rune(0xfffe)), 0xfffe},
+		{"the last code point", string(rune(unicode.MaxRune)), unicode.MaxRune},
+	}
+	for _, tt := range tests {
+		got, ok := firstUnassigned(tt.s)
+		if ok != (tt.want != 0) || got != tt.want {
+			t.Errorf("firstUnassigned(%s) = %U, %v, want %U", tt.name, got, ok, tt.want)
+		}
+	}
+
+	// It agrees with the category of every code point, but the surrogates, which a string cannot hold.
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.Is(unicode.Cs, r) {
+			continue
+		}
+		got, ok := firstUnassigned(string(r))
+		if ok != unicode.Is(unicode.Cn, r) || ok && got != r {
+			t.Fatalf("firstUnassigned(%U) = %U, %v", r, got, ok)
+		}
 	}
 }

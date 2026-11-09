@@ -126,9 +126,17 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 
 // Delete removes the account id, with every credential in it. Its login name and email address can be used again. It
 // changes no document, so that createdBy, uploadedBy and the versions' SavedBy stay. The last active administrator
-// cannot be deleted, also not by System. Only an administrator, or System, may.
+// cannot be deleted, also not by System. Only an administrator, or System, may. System can also remove a row that
+// cannot be read, however many there are, one at a time and without reading the others, which is how the repair of #49
+// clears them; the rule of the last active administrator cannot count such a row. Any other removal needs every row to
+// be readable, as every operation that writes does.
 func (m *Manager) Delete(ctx context.Context, by Actor, id string) error {
 	return m.st.Update(ctx, func(tx *store.Tx) error {
+		if by.system {
+			if removed, err := removeUnreadable(tx, id); removed || err != nil {
+				return err
+			}
+		}
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err

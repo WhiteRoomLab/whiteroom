@@ -50,12 +50,27 @@ func isLoginStart(c byte) bool {
 	return 'a' <= c && c <= 'z' || '0' <= c && c <= '9'
 }
 
+// firstUnassigned returns the first code point of s that unicode.Version has not assigned. A string in NFC without one
+// stays in NFC in every later Unicode version (the stabilized strings of UAX #15), so a name that is written and a
+// password that is hashed in its NFC form stay valid when the tables of internal/nfc are updated.
+func firstUnassigned(s string) (rune, bool) {
+	for _, r := range s {
+		if unicode.Is(unicode.Cn, r) {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
 func checkName(s string) error {
 	if s == "" {
 		return errors.New("missing name")
 	}
 	if err := content.CheckLine(s); err != nil {
 		return err
+	}
+	if r, ok := firstUnassigned(s); ok {
+		return fmt.Errorf("contains %U, which is not assigned in Unicode %s", r, unicode.Version)
 	}
 	if n := utf8.RuneCountInString(s); n > maxNameChars {
 		return fmt.Errorf("too long: %d characters (max %d)", n, maxNameChars)

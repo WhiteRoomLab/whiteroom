@@ -3,6 +3,8 @@ package account
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 )
 
 // Action is what a role may or may not do (7.3). Its value is its name in the table of 7.3.
@@ -222,9 +224,12 @@ func Allowed(p Principal, act Action, t Target) bool {
 }
 
 // refuse's text has the ID of the account, its role or, if it is not active, its status, and the phrase: nothing else of
-// the account or the target.
+// the account or the target. A role that is not one of Roles, which a row of another build can have, is quoted.
 func refuse(a Account, phrase string) error {
 	who := string(a.Role)
+	if !slices.Contains(Roles(), a.Role) {
+		who = strconv.Quote(who)
+	}
 	if a.Status != StatusActive {
 		who = string(a.Status)
 	}

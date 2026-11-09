@@ -189,14 +189,15 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 // VerifyPasswordFactor checks the password of the account with the login name, which it normalizes: one factor of a
 // login, which signs nobody in. #46 combines it with the other factors that the account has (none yet), the limits of
 // attempts and the session. Every failure is ErrBadCredentials. When no active account with a password has the login
-// name it still checks a hash that no password matches, so that the time does not tell the cases apart. It does not
-// limit attempts and does not hash again (#46).
+// name it still checks a hash that no password matches, so that the time does not tell the cases apart. A row that
+// cannot be read is no account, and does not stop the others from logging in. It does not limit attempts and does not
+// hash again (#46).
 func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password string) (Account, error) {
 	login = normalizeLogin(login)
 	var found row
 	var usable bool
 	err := m.st.View(ctx, func(tx *store.Tx) error {
-		rows, err := loadRows(tx)
+		rows, err := readableRows(tx)
 		if err != nil {
 			return err
 		}

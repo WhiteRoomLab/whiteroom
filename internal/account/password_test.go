@@ -25,6 +25,7 @@ const (
 
 	pwInvalidUTF8 = "invalid UTF-8"
 	pwControl     = "contains control characters"
+	pwUnassigned  = "contains a code point that is not assigned in Unicode " + unicode.Version
 	pwSame        = "the same as the login name, the email address or the name"
 	pwRepeated    = "one character repeated"
 	pwUnreadable  = "unreadable password hash"
@@ -40,7 +41,7 @@ const (
 
 // pwMessage matches every message that checkPassword can return, and nothing else.
 var pwMessage = regexp.MustCompile(`^(` + strings.Join([]string{
-	pwInvalidUTF8, pwControl, pwSame, pwRepeated,
+	pwInvalidUTF8, pwControl, regexp.QuoteMeta(pwUnassigned), pwSame, pwRepeated,
 	`too short: [0-9]+ characters \(min 15\)`, `too long: [0-9]+ characters \(max 256\)`,
 }, "|") + `)$`)
 
@@ -651,6 +652,7 @@ func TestPasswordRules(t *testing.T) {
 	letters := "abcdefghij"
 	hiragana := "あいうえおかきくけこ"
 	expands := string(rune(0x958)) // DEVANAGARI LETTER QA: NFC makes two characters of it
+	unassigned := string(unassignedFrom(t, 0x1ade))
 
 	tests := []struct {
 		name string
@@ -729,6 +731,26 @@ func TestPasswordRules(t *testing.T) {
 		{name: "a control character before a password that is too long", p: "\n" + pwFill(letters, 300), want: pwControl},
 		{name: "a control character in a password that is the login name", p: defaults.login + "\x00", want: pwControl, who: &who{login: defaults.login + "\x00"}},
 		{name: "15 tabs", p: strings.Repeat("\t", 15), want: pwControl},
+
+		{name: "an unassigned code point at the end", p: pwFill(letters, 14) + unassigned, want: pwUnassigned},
+		{name: "an unassigned code point at the start", p: unassigned + pwFill(letters, 14), want: pwUnassigned},
+		{name: "an unassigned code point in the middle", p: pwFill(letters, 7) + unassigned + pwFill(letters, 7), want: pwUnassigned},
+		{name: "an unassigned code point after a mark", p: pwFill(letters, 12) + "q" + acute + unassigned, want: pwUnassigned},
+		{name: "only an unassigned code point", p: unassigned, want: pwUnassigned},
+		{name: "an unassigned code point in a password that is too short", p: "a" + unassigned, want: pwUnassigned},
+		{name: "an unassigned code point in a password that is too long", p: pwFill(letters, 300) + unassigned, want: pwUnassigned},
+		{name: "15 times an unassigned code point", p: strings.Repeat(unassigned, 15), want: pwUnassigned},
+		{name: "a noncharacter", p: pwFill(letters, 14) + string(rune(0xfffe)), want: pwUnassigned},
+		{
+			name: "an unassigned code point in a password that is the login name", p: "ab" + unassigned, want: pwUnassigned,
+			who: &who{login: "ab" + unassigned},
+		},
+		{name: "an invalid byte before an unassigned code point", p: "\xff" + unassigned, want: pwInvalidUTF8},
+		{name: "an invalid byte after an unassigned code point", p: unassigned + "\xff", want: pwInvalidUTF8},
+		{name: "a control character before an unassigned code point", p: "\n" + unassigned, want: pwControl},
+		{name: "a control character after an unassigned code point", p: unassigned + "\n", want: pwControl},
+		{name: "an assigned code point at the end", p: pwFill(letters, 14) + "x"},
+		{name: "a private use character at the end", p: pwFill(letters, 14) + string(rune(0xe000))},
 
 		{name: "the login name", p: defaults.login, want: pwSame},
 		{name: "the login name in upper case", p: strings.ToUpper(defaults.login), want: pwSame},
@@ -809,6 +831,7 @@ func TestPasswordRules(t *testing.T) {
 // TestPasswordRulesOrder checks which problem comes first when a password has several.
 func TestPasswordRulesOrder(t *testing.T) {
 	login := strings.Repeat("a", 16)
+	unassigned := string(unassignedFrom(t, 0x1ade))
 	tests := []struct {
 		name string
 		p    string
@@ -816,7 +839,11 @@ func TestPasswordRulesOrder(t *testing.T) {
 	}{
 		{"invalid UTF-8 before control characters", "\xff\x00", pwInvalidUTF8},
 		{"invalid UTF-8 before the length", "\xff", pwInvalidUTF8},
+		{"invalid UTF-8 before an unassigned code point", "\xff" + unassigned, pwInvalidUTF8},
 		{"control characters before the length", "\x00", pwControl},
+		{"control characters before an unassigned code point", unassigned + "\x00", pwControl},
+		{"an unassigned code point before the length", "a" + unassigned, pwUnassigned},
+		{"an unassigned code point before the repeat", strings.Repeat(unassigned, 16), pwUnassigned},
 		{"the length before the login name", "aaaa", pwShort(4)},
 		{"the login name before the repeat", login, pwSame},
 		{"the repeat last", strings.Repeat("b", 16), pwRepeated},
@@ -846,6 +873,7 @@ func TestIsRepeated(t *testing.T) {
 // TestPasswordMessagesShowNothing checks that no part of a password is in the message about it.
 func TestPasswordMessagesShowNothing(t *testing.T) {
 	marker := "Qx9-zebra-" + string(rune(0x3042)) + string(rune(0x3044)) + "-Vk7"
+	unassigned := string(unassignedFrom(t, 0x1ade))
 	tests := []struct {
 		name  string
 		p     string
@@ -853,6 +881,7 @@ func TestPasswordMessagesShowNothing(t *testing.T) {
 	}{
 		{"invalid UTF-8", marker + "\xff", ""},
 		{"a control character", marker + "\t", ""},
+		{"an unassigned code point", marker + unassigned + marker, ""},
 		{"too short", marker[:8], ""},
 		{"too long", strings.Repeat(marker, 30), ""},
 		{"the login name", marker + marker, marker + marker},
@@ -868,6 +897,10 @@ func TestPasswordMessagesShowNothing(t *testing.T) {
 				if part := string(runes[i : i+4]); strings.Contains(err.Error(), part) {
 					t.Errorf("the message of %d bytes contains a part of the password (from character %d)", len(err.Error()), i)
 				}
+			}
+			// The message about an unassigned code point does not name it, in text or as U+XXXX.
+			if strings.Contains(err.Error(), unassigned) || strings.Contains(err.Error(), "U+") {
+				t.Errorf("the message of %d bytes shows a code point of the password", len(err.Error()))
 			}
 		})
 	}
@@ -901,7 +934,8 @@ func FuzzPasswordRules(f *testing.F) {
 	for _, s := range []string{
 		pwGood, "", "a", strings.Repeat("a", 15), strings.Repeat("a", 257), pwAcutes(15), pwAcutes(14), pwJamo(15),
 		"\xff", "a\tb", strings.Repeat("a", 14) + "\x00", "taro.yamada.2026", "Taro.Yamada.2026", strings.Repeat("e"+acute, 15),
-		strings.Repeat(string(rune(0x958)), 8),
+		strings.Repeat(string(rune(0x958)), 8), pwFill("abcdefghij", 14) + string(unassignedFrom(f, 0x1ade)),
+		pwFill("abcdefghij", 14) + string(rune(0xfffe)),
 	} {
 		f.Add(s, "taro.yamada.2026", "taro.yamada@example.com", "Ren"+eAcute+" Zellweger Jr")
 	}
@@ -916,6 +950,9 @@ func FuzzPasswordRules(f *testing.F) {
 		norm := nfc.Normalize(p)
 		if n := utf8.RuneCountInString(norm); !utf8.ValidString(p) || strings.IndexFunc(p, unicode.IsControl) >= 0 || n < 15 || n > 256 {
 			t.Fatalf("checkPassword() accepted a password of %d bytes that is invalid, has control characters or has %d characters", len(p), n)
+		}
+		if strings.IndexFunc(p, func(r rune) bool { return unicode.Is(unicode.Cn, r) }) >= 0 {
+			t.Fatalf("checkPassword() accepted a password of %d bytes that has a code point that is not assigned", len(p))
 		}
 		for _, other := range []string{login, email, name} {
 			if other != "" && strings.EqualFold(norm, nfc.Normalize(other)) {

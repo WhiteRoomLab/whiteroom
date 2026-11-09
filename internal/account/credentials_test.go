@@ -551,7 +551,7 @@ func TestRedeemToken(t *testing.T) {
 			t.Errorf("redeemToken(%s) = %v, want ErrInvalidToken", tt.name, err)
 		}
 	}
-	// A row that a store never holds, because decodeRow refuses a disabled row with a token.
+	// The token of a disabled account does not work, also in a row that has both: decodeRow reads such a row.
 	off := a
 	off.Disabled = true
 	if _, _, err := redeemToken([]row{off}, token, now); !errors.Is(err, ErrInvalidToken) {

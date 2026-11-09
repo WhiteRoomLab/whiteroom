@@ -94,9 +94,22 @@ func notFound(id string) error {
 	return missingError(fmt.Sprintf("accounts %q: not found", id))
 }
 
-// loadRows reads every row of the table accounts, in the order of the IDs. A row that does not decode fails it, since
-// the rules that look at all the accounts could not hold otherwise.
+// loadRows reads every row of the table accounts, in the order of the IDs, for the operations that write and for List. A
+// row that does not decode fails it, since the rules that look at all the accounts could not hold otherwise.
 func loadRows(tx *store.Tx) ([]row, error) {
+	return readRows(tx, false)
+}
+
+// readableRows reads the rows of the table accounts that decode, in the order of the IDs, and leaves out the others. It
+// is for the look-up of one login name, which needs no other row: a row that cannot be read is no account. It still
+// fails on an error of the store.
+func readableRows(tx *store.Tx) ([]row, error) {
+	return readRows(tx, true)
+}
+
+// readRows decodes every row of the table accounts, in the order of the IDs. A row that does not decode is left out if
+// skip is true, and else fails it.
+func readRows(tx *store.Tx, skip bool) ([]row, error) {
 	stored, err := tx.Accounts()
 	if err != nil {
 		return nil, err
@@ -104,12 +117,34 @@ func loadRows(tx *store.Tx) ([]row, error) {
 	rows := make([]row, 0, len(stored))
 	for _, s := range stored {
 		r, err := decodeRow(s.ID, s.Data)
-		if err != nil {
+		switch {
+		case err == nil:
+			rows = append(rows, r)
+		case !skip:
 			return nil, err
 		}
-		rows = append(rows, r)
 	}
 	return rows, nil
+}
+
+// removeUnreadable removes the row of the account id if it exists and does not decode, and reports whether it did. It
+// reads no other row: System clears the rows that cannot be read one at a time, however many there are. The rule of the
+// last active administrator does not apply, since it cannot count a row that cannot be read, before or after.
+func removeUnreadable(tx *store.Tx, id string) (bool, error) {
+	if content.CheckID(content.RefUser, id) != nil {
+		return false, nil
+	}
+	data, ok, err := tx.Account(id)
+	if err != nil || !ok {
+		return false, err
+	}
+	if _, err := decodeRow(id, data); err == nil {
+		return false, nil
+	}
+	if err := tx.DeleteAccount(id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func indexOfID(rows []row, id string) int {

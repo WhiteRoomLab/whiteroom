@@ -80,9 +80,13 @@ func permTableOwns(cell string, a Account, t Target) bool {
 	return false
 }
 
-// permRefusalText is the text of the refusal of an account: its ID, then its role or, if it is not active, its status.
+// permRefusalText is the text of the refusal of an account: its ID, then its role (quoted if it is not one of Roles) or, if
+// it is not active, its status.
 func permRefusalText(a Account, phrase string) string {
 	who := string(a.Role)
+	if !slices.Contains(Roles(), a.Role) {
+		who = strconv.Quote(who)
+	}
 	if a.Status != StatusActive {
 		who = string(a.Status)
 	}
@@ -321,14 +325,22 @@ func TestCheckInactive(t *testing.T) {
 
 func TestCheckUnknownRole(t *testing.T) {
 	targets := permissionTargets()
-	for _, role := range []Role{"", "root", "Admin", "ADMIN", "admin ", " admin", "viewer2", "admin,editor", "*"} {
+	roles := []Role{
+		"", "root", "Admin", "ADMIN", "admin ", " admin", "viewer2", "admin,editor", "*",
+		"a\nb", "a\r\nb", "a\x00b", `a"b`, Role("a" + lineSeparator + "b"),
+	}
+	for _, role := range roles {
 		a := permissionAccount(role, testAuthorID)
 		for _, row := range permissionTable {
 			for _, tg := range targets {
 				err := Check(Principal{Account: a}, row.action, tg)
-				want := a.ID + " (" + string(role) + "): not allowed to " + row.phrase
+				// A role that is not one of ours is quoted, so that it cannot put a line break or a quote into the text.
+				want := a.ID + " (" + strconv.Quote(string(role)) + "): not allowed to " + row.phrase
 				if err == nil || err.Error() != want || !errors.Is(err, ErrForbidden) {
 					t.Fatalf("Check(role %q, %s, %+v) = %v, want %q", role, row.action, tg, err, want)
+				}
+				if strings.ContainsAny(err.Error(), "\n\r\x00"+lineSeparator) {
+					t.Fatalf("Check(role %q, %s, %+v) = %q, which has a line break or a NUL", role, row.action, tg, err)
 				}
 			}
 		}
@@ -425,7 +437,9 @@ func TestCheckTexts(t *testing.T) {
 		{account(RoleAdmin, StatusPending), ViewAdmin, own, id + " (pending): not allowed to view the admin screen"},
 		{account(RoleAuthor, StatusPending), EditSelf, own, id + " (pending): not allowed to edit its own account"},
 		{account(RoleAuthor, StatusDisabled), EditEntry, other, id + " (disabled): not allowed to edit entries"},
-		{account("root", StatusActive), ViewAdmin, own, id + " (root): not allowed to view the admin screen"},
+		{account("root", StatusActive), ViewAdmin, own, id + ` ("root"): not allowed to view the admin screen`},
+		{account("a\nb", StatusActive), ViewAdmin, own, id + ` ("a\nb"): not allowed to view the admin screen`},
+		{account("a\nb", StatusDisabled), ViewAdmin, own, id + " (disabled): not allowed to view the admin screen"},
 	}
 	for _, tt := range tests {
 		err := Check(Principal{Account: tt.a}, tt.action, tt.target)
@@ -631,6 +645,9 @@ func FuzzPermissionCheck(f *testing.F) {
 		}
 		if err != nil {
 			who := role
+			if !slices.Contains(Roles(), Role(role)) {
+				who = strconv.Quote(role)
+			}
 			if status != string(StatusActive) {
 				who = status
 			}

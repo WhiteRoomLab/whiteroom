@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io/fs"
 	"maps"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -1009,50 +1011,754 @@ func TestRead(t *testing.T) {
 	})
 }
 
-func TestCorruptRow(t *testing.T) {
-	e := newMgr(t)
-	admin := e.first(t)
-	pending, token := e.invite(t, "yamada", RoleEditor)
-	bad := mgrRow(7, "bad", RoleViewer).ID
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(bad, []byte("not json")) })
+// mgrOperation is an operation of the Manager with the arguments that a test has chosen for it.
+type mgrOperation struct {
+	name string
+	do   func() error
+}
+
+// writes lists the operations that write, done by by, in a store that has the administrator admin and the pending
+// account pending, whose token is token. Run once in this order, they all work; tag keeps their login names apart.
+func (e *mgrEnv) writes(t *testing.T, by Actor, admin, pending Account, token, tag string) []mgrOperation {
+	ctx := t.Context()
+	return []mgrOperation{
+		{"CreateFirst", func() error {
+			_, err := e.m.CreateFirst(ctx, mgrInput("first-"+tag, RoleAdmin), mgrPassword("first-"+tag))
+			return err
+		}},
+		{"Invite", func() error {
+			_, _, err := e.m.Invite(ctx, by, mgrInput("other-"+tag, RoleViewer))
+			return err
+		}},
+		{"SetPassword", func() error {
+			_, err := e.m.SetPassword(ctx, token, mgrPassword("yamada"))
+			return err
+		}},
+		{"Reset", func() error { _, err := e.m.Reset(ctx, by, pending.ID); return err }},
+		{"ChangePassword", func() error {
+			return e.m.ChangePassword(ctx, admin.ID, mgrPassword("admin"), mgrPassword("changed-"+tag))
+		}},
+		{"Update", func() error {
+			_, err := e.m.Update(ctx, by, pending.ID, Change{Name: ptr("New name")})
+			return err
+		}},
+		{"Disable", func() error { _, err := e.m.Disable(ctx, by, pending.ID); return err }},
+		{"Enable", func() error { _, err := e.m.Enable(ctx, by, pending.ID); return err }},
+		{"Delete", func() error { return e.m.Delete(ctx, by, pending.ID) }},
+	}
+}
+
+// putRaw puts data as the row of the account id as it is, with the store's own API, which does not look at it.
+func (e *mgrEnv) putRaw(t *testing.T, id, data string) {
+	t.Helper()
+	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(id, []byte(data)) })
 	if err != nil {
+		t.Fatalf("PutAccount() = %v", err)
+	}
+}
+
+// TestCorruptRow checks a row that does not decode, in each way that it can fail the stored format: the look-ups of a
+// login name skip it, the operations that write and the reads of all accounts fail, and System can remove it.
+func TestCorruptRow(t *testing.T) {
+	bad := mgrRow(7, "bad", RoleViewer).ID
+	unreadablePassword := mgrRow(7, "broken", RoleViewer)
+	unreadablePassword.Password = "not a password hash"
+	// A key that a build with another kind of credential would write.
+	later := jsonOf(t, mgrRow(7, "later", RoleViewer))
+	later = later[:len(later)-1] + `,"passkeys":[]}`
+	kinds := []struct{ name, login, data string }{
+		{"data that is not JSON", "", "not json"},
+		{"a password that is not a hash", "broken", jsonOf(t, unreadablePassword)},
+		{"a key that this build does not know", "later", later},
+	}
+	for _, kind := range kinds {
+		for _, actor := range []string{"an administrator", "System"} {
+			t.Run(kind.name+" by "+actor, func(t *testing.T) {
+				e := newMgr(t)
+				ctx := t.Context()
+				admin := e.first(t)
+				pending, token := e.invite(t, "yamada", RoleEditor)
+				by := System
+				if actor == "an administrator" {
+					by = By(admin.ID)
+				}
+				e.putRaw(t, bad, kind.data)
+				before := e.mark(t)
+				want := invalidValue(bad)
+
+				// What looks for one login name skips the row, and what reads another account does not need it.
+				if got, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin")); err != nil || got != admin {
+					t.Errorf("VerifyPasswordFactor() of a good row = %+v, %v, want %+v", got, err, admin)
+				}
+				if got, err := e.m.Find(ctx, "yamada"); err != nil || got != pending {
+					t.Errorf("Find() of a good row = %+v, %v, want %+v", got, err, pending)
+				}
+				if got, err := e.m.Get(ctx, admin.ID); err != nil || got != admin {
+					t.Errorf("Get() of a good row = %+v, %v, want %+v", got, err, admin)
+				}
+				// The login name of the row is the login name of no account, and a hash is checked for it as for any.
+				if kind.login != "" {
+					verified := 0
+					e.m.hook = func(point string) {
+						if point == "verified" {
+							verified++
+						}
+					}
+					got, err := e.m.VerifyPasswordFactor(ctx, kind.login, mgrPassword(kind.login))
+					if !errors.Is(err, ErrBadCredentials) || got != (Account{}) || verified != 1 {
+						t.Errorf("VerifyPasswordFactor() of the login name of the row = %+v, %v after %d checks, want ErrBadCredentials after 1", got, err, verified)
+					}
+					e.m.hook = nil
+					mgrError(t, mgrErr(e.m.Find(ctx, kind.login)), fs.ErrNotExist, "no account has the login name "+strconv.Quote(kind.login))
+				}
+
+				// Everything that writes needs every row, and so do List and the reads of the row itself.
+				refused := e.writes(t, by, admin, pending, token, "before")
+				refused = append(refused,
+					mgrOperation{"List", func() error { _, err := e.m.List(ctx); return err }},
+					mgrOperation{"Get of the row", func() error { _, err := e.m.Get(ctx, bad); return err }},
+					mgrOperation{"Read of the row", func() error {
+						return e.s.View(ctx, func(tx *store.Tx) error { _, err := Read(tx, bad); return err })
+					}},
+					mgrOperation{"Delete of the row by an administrator", func() error { return e.m.Delete(ctx, By(admin.ID), bad) }},
+					mgrOperation{"Delete of an account that does not exist by System", func() error { return e.m.Delete(ctx, System, mgrMissingID) }},
+				)
+				for _, op := range refused {
+					if err := op.do(); err == nil || err.Error() != want {
+						t.Errorf("%s() = %v, want %q", op.name, err, want)
+					}
+				}
+				e.unchanged(t, before)
+
+				// System removes the row, and nothing else changes.
+				if err := e.m.Delete(ctx, System, bad); err != nil {
+					t.Fatalf("Delete() of the row by System = %v", err)
+				}
+				after := e.raw(t)
+				if _, ok := after[bad]; ok {
+					t.Error("the row is still in the store")
+				}
+				for id, data := range before.rows {
+					if id != bad && after[id] != data {
+						t.Errorf("the row of %s changed", id)
+					}
+				}
+				_, err := e.m.Get(ctx, bad)
+				mgrError(t, err, fs.ErrNotExist, mgrNotFound(bad))
+
+				// Then every operation works.
+				for _, op := range e.writes(t, by, admin, pending, token, "after") {
+					err := op.do()
+					switch {
+					case op.name == "CreateFirst":
+						if err == nil || err.Error() != "the store has accounts: CreateFirst needs a store without any" {
+							t.Errorf("CreateFirst() = %v, want the error that the store has accounts", err)
+						}
+					case err != nil:
+						t.Errorf("%s() = %v after the row was removed, want nil", op.name, err)
+					}
+				}
+				if list, err := e.m.List(ctx); err != nil || len(list) != 2 {
+					t.Errorf("List() after the row was removed = %d accounts, %v, want the administrator and the invited account", len(list), err)
+				}
+			})
+		}
+	}
+}
+
+// TestCorruptRowRepair checks how System clears rows that do not decode: each on its own, however many there are, and
+// without the rule of the last active administrator, which cannot count them. A row that can be read is removed only
+// when every row can be read.
+func TestCorruptRowRepair(t *testing.T) {
+	bad, other, third := mgrRow(7, "bad", RoleViewer).ID, mgrRow(8, "other", RoleViewer).ID, mgrRow(9, "third", RoleViewer).ID
+	t.Run("the only row", func(t *testing.T) {
+		e := newMgr(t)
+		e.putRaw(t, bad, "not json")
+		if err := e.m.Delete(t.Context(), System, bad); err != nil {
+			t.Fatalf("Delete() = %v", err)
+		}
+		if rows := e.raw(t); len(rows) != 0 {
+			t.Errorf("the store has %d rows after the removal, want none", len(rows))
+		}
+		e.first(t)
+	})
+	t.Run("a row that might have been the last administrator", func(t *testing.T) {
+		e := newMgr(t)
+		root := mgrRow(1, "root", RoleAdmin)
+		root.Password = "not a password hash"
+		editor := mgrRow(2, "editor", RoleEditor)
+		e.set(t, root, editor)
+		// The rule of the last active administrator cannot count a row that cannot be read, before or after.
+		if err := e.m.Delete(t.Context(), System, root.ID); err != nil {
+			t.Fatalf("Delete() = %v", err)
+		}
+		if _, err := e.m.Get(t.Context(), editor.ID); err != nil {
+			t.Errorf("Get() of the other row = %v, want nil", err)
+		}
+	})
+	t.Run("a good administrator is still the last one", func(t *testing.T) {
+		e := newMgr(t)
+		admin := e.first(t)
+		e.putRaw(t, bad, "not json")
+		// The row that cannot be read is in the way first.
+		if err := e.m.Delete(t.Context(), System, admin.ID); err == nil || err.Error() != invalidValue(bad) {
+			t.Errorf("Delete() of the administrator = %v, want %q", err, invalidValue(bad))
+		}
+		if err := e.m.Delete(t.Context(), System, bad); err != nil {
+			t.Fatalf("Delete() = %v", err)
+		}
+		mgrError(t, e.m.Delete(t.Context(), System, admin.ID), ErrLastAdmin, mgrLastAdmin(admin.ID, "it cannot be deleted"))
+	})
+	t.Run("a row that can be read waits for the others", func(t *testing.T) {
+		e := newMgr(t)
+		ctx := t.Context()
+		admin := e.first(t)
+		editor := e.add(t, "editor", RoleEditor)
+		e.putRaw(t, bad, "not json")
+		before := e.mark(t)
+		for name, by := range map[string]Actor{"an administrator": By(admin.ID), "System": System} {
+			if err := e.m.Delete(ctx, by, editor.ID); err == nil || err.Error() != invalidValue(bad) {
+				t.Errorf("Delete() of an account that can be read by %s = %v, want %q", name, err, invalidValue(bad))
+			}
+		}
+		e.unchanged(t, before)
+		if err := e.m.Delete(ctx, System, bad); err != nil {
+			t.Fatalf("Delete() = %v", err)
+		}
+		if err := e.m.Delete(ctx, By(admin.ID), editor.ID); err != nil {
+			t.Errorf("Delete() of an account that can be read, once every row can be = %v, want nil", err)
+		}
+	})
+	t.Run("an ID that is not one", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		mgrError(t, e.m.Delete(t.Context(), System, "x"), fs.ErrNotExist, mgrNotFound("x"))
+		// The row that cannot be read is in the way first.
+		e.putRaw(t, bad, "not json")
+		if err := e.m.Delete(t.Context(), System, "x"); err == nil || err.Error() != invalidValue(bad) {
+			t.Errorf("Delete() = %v, want %q", err, invalidValue(bad))
+		}
+	})
+	t.Run("rows one after another", func(t *testing.T) {
+		// Two and three rows that cannot be read, removed in the order of the IDs and in other orders.
+		for _, order := range [][]string{{bad, other}, {other, bad}, {bad, other, third}, {other, third, bad}, {third, other, bad}} {
+			e := newMgr(t)
+			ctx := t.Context()
+			admin := e.first(t)
+			for _, id := range order {
+				e.putRaw(t, id, "not json")
+			}
+			remaining := slices.Clone(order)
+			for _, id := range order {
+				// The first of the rows that remain, in the order of the IDs, is the one that is in the way.
+				inTheWay := invalidValue(slices.Min(remaining))
+				if err := e.m.Delete(ctx, System, admin.ID); err == nil || err.Error() != inTheWay {
+					t.Errorf("Delete() of the administrator with %d rows that cannot be read = %v, want %q", len(remaining), err, inTheWay)
+				}
+				// Only System clears a row, and it leaves the other rows as they are.
+				if err := e.m.Delete(ctx, By(admin.ID), id); err == nil || err.Error() != inTheWay {
+					t.Errorf("Delete() of a row that cannot be read by an administrator = %v, want %q", err, inTheWay)
+				}
+				others := e.raw(t)
+				delete(others, id)
+				if err := e.m.Delete(ctx, System, id); err != nil {
+					t.Fatalf("Delete() of %s, one of %d rows that cannot be read = %v", id, len(remaining), err)
+				}
+				if got := e.raw(t); !maps.Equal(got, others) {
+					t.Errorf("the rows after the removal of %s are not the other rows as they were", id)
+				}
+				remaining = slices.DeleteFunc(remaining, func(r string) bool { return r == id })
+			}
+			// Then the store works again.
+			if list, err := e.m.List(ctx); err != nil || len(list) != 1 || list[0] != admin {
+				t.Errorf("List() = %+v, %v, want the administrator", list, err)
+			}
+			mgrError(t, e.m.Delete(ctx, System, admin.ID), ErrLastAdmin, mgrLastAdmin(admin.ID, "it cannot be deleted"))
+			e.invite(t, "yamada", RoleEditor)
+		}
+	})
+}
+
+// TestRemoveUnreadable checks the removal of the row of one account that does not decode, the first step of Delete by
+// System: it removes that row and no other, reads no other row, and leaves a row that can be read, or none, alone.
+func TestRemoveUnreadable(t *testing.T) {
+	good := mgrRow(1, "a", RoleEditor)
+	bad, other := mgrRow(2, "b", RoleViewer).ID, mgrRow(4, "d", RoleViewer).ID
+	tests := []struct {
+		name    string
+		id      string
+		removed bool
+	}{
+		{"a row that cannot be read", bad, true},
+		{"another row that cannot be read", other, true},
+		{"a row that can be read", good.ID, false},
+		{"a row that does not exist", mgrMissingID, false},
+		{"an ID that is not one", "x", false},
+		{"an empty ID", "", false},
+		{"an ID of another kind", testAuthorID, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newMgr(t)
+			e.set(t, good)
+			e.putRaw(t, bad, "not json")
+			e.putRaw(t, other, "not json")
+			want := e.raw(t)
+			var removed bool
+			err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+				var err error
+				removed, err = removeUnreadable(tx, tt.id)
+				return err
+			})
+			if err != nil || removed != tt.removed {
+				t.Errorf("removeUnreadable() = %v, %v, want %v, nil", removed, err, tt.removed)
+			}
+			if tt.removed {
+				delete(want, tt.id)
+			}
+			if got := e.raw(t); !maps.Equal(got, want) {
+				t.Errorf("the rows after removeUnreadable() are not the expected ones: %d rows, want %d", len(got), len(want))
+			}
+		})
+	}
+	t.Run("the errors of the store", func(t *testing.T) {
+		e := newMgr(t)
+		e.putRaw(t, bad, "not json")
+		var ended *store.Tx
+		if err := e.s.View(t.Context(), func(tx *store.Tx) error { ended = tx; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		const text = "the transaction has ended"
+		if removed, err := removeUnreadable(ended, bad); removed || err == nil || err.Error() != text {
+			t.Errorf("removeUnreadable() of a transaction that has ended = %v, %v, want false and the error %q", removed, err, text)
+		}
+		// A transaction that cannot write does not remove the row, and says so.
+		err := e.s.View(t.Context(), func(tx *store.Tx) error {
+			removed, err := removeUnreadable(tx, bad)
+			if removed || err == nil {
+				t.Errorf("removeUnreadable() in a read-only transaction = %v, %v, want false and an error", removed, err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.raw(t)[bad]; !ok {
+			t.Error("the row is gone")
+		}
+	})
+}
+
+func TestRowLoaders(t *testing.T) {
+	e := newMgr(t)
+	a, c := mgrRow(1, "a", RoleEditor), mgrRow(3, "c", RoleViewer)
+	e.set(t, a, c)
+	bad, other := mgrRow(2, "b", RoleViewer).ID, mgrRow(4, "d", RoleViewer).ID
+	loaders := []struct {
+		name string
+		load func(tx *store.Tx) ([]row, error)
+	}{{"loadRows", loadRows}, {"readableRows", readableRows}}
+	// check loads the rows by each loader in a View, and compares the logins that it returns, or the text of its error,
+	// "" for none, with the expected ones; wantText is by loader.
+	check := func(what string, tx *store.Tx, wantLogins []string, wantText map[string]string) {
+		t.Helper()
+		for _, l := range loaders {
+			rows, err := l.load(tx)
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.Login)
+			}
+			switch text := wantText[l.name]; {
+			case text != "" && (err == nil || err.Error() != text || rows != nil):
+				t.Errorf("%s: %s() = %v, %v, want the error %q and no rows", what, l.name, got, err, text)
+			case text == "" && (err != nil || !slices.Equal(got, wantLogins)):
+				t.Errorf("%s: %s() = %v, %v, want %v", what, l.name, got, err, wantLogins)
+			}
+		}
+	}
+	view := func(f func(tx *store.Tx)) {
+		t.Helper()
+		if err := e.s.View(t.Context(), func(tx *store.Tx) error { f(tx); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	view(func(tx *store.Tx) {
+		check("every row can be read", tx, []string{"a", "c"}, nil)
+	})
+	e.putRaw(t, bad, "not json")
+	view(func(tx *store.Tx) {
+		// readableRows leaves the row out; loadRows fails with it.
+		check("a row that cannot be read", tx, []string{"a", "c"}, map[string]string{"loadRows": invalidValue(bad)})
+	})
+	e.putRaw(t, other, "not json")
+	view(func(tx *store.Tx) {
+		check("two rows that cannot be read", tx, []string{"a", "c"}, map[string]string{"loadRows": invalidValue(bad)})
+	})
+
+	// The errors of the store are not those of a row, and skip nothing.
+	var ended *store.Tx
+	if err := e.s.View(t.Context(), func(tx *store.Tx) error { ended = tx; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	before := e.mark(t)
+	const text = "the transaction has ended"
+	check("a transaction that has ended", ended, nil, map[string]string{"loadRows": text, "readableRows": text})
+}
+
+// TestUnreadableRowDoesNotHideAnAccount checks that a row that cannot be read is not an account that has its login name:
+// the account that has the login name logs in and is found.
+func TestUnreadableRowDoesNotHideAnAccount(t *testing.T) {
+	e := newMgr(t)
 	ctx := t.Context()
-	want := invalidValue(bad)
-	other := Input{Login: "other", Name: "Other", Email: "other@example.com", Role: RoleViewer}
-	operations := []struct {
+	good := mgrActiveRow(t, 5, "twin", RoleEditor, mgrPassword("twin"))
+	twin := mgrRow(4, "twin", RoleViewer) // sorts before the good row
+	twin.Password = "not a password hash"
+	e.set(t, twin, good)
+	if got, err := e.m.Find(ctx, "twin"); err != nil || got != good.account() {
+		t.Errorf("Find() = %+v, %v, want %+v", got, err, good.account())
+	}
+	if got, err := e.m.VerifyPasswordFactor(ctx, "twin", mgrPassword("twin")); err != nil || got != good.account() {
+		t.Errorf("VerifyPasswordFactor() = %+v, %v, want %+v", got, err, good.account())
+	}
+}
+
+// TestRowFromOlderUnicode is the lock-out of the final review: a build with older Unicode tables wrote a name that is in
+// NFC for those and not for these, and a build that checked the name again when it read the row could not read the row,
+// or any other, until the row was removed with the store's own API. Now the row is read, and every operation works.
+func TestRowFromOlderUnicode(t *testing.T) {
+	// U+1ADD was not assigned in Unicode 16.0 and is a mark of class 220 since 17.0.
+	name := "q" + acute + string(rune(0x1add)) + " Yamada"
+	if nfc.IsNormalized(name) {
+		t.Skip("the name is in NFC with these tables")
+	}
+	e := newMgr(t)
+	ctx := t.Context()
+	admin := e.first(t)
+	old := mgrActiveRow(t, 9, "yamada", RoleEditor, mgrPassword("yamada"))
+	old.Name = name
+	e.set(t, old)
+	account := old.account()
+	storedName := func() string { return e.row(t, old.ID).Name }
+
+	if got, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin")); err != nil || got != admin {
+		t.Errorf("VerifyPasswordFactor() of the administrator = %+v, %v, want %+v", got, err, admin)
+	}
+	if got, err := e.m.VerifyPasswordFactor(ctx, "yamada", mgrPassword("yamada")); err != nil || got != account {
+		t.Errorf("VerifyPasswordFactor() of the account = %+v, %v, want %+v", got, err, account)
+	}
+	if got, err := e.m.Get(ctx, old.ID); err != nil || got != account || got.Name != name {
+		t.Errorf("Get() = %+v, %v, want %+v", got, err, account)
+	}
+	if got, err := e.m.Find(ctx, "yamada"); err != nil || got != account {
+		t.Errorf("Find() = %+v, %v, want %+v", got, err, account)
+	}
+	if list, err := e.m.List(ctx); err != nil || len(list) != 2 || !slices.Contains(list, account) || !slices.Contains(list, admin) {
+		t.Errorf("List() = %+v, %v, want the administrator and the account", list, err)
+	}
+
+	// The operations write the row back with the name as it is stored.
+	steps := []struct {
 		name string
 		do   func() error
 	}{
-		{"CreateFirst", func() error {
-			_, err := e.m.CreateFirst(ctx, mgrInput("second", RoleAdmin), mgrPassword("second"))
+		{"Update of another field by System", func() error {
+			_, err := e.m.Update(ctx, System, old.ID, Change{Email: ptr("yamada.new@example.com")})
 			return err
 		}},
-		{"Invite", func() error { _, _, err := e.m.Invite(ctx, System, other); return err }},
-		{"SetPassword", func() error { _, err := e.m.SetPassword(ctx, token, mgrPassword("yamada")); return err }},
-		{"Reset", func() error { _, err := e.m.Reset(ctx, System, pending.ID); return err }},
-		{"ChangePassword", func() error { return e.m.ChangePassword(ctx, admin.ID, mgrPassword("admin"), mgrPassword("changed")) }},
-		{"VerifyPasswordFactor", func() error { _, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin")); return err }},
-		{"Update", func() error { _, err := e.m.Update(ctx, System, pending.ID, Change{Name: ptr("New")}); return err }},
-		{"Disable", func() error { _, err := e.m.Disable(ctx, System, pending.ID); return err }},
-		{"Enable", func() error { _, err := e.m.Enable(ctx, System, pending.ID); return err }},
-		{"Delete", func() error { return e.m.Delete(ctx, System, pending.ID) }},
-		{"Get", func() error { _, err := e.m.Get(ctx, bad); return err }},
-		{"List", func() error { _, err := e.m.List(ctx); return err }},
-		{"Find", func() error { _, err := e.m.Find(ctx, "yamada"); return err }},
+		{"Update of another field by the account", func() error {
+			_, err := e.m.Update(ctx, By(old.ID), old.ID, Change{Email: ptr("yamada.newer@example.com")})
+			return err
+		}},
+		{"Disable", func() error { _, err := e.m.Disable(ctx, By(admin.ID), old.ID); return err }},
+		{"Enable", func() error { _, err := e.m.Enable(ctx, By(admin.ID), old.ID); return err }},
+		{"ChangePassword", func() error {
+			return e.m.ChangePassword(ctx, old.ID, mgrPassword("yamada"), mgrPassword("yamada the second"))
+		}},
+		{"Invite", func() error { _, _, err := e.m.Invite(ctx, By(admin.ID), mgrInput("other", RoleViewer)); return err }},
 	}
-	for _, op := range operations {
-		if err := op.do(); err == nil || err.Error() != want {
-			t.Errorf("%s() = %v, want %q", op.name, err, want)
+	for _, step := range steps {
+		if err := step.do(); err != nil {
+			t.Errorf("%s = %v, want nil", step.name, err)
+		}
+		if got := storedName(); got != name {
+			t.Errorf("after %s the stored name is %q, want it as it was", step.name, got)
 		}
 	}
-	e.unchanged(t, before)
-	// The reads of one account do not look at the others.
-	if got, err := e.m.Get(ctx, admin.ID); err != nil || got != admin {
-		t.Errorf("Get() of a good row = %+v, %v, want %+v", got, err, admin)
+	token, err := e.m.Reset(ctx, System, old.ID)
+	if err != nil {
+		t.Fatalf("Reset() = %v", err)
 	}
+	if a, err := e.m.SetPassword(ctx, token, mgrPassword("yamada the third")); err != nil || a.Name != name || a.Status != StatusActive {
+		t.Errorf("SetPassword() = %+v, %v, want the account, active, with the name as it was stored", a, err)
+	}
+	if got := storedName(); got != name {
+		t.Errorf("after Reset and SetPassword the stored name is %q, want it as it was", got)
+	}
+
+	// A name that is written is normalized with these tables, and checked.
+	if a, err := e.m.Update(ctx, System, old.ID, Change{Name: &name}); err != nil || a.Name != nfc.Normalize(name) {
+		t.Errorf("Update() of the name = %+v, %v, want the name in NFC for these tables", a, err)
+	}
+	if a, err := e.m.Update(ctx, System, old.ID, Change{Name: ptr("Yamada Taro")}); err != nil || a.Name != "Yamada Taro" {
+		t.Errorf("Update() of the name = %+v, %v, want the new name", a, err)
+	}
+	if err := e.m.Delete(ctx, System, old.ID); err != nil {
+		t.Errorf("Delete() = %v, want nil", err)
+	}
+}
+
+// TestRowWithUnassignedName checks a name with a code point that is not assigned, as a build without the rule for it
+// stored it: it is read, every operation works, and the name cannot be written again.
+func TestRowWithUnassignedName(t *testing.T) {
+	x := unassignedFrom(t, 0x1ade)
+	name := "q" + acute + string(x) + " Yamada"
+	e := newMgr(t)
+	ctx := t.Context()
+	e.first(t)
+	old := mgrActiveRow(t, 9, "yamada", RoleEditor, mgrPassword("yamada"))
+	old.Name = name
+	e.set(t, old)
+	if got, err := e.m.VerifyPasswordFactor(ctx, "yamada", mgrPassword("yamada")); err != nil || got != old.account() {
+		t.Errorf("VerifyPasswordFactor() = %+v, %v, want %+v", got, err, old.account())
+	}
+	if a, err := e.m.Update(ctx, By(old.ID), old.ID, Change{Email: ptr("yamada.new@example.com")}); err != nil || a.Name != name {
+		t.Errorf("Update() of another field = %+v, %v, want the name as it was stored", a, err)
+	}
+	if err := e.m.ChangePassword(ctx, old.ID, mgrPassword("yamada"), mgrPassword("yamada the second")); err != nil {
+		t.Errorf("ChangePassword() = %v, want nil", err)
+	}
+	// Writing the name again is writing a name.
+	before := e.mark(t)
+	_, err := e.m.Update(ctx, By(old.ID), old.ID, Change{Name: &name})
+	mgrProblems(t, err, problem{"/name", notAssigned(x)})
+	e.unchanged(t, before)
+}
+
+// TestUnassignedCodePoints checks that a code point that unicode.Version has not assigned is refused where a name or a
+// password is written, with the message of the rule, and that nothing is written.
+func TestUnassignedCodePoints(t *testing.T) {
+	x := unassignedFrom(t, 0x1ade)
+	name := "q" + acute + string(x) + " Yamada"
+	password := mgrPassword("yamada") + string(x)
+	badName, badPassword := problem{"/name", notAssigned(x)}, problem{"/password", pwUnassigned}
+	// hashed counts the passwords that were hashed: none is for a password that is refused.
+	count := func(e *mgrEnv) *int {
+		hashed := 0
+		e.m.hook = func(point string) {
+			if point == "hashed" {
+				hashed++
+			}
+		}
+		return &hashed
+	}
+
+	t.Run("CreateFirst", func(t *testing.T) {
+		withName := Input{Login: "admin", Name: name, Email: "admin@example.com", Role: RoleAdmin}
+		for _, tt := range []struct {
+			name     string
+			in       Input
+			password string
+			want     []problem
+		}{
+			{"a name", withName, mgrPassword("admin"), []problem{badName}},
+			{"a password", mgrInput("admin", RoleAdmin), password, []problem{badPassword}},
+			{"a name and a password", withName, password, []problem{badName, badPassword}},
+		} {
+			e := newMgr(t)
+			_, err := e.m.CreateFirst(t.Context(), tt.in, tt.password)
+			mgrProblems(t, err, tt.want...)
+			if rows := e.raw(t); len(rows) != 0 {
+				t.Errorf("CreateFirst() with %s left %d rows", tt.name, len(rows))
+			}
+		}
+	})
+	t.Run("Invite", func(t *testing.T) {
+		e := newMgr(t)
+		admin := e.first(t)
+		before := e.mark(t)
+		in := mgrInput("yamada", RoleEditor)
+		in.Name = name
+		for _, by := range []Actor{By(admin.ID), System} {
+			a, token, err := e.m.Invite(t.Context(), by, in)
+			mgrProblems(t, err, badName)
+			if a != (Account{}) || token != "" {
+				t.Errorf("Invite() returned %+v and a token of %d characters with an error", a, len(token))
+			}
+		}
+		e.unchanged(t, before)
+	})
+	t.Run("Update", func(t *testing.T) {
+		e := newMgr(t)
+		admin := e.first(t)
+		yamada := e.add(t, "yamada", RoleEditor)
+		before := e.mark(t)
+		for _, by := range []Actor{By(admin.ID), System, By(yamada.ID)} {
+			a, err := e.m.Update(t.Context(), by, yamada.ID, Change{Name: &name, Email: ptr("new@example.com")})
+			mgrProblems(t, err, badName)
+			if a != (Account{}) {
+				t.Errorf("Update() returned %+v with an error", a)
+			}
+		}
+		e.unchanged(t, before)
+		// The same name with an assigned code point is fine.
+		fine := strings.ReplaceAll(name, string(x), "x")
+		if a, err := e.m.Update(t.Context(), By(yamada.ID), yamada.ID, Change{Name: &fine}); err != nil || a.Name != fine {
+			t.Errorf("Update() with an assigned code point = %+v, %v, want the new name", a, err)
+		}
+	})
+	t.Run("SetPassword", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		_, token := e.invite(t, "yamada", RoleEditor)
+		hashed := count(e)
+		before := e.mark(t)
+		a, err := e.m.SetPassword(t.Context(), token, password)
+		mgrProblems(t, err, badPassword)
+		if a != (Account{}) || *hashed != 0 {
+			t.Errorf("SetPassword() returned %+v and hashed %d passwords with an error, want none", a, *hashed)
+		}
+		// The token is as it was.
+		e.unchanged(t, before)
+		if a, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil || a.Status != StatusActive {
+			t.Errorf("SetPassword() with a password that passes = %+v, %v, want an active account", a, err)
+		}
+	})
+	t.Run("ChangePassword", func(t *testing.T) {
+		e := newMgr(t)
+		e.first(t)
+		yamada := e.add(t, "yamada", RoleEditor)
+		hashed := count(e)
+		before := e.mark(t)
+		mgrProblems(t, e.m.ChangePassword(t.Context(), yamada.ID, mgrPassword("yamada"), password), badPassword)
+		if *hashed != 0 {
+			t.Errorf("%d passwords were hashed for a password that is refused, want none", *hashed)
+		}
+		e.unchanged(t, before)
+		if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada")); err != nil {
+			t.Errorf("VerifyPasswordFactor() with the old password = %v, want nil", err)
+		}
+	})
+	t.Run("a password that is verified", func(t *testing.T) {
+		// Only writing a password is subject to the rule: a typed password is checked against its hash as it is.
+		e := newMgr(t)
+		e.first(t)
+		yamada := e.add(t, "yamada", RoleEditor)
+		r := e.row(t, yamada.ID)
+		r.Password = mgrHashed(t, password)
+		e.set(t, r)
+		if got, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", password); err != nil || got != r.account() {
+			t.Errorf("VerifyPasswordFactor() with a password that has an unassigned code point = %+v, %v, want %+v", got, err, r.account())
+		}
+		if ok, _, err := matchHash(r.Password, password, pwLow); !ok || err != nil {
+			t.Errorf("matchHash() = %v, %v, want true, nil", ok, err)
+		}
+	})
+}
+
+// TestRowsOfAnotherBuild checks that the rules that read a row work with a row that has values that the rules for
+// writing refuse, and that is in another form: a role that is not one of ours, a token of a disabled account, and
+// times in another zone.
+func TestRowsOfAnotherBuild(t *testing.T) {
+	ctx := t.Context()
+	e := newMgr(t)
+	admin := e.first(t)
+
+	t.Run("a role that is not known fails closed", func(t *testing.T) {
+		moderator := mgrActiveRow(t, 5, "moderator", "moderator", mgrPassword("moderator"))
+		e.set(t, moderator)
+		account := moderator.account()
+		if got, err := e.m.VerifyPasswordFactor(ctx, "moderator", mgrPassword("moderator")); err != nil || got != account {
+			t.Errorf("VerifyPasswordFactor() = %+v, %v, want %+v", got, err, account)
+		}
+		before := e.mark(t)
+		_, _, err := e.m.Invite(ctx, By(moderator.ID), mgrInput("other", RoleViewer))
+		mgrError(t, err, ErrForbidden, mgrNotAllowed(account, "manage accounts"))
+		_, err = e.m.Update(ctx, By(moderator.ID), moderator.ID, Change{Name: ptr("Moderator")})
+		mgrError(t, err, ErrForbidden, mgrNotAllowed(account, "edit its own account"))
+		e.unchanged(t, before)
+		// It does not count as an administrator: the administrator is still the last one.
+		mgrError(t, e.m.Delete(ctx, System, admin.ID), ErrLastAdmin, mgrLastAdmin(admin.ID, "it cannot be deleted"))
+		// Another field changes, and the role stays as it is read.
+		if a, err := e.m.Update(ctx, By(admin.ID), moderator.ID, Change{Name: ptr("Moderator")}); err != nil || a.Name != "Moderator" || a.Role != "moderator" {
+			t.Errorf("Update() of another field = %+v, %v, want the new name and the role as it was", a, err)
+		}
+		// An administrator gives it a role that is known.
+		if a, err := e.m.Update(ctx, By(admin.ID), moderator.ID, Change{Role: ptr(RoleEditor)}); err != nil || a.Role != RoleEditor {
+			t.Errorf("Update() of the role = %+v, %v, want an editor", a, err)
+		}
+		if err := e.m.Delete(ctx, System, moderator.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("an unknown role is no administrator", func(t *testing.T) {
+		only := newMgr(t)
+		root := mgrActiveRow(t, 5, "root", "root", mgrPassword("root"))
+		only.set(t, root)
+		if n := activeAdmins(only.rows(t)); n != 0 {
+			t.Errorf("activeAdmins() = %d, want 0", n)
+		}
+		if err := only.m.Delete(ctx, System, root.ID); err != nil {
+			t.Errorf("Delete() = %v, want nil: the rule of the last active administrator is not about this account", err)
+		}
+	})
+	t.Run("the token of a disabled account", func(t *testing.T) {
+		token, hash, err := newToken(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sleeper := mgrRow(6, "sleeper", RoleEditor)
+		sleeper.Password, sleeper.CredentialsChangedAt, sleeper.Disabled = "", time.Time{}, true
+		sleeper.Token = tokenRow{Purpose: PurposeInvitation, Hash: hash, ExpiresAt: mgrTime.Add(time.Hour)}
+		e.set(t, sleeper)
+		if got, err := e.m.Get(ctx, sleeper.ID); err != nil || got.Status != StatusDisabled || got.Token.Purpose != PurposeInvitation {
+			t.Errorf("Get() = %+v, %v, want a disabled account that has an invitation", got, err)
+		}
+		before := e.mark(t)
+		if _, err := e.m.SetPassword(ctx, token, mgrPassword("sleeper")); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("SetPassword() with the token of a disabled account = %v, want ErrInvalidToken", err)
+		}
+		_, err = e.m.Reset(ctx, System, sleeper.ID)
+		if want := sleeper.ID + " is disabled: enable it first"; err == nil || err.Error() != want {
+			t.Errorf("Reset() = %v, want %q", err, want)
+		}
+		e.unchanged(t, before)
+		// Enabling removes the token, as it does for any account.
+		if a, err := e.m.Enable(ctx, System, sleeper.ID); err != nil || a.Status != StatusPending || a.Token != (TokenInfo{}) {
+			t.Errorf("Enable() = %+v, %v, want a pending account without a token", a, err)
+		}
+		if err := e.m.Delete(ctx, System, sleeper.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("times in another zone and another form", func(t *testing.T) {
+		r := mgrActiveRow(t, 7, "zoned", RoleViewer, mgrPassword("zoned"))
+		canonical := jsonOf(t, r)
+		jst := time.FixedZone("JST", 9*3600)
+		utc, local := `"`+mgrTime.UTC().Format(time.RFC3339Nano)+`"`, `"`+mgrTime.In(jst).Format(time.RFC3339Nano)+`"`
+		written := " " + mgrReplaceTwice(t, canonical, utc, local) + "\n"
+		e.putRaw(t, r.ID, written)
+		if got, err := e.m.Get(ctx, r.ID); err != nil || got != r.account() {
+			t.Errorf("Get() = %+v, %v, want %+v, with its times in UTC", got, err, r.account())
+		}
+		// The operations write the one form.
+		a, err := e.m.Update(ctx, System, r.ID, Change{Name: ptr("Zoned")})
+		if err != nil || a.Name != "Zoned" {
+			t.Fatalf("Update() = %+v, %v, want the new name", a, err)
+		}
+		r.Name = "Zoned"
+		if got, want := e.raw(t)[r.ID], jsonOf(t, r); got != want {
+			t.Errorf("the stored row is not in the one form: %s", got)
+		}
+	})
+}
+
+// mgrReplaceTwice returns s with new in place of old, which must be in s exactly twice.
+func mgrReplaceTwice(t *testing.T, s, old, new string) string {
+	t.Helper()
+	if n := strings.Count(s, old); n != 2 {
+		t.Fatalf("%q is %d times in %q, want twice", old, n, s)
+	}
+	return strings.ReplaceAll(s, old, new)
 }
 
 func TestPersistence(t *testing.T) {
@@ -1350,14 +2056,22 @@ func TestPutAndRemoveKeepAnAdministrator(t *testing.T) {
 func TestPutRefusesAnUnreadableRow(t *testing.T) {
 	e := newMgr(t)
 	bad := mgrRow(1, "a", RoleViewer)
-	bad.Login = "UPPER CASE" // not a login name
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return put(tx, nil, bad, noAdminLost) })
-	want := "cannot write " + bad.ID + ": " + invalidValue(bad.ID)
-	if err == nil || err.Error() != want {
-		t.Errorf("put() = %v, want %q", err, want)
-	}
-	if rows := e.raw(t); len(rows) != 0 {
-		t.Errorf("put() left %d rows", len(rows))
+	for name, unreadable := range map[string]func(*row){
+		"a password that is not a hash": func(r *row) { r.Password = "not a password hash" },
+		"a creator that is not an ID":   func(r *row) { r.CreatedBy = "x" },
+		"a token without a hash":        func(r *row) { r.Token = tokenRow{Purpose: PurposeReset, ExpiresAt: mgrTime} },
+		"no role":                       func(r *row) { r.Role = "" },
+	} {
+		r := bad
+		unreadable(&r)
+		err := e.s.Update(t.Context(), func(tx *store.Tx) error { return put(tx, nil, r, noAdminLost) })
+		want := "cannot write " + r.ID + ": " + invalidValue(r.ID)
+		if err == nil || err.Error() != want {
+			t.Errorf("put() of a row with %s = %v, want %q", name, err, want)
+		}
+		if rows := e.raw(t); len(rows) != 0 {
+			t.Errorf("put() of a row with %s left %d rows", name, len(rows))
+		}
 	}
 	bad.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return putRow(tx, bad) }); err == nil {

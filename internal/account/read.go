@@ -24,7 +24,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Account, error) {
 	return a, nil
 }
 
-// List returns every account, in the order of the IDs.
+// List returns every account, in the order of the IDs. It fails while a row cannot be read.
 func (m *Manager) List(ctx context.Context) ([]Account, error) {
 	var accounts []Account
 	err := m.st.View(ctx, func(tx *store.Tx) error {
@@ -44,12 +44,12 @@ func (m *Manager) List(ctx context.Context) ([]Account, error) {
 }
 
 // Find returns the account whose login name is login, which it normalizes as an invitation does. If there is none, the
-// error wraps fs.ErrNotExist.
+// error wraps fs.ErrNotExist; a row that cannot be read is not found.
 func (m *Manager) Find(ctx context.Context, login string) (Account, error) {
 	login = normalizeLogin(login)
 	var a Account
 	err := m.st.View(ctx, func(tx *store.Tx) error {
-		rows, err := loadRows(tx)
+		rows, err := readableRows(tx)
 		if err != nil {
 			return err
 		}

@@ -29,14 +29,19 @@ const (
 var errUnreadableHash = errors.New("unreadable password hash")
 
 // checkPassword returns the first problem of the password p of an account with this login name, email address and name,
-// or nil. It counts the characters of the NFC form of p, keeps its spaces and has no rule of character classes. Its
-// messages show nothing of p.
+// or nil. It refuses, in this order: invalid UTF-8, control characters, a code point that unicode.Version has not
+// assigned, and then on the NFC form of p a length outside minPasswordChars and maxPasswordChars, the same text as the
+// login name, the email address or the name, and one character repeated. It keeps spaces and has no rule of character
+// classes. Its messages show nothing of p.
 func checkPassword(p, login, email, name string) error {
 	if !utf8.ValidString(p) {
 		return errors.New("invalid UTF-8")
 	}
 	if strings.ContainsFunc(p, unicode.IsControl) {
 		return errors.New("contains control characters")
+	}
+	if _, ok := firstUnassigned(p); ok {
+		return fmt.Errorf("contains a code point that is not assigned in Unicode %s", unicode.Version)
 	}
 	p = nfc.Normalize(p)
 	n := utf8.RuneCountInString(p)
