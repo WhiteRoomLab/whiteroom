@@ -46,7 +46,7 @@ func (m *Manager) List(ctx context.Context) ([]Account, error) {
 // Find returns the account whose login name is login, which it normalizes as an invitation does. If there is none, the
 // error wraps fs.ErrNotExist; a row that cannot be read is not found.
 func (m *Manager) Find(ctx context.Context, login string) (Account, error) {
-	login = normalizeLogin(login)
+	login = NormalizeLogin(login)
 	var a Account
 	err := m.st.View(ctx, func(tx *store.Tx) error {
 		rows, err := readableRows(tx)

@@ -32,18 +32,19 @@ import (
 //	                    the target, as role says
 //	operations (8)      operation ID -> the data that the caller of PutOperation keeps
 //	accounts (9)        user ID -> the row of a login account, which internal/account writes and the store does not read
+//	sessions (10)       session key -> the row of a session, which internal/account writes and the store does not read
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 4 (upgradeLog). The
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 5 (upgradeLog). The
 // schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
 // summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
-// the schema 3. The schema 4 adds the table accounts, which a store of an older schema has no rows of: Open sets the
-// schema 4 in a store of the schema 2 or 3 with no other write, and without reading a document, and builds the index of
-// one of the schema 1 as before.
-const logSchemaVersion = 4
+// the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a store of an older
+// schema has no rows of: Open sets the schema 5 in a store of the schema 2, 3 or 4 with no other write, and without
+// reading a document, and builds the index of one of the schema 1 as before.
+const logSchemaVersion = 5
 
 // indexSchema is the first schema that has the index tables.
 const indexSchema = 2
@@ -58,18 +59,19 @@ const (
 	tableReferences
 	tableOperations
 	tableAccounts
+	tableSessions
 )
 
 var tableNames = map[uint32]string{
 	tableMeta: "meta", tableDocuments: "documents", tableHistory: "history", tableRevisions: "revisions",
 	tableEntryRevisions: "entryRevisions", tableSummaries: "summaries", tableReferences: "references",
-	tableOperations: "operations", tableAccounts: "accounts",
+	tableOperations: "operations", tableAccounts: "accounts", tableSessions: "sessions",
 }
 
 // indexTableIDs are the tables of the engine that keep the index tables.
 var indexTableIDs = [numIndexTables]uint32{
 	indexSummaries: tableSummaries, indexReferences: tableReferences, indexOperations: tableOperations,
-	indexAccounts: tableAccounts,
+	indexAccounts: tableAccounts, indexSessions: tableSessions,
 }
 
 // The keys of meta.
@@ -146,8 +148,8 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
-// that a failure leaves the store as it was. A store of the schema 1 gets its index and the schema 4. One of the schema
-// 2 or 3 has the index of the schema 4 already: it gets only the schema 4, and no document, revision or object is read,
+// that a failure leaves the store as it was. A store of the schema 1 gets its index and the schema 5. One of the schema
+// 2 to 4 has the index of the schema 5 already: it gets only the schema 5, and no document, revision or object is read,
 // so a damaged one does not stop Open, and only the reads that use it fail. name is that of its logdb/ in errors.
 func upgradeLog(b *logBackend, name string) error {
 	var version uint64
@@ -166,7 +168,7 @@ func upgradeLog(b *logBackend, name string) error {
 		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
-		// The index of the schema 2 or 3 is that of the schema 4, and making it again would read every document.
+		// The index of the schema 2 to 4 is that of the schema 5, and making it again would read every document.
 		if version >= indexSchema {
 			return nil
 		}

@@ -1738,11 +1738,12 @@ func TestIndexUndecodable(t *testing.T) {
 }
 
 // TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
-// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 4 when its writer
-// opens it, once; that a store of the schema 2, which has the index without the scheduled items, or of the schema 3,
-// which has no accounts, gets the schema 4 in one commit that writes nothing else and reads no document; and that a
-// failure of any of them leaves the store as it was. A damaged object stops the upgrade of the schema 1, which makes the
-// index from the documents, and not that of the schema 2 or 3, which leaves the object to the reads that use it.
+// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 5 when its writer
+// opens it, once; that a store of the schema 2, which has the index without the scheduled items, of the schema 3, which
+// has no accounts, or of the schema 4, which has no sessions, gets the schema 5 in one commit that writes nothing else
+// and reads no document; and that a failure of any of them leaves the store as it was. A damaged object stops the
+// upgrade of the schema 1, which makes the index from the documents, and not that of the schema 2, 3 or 4, which leaves
+// the object to the reads that use it.
 func TestIndexUpgrade(t *testing.T) {
 	ops := []string{"op_A", "op_B"}
 	// clearTables deletes every row of the tables.
@@ -1765,28 +1766,35 @@ func TestIndexUpgrade(t *testing.T) {
 	toSchema1 := func(t *testing.T, s *Store) {
 		t.Helper()
 		rawUpdate(t, s, func(tx *logdb.Tx) error {
-			if err := clearTables(tx, tableSummaries, tableReferences, tableOperations, tableAccounts); err != nil {
+			err := clearTables(tx, tableSummaries, tableReferences, tableOperations, tableAccounts, tableSessions)
+			if err != nil {
 				return err
 			}
 			return errors.Join(tx.Delete(tableMeta, []byte(metaNumbers)),
 				tx.Put(tableMeta, []byte(metaSchema), []byte{1}))
 		})
 	}
-	// toSchemaWithIndex returns the function that makes the schema 2 or 3, which has no accounts. The rows of the index
-	// stay: in a store without entries that have scheduled items, which no program of the schema 2 could save, they are
-	// those of the schemas 3 and 4.
+	// toSchemaWithIndex returns the function that makes the schema 2, 3 or 4: none of them has sessions, and the schemas 2
+	// and 3 have no accounts, while the schema 4 has one. The rows of the index stay: in a store without entries that have
+	// scheduled items, which no program of the schema 2 could save, they are those of the schemas 3, 4 and 5.
 	toSchemaWithIndex := func(schema byte) func(t *testing.T, s *Store) {
 		return func(t *testing.T, s *Store) {
 			t.Helper()
 			rawUpdate(t, s, func(tx *logdb.Tx) error {
-				if err := clearTables(tx, tableAccounts); err != nil {
+				if err := clearTables(tx, tableAccounts, tableSessions); err != nil {
 					return err
+				}
+				if schema >= 4 {
+					if err := tx.Put(tableAccounts, []byte(userID), []byte("row")); err != nil {
+						return err
+					}
 				}
 				return tx.Put(tableMeta, []byte(metaSchema), []byte{schema})
 			})
 		}
 	}
-	toOlder := map[uint64]func(t *testing.T, s *Store){2: toSchemaWithIndex(2), 3: toSchemaWithIndex(3)}
+	toOlder := map[uint64]func(t *testing.T, s *Store){2: toSchemaWithIndex(2), 3: toSchemaWithIndex(3),
+		4: toSchemaWithIndex(4)}
 	schemaOf := func(t *testing.T, s *Store) uint64 {
 		t.Helper()
 		var version uint64
@@ -1813,13 +1821,13 @@ func TestIndexUpgrade(t *testing.T) {
 	tablesOf := func(t *testing.T, s *Store) map[uint32][][2]string {
 		t.Helper()
 		tables := map[uint32][][2]string{}
-		for table := tableMeta; table <= tableAccounts; table++ {
+		for table := tableMeta; table <= tableSessions; table++ {
 			tables[table] = rawTable(t, s, table)
 		}
 		return tables
 	}
-	// upgradedTablesOf returns the rows of the tables of s, a store of the schema 2 or 3, as its upgrade must leave them:
-	// as they are, but for the schema 4. It returns the last commit of s too.
+	// upgradedTablesOf returns the rows of the tables of s, a store of the schema 2, 3 or 4, as its upgrade must leave
+	// them: as they are, but for the schema 5. It returns the last commit of s too.
 	upgradedTablesOf := func(t *testing.T, s *Store) (map[uint32][][2]string, uint64) {
 		t.Helper()
 		tables := tablesOf(t, s)
@@ -1830,8 +1838,8 @@ func TestIndexUpgrade(t *testing.T) {
 		}
 		return tables, seqOf(t, s)
 	}
-	// checkOnlySchema checks that s, which has just upgraded a store of the schema 2 or 3 whose last commit was seq, has
-	// the schema 4 in one commit more, and the rows of the tables that upgradedTablesOf has returned.
+	// checkOnlySchema checks that s, which has just upgraded a store of the schema 2, 3 or 4 whose last commit was seq,
+	// has the schema 5 in one commit more, and the rows of the tables that upgradedTablesOf has returned.
 	checkOnlySchema := func(t *testing.T, s *Store, want map[uint32][][2]string, seq uint64) {
 		t.Helper()
 		if v := schemaOf(t, s); v != logSchemaVersion {
@@ -1841,7 +1849,7 @@ func TestIndexUpgrade(t *testing.T) {
 			t.Errorf("the last commit after Open() is %d, want %d: one commit more", after, seq+1)
 		}
 		if got := tablesOf(t, s); !reflect.DeepEqual(got, want) {
-			for table := tableMeta; table <= tableAccounts; table++ {
+			for table := tableMeta; table <= tableSessions; table++ {
 				if !reflect.DeepEqual(got[table], want[table]) {
 					t.Errorf("table %d after Open() = %q, want %q: only the schema changes", table, got[table], want[table])
 				}
@@ -1855,6 +1863,18 @@ func TestIndexUpgrade(t *testing.T) {
 		view(t, s, func(tx *Tx) error {
 			if data, ok, err := tx.Account(userID); err != nil || !ok || string(data) != "row" {
 				t.Errorf("Account() after the upgrade = %q, %v, %v; want the row that was put", data, ok, err)
+			}
+			return nil
+		})
+	}
+	// acceptsSessions checks that s, a store that has been upgraded, takes a row in sessions and reads it.
+	acceptsSessions := func(t *testing.T, s *Store) {
+		t.Helper()
+		key := sessionKeyOf("a")
+		update(t, s, func(tx *Tx) error { return tx.PutSession(key, []byte("session")) })
+		view(t, s, func(tx *Tx) error {
+			if data, ok, err := tx.Session(key); err != nil || !ok || string(data) != "session" {
+				t.Errorf("Session() after the upgrade = %q, %v, %v; want the row that was put", data, ok, err)
 			}
 			return nil
 		})
@@ -1914,12 +1934,18 @@ func TestIndexUpgrade(t *testing.T) {
 				if rev, err := tx.Revision(revisionID); err != nil || rev.Entry != entryID {
 					t.Errorf("Revision() of a store of the schema 1 = %+v, %v", rev, err)
 				}
-				// The accounts need no index.
+				// The accounts and the sessions need no index.
 				if rows, err := tx.Accounts(); err != nil || len(rows) != 0 {
 					t.Errorf("Accounts() of a store of the schema 1 = %s, %v; want none", show(rows), err)
 				}
 				if data, ok, err := tx.Account(userID); data != nil || ok || err != nil {
 					t.Errorf("Account() of a store of the schema 1 = %q, %v, %v; want none", data, ok, err)
+				}
+				if rows, err := tx.Sessions(); err != nil || len(rows) != 0 {
+					t.Errorf("Sessions() of a store of the schema 1 = %s, %v; want none", show(rows), err)
+				}
+				if data, ok, err := tx.Session(sessionKeyOf("a")); data != nil || ok || err != nil {
+					t.Errorf("Session() of a store of the schema 1 = %q, %v, %v; want none", data, ok, err)
 				}
 				for name, err := range map[string]error{
 					"Summary":   func() error { _, err := tx.Summary(content.RefEntry, entryID); return err }(),
@@ -1940,7 +1966,7 @@ func TestIndexUpgrade(t *testing.T) {
 				t.Fatalf("Close() of the reader = %v", err)
 			}
 
-			// Its writer builds the index in one commit, and sets the schema 4.
+			// Its writer builds the index in one commit, and sets the schema 5.
 			s = reopenLog(t, dir, *tb.log)
 			if v := schemaOf(t, s); v != logSchemaVersion {
 				t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
@@ -1956,13 +1982,15 @@ func TestIndexUpgrade(t *testing.T) {
 				t.Errorf("the operations after Open() = %q, want none: a store of the schema 1 has none", got.ops)
 			}
 			acceptsAccounts(t, s)
+			acceptsSessions(t, s)
 			secondOpen(t, s, dir, *tb.log, true)
 		})
 	})
 
-	// A store of the schema 2, which has the index without the scheduled items, and one of the schema 3, which has no
-	// accounts, get the schema 4 with the index that they have.
-	for _, schema := range []uint64{2, 3} {
+	// A store of the schema 2, which has the index without the scheduled items, one of the schema 3, which has no
+	// accounts, and one of the schema 4, which has no sessions, get the schema 5 with the index and the accounts that
+	// they have.
+	for _, schema := range []uint64{2, 3, 4} {
 		t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 			forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 				s, dir := newStore(t, tb)
@@ -1978,7 +2006,7 @@ func TestIndexUpgrade(t *testing.T) {
 					t.Fatalf("Close() = %v", err)
 				}
 
-				// A reader reads the index as it is, and the operations, and finds no accounts.
+				// A reader reads the index as it is, the operations and the accounts that the schema has, and finds no sessions.
 				r, err := openLogReader(dir, tb.options())
 				if err != nil {
 					t.Fatalf("openLogReader() of a store of the schema %d = %v", schema, err)
@@ -1992,21 +2020,23 @@ func TestIndexUpgrade(t *testing.T) {
 					t.Errorf("the index read in a store of the schema %d differs: %s; the last number %d, want %d; the "+
 						"operations %q, want %q", schema, problem, got.number, want.number, got.ops, want.ops)
 				}
-				view(t, r, func(tx *Tx) error {
-					if rows, err := tx.Accounts(); err != nil || len(rows) != 0 {
-						t.Errorf("Accounts() of a store of the schema %d = %s, %v; want none", schema, show(rows), err)
-					}
-					return nil
-				})
+				var wantAccounts []AccountRow
+				if schema >= 4 {
+					wantAccounts = []AccountRow{{userID, []byte("row")}}
+				}
+				checkAccounts(t, r, wantAccounts, otherUser)
+				checkSessions(t, r, nil, sessionKeyOf("a"))
 				if err := r.Close(); err != nil {
 					t.Fatalf("Close() of the reader = %v", err)
 				}
 
-				// Its writer sets the schema 4 in one commit, and writes nothing else.
+				// Its writer sets the schema 5 in one commit, and writes nothing else.
 				s = reopenLog(t, dir, *tb.log)
 				checkOnlySchema(t, s, wantTables, seq)
 				checkConsistent(t, s)
 				checkIntegrity(t, s)
+				checkAccounts(t, s, wantAccounts, otherUser)
+				checkSessions(t, s, nil, sessionKeyOf("a"))
 				got = readIndexState(t, s, ops...)
 				if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number ||
 					!maps.Equal(got.ops, want.ops) {
@@ -2014,6 +2044,7 @@ func TestIndexUpgrade(t *testing.T) {
 						"the operations %q, want %q", problem, got.number, want.number, got.ops, want.ops)
 				}
 				acceptsAccounts(t, s)
+				acceptsSessions(t, s)
 				secondOpen(t, s, dir, *tb.log, true)
 			})
 		})
@@ -2031,7 +2062,7 @@ func TestIndexUpgrade(t *testing.T) {
 				t.Fatalf("Close() = %v", err)
 			}
 			// The error says where the upgrade failed, and wraps the cause.
-			upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 4, so the store is unchanged: "
+			upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 5, so the store is unchanged: "
 			var first string
 			for i := range 2 {
 				c, err := open(dir, logOpts(o))
@@ -2072,7 +2103,7 @@ func TestIndexUpgrade(t *testing.T) {
 
 		// A write to the log that fails in the Update of the upgrade fails Open, and leaves the store as it was.
 		t.Run("write fault", func(t *testing.T) {
-			for _, schema := range []uint64{2, 3} {
+			for _, schema := range []uint64{2, 3, 4} {
 				t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 					o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
 					fsys := simfs.New("data")
@@ -2101,7 +2132,7 @@ func TestIndexUpgrade(t *testing.T) {
 					if u := errors.Unwrap(err); u != nil {
 						cause = u.Error()
 					}
-					upgrade := "data/logdb: cannot upgrade the table schema to 4, so the store is unchanged: "
+					upgrade := "data/logdb: cannot upgrade the table schema to 5, so the store is unchanged: "
 					if err == nil || !errors.Is(err, syscall.EIO) || err.Error() != upgrade+cause {
 						t.Fatalf("open() with a write that fails = %v, want the error of its upgrade, which wraps EIO", err)
 					}
@@ -2133,15 +2164,16 @@ func TestIndexUpgrade(t *testing.T) {
 					checkIntegrity(t, again)
 					checkIndexState(t, again, want, ops...)
 					acceptsAccounts(t, again)
+					acceptsSessions(t, again)
 				})
 			}
 		})
 	})
 
-	// A damaged object does not stop the upgrade of the schema 2 or 3, which reads no document: the reads that use the
-	// object fail as before.
+	// A damaged object does not stop the upgrade of the schema 2, 3 or 4, which reads no document: the reads that use
+	// the object fail as before.
 	t.Run("damaged object", func(t *testing.T) {
-		for _, schema := range []uint64{2, 3} {
+		for _, schema := range []uint64{2, 3, 4} {
 			t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 				forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 					s, dir := newStore(t, tb)
@@ -2159,7 +2191,7 @@ func TestIndexUpgrade(t *testing.T) {
 						t.Fatalf("Close() = %v", err)
 					}
 
-					// Its writer sets the schema 4 in one commit, and writes nothing else.
+					// Its writer sets the schema 5 in one commit, and writes nothing else.
 					s = reopenLog(t, dir, *tb.log)
 					checkOnlySchema(t, s, wantTables, seq)
 					checkIndexState(t, s, want, ops...)
@@ -2171,6 +2203,7 @@ func TestIndexUpgrade(t *testing.T) {
 						return nil
 					})
 					acceptsAccounts(t, s)
+					acceptsSessions(t, s)
 					secondOpen(t, s, dir, *tb.log, false)
 				})
 			})
@@ -2365,7 +2398,7 @@ func TestIndexErrors(t *testing.T) {
 
 // TestDiffVariants checks that the data that the generator of the differential tests means to be valid decode, so that
 // it exercises the index: the data of diffIndexData for each document of their kinds, and those of diffRevisionData;
-// and that its IDs and rows of accounts are valid or invalid as it means.
+// and that its IDs and rows of accounts, and its keys and rows of sessions, are valid or invalid as it means.
 func TestDiffVariants(t *testing.T) {
 	for _, k := range diffKinds {
 		for _, v := range diffIndexData[k.kind] {
@@ -2407,6 +2440,26 @@ func TestDiffVariants(t *testing.T) {
 	for _, v := range diffInvalidAccountData {
 		if n := len(v.data()); n >= 1 && n <= maxAccountBytes {
 			t.Errorf("the row %s has %d bytes, want none or more than %d", v.name, n, maxAccountBytes)
+		}
+	}
+	for _, key := range diffSessions {
+		if err := checkSessionKey(key); err != nil {
+			t.Errorf("the session %q is meant to be valid: %v", key, err)
+		}
+	}
+	for _, key := range diffInvalidSessions {
+		if checkSessionKey(key) == nil {
+			t.Errorf("the session %q is meant to be invalid", key)
+		}
+	}
+	for _, v := range diffSessionData {
+		if n := len(v.data()); n < 1 || n > maxSessionBytes {
+			t.Errorf("the session row %s has %d bytes, want 1 to %d", v.name, n, maxSessionBytes)
+		}
+	}
+	for _, v := range diffInvalidSessionData {
+		if n := len(v.data()); n >= 1 && n <= maxSessionBytes {
+			t.Errorf("the session row %s has %d bytes, want none or more than %d", v.name, n, maxSessionBytes)
 		}
 	}
 }

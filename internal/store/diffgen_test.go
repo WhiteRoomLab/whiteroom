@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -55,6 +56,10 @@ var (
 	diffAccounts        = []string{userID, otherUser, "usr_01JE0000000000000000000000"}
 	diffInvalidAccounts = []string{"usr_x", entryID, "", "usr_" + strings.ToLower(userID[4:])}
 
+	// diffSessions are the keys of the sessions; the invalid ones are empty, short, 63 digits, or in upper case.
+	diffSessions        = []string{strings.Repeat("0", 64), sessionKeyOf("a"), strings.Repeat("f", 64)}
+	diffInvalidSessions = []string{"", "x", diffSessions[1][:63], strings.ToUpper(diffSessions[1])}
+
 	// diffAccountData are the data that PutAccount takes, and diffInvalidAccountData those that it refuses.
 	diffAccountData = []diffRow{
 		{"1 byte", 12, func() []byte { return []byte("a") }},
@@ -66,10 +71,21 @@ var (
 		{"too large", 2, diffAccountLarge},
 	}
 
+	// diffSessionData are the data that PutSession takes, and diffInvalidSessionData those that it refuses.
+	diffSessionData = []diffRow{
+		{"1 byte", 12, func() []byte { return []byte("a") }},
+		{"300 bytes", 8, func() []byte { return bytes.Repeat([]byte("s"), 300) }},
+		{"largest", 2, func() []byte { return diffSessionLarge()[:maxSessionBytes] }},
+	}
+	diffInvalidSessionData = []diffRow{
+		{"empty", 3, func() []byte { return nil }},
+		{"too large", 2, diffSessionLarge},
+	}
+
 	diffValidDocs, diffInvalidDocs = diffDocs()
 )
 
-// diffRow is a variant of the data of a row of accounts, with its weight.
+// diffRow is a variant of the data of a row of accounts or sessions, with its weight.
 type diffRow struct {
 	name   string
 	weight int
@@ -79,6 +95,9 @@ type diffRow struct {
 // diffAccountLarge returns a buffer of maxAccountBytes+1 zero bytes, which every run shares: the data of the row that
 // is too large, and without its last byte that of the largest row.
 var diffAccountLarge = sync.OnceValue(func() []byte { return make([]byte, maxAccountBytes+1) })
+
+// diffSessionLarge is diffAccountLarge for a row of sessions: maxSessionBytes+1 zero bytes.
+var diffSessionLarge = sync.OnceValue(func() []byte { return make([]byte, maxSessionBytes+1) })
 
 // revisionIDs returns n IDs of revisions, which AddRevision can use once each.
 func revisionIDs(n int) []string {
@@ -498,6 +517,10 @@ var diffOps = []struct {
 	{2, (*diffGen).deleteAccount},
 	{3, (*diffGen).account},
 	{2, (*diffGen).accounts},
+	{3, (*diffGen).putSession},
+	{2, (*diffGen).deleteSession},
+	{2, (*diffGen).session},
+	{1, (*diffGen).sessions},
 }
 
 // update returns an Update of 1 to 6 operations, a quarter of which end with errAbort, or rarely a bulk one.
@@ -725,9 +748,64 @@ func accountResult(tx *Tx, id string) (any, error) {
 	return data, err
 }
 
+func (g *diffGen) sessionKey() string {
+	if g.chance(0.92) {
+		return pick(g, diffSessions)
+	}
+	return pick(g, diffInvalidSessions)
+}
+
+// putSession puts a pooled key and valid data, or else an invalid key or invalid data.
+func (g *diffGen) putSession() diffOp {
+	key, data := pick(g, diffSessions), g.rowData(diffSessionData)
+	if !g.chance(0.92) {
+		if g.chance(0.5) {
+			key = pick(g, diffInvalidSessions)
+		} else {
+			data = g.rowData(diffInvalidSessionData)
+		}
+	}
+	return diffOp{
+		desc: fmt.Sprintf("PutSession(%q, %d bytes)", key, len(data)),
+		run:  func(tx *Tx) (any, error) { return nil, tx.PutSession(key, data) },
+	}
+}
+
+func (g *diffGen) deleteSession() diffOp {
+	key := g.sessionKey()
+	return diffOp{
+		desc: fmt.Sprintf("DeleteSession(%q)", key),
+		run:  func(tx *Tx) (any, error) { return nil, tx.DeleteSession(key) },
+	}
+}
+
+func (g *diffGen) session() diffOp {
+	key := g.sessionKey()
+	return diffOp{
+		desc: fmt.Sprintf("Session(%q)", key),
+		run:  func(tx *Tx) (any, error) { return sessionResult(tx, key) },
+	}
+}
+
+func (g *diffGen) sessions() diffOp {
+	return diffOp{
+		desc: "Sessions()",
+		run:  func(tx *Tx) (any, error) { return tx.Sessions() },
+	}
+}
+
+// sessionResult returns the data of the session key, or nil if there are none.
+func sessionResult(tx *Tx, key string) (any, error) {
+	data, ok, err := tx.Session(key)
+	if !ok {
+		return nil, err
+	}
+	return data, err
+}
+
 // diffReads are the reads of a dump of a store: Documents and Summaries of each kind, Document, History, Summary and
 // Referrers of each document, Revision of each revision, Revisions of each entry, Object of each hash, Operation of
-// each operation, Account of each account, Accounts, and LastNumber.
+// each operation, Account of each account, Accounts, Session of each session, Sessions, and LastNumber.
 type diffReads struct {
 	kinds      []content.RefKind
 	docs       []diffDoc
@@ -736,6 +814,7 @@ type diffReads struct {
 	hashes     []string
 	operations []string
 	accounts   []string
+	sessions   []string
 }
 
 // reads returns the reads of everything that a store can have of what the operations of g name, and if invalid is
@@ -749,6 +828,7 @@ func (g *diffGen) reads(invalid bool) diffReads {
 		hashes:     append(slices.Clone(g.seen), diffMissingHash),
 		operations: diffOperations,
 		accounts:   diffAccounts,
+		sessions:   diffSessions,
 	}
 	kinds := diffKinds
 	if invalid {
@@ -763,6 +843,7 @@ func (g *diffGen) reads(invalid bool) diffReads {
 		r.hashes = append(r.hashes, diffInvalidHashes...)
 		r.operations = slices.Concat(diffOperations, diffInvalidOperations)
 		r.accounts = slices.Concat(diffAccounts, diffInvalidAccounts)
+		r.sessions = slices.Concat(diffSessions, diffInvalidSessions)
 		kinds = slices.Concat(diffKinds, diffUnsupported)
 	}
 	for _, k := range kinds {

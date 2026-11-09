@@ -1,7 +1,7 @@
 # 自作CMS 構想書
 
 > **ステータス:** 議論中（作業ドラフト）  
-> **最終更新:** 2026-11-09  
+> **最終更新:** 2026-11-10  
 > **目的:** これまでの議論で決まったことと、提案・未決定事項を分離して記録する。  
 > **注記:** この文書の「決定済み」は製品仕様の凍結を意味しない。以後の議論で変更可能。
 
@@ -46,7 +46,8 @@
 | 7. 管理画面・認証・監査（7.1・7.2） | [07-admin.md](07-admin.md) |
 | 7.3 ログインアカウントと権限（案） | [07.03-accounts.md](07.03-accounts.md) |
 | 8. お問い合わせ機能 | [08-contact.md](08-contact.md) |
-| 9. Linuxでの配布・実行 | [09-distribution.md](09-distribution.md) |
+| 9. Linuxでの配布・実行（9.1〜9.5） | [09-distribution.md](09-distribution.md) |
+| 9.6 管理用のサーバー（案） | [09.06-admin-server.md](09.06-admin-server.md) |
 | 10. セキュリティ設計の基本原則 | [10-security.md](10-security.md) |
 | 11. 初期実装の範囲（提案） | [11-initial-scope.md](11-initial-scope.md) |
 | 12. 次回以降の主要論点（未決定事項） | [12-next-topics.md](12-next-topics.md) |

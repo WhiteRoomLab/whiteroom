@@ -3,12 +3,15 @@ package account
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	mathrand "math/rand/v2"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -391,4 +394,551 @@ func mgrInvariants(s *store.Store) string {
 		logins[r.Login], emails[email] = true, true
 	}
 	return ""
+}
+
+// sessionRounds is how many times the races of logins are run: 25, and a few for -short.
+func sessionRounds() int {
+	if testing.Short() {
+		return 5
+	}
+	return 25
+}
+
+// TestConcurrentLoginAndDisable races logins with a Disable, at each gap of a login and free-running, and checks that no
+// session made before the Disable commits works after the account is enabled again.
+func TestConcurrentLoginAndDisable(t *testing.T) {
+	setup := func(t *testing.T) (*mgrEnv, Account) {
+		t.Helper()
+		e := newMgr(t)
+		e.first(t)
+		return e, e.add(t, "yamada", RoleEditor)
+	}
+	// finish enables the account again, which revives nothing: no row names it, and no token is accepted.
+	finish := func(t *testing.T, e *mgrEnv, a Account, tokens []string, what string) {
+		t.Helper()
+		if _, err := e.m.Enable(t.Context(), System, a.ID); err != nil {
+			t.Fatalf("%s: Enable() = %v", what, err)
+		}
+		if rows := e.sessionsOf(t, a.ID); len(rows) != 0 {
+			t.Errorf("%s: the account has %d session rows after Enable, want none", what, len(rows))
+		}
+		for _, token := range tokens {
+			if _, err := e.m.Authenticate(t.Context(), token); !errors.Is(err, ErrNoSession) {
+				t.Errorf("%s: Authenticate() of a session made before the Disable = %v, want ErrNoSession", what, err)
+			}
+		}
+	}
+
+	for _, point := range []string{"hashing", "verified", "session"} {
+		t.Run("a Disable at the gap "+point, func(t *testing.T) {
+			e, a := setup(t)
+			_, older := e.login(t, "yamada")
+			ran := false
+			e.m.hook = func(p string) {
+				if p == point && !ran {
+					ran = true
+					if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
+						t.Errorf("Disable() = %v", err)
+					}
+				}
+			}
+			p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+			if !ran || !errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
+				t.Errorf("Login() disabled at %q = %+v, %v, want ErrBadCredentials and no token (the Disable ran = %v)", point, p, err, ran)
+			}
+			finish(t, e, a, []string{older}, "a Disable at "+point)
+		})
+	}
+
+	t.Run("a Disable after the login", func(t *testing.T) {
+		e, a := setup(t)
+		_, older := e.login(t, "yamada")
+		_, token := e.login(t, "yamada")
+		if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		finish(t, e, a, []string{older, token}, "a Disable after the login")
+	})
+
+	t.Run("free-running", func(t *testing.T) {
+		e, a := setup(t)
+		const logins = 3
+		for round := range sessionRounds() {
+			_, older := e.login(t, "yamada")
+			tokens := make([]string, logins)
+			calls := []func() error{func() error { _, err := e.m.Disable(t.Context(), System, a.ID); return err }}
+			for i := range logins {
+				calls = append(calls, func() error {
+					var err error
+					_, tokens[i], err = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+					return err
+				})
+			}
+			made := []string{older}
+			for i, err := range mgrRunTogether(calls...) {
+				switch {
+				case i == 0 && err != nil:
+					t.Errorf("round %d: Disable() = %v", round, err)
+				case i > 0 && err == nil:
+					made = append(made, tokens[i-1])
+				case i > 0 && !errors.Is(err, ErrBadCredentials):
+					t.Errorf("round %d: Login() = %v, want nil or ErrBadCredentials", round, err)
+				}
+			}
+			finish(t, e, a, made, fmt.Sprintf("round %d", round))
+		}
+	})
+}
+
+// TestConcurrentLoginAndRoleChange races logins with a change of the role: a login that was made before the change has
+// the old role and does not work after it, and one that was made after has the new role and works.
+func TestConcurrentLoginAndRoleChange(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	a := e.add(t, "yamada", RoleEditor)
+	roles := []Role{RoleViewer, RoleAuthor, RoleEditor} // each differs from the one before it, and from editor
+	const logins = 4
+	worked := 0
+	for round := range sessionRounds() {
+		to := roles[round%len(roles)]
+		results := make([]Principal, logins)
+		tokens := make([]string, logins)
+		calls := []func() error{func() error { _, err := e.m.Update(t.Context(), System, a.ID, Change{Role: &to}); return err }}
+		for i := range logins {
+			calls = append(calls, func() error {
+				var err error
+				results[i], tokens[i], err = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+				return err
+			})
+		}
+		kept := 0
+		for i, err := range mgrRunTogether(calls...) {
+			switch {
+			case i == 0 && err != nil:
+				t.Fatalf("round %d: Update() = %v", round, err)
+			case i == 0:
+			case err != nil:
+				t.Errorf("round %d: Login() = %v, want nil: the password is right", round, err)
+			default:
+				// A login that read the account before the change is the old role, and its session must be gone.
+				want := results[i-1].Account.Role == to
+				_, authErr := e.m.Authenticate(t.Context(), tokens[i-1])
+				if has := e.hasSession(t, tokens[i-1]); has != want || (authErr == nil) != want {
+					t.Errorf("round %d: a login of the role %s after a change to %s has a row = %v and works = %v, want both %v",
+						round, results[i-1].Account.Role, to, has, authErr == nil, want)
+				}
+				if want {
+					kept++
+				}
+			}
+		}
+		if rows := e.sessionsOf(t, a.ID); len(rows) != kept {
+			t.Errorf("round %d: the account has %d session rows, want %d: those of the logins made after the change", round, len(rows), kept)
+		}
+		worked += kept
+	}
+	if worked == 0 {
+		t.Error("no login was made after a change of the role in any round: the test does not try both orders")
+	}
+}
+
+// TestConcurrentLoginAndChangePassword races logins with the old password and with the new one against ChangePassword: a
+// login that matched the old password and was written before the change is ended by it, and one that is written after
+// fails; only a login with the new password has a session after the change.
+func TestConcurrentLoginAndChangePassword(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	a := e.add(t, "yamada", RoleEditor)
+	current := mgrPassword("yamada")
+	const logins = 3
+	for round := range sessionRounds() {
+		next := fmt.Sprintf("the password of round %d", round)
+		type login struct {
+			password string
+			token    string
+		}
+		results := make([]login, 2*logins)
+		calls := []func() error{func() error { return e.m.ChangePassword(t.Context(), a.ID, current, next) }}
+		for i := range results {
+			results[i].password = current
+			if i >= logins {
+				results[i].password = next
+			}
+			calls = append(calls, func() error {
+				var err error
+				_, results[i].token, err = e.m.Login(t.Context(), "yamada", results[i].password, "")
+				return err
+			})
+		}
+		kept := 0
+		for i, err := range mgrRunTogether(calls...) {
+			switch {
+			case i == 0 && err != nil:
+				t.Fatalf("round %d: ChangePassword() = %v", round, err)
+			case i == 0:
+			case err != nil && !errors.Is(err, ErrBadCredentials):
+				t.Errorf("round %d: Login() = %v, want nil or ErrBadCredentials", round, err)
+			case err == nil:
+				r := results[i-1]
+				// The new password matches only after the change commits, so its session works; a session made with the old
+				// password was written before the change, and the change ended it.
+				want := r.password == next
+				_, authErr := e.m.Authenticate(t.Context(), r.token)
+				if has := e.hasSession(t, r.token); has != want || (authErr == nil) != want {
+					t.Errorf("round %d: a login with the password of the %s has a row = %v and works = %v, want both %v",
+						round, map[bool]string{true: "new", false: "old"}[want], has, authErr == nil, want)
+				}
+				if want {
+					kept++
+				}
+			}
+		}
+		if rows := e.sessionsOf(t, a.ID); len(rows) != kept {
+			t.Errorf("round %d: the account has %d session rows, want %d: those of the logins with the new password", round, len(rows), kept)
+		}
+		current = next
+	}
+}
+
+// TestConcurrentLoginAndChangeOwnPassword races two ChangeOwnPassword calls of the same session, logins with the old
+// password and logins with each new one: exactly one change wins and the other is ErrNoSession, and the only sessions
+// after it are the winner's new one and those of logins with the winner's password.
+func TestConcurrentLoginAndChangeOwnPassword(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	a := e.add(t, "yamada", RoleEditor)
+	current := mgrPassword("yamada")
+	_, token := e.login(t, "yamada")
+	const logins = 2
+	wins := [2]int{}
+	for round := range sessionRounds() {
+		nexts := [2]string{fmt.Sprintf("the first password of round %d", round), fmt.Sprintf("the second password of round %d", round)}
+		type result struct {
+			password, token string
+		}
+		fresh := [2]string{}
+		results := make([]result, 3*logins)
+		calls := make([]func() error, 0, 2+len(results))
+		for w := range nexts {
+			calls = append(calls, func() error {
+				var err error
+				_, fresh[w], err = e.m.ChangeOwnPassword(t.Context(), token, current, nexts[w])
+				return err
+			})
+		}
+		for i := range results {
+			results[i].password = []string{current, nexts[0], nexts[1]}[i/logins]
+			calls = append(calls, func() error {
+				var err error
+				_, results[i].token, err = e.m.Login(t.Context(), "yamada", results[i].password, "")
+				return err
+			})
+		}
+		errs := mgrRunTogether(calls...)
+		winner := -1
+		for w := range nexts {
+			switch {
+			case errs[w] == nil && winner < 0:
+				winner = w
+			case errs[w] == nil:
+				t.Fatalf("round %d: both calls of ChangeOwnPassword succeeded", round)
+			case !errors.Is(errs[w], ErrNoSession):
+				t.Errorf("round %d: ChangeOwnPassword() = %v, want nil or ErrNoSession", round, errs[w])
+			}
+		}
+		if winner < 0 {
+			t.Fatalf("round %d: neither call of ChangeOwnPassword succeeded: %v", round, errs[:2])
+		}
+		wins[winner]++
+		kept := 1 // the new session of the winner
+		sessLives(t, e, fresh[winner], fmt.Sprintf("of the winner in round %d", round))
+		sessGone(t, e, token, fmt.Sprintf("that asked in round %d", round))
+		for i, err := range errs[2:] {
+			r := results[i]
+			switch {
+			case err != nil && !errors.Is(err, ErrBadCredentials):
+				t.Errorf("round %d: Login() = %v, want nil or ErrBadCredentials", round, err)
+			case err == nil && r.password == nexts[1-winner]:
+				t.Errorf("round %d: a login with the password that lost succeeded", round)
+			case err == nil && r.password == current:
+				sessGone(t, e, r.token, fmt.Sprintf("of a login with the old password in round %d", round))
+			case err == nil:
+				sessLives(t, e, r.token, fmt.Sprintf("of a login with the new password in round %d", round))
+				kept++
+			}
+		}
+		if rows := e.sessionsOf(t, a.ID); len(rows) != kept {
+			t.Errorf("round %d: the account has %d session rows, want %d", round, len(rows), kept)
+		}
+		current, token = nexts[winner], fresh[winner]
+	}
+	t.Logf("the first call won %d rounds and the second %d", wins[0], wins[1])
+}
+
+// sessionInvariants reads the accounts and the sessions in one snapshot and returns what is wrong with them, or "": a
+// session row that does not decode, or that names an account that is missing, is not active or has other credentials than
+// the session was made with. The tests that use it never let a session expire, so every row must work.
+func sessionInvariants(s *store.Store) string {
+	msg := ""
+	err := s.View(context.Background(), func(tx *store.Tx) error {
+		stored, err := tx.Sessions()
+		if err != nil {
+			return err
+		}
+		for _, st := range stored {
+			sess, err := decodeSession(st.Key, st.Data)
+			if err != nil {
+				msg = "a session row does not decode"
+				return nil
+			}
+			r, ok, err := readAccount(tx, sess.Account)
+			switch {
+			case err != nil:
+				return err
+			case !ok:
+				msg = "a session row names an account that is missing or cannot be read"
+				return nil
+			case !sess.worksFor(r):
+				msg = "a session row names an account that is not active or has other credentials than the session was made with"
+				return nil
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "the sessions cannot be read: " + err.Error()
+	}
+	return msg
+}
+
+// TestConcurrentSessionRules runs logins, requests, logouts and every operation that ends sessions from several goroutines
+// on a few accounts, with a clock that moves on every reading so that the credentials of an account differ after each
+// change, while another goroutine reads the store: in every snapshot, each session row must work, which is to say that no
+// operation commits a change without ending the sessions that rely on what it changed.
+func TestConcurrentSessionRules(t *testing.T) {
+	workers, steps := 6, 60
+	if testing.Short() {
+		workers, steps = 3, 12
+	}
+	e := newMgr(t)
+	var ticks atomic.Int64
+	e.m.SetClock(func() time.Time { return mgrTime.Add(time.Duration(ticks.Add(1)) * time.Millisecond) })
+	ctx := t.Context()
+	logins := []string{"one", "two", "three", "four"}
+	everyone := append([]string{"admin", "boss"}, logins...)
+	type state struct {
+		op       sync.Mutex // held by an operation that changes the password for as long as it runs, so that they do not overlap
+		mu       sync.Mutex // guards password, and is held briefly
+		password string     // the password that the account has, if the test knows it
+		id       string
+	}
+	accounts := map[string]*state{
+		"admin": {password: mgrPassword("admin"), id: e.first(t).ID},
+		"boss":  {password: mgrPassword("boss"), id: e.add(t, "boss", RoleAdmin).ID},
+	}
+	for _, login := range logins {
+		accounts[login] = &state{password: mgrPassword(login), id: e.add(t, login, RoleEditor).ID}
+	}
+	current := func(st *state) string {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.password
+	}
+	set := func(st *state, password string) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		st.password = password
+	}
+
+	var mu sync.Mutex
+	var tokens []string
+	owner := make(map[string]string) // the login name of a token
+	remember := func(token, login string) {
+		mu.Lock()
+		defer mu.Unlock()
+		tokens = append(tokens, token)
+		owner[token] = login
+	}
+	pick := func(r *mathrand.Rand) (token, login string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(tokens) == 0 {
+			return "", ""
+		}
+		token = tokens[r.IntN(len(tokens))]
+		return token, owner[token]
+	}
+	// pickOf returns a token that a login of this account made, or "" if there is none.
+	pickOf := func(r *mathrand.Rand, login string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(tokens) == 0 {
+			return ""
+		}
+		start := r.IntN(len(tokens))
+		for i := range tokens {
+			if token := tokens[(start+i)%len(tokens)]; owner[token] == login {
+				return token
+			}
+		}
+		return ""
+	}
+	var changes atomic.Int64
+
+	done := make(chan struct{})
+	var checker sync.WaitGroup
+	checker.Add(1)
+	go func() {
+		defer checker.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(time.Millisecond):
+			}
+			if msg := sessionInvariants(e.s); msg != "" {
+				t.Error(msg)
+				return
+			}
+		}
+	}()
+
+	var successes sync.Map
+	var running sync.WaitGroup
+	for w := range workers {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			r := mathrand.New(mathrand.NewPCG(uint64(w), 11))
+			for range steps {
+				login := everyone[r.IntN(len(everyone))]
+				target := logins[r.IntN(len(logins))] // the accounts that are changed: the administrators are not
+				st := accounts[target]
+				kind := r.IntN(11)
+				var err error
+				switch kind {
+				case 0, 1:
+					previous, _ := pick(r)
+					var token string
+					_, token, err = e.m.Login(ctx, login, current(accounts[login]), previous)
+					if err == nil {
+						remember(token, login)
+					}
+				case 2:
+					token, _ := pick(r)
+					_, err = e.m.Authenticate(ctx, token)
+				case 3:
+					token, _ := pick(r)
+					err = e.m.Logout(ctx, token)
+				case 4:
+					_, err = e.m.Disable(ctx, System, st.id)
+				case 5:
+					_, err = e.m.Enable(ctx, System, st.id)
+				case 6:
+					role := Roles()[r.IntN(len(Roles()))]
+					_, err = e.m.Update(ctx, System, st.id, Change{Role: &role})
+				case 7:
+					st.op.Lock()
+					next := fmt.Sprintf("%s changes to number %d", target, changes.Add(1))
+					if err = e.m.ChangePassword(ctx, st.id, current(st), next); err == nil {
+						set(st, next)
+					}
+					st.op.Unlock()
+				case 8:
+					// A session that was made earlier, or one that a login makes now: either may have ended meanwhile.
+					token := pickOf(r, target)
+					st.op.Lock()
+					if r.IntN(2) == 0 {
+						if _, token, err = e.m.Login(ctx, target, current(st), ""); err == nil {
+							remember(token, target)
+						}
+					}
+					if err == nil {
+						next := fmt.Sprintf("%s changes itself to number %d", target, changes.Add(1))
+						var fresh string
+						if _, fresh, err = e.m.ChangeOwnPassword(ctx, token, current(st), next); err == nil {
+							set(st, next)
+							remember(fresh, target)
+						}
+					}
+					st.op.Unlock()
+				case 9:
+					st.op.Lock()
+					var token string
+					if token, err = e.m.Reset(ctx, System, st.id); err == nil {
+						set(st, "") // the account has none until the token is used
+						next := fmt.Sprintf("%s starts again with number %d", target, changes.Add(1))
+						if _, err = e.m.SetPassword(ctx, token, next); err == nil {
+							set(st, next)
+						}
+					}
+					st.op.Unlock()
+				case 10:
+					// An account that is made, logs in and is deleted while the others go on.
+					n := changes.Add(1)
+					in := mgrInput(fmt.Sprintf("temp-%d", n), RoleViewer)
+					var a Account
+					var token string
+					if a, token, err = e.m.Invite(ctx, System, in); err != nil {
+						break
+					}
+					if _, err = e.m.SetPassword(ctx, token, fmt.Sprintf("the password of temp number %d", n)); err != nil {
+						break
+					}
+					if _, token, err = e.m.Login(ctx, in.Login, fmt.Sprintf("the password of temp number %d", n), ""); err != nil {
+						break
+					}
+					if err = e.m.Delete(ctx, System, a.ID); err != nil {
+						break
+					}
+					if _, err = e.m.Authenticate(ctx, token); !errors.Is(err, ErrNoSession) {
+						t.Errorf("Authenticate() of a session of an account that was deleted = %v, want ErrNoSession", err)
+					}
+					err = nil
+				}
+				if err != nil && !sessionStressExpected(err) {
+					t.Errorf("operation %d failed with %v", kind, err)
+				}
+				if err == nil {
+					n, _ := successes.LoadOrStore(kind, new(atomic.Int64))
+					n.(*atomic.Int64).Add(1)
+				}
+			}
+		}()
+	}
+	running.Wait()
+	close(done)
+	checker.Wait()
+
+	total := int64(0)
+	by := make(map[int]int64)
+	successes.Range(func(k, v any) bool {
+		by[k.(int)] = v.(*atomic.Int64).Load()
+		total += by[k.(int)]
+		return true
+	})
+	t.Logf("%d of %d operations succeeded, by kind: %v", total, workers*steps, by)
+	if total < int64(workers*steps/4) {
+		t.Errorf("only %d of %d operations succeeded: the test does not try the rules", total, workers*steps)
+	}
+	if msg := sessionInvariants(e.s); msg != "" {
+		t.Error(msg)
+	}
+	// A token works if its row is there, and only then.
+	for _, token := range tokens {
+		has := e.hasSession(t, token)
+		if _, err := e.m.Authenticate(ctx, token); (err == nil) != has {
+			t.Errorf("a token of %s works = %v, though its row is there = %v", owner[token], err == nil, has)
+		}
+	}
+	if msg := mgrInvariants(e.s); msg != "" {
+		t.Error(msg)
+	}
+}
+
+// sessionStressExpected reports whether err is a refusal that TestConcurrentSessionRules makes happen: those of
+// mgrStressExpected, a password that is not right any more or an account that is not active, a session that has ended,
+// and a password that changed while the hash was made.
+func sessionStressExpected(err error) bool {
+	return mgrStressExpected(err) || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoSession) || errors.Is(err, ErrConflict)
 }

@@ -71,11 +71,12 @@ func sum(data []byte) string {
 }
 
 // checkEmpty checks that s has no object, no version, no current document, no revision, and nothing in the index, the
-// operations or the accounts.
+// operations, the accounts or the sessions.
 func checkEmpty(t *testing.T, s *Store) {
 	t.Helper()
 	tables := []string{
 		"objects", "versions", "documents", "revisions", "summaries", "references", "operations", "accounts",
+		"sessions",
 	}
 	for _, table := range tables {
 		if n := count(t, s, table); n != 0 {
@@ -420,7 +421,8 @@ func mkdir(t *testing.T, name string) {
 }
 
 // calls are calls of every method of tx, by name, on the entry entryID or its data, and on its revision revisionID or
-// its data, revJSON("About"), on the operation op_A, and on the account userID, which return their errors.
+// its data, revJSON("About"), on the operation op_A, on the account userID, and on the session whose key is that of
+// "a", which return their errors.
 func calls(tx *Tx) map[string]func() error {
 	data := docJSON(content.RefEntry, entryID)
 	return map[string]func() error{
@@ -447,11 +449,18 @@ func calls(tx *Tx) map[string]func() error {
 		"Accounts":      func() error { _, err := tx.Accounts(); return err },
 		"PutAccount":    func() error { return tx.PutAccount(userID, []byte("data")) },
 		"DeleteAccount": func() error { return tx.DeleteAccount(userID) },
+		"Session":       func() error { _, _, err := tx.Session(sessionKeyOf("a")); return err },
+		"Sessions":      func() error { _, err := tx.Sessions(); return err },
+		"PutSession":    func() error { return tx.PutSession(sessionKeyOf("a"), []byte("data")) },
+		"DeleteSession": func() error { return tx.DeleteSession(sessionKeyOf("a")) },
 	}
 }
 
 // writes are the methods of Tx that write.
-var writes = []string{"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex", "PutAccount", "DeleteAccount"}
+var writes = []string{
+	"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex", "PutAccount", "DeleteAccount", "PutSession",
+	"DeleteSession",
+}
 
 // putWithRevision puts the entry entryID with its revision revisionID, whose data calls has, in an Update of s.
 func putWithRevision(t *testing.T, s *Store) {

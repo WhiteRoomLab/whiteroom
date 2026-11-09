@@ -33,6 +33,11 @@ const maxTypedPasswordBytes = 8 << 10
 
 var errUnreadableHash = errors.New("unreadable password hash")
 
+// PasswordTooLong reports whether p has more bytes than any typed password that the accounts work on. No password is that
+// long, so Login fails with ErrBadCredentials for it without a hash, as for any password that does not match: a caller that
+// limits attempts may answer it the same way without counting an attempt.
+func PasswordTooLong(p string) bool { return len(p) > maxTypedPasswordBytes }
+
 // checkPassword returns the first problem of the password p of an account with this login name, email address and name,
 // or nil. It refuses, in this order: more than maxTypedPasswordBytes bytes, invalid UTF-8, control characters, a code
 // point that unicode.Version has not assigned, and then on the NFC form of p a length outside minPasswordChars and
@@ -156,7 +161,7 @@ func decodeBase64(enc *base64.Encoding, text string) []byte {
 // maxTypedPasswordBytes bytes is no match, whatever encoded is: no password that checkPassword accepted is canonically
 // equivalent to it, so encoded is not even parsed, and p is not put in NFC.
 func matchHash(encoded, p string, iterations int) (ok, rehash bool, err error) {
-	if len(p) > maxTypedPasswordBytes {
+	if PasswordTooLong(p) {
 		return false, false, nil
 	}
 	n, salt, key, err := parseHash(encoded)

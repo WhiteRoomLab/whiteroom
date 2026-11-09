@@ -412,6 +412,46 @@ func TestMatchHashKeyPadding(t *testing.T) {
 	}
 }
 
+// TestPasswordTooLong checks the bound that callers can ask about: it is on the bytes of the text as it is typed, and it is
+// the one that matchHash, Login and checkPassword apply.
+func TestPasswordTooLong(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		p    string
+		want bool
+	}{
+		{"empty", "", false},
+		{"a password", pwGood, false},
+		{"the bound", strings.Repeat("a", 8192), false},
+		{"one byte over", strings.Repeat("a", 8193), true},
+		{"a megabyte", strings.Repeat("a", 1<<20), true},
+		{"2048 characters of 4 bytes", strings.Repeat(string(rune(0x1F600)), 2048), false},
+		{"2049 characters of 4 bytes", strings.Repeat(string(rune(0x1F600)), 2049), true},
+		{"8192 bytes that are not UTF-8", strings.Repeat("\xff", 8192), false},
+		{"8193 bytes that are not UTF-8", strings.Repeat("\xff", 8193), true},
+		{"bytes that NFC makes shorter", pwAcutes(3000), true},
+	} {
+		if got := PasswordTooLong(tt.p); got != tt.want {
+			t.Errorf("PasswordTooLong() of %s = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	if PasswordTooLong(strings.Repeat("a", maxTypedPasswordBytes)) || !PasswordTooLong(strings.Repeat("a", maxTypedPasswordBytes+1)) {
+		t.Error("PasswordTooLong() is not the bound of matchHash")
+	}
+	// A text that it refuses is no match, whatever the hash is; one that it allows is looked at.
+	for _, p := range []string{strings.Repeat("a", maxTypedPasswordBytes+1), pwAcutes(3000)} {
+		if ok, _, err := matchHash(pwKnown, p, pwLow); ok || err != nil {
+			t.Errorf("matchHash() of a text that PasswordTooLong refuses = %v, %v, want false, nil", ok, err)
+		}
+		if _, _, err := matchHash("not a hash", p, pwLow); err != nil {
+			t.Errorf("matchHash() of an unreadable hash and a text that PasswordTooLong refuses = %v, want nil: the hash is not parsed", err)
+		}
+	}
+	if _, _, err := matchHash("not a hash", strings.Repeat("a", maxTypedPasswordBytes), pwLow); !errors.Is(err, errUnreadableHash) {
+		t.Errorf("matchHash() of an unreadable hash and a text that PasswordTooLong allows = %v, want %q", err, pwUnreadable)
+	}
+}
+
 // TestMatchHashTypedPasswordBound checks that a typed password of more than maxTypedPasswordBytes bytes is no match,
 // even for a hash that it was made into, and costs nothing: the hash is not parsed and the text is not put in NFC.
 func TestMatchHashTypedPasswordBound(t *testing.T) {

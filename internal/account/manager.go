@@ -1,11 +1,13 @@
 package account
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"runtime"
 	"slices"
 	"strconv"
 	"time"
@@ -30,9 +32,10 @@ var (
 	ErrConflict = errors.New("changed since it was read")
 )
 
-// Manager does the account operations of 7.3 on the table accounts of a store. Every operation that writes is one Update
-// of the store, which reads every account first, so that the rules that look at all of them hold whatever else runs.
-// It is safe for concurrent use.
+// Manager does the account operations of 7.3 on the table accounts of a store, and the logins and sessions on the table
+// sessions. Every operation that writes is one Update of the store, which reads every account first, so that the rules
+// that look at all of them hold whatever else runs. It computes only a few password hashes at once, whatever number of
+// calls need one (see gated). It is safe for concurrent use.
 type Manager struct {
 	st         *store.Store
 	now        func() time.Time
@@ -41,15 +44,26 @@ type Manager struct {
 	iterations int       // of the new password hashes
 	// unknownHash is a hash of a text that nobody knows, with iterations when the Manager was made. It is set once.
 	unknownHash string
+	// hashes has a place for each password hash that may be computed at the same time.
+	hashes chan struct{}
 	// hook is nil outside the tests, which run another operation at a point of one.
 	hook func(point string)
 }
 
 // New returns a Manager for s that reads the time from the system clock and random bits from crypto/rand. It makes here,
-// and not at the first call, the hash that VerifyPasswordFactor checks for a login that no account can use, so that every
-// call costs one hash of the Manager's count, the first one too. It fails only if the random bits cannot be read.
+// and not at the first call, the hash that VerifyPasswordFactor and Login check for a login that no account can use, so
+// that every call costs one hash of the Manager's count, the first one too. It fails only if the random bits cannot be
+// read. A process makes one Manager for a store.
 func New(s *store.Store) (*Manager, error) {
 	return newManager(s, defaultIterations, rand.Reader)
+}
+
+// NewWithIterations is New with the count of the iterations of the password hashes. It is for the tests of other packages,
+// which need cheap hashes: the real count takes about 80 ms for a hash, and ten times as long under the race detector.
+// Production code uses New, and a test of this package checks that no file of the module but a test refers to it. The
+// count must be from 1 to 10000000.
+func NewWithIterations(s *store.Store, iterations int) (*Manager, error) {
+	return newManager(s, iterations, rand.Reader)
 }
 
 // newManager is New with the iteration count of the hashes and the source of the random bits, which the tests change.
@@ -64,6 +78,7 @@ func newManager(s *store.Store, iterations int, r io.Reader) (*Manager, error) {
 	}
 	return &Manager{
 		st: s, now: time.Now, ids: content.NewIDSource(r), rand: r, iterations: iterations, unknownHash: hash,
+		hashes: make(chan struct{}, max(1, runtime.GOMAXPROCS(0)/4)),
 	}, nil
 }
 
@@ -79,9 +94,50 @@ func (m *Manager) at(point string) {
 	}
 }
 
-// Actor is who does an account operation: an account, by By, or the commands on the server, System. #46 will let an
-// Actor carry how its session was authenticated, for the account operations that will ask for a recent
-// re-authentication (7.3). The zero Actor, which By("") is too, may do nothing.
+// gated runs f, which computes a password hash, once there is a place for it among the hashes that run: a Manager
+// computes at most a quarter of GOMAXPROCS of them at the same time, and one at least, so that a flood of logins cannot
+// take every processor for 80 ms each. It waits for a place until ctx ends, and then returns the error of ctx without
+// having called f. The one hash that newManager makes is not gated.
+func (m *Manager) gated(ctx context.Context, f func()) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case m.hashes <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-m.hashes }()
+	m.at("hashing")
+	f()
+	return nil
+}
+
+// match is matchHash with the Manager's iteration count, through the gate. A typed password that matchHash refuses
+// without hashing it takes no place.
+func (m *Manager) match(ctx context.Context, encoded, p string) (ok, rehash bool, err error) {
+	if PasswordTooLong(p) {
+		return matchHash(encoded, p, m.iterations)
+	}
+	var matchErr error
+	if err := m.gated(ctx, func() { ok, rehash, matchErr = matchHash(encoded, p, m.iterations) }); err != nil {
+		return false, false, err
+	}
+	return ok, rehash, matchErr
+}
+
+// newHash is hashPassword with the Manager's iteration count and random bits, through the gate.
+func (m *Manager) newHash(ctx context.Context, p string) (hash string, err error) {
+	var hashErr error
+	if err := m.gated(ctx, func() { hash, hashErr = hashPassword(p, m.iterations, m.rand) }); err != nil {
+		return "", err
+	}
+	return hash, hashErr
+}
+
+// Actor is who does an account operation: an account, by By, or the commands on the server, System. It does not carry how
+// the session of the account was authenticated; 7.3 keeps that path for the operations that will ask for a recent
+// re-authentication. The zero Actor, which By("") is too, may do nothing.
 type Actor struct {
 	id     string
 	system bool
@@ -137,6 +193,17 @@ func readRows(tx *store.Tx, skip bool) ([]row, error) {
 		}
 	}
 	return rows, nil
+}
+
+// readAccount reads the row of the account id: ok is false for a row that is missing and for one that does not decode,
+// which is no account to a login or a session, and only an error of the store is an error.
+func readAccount(tx *store.Tx, id string) (r row, ok bool, err error) {
+	data, ok, err := tx.Account(id)
+	if err != nil || !ok {
+		return row{}, false, err
+	}
+	r, err = decodeRow(id, data)
+	return r, err == nil, nil
 }
 
 // removeUnreadable removes the row of the account id if it exists and does not decode, and reports whether it did. It
