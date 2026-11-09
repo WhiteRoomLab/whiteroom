@@ -43,7 +43,8 @@
 | 6.10 WordPressとの対応 | [06.10-wordpress.md](06.10-wordpress.md) |
 | 6.11 例 | [06.11-examples.md](06.11-examples.md) |
 | 6.12 未決定 | [06.12-open-questions.md](06.12-open-questions.md) |
-| 7. 管理画面・認証・監査 | [07-admin.md](07-admin.md) |
+| 7. 管理画面・認証・監査（7.1・7.2） | [07-admin.md](07-admin.md) |
+| 7.3 ログインアカウントと権限（案） | [07.03-accounts.md](07.03-accounts.md) |
 | 8. お問い合わせ機能 | [08-contact.md](08-contact.md) |
 | 9. Linuxでの配布・実行 | [09-distribution.md](09-distribution.md) |
 | 10. セキュリティ設計の基本原則 | [10-security.md](10-security.md) |
