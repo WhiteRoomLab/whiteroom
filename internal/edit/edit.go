@@ -34,7 +34,7 @@ type Editor struct {
 	schema content.SiteFile
 	theme  *theme.Theme
 	now    func() time.Time
-	ids    idSource
+	ids    *content.IDSource
 	notify func(Result)
 	wrap   func(reader) reader // nil outside the tests, which make the reads of the index fail
 }
@@ -42,7 +42,7 @@ type Editor struct {
 // New returns an Editor of s for the site that has the schema file schema, named as in a site directory
 // (site/schema.yaml), and the theme th, which must not be nil.
 func New(s *store.Store, schema content.SiteFile, th *theme.Theme) *Editor {
-	return &Editor{store: s, schema: schema, theme: th, now: time.Now, ids: idSource{rand: rand.Reader}}
+	return &Editor{store: s, schema: schema, theme: th, now: time.Now, ids: content.NewIDSource(rand.Reader)}
 }
 
 // Notify makes the Editor call f with the Result of each operation whose Update has committed, after the Update and

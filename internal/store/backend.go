@@ -19,13 +19,15 @@ type backend interface {
 }
 
 // indexTable is a table that the store keeps beside those of the documents (index.go): the summaries of the current
-// documents and the references between them, which are derived from the documents, and the operations, which are not.
+// documents and the references between them, which are derived from the documents, and the operations and the
+// accounts, which are records.
 type indexTable int
 
 const (
 	indexSummaries indexTable = iota
 	indexReferences
 	indexOperations
+	indexAccounts
 	numIndexTables
 )
 

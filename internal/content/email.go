@@ -15,6 +15,11 @@ const (
 	maxDomainLabelBytes = 63
 )
 
+// NormalizeEmail normalizes an email address by the rule of 6.7, as CheckEmail requires.
+func NormalizeEmail(s string) string {
+	return normalizeEmail(s)
+}
+
 // normalizeEmail removes control characters and surrounding spaces as normalizeHref does,
 // and maps the ASCII letters of the domain, after the last "@", to lower case.
 func normalizeEmail(s string) string {
@@ -30,6 +35,11 @@ func normalizeEmail(s string) string {
 		}
 		return r
 	}, s[at:])
+}
+
+// CheckEmail checks an email address by the rule of 6.7.
+func CheckEmail(s string) error {
+	return checkEmail(s)
 }
 
 // checkEmail accepts an email address as checkAddrSpec does, without control characters or surrounding spaces.

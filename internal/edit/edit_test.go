@@ -71,7 +71,7 @@ func testEditor(t *testing.T, s *store.Store) *Editor {
 	}
 	e := New(s, content.SiteFile{Name: "site/schema.yaml", Data: schema}, th)
 	e.now = func() time.Time { return testNow }
-	e.ids.rand = rand.NewChaCha8(testSeed)
+	e.ids = content.NewIDSource(rand.NewChaCha8(testSeed))
 	return e
 }
 

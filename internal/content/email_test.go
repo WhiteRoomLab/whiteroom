@@ -139,6 +139,33 @@ func TestNormalizeEmail(t *testing.T) {
 	}
 }
 
+// TestEmailExports checks that the exported functions are the unexported ones, which the login accounts use.
+func TestEmailExports(t *testing.T) {
+	for _, in := range []string{
+		"info@example.com", " Info@Example.COM\n", "info@exa\x00mple.com", "A@B@Example.COM", "山田@example.com",
+		"info@example", "info@例え.jp", "", "@", "info@" + strings.Repeat("a", 63) + ".com",
+	} {
+		if got, want := NormalizeEmail(in), normalizeEmail(in); got != want {
+			t.Errorf("NormalizeEmail(%q) = %q, want %q", in, got, want)
+		}
+		got, want := CheckEmail(in), checkEmail(in)
+		if (got == nil) != (want == nil) || got != nil && got.Error() != want.Error() {
+			t.Errorf("CheckEmail(%q) = %v, want %v", in, got, want)
+		}
+	}
+
+	n := NormalizeEmail(" Info@Example.COM\n")
+	if n != "Info@example.com" {
+		t.Errorf("NormalizeEmail() = %q, want %q", n, "Info@example.com")
+	}
+	if err := CheckEmail(n); err != nil {
+		t.Errorf("CheckEmail(%q) = %v, want nil", n, err)
+	}
+	if err, want := CheckEmail("info@example"), `invalid email address "info@example": the domain needs a dot`; err == nil || err.Error() != want {
+		t.Errorf("CheckEmail(an address without a dot in the domain) = %v, want %q", err, want)
+	}
+}
+
 // FuzzNormalizeEmail checks that a normalized address does not change when normalized again,
 // and that checkEmail does not ask to normalize it.
 func FuzzNormalizeEmail(f *testing.F) {

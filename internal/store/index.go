@@ -98,7 +98,7 @@ var indexKinds = []content.RefKind{
 }
 
 var indexTableNames = [numIndexTables]string{
-	indexSummaries: "summaries", indexReferences: "references", indexOperations: "operations",
+	indexSummaries: "summaries", indexReferences: "references", indexOperations: "operations", indexAccounts: "accounts",
 }
 
 // readRow decodes value, that of key in summaries, the row of a document of kind.
@@ -759,7 +759,7 @@ func (t *Tx) computeIndex(emit func(table indexTable, key, value []byte) error) 
 // references become those that Put, Delete and AddRevision would have made, and the last number is raised to the
 // largest of the current entries. It writes only what differs: the rows that are missing or have another value, and
 // the deletion of the rows that nothing gives, so that an index that is right gets no write. A document that does not
-// decode has no summary. It leaves the operations, which are records, and not derived from anything.
+// decode has no summary. It leaves the operations and the accounts, which are records, and not derived from anything.
 func (t *Tx) RebuildIndex() error {
 	if err := t.check(true); err != nil {
 		return err

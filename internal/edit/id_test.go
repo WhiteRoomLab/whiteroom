@@ -111,7 +111,7 @@ func (r repeat) Read(p []byte) (int, error) {
 
 func TestNewIDCountsUp(t *testing.T) {
 	e := testEditor(t, nil)
-	e.ids.rand = io.MultiReader(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe}), repeat(0))
+	e.ids = content.NewIDSource(io.MultiReader(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe}), repeat(0)))
 	var got []*big.Int
 	for range 3 {
 		got = append(got, idNumber(t, content.RefMedia, mustID(t, e, content.RefMedia)))
@@ -129,7 +129,7 @@ func TestNewIDCountsUp(t *testing.T) {
 
 func TestNewIDErrors(t *testing.T) {
 	e := testEditor(t, nil)
-	e.ids.rand = repeat(0xff)
+	e.ids = content.NewIDSource(repeat(0xff))
 	mustID(t, e, content.RefTerm)
 	_, err := e.newID(content.RefTerm)
 	if want := "cannot make an ID: the 80 random bits of the last one are all ones"; err == nil || err.Error() != want {
@@ -153,7 +153,7 @@ func TestNewIDErrors(t *testing.T) {
 		}
 	}
 	e = testEditor(t, nil)
-	e.ids.rand = bytes.NewReader([]byte{1, 2, 3})
+	e.ids = content.NewIDSource(bytes.NewReader([]byte{1, 2, 3}))
 	if id, err := e.newID(content.RefTerm); err == nil {
 		t.Errorf("newID() with a source of 3 bytes = %q, want an error", id)
 	}

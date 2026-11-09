@@ -70,11 +70,13 @@ func sum(data []byte) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 }
 
-// checkEmpty checks that s has no object, no version, no current document, no revision, and nothing in the index or the
-// operations.
+// checkEmpty checks that s has no object, no version, no current document, no revision, and nothing in the index, the
+// operations or the accounts.
 func checkEmpty(t *testing.T, s *Store) {
 	t.Helper()
-	tables := []string{"objects", "versions", "documents", "revisions", "summaries", "references", "operations"}
+	tables := []string{
+		"objects", "versions", "documents", "revisions", "summaries", "references", "operations", "accounts",
+	}
 	for _, table := range tables {
 		if n := count(t, s, table); n != 0 {
 			t.Errorf("rows of %s = %d, want 0", table, n)
@@ -418,7 +420,7 @@ func mkdir(t *testing.T, name string) {
 }
 
 // calls are calls of every method of tx, by name, on the entry entryID or its data, and on its revision revisionID or
-// its data, revJSON("About"), and on the operation op_A, which return their errors.
+// its data, revJSON("About"), on the operation op_A, and on the account userID, which return their errors.
 func calls(tx *Tx) map[string]func() error {
 	data := docJSON(content.RefEntry, entryID)
 	return map[string]func() error{
@@ -434,18 +436,22 @@ func calls(tx *Tx) map[string]func() error {
 			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
 			return err
 		},
-		"Summary":      func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
-		"Summaries":    func() error { _, err := tx.Summaries(content.RefEntry); return err },
-		"Referrers":    func() error { _, err := tx.Referrers(content.RefEntry, entryID); return err },
-		"LastNumber":   func() error { _, err := tx.LastNumber(); return err },
-		"Operation":    func() error { _, _, err := tx.Operation("op_A"); return err },
-		"PutOperation": func() error { return tx.PutOperation("op_A", []byte("data")) },
-		"RebuildIndex": tx.RebuildIndex,
+		"Summary":       func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
+		"Summaries":     func() error { _, err := tx.Summaries(content.RefEntry); return err },
+		"Referrers":     func() error { _, err := tx.Referrers(content.RefEntry, entryID); return err },
+		"LastNumber":    func() error { _, err := tx.LastNumber(); return err },
+		"Operation":     func() error { _, _, err := tx.Operation("op_A"); return err },
+		"PutOperation":  func() error { return tx.PutOperation("op_A", []byte("data")) },
+		"RebuildIndex":  tx.RebuildIndex,
+		"Account":       func() error { _, _, err := tx.Account(userID); return err },
+		"Accounts":      func() error { _, err := tx.Accounts(); return err },
+		"PutAccount":    func() error { return tx.PutAccount(userID, []byte("data")) },
+		"DeleteAccount": func() error { return tx.DeleteAccount(userID) },
 	}
 }
 
 // writes are the methods of Tx that write.
-var writes = []string{"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex"}
+var writes = []string{"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex", "PutAccount", "DeleteAccount"}
 
 // putWithRevision puts the entry entryID with its revision revisionID, whose data calls has, in an Update of s.
 func putWithRevision(t *testing.T, s *Store) {

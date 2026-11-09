@@ -81,7 +81,7 @@ func rawUpdate(t *testing.T, s *Store, f func(tx *logdb.Tx) error) {
 // logTables are the tables of the log backend by the names of the tables that the tests count (3.4).
 var logTables = map[string]uint32{
 	"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions, "summaries": tableSummaries,
-	"references": tableReferences, "operations": tableOperations,
+	"references": tableReferences, "operations": tableOperations, "accounts": tableAccounts,
 }
 
 // count returns the number of rows of table in s, of the tables of 3.4 by name: the objects of the engine, or the keys
@@ -512,6 +512,14 @@ func show(v any) string {
 			sums = append(sums, summaryText(s))
 		}
 		return "[" + strings.Join(sums, "; ") + "]"
+	case AccountRow:
+		return v.ID + " " + show(v.Data)
+	case []AccountRow:
+		var rows []string
+		for _, r := range v {
+			rows = append(rows, show(r))
+		}
+		return "[" + strings.Join(rows, "; ") + "]"
 	}
 	return fmt.Sprintf("%+v", v)
 }
@@ -714,7 +722,8 @@ func rawTable(t *testing.T, s *Store, table uint32) [][2]string {
 // TestLogTables checks the keys and values of the tables of the log backend against its schema.
 func TestLogTables(t *testing.T) {
 	s, _ := newLogStore(t, logdb.Options{})
-	// An entry that publishes its revision, which refers to a medium, a term that has a parent, and an operation.
+	// An entry that publishes its revision, which refers to a medium, a term that has a parent, an operation and an
+	// account.
 	data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "number": 3, "status": "published", ` +
 		`"publishedRevision": "` + revisionID + `"}`)
 	rev := []byte(`{"schemaVersion": 1, "title": "About", "slug": "about", "featuredImage": "` + mediaID + `"}`)
@@ -730,7 +739,10 @@ func TestLogTables(t *testing.T) {
 		if _, err := tx.Put(content.RefTerm, termID, term, userID); err != nil {
 			return err
 		}
-		return tx.PutOperation("op_1", []byte("done"))
+		if err := tx.PutOperation("op_1", []byte("done")); err != nil {
+			return err
+		}
+		return tx.PutAccount(userID, []byte("row"))
 	})
 	// Fields of fewer than 128 bytes: their lengths are a byte.
 	field := func(b string) string { return string([]byte{byte(len(b))}) + b }
@@ -749,7 +761,7 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x03"}, {"versions", "\x02"}},
+		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x04"}, {"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
 			{"term\x00" + termID, termVersion},
@@ -771,10 +783,11 @@ func TestLogTables(t *testing.T) {
 			{parent + "\x00term\x00" + termID + "\x00document", ""},
 		},
 		tableOperations: {{"op_1", "done"}},
+		tableAccounts:   {{userID, "row"}},
 	}
 	check := func(when string) {
 		t.Helper()
-		for table := range uint32(9) {
+		for table := range uint32(10) {
 			if got := rawTable(t, s, table); !slices.Equal(got, want[table]) {
 				t.Errorf("table %d %s = %q, want %q", table, when, got, want[table])
 			}
@@ -1189,9 +1202,9 @@ func TestLogSchemaVersion(t *testing.T) {
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{4}, "the store schema is of version 4, newer than this program knows (3)"},
+		{"newer", []byte{5}, "the store schema is of version 5, newer than this program knows (4)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (3)"},
+			"the store schema is of version 300, newer than this program knows (4)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},

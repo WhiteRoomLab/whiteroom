@@ -167,6 +167,29 @@ func TestCheckLine(t *testing.T) {
 	}
 }
 
+// TestLineExports checks the exported functions for the lines of plain text, which the login accounts use.
+func TestLineExports(t *testing.T) {
+	const lineBreak = "contains a line break or tab"
+	n := NormalizeLine("cafe" + acute + "\x00")
+	if n != "caf"+eAcute {
+		t.Errorf("NormalizeLine(NFD with a control character) = %q, want %q", n, "caf"+eAcute)
+	}
+	if err := CheckLine(n); err != nil {
+		t.Errorf("CheckLine(%q) = %v, want nil", n, err)
+	}
+	for _, in := range []string{"a\tb", "a\nb", "a\rb", "a\vb", "a\fb", "a" + string(rune(0x85)) + "b", "a" + string(rune(0x2028)) + "b"} {
+		if got := NormalizeLine(in); got != in {
+			t.Errorf("NormalizeLine(%q) = %q, want it unchanged for CheckLine to report", in, got)
+		}
+		if err := CheckLine(in); err == nil || err.Error() != lineBreak {
+			t.Errorf("CheckLine(%q) = %v, want %q", in, err, lineBreak)
+		}
+	}
+	if err := CheckLine("cafe" + acute); err == nil || err.Error() != "not in Unicode NFC; normalize it first" {
+		t.Errorf("CheckLine(NFD) = %v, want the error that it is not in NFC", err)
+	}
+}
+
 func TestCheckRaw(t *testing.T) {
 	const control = "contains control characters; normalize it first"
 	tests := []struct {
