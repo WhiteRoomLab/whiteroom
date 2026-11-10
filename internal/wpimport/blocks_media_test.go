@@ -144,6 +144,7 @@ func convertMedia(t *testing.T, imp *Import, site *content.Site, settings *Setti
 		t.Fatalf("Body = %v", err)
 	}
 	checkBody(t, imp, site, res)
+	checkNoPieces(t, text, imp, res)
 	noGuard(t, imp)
 	return res
 }

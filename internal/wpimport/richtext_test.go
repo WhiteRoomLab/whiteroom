@@ -199,8 +199,44 @@ func TestRichText(t *testing.T) {
 		{name: "a superscript in a superscript is one", in: "<sup>a<sup>b</sup></sup>", want: content.RichText{rtText("ab", rtSup)}},
 		{name: "underline by a span", in: `<span style="text-decoration: underline;">a</span><span style="Text-Decoration:UNDERLINE">b</span>`,
 			want: content.RichText{rtText("ab", rtUnderline)}},
-		{name: "another text decoration is lost", in: `<span style="text-decoration: line-through">a</span>`,
+		{name: "another text decoration is lost", in: `<span style="text-decoration: overline">a</span><span style="text-decoration: none">b</span>`,
+			want: content.RichText{rtText("ab")}, notes: []string{kept("<span>")}},
+		{name: "a strike by a span", in: `<span style="text-decoration: line-through">a</span><span style="TEXT-DECORATION:Line-Through !important">b</span>`,
+			want: content.RichText{rtText("ab", rtStrike)}},
+		{name: "an underline and a strike by a span", in: `<span style="text-decoration: underline line-through">a</span>`,
+			want: content.RichText{rtText("a", rtUnderline, rtStrike)}},
+		{name: "bold by a span", in: `<span style="font-weight: bold">a</span><span style="font-weight:BOLDER !important">b</span>` +
+			`<span style="font-weight: 600">c</span><span style="font-weight:700">d</span><span style="font-weight: 900">e</span>`,
+			want: content.RichText{rtText("abcde", rtBold)}},
+		{name: "a weight that is not bold", in: `<span style="font-weight: normal">a</span><span style="font-weight: 400">b</span><span style="font-weight: 599">c</span>` +
+			`<span style="font-weight: 901">d</span><span style="font-weight: lighter">e</span><span style="font-weight: heavy">f</span>`,
+			want: content.RichText{rtText("abcdef")}, notes: []string{kept("<span>")}},
+		{name: "italic by a span", in: `<span style="font-style: italic">a</span><span style="font-style: oblique 10deg">b</span><span style="font-style:Oblique">c</span>`,
+			want: content.RichText{rtText("abc", rtItalic)}},
+		{name: "a style that is not italic", in: `<span style="font-style: normal">a</span>`,
 			want: content.RichText{rtText("a")}, notes: []string{kept("<span>")}},
+		{name: "a color by a span", in: `<span style="color: #cf2e2e">a</span><span style="color:#cf2e2e;background-color: rgb(255 244 229 / 50%)">b</span>`,
+			want: content.RichText{
+				rtText("a", rtHighlight(content.Highlight{Color: content.Color{Value: "#cf2e2e"}})),
+				rtText("b", rtHighlight(content.Highlight{Color: content.Color{Value: "#cf2e2e"}, BackgroundColor: content.Color{Value: "rgb(255 244 229 / 50%)"}})),
+			}},
+		{name: "a background color by a span", in: `<span style="background-color:hsl(10, 20%, 30%)">a</span>`,
+			want: content.RichText{rtText("a", rtHighlight(content.Highlight{BackgroundColor: content.Color{Value: "hsl(10, 20%, 30%)"}}))}},
+		{name: "colors of a span that are clear or not colors are not imported", in: `<span style="color:transparent">a</span><span style="color:red;background-color:rgba(0, 0, 0, 0)">b</span>` +
+			`<span style="color:#0000">c</span><span style="color:calc(1)">d</span><span style="color:#xyz">e</span>`,
+			want: content.RichText{rtText("abcde")}, notes: []string{kept("<span>")}},
+		{name: "a clear background keeps the color of a span", in: `<span style="background-color:rgba(0, 0, 0, 0);color:#111">a</span>`,
+			want: content.RichText{rtText("a", rtHighlight(content.Highlight{Color: content.Color{Value: "#111"}}))}},
+		{name: "several settings of a span", in: `<span style="font-weight:700;font-style:italic;text-decoration:underline line-through;color:#111;font-size:20px">a</span>`,
+			want: content.RichText{rtText("a", rtUnderline, rtStrike, rtBold, rtItalic, rtHighlight(content.Highlight{Color: content.Color{Value: "#111"}}))}},
+		{name: "a span that makes a mark is not noted for the settings it does not read", in: `<span style="font-size:20px;font-weight:bold" class="x">a</span>`,
+			want: content.RichText{rtText("a", rtBold)}},
+		{name: "a span with settings that are not read keeps its text", in: `<span style="font-size:20px;margin:0">a</span>`,
+			want: content.RichText{rtText("a")}, notes: []string{kept("<span>")}},
+		{name: "the settings of a span in a mark", in: `<b><span style="font-weight:bold">a</span></b><i><span style="font-style:italic">b</span>c</i>`,
+			want: content.RichText{rtText("a", rtBold), rtText("bc", rtItalic)}},
+		{name: "the style of a span with a class of a highlight is read as before", in: `<span style="font-weight:bold;color:#111" class="has-inline-color has-vivid-red-color">a</span>`,
+			want: content.RichText{rtText("a", rtBold, rtHighlight(content.Highlight{Color: content.Color{Preset: "red"}}))}},
 		{name: "a span with no attributes", in: "<span>a</span><span> b</span>", want: content.RichText{rtText("a b")}},
 		{name: "a span with a class", in: `<span class="x">a</span>`, want: content.RichText{rtText("a")}, notes: []string{kept("<span>")}},
 
@@ -244,6 +280,8 @@ func TestRichText(t *testing.T) {
 			notes: []string{kept("<div>")}},
 		{name: "block elements at the ends", in: "<div>a</div><p>b</p>", want: content.RichText{rtText("a"), rtBreak(), rtText("b")},
 			notes: []string{kept("<div>, <p>")}},
+		{name: "a center element sets its content apart", in: "a<center>b</center>c", want: content.RichText{rtText("a"), rtBreak(), rtText("b"), rtBreak(), rtText("c")},
+			notes: []string{kept("<center>")}},
 		{name: "a block element after a break", in: "a<br><div>b</div>", want: content.RichText{rtText("a"), rtBreak(), rtText("b")},
 			notes: []string{kept("<div>")}},
 		{name: "block elements in marks", in: "<b>a<div>b</div></b>", want: content.RichText{rtText("a", rtBold), rtBreak(), rtText("b", rtBold)},
@@ -426,6 +464,93 @@ func TestRichText(t *testing.T) {
 			wantLines(t, imp.Report, lines)
 		})
 	}
+}
+
+func TestRichTextOfTheClassicEditor(t *testing.T) {
+	// What is noted of the styles, the places that links go to, and the addresses that have a shortcode, is noted for the HTML of
+	// the classic editor only.
+	kept := func(tags string) string { return bodyNoteLine(Changed, "kept only the text of "+tags) }
+	lost := func(items, tag string) string { return bodyNoteLine(Skipped, "lost "+items+" of "+tag+lostSuffix) }
+	for _, tt := range []struct {
+		name, in string
+		classic  bool
+		notes    []string
+		targets  []string
+	}{
+		{name: "a style no mark took, in the block editor", in: `<span style="font-size: 1px">a</span>`, notes: []string{kept("<span>")}},
+		{name: "a style no mark took", in: `<span style="font-size: 1px">a</span>`, classic: true, notes: []string{kept("<span>"), lost("style.font-size", "<span>")}},
+		{name: "the style that a mark took", in: `<span style="font-weight: 700; color: #f00; font-size: 1px">a</span>`, classic: true,
+			notes: []string{lost("style.font-size", "<span>")}},
+		{name: "the style of an element that makes no mark", in: `<b style="font-size: 1px">a</b><div style="margin: 0">b</div>`, classic: true,
+			notes: []string{lost("style.font-size", "<b>"), lost("style.margin", "<div>"), kept("<div>")}},
+		{name: "places in the block editor", in: `<a name="x">a</a><a id="y"></a>`, notes: []string{kept("<a>")}},
+		{name: "places", in: `<a name="x">a</a><a id="y"></a>`, classic: true, targets: []string{"x", "y"}},
+		{name: "a place that has an id and another name", in: `<a id="i" name="n"></a>`, classic: true, targets: []string{"i"},
+			notes: []string{bodyNoteLine(Skipped, `the anchor "n" is not imported: the element has the id "i"`)}},
+		{name: "a link is not a place", in: `<a href="/about/" id="i" name="n">a</a>`, classic: true},
+		{name: "an anchor with no name and no id", in: `<a>a</a>`, classic: true, notes: []string{kept("<a>")}},
+		{name: "an address with a shortcode in the block editor", in: `<a href="[home_url]/x/">a</a>`},
+		{name: "an address with a shortcode", in: `<a href="[home_url]/x/">a</a>`, classic: true,
+			notes: []string{bodyNoteLine(Review, `the address "[home_url]/x/" has a shortcode, which whiteroom does not run`)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			imp := linkImport(t)
+			c := richConv(imp, "", nil)
+			c.inClassic = tt.classic
+			if _, err := c.richText(richRoot(t, tt.in), false, noteAt{}); err != nil {
+				t.Fatalf("richText(%q) = %v", tt.in, err)
+			}
+			if !slices.Equal(c.targets, tt.targets) {
+				t.Errorf("the places are %q, want %q", c.targets, tt.targets)
+			}
+			c.flush(nil)
+			var lines []string
+			for _, n := range tt.notes {
+				lines = append(lines, bodyLine(n))
+			}
+			wantLines(t, imp.Report, lines)
+		})
+	}
+
+	// A text can have any number of elements with any number of properties; the text keeps few, and the note names only the first.
+	lostNotes := func(t *testing.T, markup string) []string {
+		t.Helper()
+		imp := linkImport(t)
+		c := richConv(imp, "", nil)
+		c.inClassic = true
+		if _, err := c.richText(richRoot(t, markup), false, noteAt{}); err != nil {
+			t.Fatal(err)
+		}
+		c.flush(nil)
+		var notes []string
+		for _, e := range imp.Report.Entries() {
+			if strings.HasPrefix(e.Message, "lost ") {
+				notes = append(notes, e.Message)
+			}
+		}
+		return notes
+	}
+	t.Run("many elements", func(t *testing.T) {
+		var b strings.Builder
+		for i := range 3 * maxStyleNotes {
+			fmt.Fprintf(&b, `<x-%d style="a: 1"></x-%d>`, i, i)
+		}
+		if notes := lostNotes(t, b.String()); len(notes) != maxStyleNotes {
+			t.Errorf("there are %d notes, want %d", len(notes), maxStyleNotes)
+		}
+	})
+	t.Run("many properties", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`<span style="`)
+		for i := range 3 * maxStyleNotes {
+			fmt.Fprintf(&b, "p%d: 1;", i)
+		}
+		b.WriteString(`">a</span>`)
+		notes := lostNotes(t, b.String())
+		if want := fmt.Sprintf(", and %d more of <span>%s", maxStyleNotes-maxLostShown, lostTail); len(notes) != 1 || !strings.Contains(notes[0], want) {
+			t.Errorf("the notes are %.300q, want one that ends with %q", notes, want)
+		}
+	})
 }
 
 // expandIDs puts the IDs of the posts, written @ and the number in the tests, in the links of want.
@@ -1034,6 +1159,8 @@ func FuzzRichText(f *testing.F) {
 		"<ul><li>a</li></ul>", "<svg><a href=x>y</a></svg>", "a\u00a0 b\u2028c\v", "<table><tr><td>x", "&amp;&lt;&#0;&#x110000;", "&#X0C", "a&#xB;b&#x85;c&#x2029;d",
 		"<a><a><b>x</a></b>", "<span style='text-decoration:underline;color:#fff'>a</span>", "\xff\xfe<b>\xc3</b>",
 		"<a href=\"https://example.com/?p=11#" + "a\x00b\">x</a>", "<mark style='color:red'>", `<a href="#日本語">x</a>`,
+		// Shortcodes in the text, which WordPress runs, and the ones that are escaped or are no shortcodes.
+		"a [foo] b", "[[foo]] [x] [PR] [1] [注1]", "<b>[a]</b> [b c=\"d\"]e[/b]", "[[a]]]]", "[ [] [a", "[a][b][c][a]\n[[d]]",
 	} {
 		f.Add(seed, false)
 		f.Add(seed, true)

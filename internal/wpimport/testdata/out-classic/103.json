@@ -1,0 +1,116 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "table",
+      "id": "b_7mfve4ts",
+      "content": [
+        {
+          "type": "tableRow",
+          "attrs": {
+            "section": "head"
+          },
+          "content": [
+            {
+              "type": "tableCell",
+              "attrs": {
+                "header": true
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "品名"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "attrs": {
+                "header": true,
+                "textAlign": "right"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "価格"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "りんご"
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "attrs": {
+                "textAlign": "right"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "120円"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "attrs": {
+                "colspan": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "合計 "
+                },
+                {
+                  "type": "text",
+                  "text": "120円",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "id": "b_ejvcaatm",
+      "attrs": {
+        "language": "go"
+      },
+      "content": "package main\n\nfunc main() {\n\tprintln(\"こんにちは\")\n}"
+    },
+    {
+      "type": "code",
+      "id": "b_wfcrpmb0",
+      "attrs": {
+        "language": "php"
+      },
+      "content": "<?php\n\necho \"空行のある pre\";"
+    },
+    {
+      "type": "separator",
+      "id": "b_p9boyf1u"
+    }
+  ]
+}

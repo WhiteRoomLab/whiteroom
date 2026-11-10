@@ -10,6 +10,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/html"
 	"github.com/WhiteRoomLab/whiteroom/internal/wpblock"
+	"github.com/WhiteRoomLab/whiteroom/internal/wpformat"
 )
 
 // blockCounts are the names that the bodies of the items use, and how many times each.
@@ -43,12 +44,18 @@ func (cc *blockCounts) preset(k presetKind, slug string) {
 // items that become entries and the reusable blocks. It counts the blocks of the core that are not dynamic, with the
 // blocks in them, also those that the conversion makes legacy blocks of for another reason, such as a video and a pattern
 // that is not published; the blocks of themes and plugins, and the dynamic ones, are left out with the blocks in them.
-// Of the custom HTML blocks it counts those that are legacy blocks unless the site allows custom HTML.
+// Of the custom HTML blocks it counts those that are legacy blocks unless the site allows custom HTML. The HTML of the classic
+// editor (a content that has no block, the HTML between blocks, and the HTML of the classic and shortcode blocks) is read for
+// the image sizes and the classes of inline elements too. An item made with Elementor is left out: the conversion makes one
+// legacy block of it.
 func (imp *Import) proposeBlocks(s *Settings, defs *content.Site) {
 	cc := newBlockCounts()
 	for i := range imp.WXR.Items {
 		it := &imp.WXR.Items[i]
 		if it.Status == "trash" || it.Status == "auto-draft" || it.Type != "wp_block" && typeName(it.Type, defs) == "" {
+			continue
+		}
+		if builtWithElementor(it) {
 			continue
 		}
 		cc.addBody(it.Content)
@@ -129,7 +136,9 @@ func usedNames(counts map[string]int) string {
 	return s
 }
 
-// addBody counts the names in the blocks of the content text of an item.
+// addBody counts the names in the blocks of the content text of an item. If no block has a name, all of the text is the HTML
+// of the classic editor, as the conversion reads it; otherwise the HTML between the blocks is, except what follows a block
+// closer that closes no block.
 func (cc *blockCounts) addBody(text string) {
 	if len(text) > maxBodyBytes || blank(text) {
 		return
@@ -139,6 +148,10 @@ func (cc *blockCounts) addBody(text string) {
 		return
 	}
 	budget := maxHTMLBytes
+	if !slices.ContainsFunc(blocks, func(b wpblock.Block) bool { return b.Name != "" }) {
+		cc.addClassic(text, &budget)
+		return
+	}
 	var stack []*wpblock.Block
 	for i := range blocks {
 		stack = append(stack, &blocks[i])
@@ -146,6 +159,12 @@ func (cc *blockCounts) addBody(text string) {
 	for len(stack) > 0 {
 		b := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		if b.Name == "" {
+			if !b.Stray {
+				cc.addClassic(text[b.Start:b.End], &budget)
+			}
+			continue
+		}
 		if !strings.HasPrefix(b.Name, "core/") || dynamicBlock(b.Name) {
 			continue
 		}
@@ -196,6 +215,10 @@ func (cc *blockCounts) addBlock(b *wpblock.Block, budget *int) {
 		if legacyUnlessAllowed(b.HTML(), budget) {
 			cc.customHTML++
 		}
+	case "core/freeform", "core/shortcode":
+		// The conversion reads their HTML as that of the classic editor.
+		cc.addClassic(b.HTML(), budget)
+		return
 	}
 	if !plainHTML[b.Name] {
 		cc.addInline(b.HTML(), budget)
@@ -222,10 +245,10 @@ func legacyUnlessAllowed(text string, budget *int) bool {
 	return provider == ""
 }
 
-// plainHTML are the blocks whose HTML is not text with marks: code, HTML and shortcodes are taken as they are, and the
-// spans of a cover are its background.
+// plainHTML are the blocks whose HTML is not text with marks: code and HTML are taken as they are, and the spans of a cover
+// are its background.
 var plainHTML = map[string]bool{
-	"core/html": true, "core/code": true, "core/preformatted": true, "core/shortcode": true, "core/cover": true,
+	"core/html": true, "core/code": true, "core/preformatted": true, "core/cover": true,
 }
 
 // addRefs counts the references to presets in the strings of the attributes a, at any depth.
@@ -269,26 +292,89 @@ func (cc *blockCounts) addInline(markup string, budget *int) {
 		return
 	}
 	*budget -= len(markup)
-	nodes, err := parseIn("div", markup)
+	root, err := parseFragment(markup)
 	if err != nil {
 		return
 	}
-	root := &html.Node{Type: html.DocumentFragmentNode}
-	for _, n := range nodes {
-		root.AppendChild(n)
-	}
+	cc.addElements(root, false)
+}
+
+// addElements counts, in the tree below root, the classes of the mark and span elements (see addInline) and, if images is set,
+// the size of each img element: the first class that is size-<name>, the class that the classic editor gives an image, unless
+// the name is full.
+func (cc *blockCounts) addElements(root *html.Node, images bool) {
 	for d := root.FirstChild; d != nil; d = after(root, d, true) {
-		if d.Type != html.ElementNode || d.Namespace != html.HTML || d.Name != "mark" && d.Name != "span" {
+		if d.Type != html.ElementNode || d.Namespace != html.HTML {
 			continue
 		}
-		for _, class := range classList(d) {
-			switch slug, _, ok := colorClass(class); {
-			case ok:
-				cc.preset(kindColor, slug)
-			case class == "has-inline-color", strings.HasPrefix(class, "wp-"), strings.HasPrefix(class, "has-"):
-			default:
-				cc.marks[class]++
+		switch d.Name {
+		case "img":
+			if !images {
+				continue
 			}
+			for _, class := range classList(d) {
+				if size, ok := strings.CutPrefix(class, "size-"); ok && size != "" {
+					if size != "full" {
+						cc.imageSizes[size]++
+					}
+					break
+				}
+			}
+		case "mark", "span":
+			for _, class := range classList(d) {
+				switch slug, _, ok := colorClass(class); {
+				case ok:
+					cc.preset(kindColor, slug)
+				case class == "has-inline-color", strings.HasPrefix(class, "wp-"), strings.HasPrefix(class, "has-"):
+				default:
+					cc.marks[class]++
+				}
+			}
+		}
+	}
+}
+
+// addClassic counts the names in markup, HTML of the classic editor: the sizes of the galleries and of the images, and the
+// classes of the inline elements. Like addInline, it reads at most *budget bytes of HTML in all, and no markup that is longer
+// than the HTML of one block may be.
+func (cc *blockCounts) addClassic(markup string, budget *int) {
+	if len(markup) > min(*budget, maxBlockHTMLBytes) {
+		return
+	}
+	cc.addGalleries(markup)
+	if !hasTag(markup, "img", "span", "mark") {
+		return
+	}
+	*budget -= len(markup)
+	root, err := parseFragment(markup)
+	if err != nil {
+		return
+	}
+	cc.addElements(root, true)
+}
+
+// addGalleries counts the sizes of the [gallery] shortcodes in markup: the attribute size, or thumbnail, which WordPress
+// shows if there is none. A shortcode whose attributes are longer than a string may be is not read, as the conversion does not.
+func (cc *blockCounts) addGalleries(markup string) {
+	if !strings.Contains(markup, "[gallery") {
+		return
+	}
+	left := maxWPBlocks
+	found := wpformat.FindShortcodes(markup, func(name string, next byte) bool {
+		if name != "gallery" || left <= 0 || !isShortcodeName(name, next) {
+			return false
+		}
+		left--
+		return true
+	})
+	for _, sc := range found {
+		// [[gallery]] is the text [gallery].
+		if sc.Open && sc.Close || len(sc.Attrs) > content.MaxTextBytes {
+			continue
+		}
+		size, _ := wpformat.ParseAttrs(sc.Attrs).Get("size")
+		if size = cmp.Or(strings.TrimSpace(size), "thumbnail"); size != "full" {
+			cc.imageSizes[size]++
 		}
 	}
 }

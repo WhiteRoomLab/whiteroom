@@ -30,13 +30,16 @@ import (
 // imports; and render.txt, the warnings of the renderer of the example theme.
 const bodiesOut = "testdata/out-blocks"
 
-func readBodies(t testing.TB) (*wxr.Export, *Report) {
+func readBodies(t testing.TB) (*wxr.Export, *Report) { return readBodiesFile(t, "blocks.xml") }
+
+// readBodiesFile reads the WXR testdata/<name>, which the report calls by that name.
+func readBodiesFile(t testing.TB, name string) (*wxr.Export, *Report) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "blocks.xml"))
+	data, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, rep, err := Read(context.Background(), "blocks.xml", bytes.NewReader(data))
+	e, rep, err := Read(context.Background(), name, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,9 +67,18 @@ func attachedFile(it *wxr.Item) string {
 // newBodiesImport is the import of e in which the plan has given every post, page, attachment and form its ID, and the
 // conversions of the entries, the media and the forms have recorded them, as the real ones will.
 func newBodiesImport(e *wxr.Export, rep *Report) (*Import, error) {
-	imp := New("blocks.xml", e, rep)
+	return newImportOf("blocks.xml", e, rep, nil)
+}
+
+// newImportOf is newBodiesImport for the WXR called file. The items that skip says yes to are not given an ID, as the forms
+// that are not imported.
+func newImportOf(file string, e *wxr.Export, rep *Report, skip func(*wxr.Item) bool) (*Import, error) {
+	imp := New(file, e, rep)
 	for i := range e.Items {
 		it := &e.Items[i]
+		if skip != nil && skip(it) {
+			continue
+		}
 		var kind content.RefKind
 		var ref content.Ref
 		switch it.Type {
@@ -232,7 +244,12 @@ type bodiesResult struct {
 // key is the ID of the revision that the entry gets, and the target is revisions/<ID>.json#/body.
 func convertBodies(t *testing.T, imp *Import, allowHTML bool, keep func(*wxr.Item) bool) []bodiesResult {
 	t.Helper()
-	settings := bodiesSettings(allowHTML)
+	return convertBodiesWith(t, imp, bodiesSettings(allowHTML), keep)
+}
+
+// convertBodiesWith is convertBodies with the settings, which the site allows custom HTML by.
+func convertBodiesWith(t *testing.T, imp *Import, settings *Settings, keep func(*wxr.Item) bool) []bodiesResult {
+	t.Helper()
 	site, err := imp.Site(settings, nil)
 	if err != nil {
 		t.Fatalf("Site = %v", err)
@@ -249,6 +266,7 @@ func convertBodies(t *testing.T, imp *Import, allowHTML bool, keep func(*wxr.Ite
 			t.Fatalf("Body of the post %d = %v", it.ID, err)
 		}
 		checkBody(t, imp, site, res)
+		checkNoPieces(t, it.Content, imp, res)
 		checkRevision(t, imp, site, it, res)
 		results = append(results, bodiesResult{it, target, res})
 	}
@@ -515,6 +533,7 @@ func limitedItem(t *testing.T, imp *Import, item *wxr.Item) (*bodyConv, *BodyRes
 	c.flush(blocks)
 	res := &BodyResult{Blocks: blocks, More: more}
 	checkBody(t, imp, site, res)
+	checkNoPieces(t, item.Content, imp, res)
 	if n := countBlocks(res.Blocks); n > content.MaxBlocks {
 		t.Errorf("the conversion made %d blocks, at most %d are allowed", n, content.MaxBlocks)
 	}
@@ -1002,6 +1021,7 @@ func convertText(t *testing.T, e *wxr.Export, text string, allowHTML, mapped boo
 		t.Fatalf("Body = %v", err)
 	}
 	checkBody(t, imp, site, res)
+	checkNoPieces(t, text, imp, res)
 	checkRevision(t, imp, site, &item, res)
 	checkTargets(t, imp.Report, []bodiesResult{{&item, bodyTarget, res}})
 	stack := []content.Blocks{res.Blocks}
@@ -1033,6 +1053,11 @@ func FuzzBody(f *testing.F) {
 		f.Add(it.Content, false, false)
 		f.Add(it.Content, true, true)
 	}
+	classic, _ := readBodiesFile(f, classicFile)
+	for _, it := range bodyPosts(classic) {
+		f.Add(it.Content, false, false)
+		f.Add(it.Content, true, true)
+	}
 	for _, s := range []string{
 		"", " ", "x", "<p>x</p>", "<!--", "<!-- wp:", "<!-- wp:paragraph", "<!-- wp:paragraph -->", "<!-- wp:paragraph /-->",
 		"<!-- /wp:paragraph -->", "<!-- wp:paragraph {", `<!-- wp:paragraph {"a":1} -->`, `<!-- wp:paragraph {"a":} -->`,
@@ -1048,6 +1073,50 @@ func FuzzBody(f *testing.F) {
 		"\x11", "\v", "\xc2\x85", `<!-- wp:paragraph --><p>` + "\x11" + `</p><!-- /wp:paragraph -->`,
 		`<!-- wp:heading --><h1>` + "\x11" + `</h1><!-- /wp:heading -->`, `<!-- wp:verse --><pre>a&#X0C;b</pre><!-- /wp:verse -->`,
 		`<!-- wp:buttons --><div><!-- wp:button --><div><a href="/x">` + "\x11" + `</a></div><!-- /wp:button --></div><!-- /wp:buttons -->`,
+		// The HTML of the classic editor: with wpautop, and without it.
+		"A\nB\n\nC<br>D", "A\n<!--more-->\nB", "A<!--more Go--><img src=\"x.png\">B\n\n<!--nextpage-->\n\nC", "<!--more--><!--nextpage-->",
+		`<img class="alignleft wp-image-50" src="` + photoURL + `" alt="">text<br><!--more--><br>text<img src="x">`,
+		`<p style="text-align:center" id="a" class="b c"><a href="x/"><img src="y"></a></p><h1 style="color:red">h</h1>`,
+		"<div><div><div>x</div><p>y</p></div></div><section>s</section><center>c</center><main>m</main>",
+		"<ul><li>a<ul><li>b</li></ul></li><li><img src=\"x\">c<ul><li>d</li></ul></li></ul><ol start=2 reversed><li>x</li></ol>",
+		"<blockquote><p>q</p><cite>c</cite><ul><li>l</li></ul></blockquote><blockquote></blockquote>",
+		"<table border=1><caption>c</caption><thead><tr><th align=right>h</th></tr></thead><tr><td style=\"text-align:left;width:5\">a</td></tr></table>",
+		"<pre class=\"language-go\">a\n\tb</pre><hr width=\"5\"><details><summary><b>s</b></summary>d</details><figure><img src=\"x\"><figcaption>c</figcaption></figure>",
+		`<iframe src="https://www.youtube.com/embed/abc"></iframe><iframe src="//player.vimeo.com/video/1"></iframe><iframe></iframe><p><iframe src="x"></iframe>t</p>`,
+		"<script>a</script><style>b</style><template>c</template><dl><dt>d</dt></dl><form><input></form><video src=x></video><svg></svg>",
+		"<!-- wp:Foo -->Line one\n\nLine two", "<!-- wp:freeform --><p>a</p><!--more--><p>b</p><!-- /wp:freeform --><!-- wp:more /-->",
+		"<!-- wp:group --><div><!-- wp:freeform -->x<!--more--><!--nextpage--><div>y</div><!-- /wp:freeform --></div><!-- /wp:group -->",
+		"<p>" + strings.Repeat("<span style=\"font-weight:bold\">", 50) + "x</p>", "&nbsp;\n\n<p>&nbsp;</p><br><br>",
+		// Shortcodes, URLs on a line of their own, and the elements that stand for them.
+		`[gallery ids="50,51" columns="2"]`, `[gallery]` + "\n\n" + `[gallery ids="50" order="DESC" orderby="rand" link="none" size="full"]`,
+		`[caption id="attachment_50" width="9"]<a href="x"><img class="wp-image-50" src="x"></a> c <b>d</b>[/caption]`, `[caption width="9" caption="c"]<img src="x">[/caption]`,
+		`[embed]https://www.youtube.com/watch?v=dQw4w9WgXcQ[/embed]` + "\n[embed src=\"https://vimeo.com/76979871\" width=\"1\"]\n[embed][/embed]",
+		"https://vimeo.com/76979871\n\nhttps://example.org/x\n\nline\nhttps://x.com/a/status/1\nmore\n<p>https://youtu.be/dQw4w9WgXcQ</p>",
+		`[contact-form-7 id="a1b2c3d" title="x"]` + "\n" + `[contact-form 5 "x"]` + "\n" + `[contact-form-7 id="A1B2C3D"]`,
+		"[[a]] [b] [/c] [d/] [e x=\"1\"/] [PR] [1] [注1] [a.b]", "[box]\n\nx\n\n[/box]\n\n[a][b]c[/b][/a]", "[a]]\n\n[[b] [[c]]\n[[d]]e[/d]]",
+		`<p>[a]</p><ul><li>[b]</li></ul><table><tr><td>[c]</td></tr></table><h2>[d]</h2><pre>[e]</pre><blockquote><cite>[f]</cite></blockquote>`,
+		"<blockquote><p>q</p><p><cite>c</cite></p></blockquote><blockquote><p><cite>c</cite></p><p>q</p></blockquote>",
+		"<script>[a]</script><style>[b]</style><textarea>[c]</textarea><!-- [d] --><a title=\"> [e]\">x</a><xmp>[f]</xmp><plaintext>[g]",
+		`<x-wr-piece data-n="0">t</x-wr-piece> [a] <x-wr-piece-2 data-n="1"></x-wr-piece-2>` + "\n[b]\nhttps://vimeo.com/76979871",
+		`<!-- wp:paragraph --><p>[gallery ids="50"]</p><!-- /wp:paragraph --><!-- wp:paragraph --><p>https://youtu.be/dQw4w9WgXcQ</p><!-- /wp:paragraph -->`,
+		`<!-- wp:shortcode -->[gallery ids="50,51"]<!-- /wp:shortcode -->`, `<!-- wp:paragraph --><p>a [b] [[c]]</p><!-- /wp:paragraph -->`,
+		`<!-- wp:shortcode -->[box]` + "\n\n" + `https://youtu.be/dQw4w9WgXcQ<!--more-->[/box]<!-- /wp:shortcode -->`,
+		`<!-- wp:freeform -->[a]<p>[b]</p><!-- /wp:freeform --><!-- wp:block {"ref":41} /-->`,
+		// Pieces of the classic editor: the paragraphs, the pieces, the tags, and an element that is not closed.
+		"a\n\nb", "<p>[foo]</p>", `[caption]<img src="x"> c[/caption]`, "[gallery]", "https://www.youtube.com/watch?v=x", "<!--more-->",
+		"<!--nextpage-->", "<div><p>x</p>", "[[foo]]", `<x-wr-piece data-n="0"></x-wr-piece>`,
+		// The http address of a provider, a heading over several lines, and the pieces that have no end.
+		"http://www.youtube.com/watch?v=dQw4w9WgXcQ\n\n[embed]HTTP://vimeo.com/76979871[/embed]\n\n" + `<iframe src="http://player.vimeo.com/video/1"></iframe>`,
+		"<h2>\nHead\n</h2>\n\n<h3>a<br>b<br></h3>", "[foo", "[foo bar=\"", "[gallery ids=\"1,2\" size=", "<p>[caption width=\"9\"]<img src=\"x\">",
+		// Places that links go to, figures, brackets in code, alignment, and what the elements of a text lose.
+		`<a name="a"></a><a id="b"></a><h2><a name="c"></a>x</h2><p id="d"><a name="e"></a></p><a id="a" name="f"></a>`,
+		`<figure><img src="x"><img src="y"><figcaption>c</figcaption></figure><figure><table></table><p>x</p></figure><figure class="aligncenter size-large foo"><a href="x"><img src="y"></a></figure>`,
+		"<pre>a[i] [[b]] [gallery]</pre><code>[c]</code> [d]<code>[e] [[f]]</code><pre><code>g[h]</pre>",
+		`<p style="text-align:center"><img class="alignnone" src="x"><br>t</p><p align="right"><iframe src="y"></iframe></p>`,
+		"<ul><li class=\"a\" id=\"b\" style=\"c:d\">e<ul><li>f</li></ul>g</li></ul><table><tr class=r><td id=i class=c style=x:y>t</td></tr></table>",
+		`<span style="font-size:1px;color:#fff">a</span><strong style="a:b">c</strong><a href="[x]/y" style="z:z">d</a><h2>h<!--more--></h2><ul><li>l<!--more--></li></ul>`,
+		"[a\n b=\"1\"] x [a<br>b]", "<p>&nbsp;<img src=\"x\">&nbsp;<img src=\"y\">&nbsp;</p>", `<pre class="language-go"><code>x</code></pre>`,
+		`<!-- wp:paragraph --><p>a &lt; b [c] <code>[d]</code></p><!-- /wp:paragraph -->`,
 	} {
 		f.Add(s, true, true)
 	}

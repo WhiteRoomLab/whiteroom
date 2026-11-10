@@ -1,0 +1,13 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "legacy",
+      "id": "b_mk9hpv5b",
+      "attrs": {
+        "html": "<div data-elementor-type=\"wp-page\" class=\"elementor\">\n<section class=\"elementor-section\"><div class=\"elementor-container\"><div class=\"elementor-widget-heading\"><h2 class=\"elementor-heading-title\">Elementor で作った見出し</h2></div><div class=\"elementor-widget-text-editor\"><p>本文欄に残っている HTML です。</p></div></div></section>\n</div>",
+        "reason": "the page was made with Elementor, which showed its own data in place of the content"
+      }
+    }
+  ]
+}

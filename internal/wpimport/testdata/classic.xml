@@ -1,0 +1,912 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- A sample of bodies written with the classic editor, in the shape of a WordPress 7.1 export, written by hand for the tests of internal/wpimport. -->
+<rss version="2.0"
+	xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:wp="http://wordpress.org/export/1.2/"
+>
+
+<channel>
+	<title>クラシックエディターの見本サイト</title>
+	<link>https://example.com</link>
+	<description>手で書いた、クラシックエディターの本文の見本です</description>
+	<pubDate>Sun, 01 Nov 2026 00:00:00 +0000</pubDate>
+	<language>ja</language>
+	<wp:wxr_version>1.2</wp:wxr_version>
+	<wp:base_site_url>https://example.com</wp:base_site_url>
+	<wp:base_blog_url>https://example.com</wp:base_blog_url>
+
+	<wp:author><wp:author_id>1</wp:author_id><wp:author_login><![CDATA[admin]]></wp:author_login><wp:author_email><![CDATA[admin@example.com]]></wp:author_email><wp:author_display_name><![CDATA[admin]]></wp:author_display_name><wp:author_first_name><![CDATA[]]></wp:author_first_name><wp:author_last_name><![CDATA[]]></wp:author_last_name></wp:author>
+
+	<generator>https://wordpress.org/?v=7.1.4</generator>
+
+	<item>
+		<title><![CDATA[会社概要]]></title>
+		<link>https://example.com/about/</link>
+		<pubDate>Mon, 05 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=100</guid>
+		<description></description>
+		<content:encoded><![CDATA[会社の概要です。ほかの記事から、このページにリンクします。]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>100</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-05 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-05 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-05 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-05 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[about]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>1</wp:menu_order>
+		<wp:post_type><![CDATA[page]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[段落と改行]]></title>
+		<link>https://example.com/2026/10/20/paragraphs/</link>
+		<pubDate>Tue, 20 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=101</guid>
+		<description></description>
+		<content:encoded><![CDATA[最初の段落です。空行で段落が分かれます。
+
+2つ目の段落です。
+1つの改行は、表示のときに、段落の中の改行になります。
+
+3つ目の段落は、<strong>太字</strong>、<em>斜体</em>、<u>下線</u>、<strike>取り消し線</strike>、<a href="https://example.com/about/">会社概要へのリンク</a>を使います。
+
+4つ目の段落は、ここで<br>改行します。
+
+5つ目と<br><br>6つ目は、br が2つ続くので、別の段落です。
+
+<p>&nbsp;</p>
+
+<p style="text-align: center; padding-left: 30px;">中央にそろえた段落です。字下げの padding-left は取り込みません。</p>
+<!--more 続きを読む-->
+続きの段落です。
+
+<!--more-->
+
+2つ目の続きを読むの印は、取り込まれずに消えます。]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>101</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-20 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-20 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-20 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-20 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[paragraphs]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[見出しとリストと引用]]></title>
+		<link>https://example.com/2026/10/21/headings/</link>
+		<pubDate>Wed, 21 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=102</guid>
+		<description></description>
+		<content:encoded><![CDATA[<h1>大見出し（h1）は h2 になります</h1>
+<h2 id="section">アンカーつきの見出し</h2>
+<h3>小見出し</h3>
+<h4 id="section">同じ id の見出しは、アンカーを取り込みません</h4>
+<h2>
+行をまたいで書いた見出し
+</h2>
+
+<ul>
+	<li>箇条書きの項目1</li>
+	<li>項目2
+<ul>
+	<li>入れ子の項目</li>
+</ul>
+</li>
+</ul>
+
+<ol start="3" reversed="reversed">
+	<li>番号つきの項目</li>
+	<li>もう1つの項目</li>
+</ol>
+
+<blockquote>
+<p>引用の段落です。</p>
+<ul>
+	<li>引用の中のリスト</li>
+</ul>
+<cite>出典：見本の本</cite>
+</blockquote>]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>102</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-21 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-21 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-21 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-21 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[headings]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[表とコード]]></title>
+		<link>https://example.com/2026/10/22/tables/</link>
+		<pubDate>Thu, 22 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=103</guid>
+		<description></description>
+		<content:encoded><![CDATA[<table border="1" width="100%" cellpadding="4">
+<thead>
+<tr>
+<th>品名</th>
+<th style="text-align: right;">価格</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>りんご</td>
+<td style="text-align: right;">120円</td>
+</tr>
+<tr>
+<td colspan="2">合計 <strong>120円</strong></td>
+</tr>
+</tbody>
+</table>
+
+<pre><code class="language-go">package main
+
+func main() {
+	println("こんにちは")
+}</code></pre>
+
+<pre class="language-php">&lt;?php
+
+echo "空行のある pre";</pre>
+
+<hr />]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>103</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-22 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-22 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-22 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-22 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[tables]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[画像とキャプション]]></title>
+		<link>https://example.com/2026/10/23/images/</link>
+		<pubDate>Fri, 23 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=104</guid>
+		<description></description>
+		<content:encoded><![CDATA[<img class="aligncenter size-medium wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a-300x200.jpg" alt="窓の外の景色" width="300" height="200" />
+
+<a href="https://example.com/wp-content/uploads/2026/10/photo-a.jpg"><img class="alignnone size-large wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a-1024x683.jpg" alt="窓の外の景色" width="1024" height="683" /></a>
+
+<img class="alignleft size-thumbnail" src="https://example.com/wp-content/uploads/2026/10/photo-b-150x150.png" alt="机の上" width="150" height="150" />画像の左に文字が回り込みます。クラスが無くても、ファイルの URL で、取り込んだ画像だとわかります。
+2行目の文字です。
+
+<img class="size-huge wp-image-131" src="https://example.com/wp-content/uploads/2026/10/photo-b.png" alt="机の上" /><br />
+画像のあとに br があり、次の行に文字があります。
+
+文の途中に <img class="wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a-150x150.jpg" alt="小さな画像"> の画像がある段落は、段落全体が legacy になります。
+
+<img src="https://other.example.org/images/banner.png" alt="ほかのサイトの画像" />
+
+<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" />
+
+[caption id="attachment_130" align="aligncenter" width="300"]<a href="https://example.com/wp-content/uploads/2026/10/photo-a.jpg"><img class="size-medium wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a-300x200.jpg" alt="窓の外の景色" width="300" height="200" /></a> 窓の外の<strong>景色</strong>のキャプションです[/caption]
+
+[caption id="attachment_131" align="alignright" width="0"]<img class="size-medium wp-image-131" src="https://example.com/wp-content/uploads/2026/10/photo-b-300x225.png" alt="机の上" /> width が 0 なので、キャプションは表示されません[/caption]
+
+[caption id="attachment_131" align="alignleft" width="300" caption="属性で書いた<em>キャプション</em>"]<img class="size-medium wp-image-131" src="https://example.com/wp-content/uploads/2026/10/photo-b-300x225.png" alt="机の上" />[/caption]]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>104</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-23 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-23 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-23 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-23 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[images]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[ギャラリー]]></title>
+		<link>https://example.com/2026/10/24/galleries/</link>
+		<pubDate>Sat, 24 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=105</guid>
+		<description></description>
+		<content:encoded><![CDATA[[gallery ids="133,130,131"]
+
+[gallery]
+
+[gallery link="none" size="large" columns="2" ids="130,131"]
+
+[gallery ids="130,999"]]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>105</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-24 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-24 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-24 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-24 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[galleries]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[埋め込みとショートコード]]></title>
+		<link>https://example.com/2026/10/25/shortcodes/</link>
+		<pubDate>Sun, 25 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=106</guid>
+		<description></description>
+		<content:encoded><![CDATA[https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+次の行が Vimeo の URL です。
+https://vimeo.com/76979871
+この行は URL のあとの文です。
+
+https://x.com/example/status/1234567890
+
+http://www.youtube.com/watch?v=abcdefghijk
+
+https://example.org/some/page
+
+[embed]https://www.youtube.com/watch?v=dQw4w9WgXcQ[/embed]
+
+[embed]https://example.org/video[/embed]
+
+<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" width="560" height="315" frameborder="0" allowfullscreen></iframe>
+
+<iframe src="http://player.vimeo.com/video/76979871" width="500" height="281"></iframe>
+
+<iframe src="https://example.org/frame"></iframe>
+
+[video src="https://example.com/wp-content/uploads/2026/10/movie.mp4"]
+
+[audio src="https://example.com/wp-content/uploads/2026/10/sound.mp3"]
+
+[playlist ids="130,131"]
+
+[my_button url="/contact/"]
+
+価格は [price id=3] 円です。
+
+[box]
+段落をまたぐ
+ショートコードです。
+
+2つ目の段落です。
+[/box]
+
+[[gallery]] と書くと、ショートコードの説明が書けます。
+
+[PR] は広告の印で、ショートコードではありません。
+
+[contact-form-7 id="a1b2c3d" title="お問い合わせ"]
+
+[contact-form 5 "古い書き方"]
+
+[contact-form-7 id="1234567" title="見つからないフォーム"]
+
+[contact-form-7 id="f00dbab" title="取り込まないフォーム"]]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>106</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-25 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-25 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-25 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-25 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[shortcodes]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[入れ物とほかの要素]]></title>
+		<link>https://example.com/2026/10/26/containers/</link>
+		<pubDate>Mon, 26 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=107</guid>
+		<description></description>
+		<content:encoded><![CDATA[<div class="notice box">
+<p>class のある div は、group になり、className が付きます。</p>
+<!--more-->
+</div>
+
+<section>
+<p>section の中の段落です。</p>
+</section>
+
+<main>
+<p>main は div の group として取り込みます。</p>
+</main>
+
+<center>中央寄せの center です。</center>
+
+<details>
+<summary>詳細を開く</summary>
+<p>details の中身です。</p>
+</details>
+
+<figure><img class="size-medium wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a-300x200.jpg" alt="窓の外の景色" /><figcaption>figure の画像と figcaption</figcaption></figure>
+
+<figure><table><tbody><tr><td>図の中の表</td></tr></tbody></table><figcaption>表のキャプション</figcaption></figure>
+
+<dl><dt>用語</dt><dd>説明</dd></dl>
+
+<form action="/search/" method="get"><input type="text" name="s"></form>
+
+<script>console.log("script");</script>
+<style>.notice { color: red; }</style>
+
+<p>文字の色は<span style="color: #ff0000;">赤</span>、背景色は<span style="background-color: #ffff00;">黄</span>、<span style="font-weight: bold;">太字</span>、<span style="text-decoration: line-through;">取り消し線</span>、<span class="hl">テーマのマーカー</span>です。</p>
+
+<p class="MsoNormal">Word から貼り付けた段落です。</p>
+
+<p class="first second">クラスが2つの段落です。</p>
+
+<p>リンクは、<a href="about/">相対のリンク</a>、<a href="/contact/">パスのリンク</a>、<a href="https://www.example.org/docs/" target="_blank" rel="noopener">外部の資料</a>、<a href="https://example.com/wp-content/uploads/2026/10/guide.pdf">ガイド（PDF）</a>です。</p>
+
+<dl><dt><a href="about/">相対のリンク</a></dt><dd>legacy の中は、絶対の URL にします。</dd></dl>
+
+<!-- 普通のコメントは、消えます -->]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>107</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-26 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-26 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-26 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-26 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[containers]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[改ページ]]></title>
+		<link>https://example.com/2026/10/27/pages/</link>
+		<pubDate>Tue, 27 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=108</guid>
+		<description></description>
+		<content:encoded><![CDATA[1ページ目の段落です。
+
+<!--nextpage-->
+
+2ページ目の段落です。
+この行は、同じ段落の続きです。
+
+<!--nextpage-->
+
+3ページ目の段落です。]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>108</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-27 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-27 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-27 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-27 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[pages]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[Elementor のページ]]></title>
+		<link>https://example.com/builder/</link>
+		<pubDate>Wed, 28 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=109</guid>
+		<description></description>
+		<content:encoded><![CDATA[<div data-elementor-type="wp-page" class="elementor">
+<section class="elementor-section"><div class="elementor-container"><div class="elementor-widget-heading"><h2 class="elementor-heading-title">Elementor で作った見出し</h2></div><div class="elementor-widget-text-editor"><p>本文欄に残っている HTML です。</p></div></div></section>
+</div>]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>109</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-28 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-28 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-28 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-28 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[builder]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>2</wp:menu_order>
+		<wp:post_type><![CDATA[page]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_elementor_edit_mode]]></wp:meta_key>
+			<wp:meta_value><![CDATA[builder]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[ブロックのある本文]]></title>
+		<link>https://example.com/2026/10/29/mixed/</link>
+		<pubDate>Thu, 29 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=110</guid>
+		<description></description>
+		<content:encoded><![CDATA[<!-- wp:paragraph -->
+<p>ブロックのある本文です。</p>
+<!-- /wp:paragraph -->
+
+ブロックの間の文字です。
+
+空行があっても、同じ段落です。
+
+<!-- wp:group -->
+<div class="wp-block-group"><!-- wp:freeform -->
+<p>グループの中のクラシックのブロックです。</p>
+<!-- /wp:freeform --></div>
+<!-- /wp:group -->
+
+<!-- wp:paragraph -->
+<p>https://www.youtube.com/watch?v=dQw4w9WgXcQ</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>[contact-form-7 id="a1b2c3d" title="お問い合わせ"]</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>文の中の [foo] は、段落ブロックを legacy にします。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:shortcode -->
+[gallery ids="130,131"]
+<!-- /wp:shortcode -->
+
+<!--more-->
+
+<!--nextpage-->
+
+<!-- wp:paragraph -->
+<p>最後の段落です。</p>
+<!-- /wp:paragraph -->]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>110</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-29 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-29 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-29 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-29 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[mixed]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[同期パターンを使う本文]]></title>
+		<link>https://example.com/2026/10/30/pattern/</link>
+		<pubDate>Fri, 30 Oct 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=111</guid>
+		<description></description>
+		<content:encoded><![CDATA[<!-- wp:block {"ref":120} /-->
+
+<!-- wp:paragraph -->
+<p>パターンのあとの段落です。</p>
+<!-- /wp:paragraph -->]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>111</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-30 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-30 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-30 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-30 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[pattern]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[見直した変換の形]]></title>
+		<link>https://example.com/2026/11/01/revised/</link>
+		<pubDate>Sun, 01 Nov 2026 01:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=112</guid>
+		<description></description>
+		<content:encoded><![CDATA[<a href="#chapter1">第1章へ移動</a>
+
+<a name="chapter1"></a>
+
+<h2>第1章</h2>
+
+<h2 id="chapter2"><a name="old-chapter2"></a>第2章</h2>
+
+<figure class="aligncenter size-large foo">
+<img class="wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a.jpg" alt="窓の外の景色" />
+<figcaption>figure に書いたキャプション</figcaption>
+</figure>
+
+<figure>
+<img class="wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a.jpg" alt="窓の外の景色" />
+<img class="wp-image-131" src="https://example.com/wp-content/uploads/2026/10/photo-b.png" alt="机の上" />
+<figcaption>2枚の写真を、1つの figure に並べたものです</figcaption>
+</figure>
+
+<p style="text-align: center;"><img class="alignnone wp-image-131" src="https://example.com/wp-content/uploads/2026/10/photo-b.png" alt="机の上" /></p>
+
+<p style="text-align: center;"><img class="wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a.jpg" alt="窓の外の景色" /><br />
+写真の下の説明です。</p>
+
+<p align="center"><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" width="560" height="315"></iframe></p>
+
+<p>色は<span style="color: #cc0000; font-size: 14pt;">赤</span>で、<strong style="letter-spacing: 2px;">太字</strong>です。</p>
+
+<pre class="language-go"><code>fmt.Println(a[i], b[key])</code></pre>
+
+<ul>
+<li style="color: #333333;" class="item" id="first">項目です</li>
+<li>次の項目です</li>
+</ul>
+
+<ul>
+<li>入れ子のある項目<ul><li>入れ子の項目</li></ul>入れ子のあとにも、文字があります</li>
+</ul>
+
+<p><img class="wp-image-130" src="https://example.com/wp-content/uploads/2026/10/photo-a.jpg" alt="窓の外の景色" />&nbsp;</p>
+
+<h3>見出しの中に続きを読むがあります<!--more--></h3>
+
+<a href="[home_url]/about/">会社概要</a>
+
+[my_shortcode
+  label="見直し"]]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>112</wp:post_id>
+		<wp:post_date><![CDATA[2026-11-01 10:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-11-01 01:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-11-01 10:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-11-01 01:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[revised]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[クラシックのパターン]]></title>
+		<link>https://example.com/?post_type=wp_block&#038;p=120</link>
+		<pubDate>Fri, 30 Oct 2026 00:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=120</guid>
+		<description></description>
+		<content:encoded><![CDATA[パターンの中のクラシックの段落です。
+2行目も、同じ段落です。wpautop はかかりません。
+
+<p>p の段落です。</p>
+<!--more-->
+<!--nextpage-->]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>120</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-30 09:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-30 00:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-30 09:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-30 00:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[classic-pattern]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[wp_block]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title><![CDATA[photo-a]]></title>
+		<link>https://example.com/photo-a/</link>
+		<pubDate>Thu, 01 Oct 2026 00:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=130</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[窓から見た<em>朝</em>の景色]]></excerpt:encoded>
+		<wp:post_id>130</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-01 09:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-01 00:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-01 09:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-01 00:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[photo-a]]></wp:post_name>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_parent>104</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url><![CDATA[https://example.com/wp-content/uploads/2026/10/photo-a.jpg]]></wp:attachment_url>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attached_file]]></wp:meta_key>
+			<wp:meta_value><![CDATA[2026/10/photo-a.jpg]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_metadata]]></wp:meta_key>
+			<wp:meta_value><![CDATA[a:4:{s:5:"width";i:1200;s:6:"height";i:800;s:4:"file";s:19:"2026/10/photo-a.jpg";s:5:"sizes";a:3:{s:9:"thumbnail";a:4:{s:4:"file";s:19:"photo-a-150x150.jpg";s:5:"width";i:150;s:6:"height";i:150;s:9:"mime-type";s:10:"image/jpeg";}s:6:"medium";a:4:{s:4:"file";s:19:"photo-a-300x200.jpg";s:5:"width";i:300;s:6:"height";i:200;s:9:"mime-type";s:10:"image/jpeg";}s:5:"large";a:4:{s:4:"file";s:20:"photo-a-1024x683.jpg";s:5:"width";i:1024;s:6:"height";i:683;s:9:"mime-type";s:10:"image/jpeg";}}}]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_image_alt]]></wp:meta_key>
+			<wp:meta_value><![CDATA[窓の外の景色]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[photo-b]]></title>
+		<link>https://example.com/photo-b/</link>
+		<pubDate>Thu, 01 Oct 2026 00:10:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=131</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>131</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-01 09:10:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-01 00:10:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-01 09:10:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-01 00:10:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[photo-b]]></wp:post_name>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_parent>104</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url><![CDATA[https://example.com/wp-content/uploads/2026/10/photo-b.png]]></wp:attachment_url>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attached_file]]></wp:meta_key>
+			<wp:meta_value><![CDATA[2026/10/photo-b.png]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_metadata]]></wp:meta_key>
+			<wp:meta_value><![CDATA[a:4:{s:5:"width";i:800;s:6:"height";i:600;s:4:"file";s:19:"2026/10/photo-b.png";s:5:"sizes";a:2:{s:9:"thumbnail";a:4:{s:4:"file";s:19:"photo-b-150x150.png";s:5:"width";i:150;s:6:"height";i:150;s:9:"mime-type";s:9:"image/png";}s:6:"medium";a:4:{s:4:"file";s:19:"photo-b-300x225.png";s:5:"width";i:300;s:6:"height";i:225;s:9:"mime-type";s:9:"image/png";}}}]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_image_alt]]></wp:meta_key>
+			<wp:meta_value><![CDATA[机の上]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[photo-c]]></title>
+		<link>https://example.com/photo-c/</link>
+		<pubDate>Thu, 01 Oct 2026 00:20:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=132</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[屋上から見た夕方の空]]></excerpt:encoded>
+		<wp:post_id>132</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-01 09:20:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-01 00:20:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-01 09:20:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-01 00:20:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[photo-c]]></wp:post_name>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_parent>105</wp:post_parent>
+		<wp:menu_order>2</wp:menu_order>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url><![CDATA[https://example.com/wp-content/uploads/2026/10/photo-c.jpg]]></wp:attachment_url>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attached_file]]></wp:meta_key>
+			<wp:meta_value><![CDATA[2026/10/photo-c.jpg]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_metadata]]></wp:meta_key>
+			<wp:meta_value><![CDATA[a:4:{s:5:"width";i:1000;s:6:"height";i:750;s:4:"file";s:19:"2026/10/photo-c.jpg";s:5:"sizes";a:2:{s:9:"thumbnail";a:4:{s:4:"file";s:19:"photo-c-150x150.jpg";s:5:"width";i:150;s:6:"height";i:150;s:9:"mime-type";s:10:"image/jpeg";}s:6:"medium";a:4:{s:4:"file";s:19:"photo-c-300x225.jpg";s:5:"width";i:300;s:6:"height";i:225;s:9:"mime-type";s:10:"image/jpeg";}}}]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[photo-d]]></title>
+		<link>https://example.com/photo-d/</link>
+		<pubDate>Thu, 01 Oct 2026 00:30:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=133</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>133</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-01 09:30:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-01 00:30:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-01 09:30:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-01 00:30:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[photo-d]]></wp:post_name>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_parent>105</wp:post_parent>
+		<wp:menu_order>1</wp:menu_order>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url><![CDATA[https://example.com/wp-content/uploads/2026/10/photo-d.jpg]]></wp:attachment_url>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attached_file]]></wp:meta_key>
+			<wp:meta_value><![CDATA[2026/10/photo-d.jpg]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_metadata]]></wp:meta_key>
+			<wp:meta_value><![CDATA[a:4:{s:5:"width";i:900;s:6:"height";i:600;s:4:"file";s:19:"2026/10/photo-d.jpg";s:5:"sizes";a:2:{s:9:"thumbnail";a:4:{s:4:"file";s:19:"photo-d-150x150.jpg";s:5:"width";i:150;s:6:"height";i:150;s:9:"mime-type";s:10:"image/jpeg";}s:6:"medium";a:4:{s:4:"file";s:19:"photo-d-300x200.jpg";s:5:"width";i:300;s:6:"height";i:200;s:9:"mime-type";s:10:"image/jpeg";}}}]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attachment_image_alt]]></wp:meta_key>
+			<wp:meta_value><![CDATA[ノートと鉛筆]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[guide]]></title>
+		<link>https://example.com/guide/</link>
+		<pubDate>Thu, 01 Oct 2026 00:40:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=134</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>134</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-01 09:40:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-01 00:40:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-01 09:40:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-01 00:40:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[guide]]></wp:post_name>
+		<wp:status><![CDATA[inherit]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url><![CDATA[https://example.com/wp-content/uploads/2026/10/guide.pdf]]></wp:attachment_url>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_wp_attached_file]]></wp:meta_key>
+			<wp:meta_value><![CDATA[2026/10/guide.pdf]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[お問い合わせ]]></title>
+		<link>https://example.com/?post_type=wpcf7_contact_form&#038;p=140</link>
+		<pubDate>Mon, 05 Oct 2026 03:00:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=140</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>140</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-05 12:00:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-05 03:00:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-05 12:00:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-05 03:00:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[contact-form-1]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[wpcf7_contact_form]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_form]]></wp:meta_key>
+			<wp:meta_value><![CDATA[<p>ご氏名 [text* full-name]</p>
+<p>連絡先 [email* mail-address]</p>
+[submit "送る"]]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_locale]]></wp:meta_key>
+			<wp:meta_value><![CDATA[ja]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_hash]]></wp:meta_key>
+			<wp:meta_value><![CDATA[a1b2c3d4e5f60718293a4b5c6d7e8f9012345678]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_old_cf7_unit_id]]></wp:meta_key>
+			<wp:meta_value><![CDATA[5]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+	<item>
+		<title><![CDATA[取り込まないフォーム]]></title>
+		<link>https://example.com/?post_type=wpcf7_contact_form&#038;p=141</link>
+		<pubDate>Mon, 05 Oct 2026 03:10:00 +0000</pubDate>
+		<dc:creator><![CDATA[admin]]></dc:creator>
+		<guid isPermaLink="false">https://example.com/?p=141</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>141</wp:post_id>
+		<wp:post_date><![CDATA[2026-10-05 12:10:00]]></wp:post_date>
+		<wp:post_date_gmt><![CDATA[2026-10-05 03:10:00]]></wp:post_date_gmt>
+		<wp:post_modified><![CDATA[2026-10-05 12:10:00]]></wp:post_modified>
+		<wp:post_modified_gmt><![CDATA[2026-10-05 03:10:00]]></wp:post_modified_gmt>
+		<wp:comment_status><![CDATA[closed]]></wp:comment_status>
+		<wp:ping_status><![CDATA[closed]]></wp:ping_status>
+		<wp:post_name><![CDATA[contact-form-2]]></wp:post_name>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type><![CDATA[wpcf7_contact_form]]></wp:post_type>
+		<wp:post_password><![CDATA[]]></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_form]]></wp:meta_key>
+			<wp:meta_value><![CDATA[<p>ご意見 [textarea opinion]</p>
+[submit "送る"]]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_locale]]></wp:meta_key>
+			<wp:meta_value><![CDATA[ja]]></wp:meta_value>
+		</wp:postmeta>
+		<wp:postmeta>
+			<wp:meta_key><![CDATA[_hash]]></wp:meta_key>
+			<wp:meta_value><![CDATA[f00dbab1c2d3e4f5061728394a5b6c7d8e9f0a1b]]></wp:meta_value>
+		</wp:postmeta>
+	</item>
+
+</channel>
+</rss>

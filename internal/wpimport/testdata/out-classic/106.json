@@ -1,0 +1,205 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "embed",
+      "id": "b_cx9lx2es",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_lbcyu8kh",
+      "content": [
+        {
+          "type": "text",
+          "text": "次の行が Vimeo の URL です。"
+        }
+      ]
+    },
+    {
+      "type": "embed",
+      "id": "b_1hi884jo",
+      "attrs": {
+        "provider": "vimeo",
+        "url": "https://vimeo.com/76979871"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_bdq4fdr0",
+      "content": [
+        {
+          "type": "text",
+          "text": "この行は URL のあとの文です。"
+        }
+      ]
+    },
+    {
+      "type": "embed",
+      "id": "b_n6dlnie3",
+      "attrs": {
+        "provider": "x",
+        "url": "https://x.com/example/status/1234567890"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_q1jkjr1a",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/watch?v=abcdefghijk"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_jtde9ssf",
+      "content": [
+        {
+          "type": "text",
+          "text": "https://example.org/some/page"
+        }
+      ]
+    },
+    {
+      "type": "embed",
+      "id": "b_0wv6ywz6",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_ns203wyr",
+      "attrs": {
+        "html": "[embed]https://example.org/video[/embed]",
+        "reason": "the URL cannot be embedded: not a URL that a provider can embed"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_9nxgttf6",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "embed",
+      "id": "b_ehos28av",
+      "attrs": {
+        "provider": "vimeo",
+        "url": "https://player.vimeo.com/video/76979871"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_wm8xq8n3",
+      "attrs": {
+        "html": "<iframe src=\"https://example.org/frame\"></iframe>",
+        "reason": "the iframe cannot be embedded: not a URL that a provider can embed"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_4jwtl295",
+      "attrs": {
+        "html": "[video src=\"https://example.com/wp-content/uploads/2026/10/movie.mp4\"]",
+        "reason": "whiteroom has no video blocks yet (stage 2)"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_46vidba9",
+      "attrs": {
+        "html": "[audio src=\"https://example.com/wp-content/uploads/2026/10/sound.mp3\"]",
+        "reason": "whiteroom has no audio blocks yet (stage 2)"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_6il4s9p4",
+      "attrs": {
+        "html": "[playlist ids=\"130,131\"]",
+        "reason": "whiteroom has no playlist blocks"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_3588xv65",
+      "attrs": {
+        "html": "[my_button url=\"/contact/\"]",
+        "reason": "the shortcode [my_button] is not converted"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_oiphe4yd",
+      "attrs": {
+        "html": "<p>価格は [price id=3] 円です。</p>",
+        "reason": "the text has the shortcode [price], which whiteroom does not run"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_r5fu3dgm",
+      "attrs": {
+        "html": "[box]<br />\n段落をまたぐ<br />\nショートコードです。</p>\n<p>2つ目の段落です。<br />\n[/box]",
+        "reason": "the shortcode [box] is not converted"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_t2hdx18u",
+      "content": [
+        {
+          "type": "text",
+          "text": "[gallery] と書くと、ショートコードの説明が書けます。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_8288m3or",
+      "content": [
+        {
+          "type": "text",
+          "text": "[PR] は広告の印で、ショートコードではありません。"
+        }
+      ]
+    },
+    {
+      "type": "form",
+      "id": "b_roi8cn2z",
+      "attrs": {
+        "form": "frm_00000000007JMRFS5ZA4P95W8G"
+      }
+    },
+    {
+      "type": "form",
+      "id": "b_e1mod98f",
+      "attrs": {
+        "form": "frm_00000000007JMRFS5ZA4P95W8G"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_dww16dax",
+      "attrs": {
+        "html": "[contact-form-7 id=\"1234567\" title=\"見つからないフォーム\"]",
+        "reason": "the form \"見つからないフォーム\" is not imported"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_66wavr0n",
+      "attrs": {
+        "html": "[contact-form-7 id=\"f00dbab\" title=\"取り込まないフォーム\"]",
+        "reason": "the form \"取り込まないフォーム\" is not imported"
+      }
+    }
+  ]
+}

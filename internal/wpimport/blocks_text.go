@@ -57,6 +57,16 @@ func childNamed(n *html.Node, name string) *html.Node {
 	return nil
 }
 
+// onlyBlankFrom reports whether n and the siblings after it are only white space and comments.
+func onlyBlankFrom(n *html.Node) bool {
+	for ; n != nil; n = n.NextSibling {
+		if n.Type != html.CommentNode && (n.Type != html.TextNode || !blank(n.Data)) {
+			return false
+		}
+	}
+	return true
+}
+
 // onlyChild returns the child of n if it is the only one that is not a comment or white space, and nil otherwise.
 func onlyChild(n *html.Node) *html.Node {
 	var only *html.Node
@@ -150,13 +160,23 @@ func (c *bodyConv) lostAlignment(b *wpblock.Block, own noteAt) {
 	c.lost(own, b.Name, lost...)
 }
 
-func convertParagraph(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
+func convertParagraph(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, at noteAt) ([]content.Block, error) {
 	root, err := c.root(b, "p")
 	if err != nil {
 		return nil, err
 	}
+	blocks, url, done, err := c.lonePiece(root, at)
+	if done || err != nil {
+		if err == nil && len(blocks) > 0 {
+			c.lostOfLone(b, root, noteAt{id: blocks[0].ID})
+		}
+		return blocks, err
+	}
 	blk := c.newBlock(content.BlockParagraph)
 	own := noteAt{id: blk.ID}
+	if url != "" {
+		c.note(own, Review, urlRecord, url)
+	}
 	if blk.Text, err = c.richText(root, false, own); err != nil {
 		return nil, err
 	}
@@ -193,8 +213,14 @@ func convertHeading(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, at not
 	if err != nil {
 		return nil, err
 	}
+	return c.headingFrom(b, root, at)
+}
+
+// headingFrom converts root, a heading element, whose settings b has.
+func (c *bodyConv) headingFrom(b *wpblock.Block, root *html.Node, at noteAt) ([]content.Block, error) {
 	blk := c.newBlock(content.BlockHeading)
 	own := noteAt{id: blk.ID}
+	var err error
 	if blk.Text, err = c.richText(root, false, own); err != nil {
 		return nil, err
 	}
@@ -362,17 +388,28 @@ func (c *bodyConv) oldItems(blk *content.Block, root *html.Node, depth int, at n
 
 // oldItem converts the element li, an item at depth: the text before the list in it, and the list.
 func (c *bodyConv) oldItem(li *html.Node, depth int) (content.Block, error) {
-	var lists []*html.Node
+	var lists, places []*html.Node
 	for ch := li.FirstChild; ch != nil; {
 		next := ch.NextSibling
 		if isElement(ch, "ul", "ol") {
 			li.RemoveChild(ch)
 			lists = append(lists, ch)
+			places = append(places, next)
 		}
 		ch = next
 	}
+	// The lists go back where they were, so that a legacy block of the HTML of a list that fails has all of it.
+	defer func() {
+		for i := len(lists) - 1; i >= 0; i-- {
+			li.InsertBefore(lists[i], places[i])
+		}
+	}()
 	if len(lists) > 1 {
 		return content.Block{}, legacyf("a list item has blocks other than one list")
+	}
+	if len(lists) == 1 && c.inClassic && !onlyBlankFrom(places[0]) {
+		// The text after the list would come before it, as the list is a block after the text of the item.
+		return content.Block{}, legacyf("a list item has content after its list")
 	}
 	item := c.newBlock(content.BlockListItem)
 	para := c.newBlock(content.BlockParagraph)
@@ -547,6 +584,11 @@ func convertCode(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt)
 	if err != nil {
 		return nil, err
 	}
+	return c.codeFrom(b, root), nil
+}
+
+// codeFrom converts root, a pre element, whose settings b has.
+func (c *bodyConv) codeFrom(b *wpblock.Block, root *html.Node) []content.Block {
 	blk := c.newBlock(content.BlockCode)
 	own := noteAt{id: blk.ID}
 	text := root
@@ -556,7 +598,7 @@ func convertCode(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt)
 	blk.Code = c.codeText(text, own)
 	blk.Attrs.Language = c.codeLanguage(text, own)
 	c.applyProps(&blk, b, root, own)
-	return []content.Block{blk}, nil
+	return []content.Block{blk}
 }
 
 // codeLanguage reads the language from the class language-<name> of the element that holds the code.
@@ -649,6 +691,12 @@ func convertTable(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, at noteA
 	if err != nil {
 		return nil, err
 	}
+	return c.tableFrom(b, root, at)
+}
+
+// tableFrom converts root, a table element or a figure element that holds one, whose settings b has.
+func (c *bodyConv) tableFrom(b *wpblock.Block, root *html.Node, at noteAt) ([]content.Block, error) {
+	var err error
 	table, figcaption := root, (*html.Node)(nil)
 	if root.Name == "figure" {
 		if table = childNamed(root, "table"); table == nil {
@@ -783,7 +831,8 @@ func tableSpan(cell *html.Node, name string) (n int, lost bool) {
 }
 
 // cellAlign reads the alignment of the text of a cell, from the attribute data-align or else the class
-// has-text-align-<value>. aligned is left, center or right; other is any other value.
+// has-text-align-<value>, or else, as the classic editor writes it, the property text-align of the style or the attribute
+// align. aligned is left, center or right; other is any other value.
 func cellAlign(cell *html.Node) (aligned, other string) {
 	v := strings.ToLower(strings.TrimSpace(attr(cell, "data-align")))
 	if v == "" {
@@ -793,6 +842,14 @@ func cellAlign(cell *html.Node) (aligned, other string) {
 				break
 			}
 		}
+	}
+	if v == "" {
+		if style := attr(cell, "style"); style != "" {
+			v = declValue(styleDecls(style), "text-align")
+		}
+	}
+	if v == "" {
+		v = strings.ToLower(strings.TrimSpace(attr(cell, "align")))
 	}
 	if v == "left" || v == "center" || v == "right" {
 		return v, ""
@@ -868,20 +925,8 @@ func embedOf(nodes []*html.Node) (provider, src string) {
 	if !isElement(frame, "iframe") {
 		return "", ""
 	}
-	src = content.NormalizeHref(attr(frame, "src"))
-	if strings.HasPrefix(src, "//") {
-		// An address without a scheme takes that of the page, which is https on the site.
-		src = "https:" + src
-	}
-	if content.CheckHref(src) != nil {
-		return "", ""
-	}
-	for _, name := range embedProviders {
-		if _, err := content.ParseEmbedURL(name, src); err == nil {
-			return name, src
-		}
-	}
-	return "", ""
+	provider, src, _ = frameEmbed(frame, false)
+	return provider, src
 }
 
 func convertGroup(c *bodyConv, doc string, b *wpblock.Block, p bodyPlace, at noteAt) ([]content.Block, error) {

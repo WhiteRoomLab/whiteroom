@@ -18,16 +18,16 @@ func init() {
 const formType = "wpcf7_contact_form"
 
 // findForm finds the form of Contact Form 7 that a shortcode or a block with the hash, the ID and the title means, as
-// Contact Form 7 does: the form whose hash starts with hash, if it has 7 or more hexadecimal digits, else the one with
-// the post ID id, else the first one with the title. It returns nil if there is none.
+// Contact Form 7 does: the form whose hash starts with hash, if it has 7 or more hexadecimal digits in lower case, else the
+// one with the post ID id, else the first one with the title. It returns nil if there is none.
 func (imp *Import) findForm(id int64, hash, title string) *wxr.Item {
 	if imp.WXR == nil {
 		return nil
 	}
 	forms := imp.contactForms()
-	if len(hash) >= 7 && strings.IndexFunc(hash, func(r rune) bool { return !asciiHex(r) }) < 0 {
-		hash = strings.ToLower(hash)
+	if len(hash) >= 7 && strings.IndexFunc(hash, func(r rune) bool { return !lowerHex(r) }) < 0 {
 		for _, it := range forms {
+			// The database matches without regard to case.
 			if h, _ := it.Meta.Get("_hash"); strings.HasPrefix(strings.ToLower(h), hash) {
 				return it
 			}
@@ -60,15 +60,29 @@ func (imp *Import) contactForms() []*wxr.Item {
 	return imp.forms
 }
 
-func asciiHex(r rune) bool {
-	return r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
+func lowerHex(r rune) bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'f'
 }
 
-func convertContactForm(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
-	a := b.Attrs
-	id, title := postID(a.Get("id")), str(a.Get("title"))
+// findFormByOldID finds the first form of Contact Form 7 in the WXR that has the number id as the one that Contact Form 7
+// before 4 gave it, which [contact-form 123 "Title"] has.
+func (imp *Import) findFormByOldID(id int64) *wxr.Item {
+	if imp.WXR == nil {
+		return nil
+	}
+	for _, it := range imp.contactForms() {
+		if v, ok := it.Meta.Get("_old_cf7_unit_id"); ok && textID(v) == id {
+			return it
+		}
+	}
+	return nil
+}
+
+// formBlock makes the form block for it, the form that was found for the shortcode or the block: id is the post ID, and
+// title the title, that it has. It is a legacy error if there is no form, or it is not imported.
+func (c *bodyConv) formBlock(it *wxr.Item, id int64, title string) (content.Block, error) {
 	formID := ""
-	if it := c.imp.findForm(id, str(a.Get("hash")), title); it != nil {
+	if it != nil {
 		if kind, to, ok := c.imp.IDs.Lookup(PostObject(it)); ok && kind == content.RefForm {
 			if _, ok := c.imp.Ref(content.RefForm, to); ok {
 				formID = to
@@ -78,19 +92,29 @@ func convertContactForm(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ 
 	if formID == "" {
 		switch {
 		case title != "":
-			return nil, legacyf("the form %q is not imported", title)
+			return content.Block{}, legacyf("the form %q is not imported", title)
 		case id >= 1:
-			return nil, legacyf("the form %d is not imported", id)
+			return content.Block{}, legacyf("the form %d is not imported", id)
 		}
-		return nil, legacyf("the form is not imported")
+		return content.Block{}, legacyf("the form is not imported")
+	}
+	blk := c.newBlock(content.BlockForm)
+	blk.Attrs.Form = formID
+	return blk, nil
+}
+
+func convertContactForm(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
+	a := b.Attrs
+	id, title := postID(a.Get("id")), str(a.Get("title"))
+	blk, err := c.formBlock(c.imp.findForm(id, str(a.Get("hash")), title), id, title)
+	if err != nil {
+		return nil, err
 	}
 	// The form is in the attributes: the HTML only has the anchor and the class.
 	root, err := c.root(b, "div")
 	if err != nil {
 		root = nil
 	}
-	blk := c.newBlock(content.BlockForm)
-	blk.Attrs.Form = formID
 	c.applyProps(&blk, b, root, noteAt{id: blk.ID})
 	return []content.Block{blk}, nil
 }

@@ -29,8 +29,7 @@ const (
 	groupClose = "<!-- /wp:test/group -->"
 	imageBlock = `<!-- wp:test/image {"id":5} /-->`
 
-	classicReason = "the HTML of the classic editor is not converted yet"
-	deepReason    = "the blocks are nested more than 32 deep"
+	deepReason = "the blocks are nested more than 32 deep"
 )
 
 func bodyItem(text string) *wxr.Item {
@@ -65,6 +64,11 @@ func legacyBlock(id, html, reason string) content.Block {
 	return content.Block{Type: content.BlockLegacy, ID: id, Attrs: content.Attrs{HTML: html, Reason: reason}}
 }
 
+// paragraphBlock is a paragraph of the text, which has no marks.
+func paragraphBlock(id, text string) content.Block {
+	return content.Block{Type: content.BlockParagraph, ID: id, Text: content.RichText{rtText(text)}}
+}
+
 // legacyLine is the short line for the review of a legacy block with the reason, at the pointer.
 func legacyLine(reason, pointer string) string {
 	return "review: " + reason + "; it is a legacy block -> " + pointer
@@ -81,6 +85,7 @@ func convertBody(t *testing.T, site *content.Site, text string) (*BodyResult, *I
 		t.Fatalf("Body = %v", err)
 	}
 	checkBody(t, imp, site, res)
+	checkNoPieces(t, text, imp, res)
 	return res, imp
 }
 
@@ -189,7 +194,6 @@ func TestBody(t *testing.T) {
 	const box = `<!-- wp:my-plugin/box {"size":3} --><div class="box">Hello</div><!-- /wp:my-plugin/box -->`
 	const dynamic = `<!-- wp:latest-posts {"postsToShow":4} /-->`
 	const (
-		shortcode = "the shortcode block is not converted yet"
 		stray     = "a block closer without an opener ends the blocks; WordPress shows the rest as it is"
 		notClosed = `review: the block "acme/a" is not closed; it ends at the end of the content -> /body/0`
 	)
@@ -217,19 +221,14 @@ func TestBody(t *testing.T) {
 			[]string{legacyLine(notConverted("acme/a"), "/body/0"), legacyLine(notConverted("acme/b"), "/body/1")}},
 		{"other HTML between blocks", "<p>Top</p>" + blockA + "\n<p>Hello</p>\n" + blockB,
 			[]content.Block{
-				legacyBlock(bodyIDs[0], "<p>Top</p>", classicReason), legacyBlock(bodyIDs[1], blockA, notConverted("acme/a")),
-				legacyBlock(bodyIDs[2], "\n<p>Hello</p>\n", classicReason), legacyBlock(bodyIDs[3], blockB, notConverted("acme/b")),
+				paragraphBlock(bodyIDs[0], "Top"), legacyBlock(bodyIDs[1], blockA, notConverted("acme/a")),
+				paragraphBlock(bodyIDs[2], "Hello"), legacyBlock(bodyIDs[3], blockB, notConverted("acme/b")),
 			}, -1,
-			[]string{
-				legacyLine(classicReason, "/body/0"), legacyLine(notConverted("acme/a"), "/body/1"),
-				legacyLine(classicReason, "/body/2"), legacyLine(notConverted("acme/b"), "/body/3"),
-			}},
+			[]string{legacyLine(notConverted("acme/a"), "/body/1"), legacyLine(notConverted("acme/b"), "/body/3")}},
 		{"content without delimiters", "<p>Hello</p>\r\n<p>World</p>\r\n",
-			[]content.Block{legacyBlock(bodyIDs[0], "<p>Hello</p>\n<p>World</p>\n", classicReason)}, -1,
-			[]string{legacyLine(classicReason, "/body/0")}},
+			[]content.Block{paragraphBlock(bodyIDs[0], "Hello"), paragraphBlock(bodyIDs[1], "World")}, -1, nil},
 		{"content with a closer and no block", "<p>Hello</p><!-- /wp:acme/a --><p>World</p>",
-			[]content.Block{legacyBlock(bodyIDs[0], "<p>Hello</p><!-- /wp:acme/a --><p>World</p>", classicReason)}, -1,
-			[]string{legacyLine(classicReason, "/body/0")}},
+			[]content.Block{paragraphBlock(bodyIDs[0], "Hello"), paragraphBlock(bodyIDs[1], "World")}, -1, nil},
 		{"a closer without an opener", blockA + "<!-- /wp:acme/b -->tail",
 			[]content.Block{a, legacyBlock(bodyIDs[1], "<!-- /wp:acme/b -->tail", stray)}, -1,
 			[]string{legacyLine(notConverted("acme/a"), "/body/0"), legacyLine(stray, "/body/1")}},
@@ -250,13 +249,15 @@ func TestBody(t *testing.T) {
 				`changed: the attributes of the block "core/nextpage" are not valid JSON; they are ignored -> /body`,
 				"skipped: 1 page break is removed; whiteroom has no page breaks -> /body",
 			}},
+		// The content of the shortcode block is converted as WordPress shows it: no attachment is imported here, so no image is.
 		{"the classic block and the shortcode block",
 			"<!-- wp:freeform --><p>Hi</p><!-- /wp:freeform -->" + `<!-- wp:shortcode -->[gallery ids="1,2"]<!-- /wp:shortcode -->`,
-			[]content.Block{
-				legacyBlock(bodyIDs[0], "<!-- wp:freeform --><p>Hi</p><!-- /wp:freeform -->", classicReason),
-				legacyBlock(bodyIDs[1], `<!-- wp:shortcode -->[gallery ids="1,2"]<!-- /wp:shortcode -->`, shortcode),
-			}, -1,
-			[]string{legacyLine(classicReason, "/body/0"), legacyLine(shortcode, "/body/1")}},
+			[]content.Block{paragraphBlock(bodyIDs[0], "Hi")}, -1,
+			[]string{
+				"skipped: the empty gallery is removed -> /body",
+				"skipped: the image 1 of the gallery is not imported: it is not an imported image -> /body",
+				"skipped: the image 2 of the gallery is not imported: it is not an imported image -> /body",
+			}},
 		{"one page break", blockA + "\n" + pageBreak + "\n" + blockB,
 			[]content.Block{a, legacyBlock(bodyIDs[1], blockB, notConverted("acme/b"))}, -1,
 			[]string{
@@ -826,9 +827,10 @@ func TestBodyLimits(t *testing.T) {
 		res, imp := convertBody(t, bodySite(false), blockA+blockB+blockC)
 		sameBlocks(t, res.Blocks, nil)
 		wantLines(t, imp.Report, bodyLines("skipped: the content is not imported: it has more than 2 blocks -> /body"))
-		res, _ = convertBody(t, bodySite(false), blockA+"<p>x</p>"+blockB)
-		if len(res.Blocks) != 3 {
-			t.Errorf("two blocks and HTML gave %d blocks, want 3", len(res.Blocks))
+		// HTML between blocks is not a block of WordPress that the parser counts; a line break in it makes no block.
+		res, _ = convertBody(t, bodySite(false), blockA+"<br>"+blockB)
+		if len(res.Blocks) != 2 {
+			t.Errorf("two blocks and HTML gave %d blocks, want 2", len(res.Blocks))
 		}
 	})
 
@@ -949,15 +951,15 @@ func TestBodyLegacyTooLong(t *testing.T) {
 	sameBlocks(t, res.Blocks, []content.Block{legacyBlock(bodyIDs[0], fits, notConverted("acme/a"))})
 	wantLines(t, imp.Report, bodyLines(legacyLine(notConverted("acme/a"), "/body/0")))
 
-	// The HTML between blocks.
+	// The HTML between blocks is a paragraph, which is a legacy block if its text is too long, and its HTML then is.
 	long := strings.Repeat("y", content.MaxTextBytes+1)
 	res, imp = convertBody(t, bodySite(false), blockB+long+blockC)
 	sameBlocks(t, res.Blocks, []content.Block{
-		legacyBlock(bodyIDs[0], blockB, notConverted("acme/b")), legacyBlock(bodyIDs[1], blockC, notConverted("acme/c")),
+		legacyBlock(bodyIDs[0], blockB, notConverted("acme/b")), legacyBlock(bodyIDs[2], blockC, notConverted("acme/c")),
 	})
 	wantLines(t, imp.Report, bodyLines(
 		legacyLine(notConverted("acme/b"), "/body/0"), legacyLine(notConverted("acme/c"), "/body/1"),
-		fmt.Sprintf("skipped: the HTML between blocks is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(long), content.MaxTextBytes)))
+		fmt.Sprintf("skipped: the element <p> is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(long)+len("<p></p>"), content.MaxTextBytes)))
 
 	// A block.
 	block := open + filler + "yyyyyyy" + closer
@@ -967,12 +969,12 @@ func TestBodyLegacyTooLong(t *testing.T) {
 		legacyLine(notConverted("acme/b"), "/body/0"),
 		fmt.Sprintf(`skipped: the block "acme/a" is not imported: its HTML is too long: %d bytes (max %d) -> /body`, len(block), content.MaxTextBytes)))
 
-	// The content of the classic editor, which has no block, is all of the content.
+	// The content of the classic editor, which has no block, is paragraphs, and an element that is too long is not imported.
 	classic := "<p>" + strings.Repeat("x", content.MaxTextBytes) + "</p>"
 	res, imp = convertBody(t, bodySite(false), classic)
 	sameBlocks(t, res.Blocks, nil)
 	wantLines(t, imp.Report, bodyLines(
-		fmt.Sprintf("skipped: the content of the classic editor is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(classic), content.MaxTextBytes)))
+		fmt.Sprintf("skipped: the element <p> is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(classic), content.MaxTextBytes)))
 
 	// What comes after a closer without an opener is the rest of the content, which WordPress shows as it is.
 	rest := "<!-- /wp:acme/c -->" + strings.Repeat("y", content.MaxTextBytes)
@@ -983,17 +985,16 @@ func TestBodyLegacyTooLong(t *testing.T) {
 		fmt.Sprintf("skipped: the rest of the content after a block closer without an opener is not imported: its HTML is too long: %d bytes (max %d) -> /body",
 			len(rest), content.MaxTextBytes)))
 
-	// The content of a synced pattern that has no block is HTML all the same, but it is not the content of the classic editor,
-	// and the post is not lost with it.
+	// The same for the content of a synced pattern that has no block, and the post is not lost with it.
 	e := patternsExport(1, func(int) string { return classic })
 	imp = New("site.xml", e, NewReport(Info{File: "site.xml"}))
 	_, patterned := limitedBody(t, imp, wpPara("a")+wpRef(1)+wpPara("b"))
 	sameBlocks(t, patterned.Blocks, []content.Block{
 		{Type: content.BlockParagraph, ID: bodyIDs[0], Text: content.RichText{rtText("a")}},
-		{Type: content.BlockParagraph, ID: bodyIDs[1], Text: content.RichText{rtText("b")}},
+		{Type: content.BlockParagraph, ID: bodyIDs[2], Text: content.RichText{rtText("b")}},
 	})
 	wantLines(t, imp.Report, bodyLines(
-		fmt.Sprintf("skipped: the content of the synced pattern is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(classic), content.MaxTextBytes),
+		fmt.Sprintf("skipped: the element <p> is not imported: its HTML is too long: %d bytes (max %d) -> /body", len(classic), content.MaxTextBytes),
 		`changed: the synced pattern 1 ("Pattern 1") is copied here; whiteroom has no shared blocks yet (stage 2) -> /body`))
 }
 
