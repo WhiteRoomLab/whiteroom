@@ -1,0 +1,35 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_v9jt3ori",
+      "content": [
+        {
+          "type": "text",
+          "text": "パターンの中のクラシックの段落です。 2行目も、同じ段落です。wpautop はかかりません。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_ky3kqc0o",
+      "content": [
+        {
+          "type": "text",
+          "text": "p の段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_9tt93pj8",
+      "content": [
+        {
+          "type": "text",
+          "text": "パターンのあとの段落です。"
+        }
+      ]
+    }
+  ]
+}

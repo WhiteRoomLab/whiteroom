@@ -1,0 +1,344 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "group",
+      "id": "b_lvc90c0a",
+      "className": "notice",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_tr263gkb",
+          "content": [
+            {
+              "type": "text",
+              "text": "class のある div は、group になり、className が付きます。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_azb8ggfl",
+      "attrs": {
+        "tagName": "section"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_8ooo8l8k",
+          "content": [
+            {
+              "type": "text",
+              "text": "section の中の段落です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_5bi872lf",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_psx7ojho",
+          "content": [
+            {
+              "type": "text",
+              "text": "main は div の group として取り込みます。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_ky7gizhu",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_8ojjgzmw",
+          "content": [
+            {
+              "type": "text",
+              "text": "中央寄せの center です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_d1t529oy",
+      "attrs": {
+        "label": "詳細を開く"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_62uqbdul",
+          "content": [
+            {
+              "type": "text",
+              "text": "details の中身です。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "id": "b_ezqpntoj",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "caption": [
+          {
+            "type": "text",
+            "text": "figure の画像と figcaption"
+          }
+        ],
+        "size": "medium"
+      }
+    },
+    {
+      "type": "table",
+      "id": "b_19lmqdwu",
+      "attrs": {
+        "caption": [
+          {
+            "type": "text",
+            "text": "表のキャプション"
+          }
+        ]
+      },
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "図の中の表"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_tqvvyt93",
+      "attrs": {
+        "html": "<dl>\n<dt>用語</dt>\n<dd>説明</dd>\n</dl>",
+        "reason": "the element <dl> is not converted"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_juggdsjg",
+      "attrs": {
+        "html": "<form action=\"/search/\" method=\"get\"><input type=\"text\" name=\"s\"></form>",
+        "reason": "the element <form> is not converted"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_fbq9wa9a",
+      "content": [
+        {
+          "type": "text",
+          "text": "文字の色は"
+        },
+        {
+          "type": "text",
+          "text": "赤",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "color": {
+                  "value": "#ff0000"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、背景色は"
+        },
+        {
+          "type": "text",
+          "text": "黄",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "backgroundColor": {
+                  "value": "#ffff00"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "太字",
+          "marks": [
+            {
+              "type": "bold"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "取り消し線",
+          "marks": [
+            {
+              "type": "strike"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "テーマのマーカー",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "variant": "marker"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_0wxol16o",
+      "className": "MsoNormal",
+      "content": [
+        {
+          "type": "text",
+          "text": "Word から貼り付けた段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_rz4yvyo5",
+      "className": "first",
+      "content": [
+        {
+          "type": "text",
+          "text": "クラスが2つの段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_v6us1w1x",
+      "content": [
+        {
+          "type": "text",
+          "text": "リンクは、"
+        },
+        {
+          "type": "text",
+          "text": "相対のリンク",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "/2026/10/26/containers/about/"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "パスのリンク",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "/contact/"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "外部の資料",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://www.example.org/docs/",
+                "newTab": true
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "ガイド（PDF）",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "media": "med_0000000000C9RTKN11DM17VA6Z"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "です。"
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_faljyt2l",
+      "attrs": {
+        "html": "<dl>\n<dt><a href=\"https://example.com/2026/10/26/containers/about/\">相対のリンク</a></dt>\n<dd>legacy の中は、絶対の URL にします。</dd>\n</dl>",
+        "reason": "the element <dl> is not converted"
+      }
+    }
+  ]
+}

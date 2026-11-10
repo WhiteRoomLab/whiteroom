@@ -1,0 +1,163 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "image",
+      "id": "b_z36wlomk",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "size": "medium",
+        "align": "center"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_0biefurg",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "link": {
+          "media": "med_0000000000G76GCE25NPG7XVB8"
+        },
+        "size": "large"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_bkmre1xi",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "alt": "机の上",
+        "size": "thumbnail",
+        "align": "left"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_60oz0w6o",
+      "content": [
+        {
+          "type": "text",
+          "text": "画像の左に文字が回り込みます。クラスが無くても、ファイルの URL で、取り込んだ画像だとわかります。"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "2行目の文字です。"
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "id": "b_a15g0r2f",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "alt": "机の上"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_vrrbwtq1",
+      "content": [
+        {
+          "type": "text",
+          "text": "画像のあとに br があり、次の行に文字があります。"
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_gbqhyu7w",
+      "attrs": {
+        "html": "<p>文の途中に <img class=\"wp-image-130\" src=\"https://example.com/wp-content/uploads/2026/10/photo-a-150x150.jpg\" alt=\"小さな画像\"> の画像がある段落は、段落全体が legacy になります。</p>",
+        "reason": "the text has <img>, which rich text cannot have"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_lgx0ygm4",
+      "attrs": {
+        "html": "<img src=\"https://other.example.org/images/banner.png\" alt=\"ほかのサイトの画像\">",
+        "reason": "the image is not an imported attachment"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_75q73h83",
+      "attrs": {
+        "html": "<img src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\" alt=\"\">",
+        "reason": "the image is not an imported attachment"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_73gwrbbm",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "caption": [
+          {
+            "type": "text",
+            "text": "窓の外の"
+          },
+          {
+            "type": "text",
+            "text": "景色",
+            "marks": [
+              {
+                "type": "bold"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "のキャプションです"
+          }
+        ],
+        "link": {
+          "media": "med_0000000000G76GCE25NPG7XVB8"
+        },
+        "size": "medium",
+        "align": "center"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_2z1rjndd",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "alt": "机の上",
+        "size": "medium",
+        "align": "right"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_2a4dfgz3",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "alt": "机の上",
+        "caption": [
+          {
+            "type": "text",
+            "text": "属性で書いた"
+          },
+          {
+            "type": "text",
+            "text": "キャプション",
+            "marks": [
+              {
+                "type": "italic"
+              }
+            ]
+          }
+        ],
+        "size": "medium",
+        "align": "left"
+      }
+    }
+  ]
+}

@@ -28,6 +28,8 @@ type Import struct {
 	// forms are the forms of Contact Form 7 in the WXR, collected when a body first looks for one; formsRead tells that.
 	forms     []*wxr.Item
 	formsRead bool
+	// attachments are the attachments of the WXR by the post ID of their parent, collected when a gallery first needs them.
+	attachments map[int64][]*wxr.Item
 }
 
 type importRef struct {

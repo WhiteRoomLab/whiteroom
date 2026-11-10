@@ -1,0 +1,9 @@
+104: /8/attrs/html: removed <img> element: invalid src "data:image/gif;base64,R0lGODlhAQABAAAAACw=": scheme "data" is not allowed
+105: /4/attrs/alt: no alt in ja: neither the block nor its medium has one; rendered without the alt attribute
+106: /11/attrs/html: removed <iframe> element and its content
+107: /8/attrs/html: removed <form> element, keeping its content
+107: /8/attrs/html: removed <input> element
+107: /9/content/1/marks/0/attrs/color/value: the theme allows only presets for color; ignored
+107: /9/content/3/marks/0/attrs/backgroundColor/value: the theme allows only presets for color; ignored
+109: /0/attrs/html: removed data-elementor-type attribute of <div>
+112: /9/content/1/marks/0/attrs/color/value: the theme allows only presets for color; ignored

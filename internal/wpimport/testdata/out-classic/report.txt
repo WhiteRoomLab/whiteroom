@@ -1,0 +1,57 @@
+classic.xml:49:2: skipped: item 101 (post "段落と改行"): lost style.padding-left of <p>; whiteroom has no such settings -> revisions/rev_0000000000VZ0BEW56YVJFS43Y.json#/body/7
+classic.xml:49:2: skipped: item 101 (post "段落と改行"): the text "続きを読む" of the more link is not imported -> revisions/rev_0000000000VZ0BEW56YVJFS43Y.json#/body
+classic.xml:92:2: skipped: item 102 (post "見出しとリストと引用"): lost reversed of the block "core/list"; whiteroom has no such settings -> revisions/rev_0000000000XMFM39HD0M0CASFG.json#/body/6
+classic.xml:92:2: skipped: item 102 (post "見出しとリストと引用"): the anchor "section" is not imported: another block has it -> revisions/rev_0000000000XMFM39HD0M0CASFG.json#/body/3
+classic.xml:92:2: changed: item 102 (post "見出しとリストと引用"): the heading level 1 is 2 here; h1 is for the title -> revisions/rev_0000000000XMFM39HD0M0CASFG.json#/body/0
+classic.xml:144:2: skipped: item 103 (post "表とコード"): lost border, width, cellpadding of <table>; whiteroom has no such settings -> revisions/rev_0000000000082KD7QY5EZM6544.json#/body/0
+classic.xml:196:2: skipped: item 104 (post "画像とキャプション"): the image size "huge" is not imported: blocks.imageSizes maps it to nothing -> revisions/rev_00000000002NKJ53NYAXAEZW0Q.json#/body/4
+classic.xml:196:2: review: item 104 (post "画像とキャプション"): the image is not an imported attachment; it is a legacy block -> revisions/rev_00000000002NKJ53NYAXAEZW0Q.json#/body/7
+classic.xml:196:2: review: item 104 (post "画像とキャプション"): the image is not an imported attachment; it is a legacy block -> revisions/rev_00000000002NKJ53NYAXAEZW0Q.json#/body/8
+classic.xml:196:2: review: item 104 (post "画像とキャプション"): the text has <img>, which rich text cannot have; it is a legacy block -> revisions/rev_00000000002NKJ53NYAXAEZW0Q.json#/body/6
+classic.xml:240:2: skipped: item 105 (post "ギャラリー"): lost columns of the shortcode [gallery]; whiteroom has no such settings -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/5
+classic.xml:240:2: skipped: item 105 (post "ギャラリー"): the image 999 of the gallery is not imported: it is not an imported image -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body
+classic.xml:240:2: changed: item 105 (post "ギャラリー"): the gallery is 1 image here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/7
+classic.xml:240:2: changed: item 105 (post "ギャラリー"): the gallery is 2 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/3
+classic.xml:240:2: changed: item 105 (post "ギャラリー"): the gallery is 2 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/5
+classic.xml:240:2: changed: item 105 (post "ギャラリー"): the gallery is 3 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/0
+classic.xml:240:2: review: item 105 (post "ギャラリー"): the image has no alt; set alt, or decorative for a decorative image -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/body/4/attrs/alt
+classic.xml:270:2: changed: item 106 (post "埋め込みとショートコード"): the iframe is an embed block here -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/10
+classic.xml:270:2: changed: item 106 (post "埋め込みとショートコード"): the iframe is an embed block here -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/9
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the URL "https://example.org/some/page" on its own line is text here; WordPress may have shown it as an embed, and whiteroom embeds only YouTube, Vimeo and X -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/6
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the URL cannot be embedded: not a URL that a provider can embed; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/8
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the form "取り込まないフォーム" is not imported; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/23
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the form "見つからないフォーム" is not imported; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/22
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the iframe cannot be embedded: not a URL that a provider can embed; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/11
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the shortcode [box] is not converted; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/17
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the shortcode [my_button] is not converted; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/15
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): the text has the shortcode [price], which whiteroom does not run; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/16
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): whiteroom has no audio blocks yet (stage 2); it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/13
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): whiteroom has no playlist blocks; it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/14
+classic.xml:270:2: review: item 106 (post "埋め込みとショートコード"): whiteroom has no video blocks yet (stage 2); it is a legacy block -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/body/12
+classic.xml:343:2: skipped: item 107 (post "入れ物とほかの要素"): removed <script>, <style> with their content -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body
+classic.xml:343:2: skipped: item 107 (post "入れ物とほかの要素"): the class "box" is not imported: whiteroom blocks have one class name -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/0
+classic.xml:343:2: skipped: item 107 (post "入れ物とほかの要素"): the class "second" is not imported: whiteroom blocks have one class name -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/11
+classic.xml:343:2: skipped: item 107 (post "入れ物とほかの要素"): the more tag is removed: it is not at the top of the content -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/0/content
+classic.xml:343:2: changed: item 107 (post "入れ物とほかの要素"): the details block is a group here, always open; whiteroom has no details blocks yet (stage 2) -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/4
+classic.xml:343:2: changed: item 107 (post "入れ物とほかの要素"): the group's <center> is a <div> here -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/3
+classic.xml:343:2: changed: item 107 (post "入れ物とほかの要素"): the group's <main> is a <div> here -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/2
+classic.xml:343:2: review: item 107 (post "入れ物とほかの要素"): the element <dl> is not converted; it is a legacy block -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/13
+classic.xml:343:2: review: item 107 (post "入れ物とほかの要素"): the element <dl> is not converted; it is a legacy block -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/7
+classic.xml:343:2: review: item 107 (post "入れ物とほかの要素"): the element <form> is not converted; it is a legacy block -> revisions/rev_00000000001BN51C6KX5P9X64G.json#/body/8
+classic.xml:408:2: skipped: item 108 (post "改ページ"): 2 page breaks are removed; whiteroom has no page breaks -> revisions/rev_0000000000R2WQTM3QPG57T5S7.json#/body
+classic.xml:441:2: review: item 109 (page "Elementor のページ"): the page was made with Elementor, which showed its own data in place of the content; it is a legacy block -> revisions/rev_0000000000YXQ0ZNA6P2NQ1YGT.json#/body/0
+classic.xml:471:2: skipped: item 110 (post "ブロックのある本文"): 1 page break is removed; whiteroom has no page breaks -> revisions/rev_00000000001FFGE6T21C7S8TJ1.json#/body
+classic.xml:471:2: changed: item 110 (post "ブロックのある本文"): the gallery is 2 images here; whiteroom has no gallery blocks yet (stage 2) -> revisions/rev_00000000001FFGE6T21C7S8TJ1.json#/body/6
+classic.xml:471:2: review: item 110 (post "ブロックのある本文"): the text has the shortcode [foo], which whiteroom does not run; it is a legacy block -> revisions/rev_00000000001FFGE6T21C7S8TJ1.json#/body/5
+classic.xml:531:2: changed: item 111 (post "同期パターンを使う本文"): the synced pattern 120 ("クラシックのパターン") is copied here; whiteroom has no shared blocks yet (stage 2) -> revisions/rev_0000000000YFKZMK4FPZB7FVAY.json#/body/0
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): lost align of <p>; whiteroom has no such settings -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/8
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): lost style.color, class, id of <ul>; whiteroom has no such settings -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/11
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): lost style.font-size of <span>; whiteroom has no such settings -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/9
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): lost style.letter-spacing of <strong>; whiteroom has no such settings -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/9
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): the anchor "old-chapter2" is not imported: the block has the anchor "chapter2" -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/2
+classic.xml:559:2: skipped: item 112 (post "見直した変換の形"): the more tag is removed: it is not at the top of the content -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/14
+classic.xml:559:2: changed: item 112 (post "見直した変換の形"): the iframe is an embed block here -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/8
+classic.xml:559:2: review: item 112 (post "見直した変換の形"): a list item has content after its list; it is a legacy block -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/12
+classic.xml:559:2: review: item 112 (post "見直した変換の形"): the address "[home_url]/about/" has a shortcode, which whiteroom does not run -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/15
+classic.xml:559:2: review: item 112 (post "見直した変換の形"): the element <figure> is not converted; it is a legacy block -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/4
+classic.xml:559:2: review: item 112 (post "見直した変換の形"): the shortcode [my_shortcode] is not converted; it is a legacy block -> revisions/rev_0000000000S2YRP78PBRPMDGX8.json#/body/16

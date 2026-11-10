@@ -43,6 +43,11 @@ func (c *bodyConv) codeText(n *html.Node, at noteAt) string {
 	var b strings.Builder
 	var kept orderedSet
 	for d := n.FirstChild; d != nil; d = after(n, d, true) {
+		if pc := c.pieceOf(d); pc != nil {
+			// A pre that holds a shortcode is a legacy block before this, so the piece is a URL.
+			b.WriteString(pc.url)
+			continue
+		}
 		switch {
 		case d.Type == html.TextNode:
 			b.WriteString(d.Data)
@@ -98,12 +103,14 @@ type richMark struct {
 	by string
 }
 
-// richFrame is an element that the reader is in: the marks from before it, and whether it sets its content apart.
+// richFrame is an element that the reader is in: the marks from before it, whether it sets its content apart, and whether it is
+// code.
 type richFrame struct {
 	node     *html.Node
 	marks    []richMark
 	plain    []content.Mark
 	boundary bool
+	code     bool
 }
 
 // richReader reads the content of an element into tokens, which assemble then makes text of. plain is set to leave out
@@ -119,8 +126,22 @@ type richReader struct {
 	cur    []content.Mark // the same, as the marks of a token
 	tokens []richToken
 	size   int // the bytes of text read so far, with richPieceBytes more for each piece of text and each break
+	// codeDepth is how many pre and code elements the reader is in. In them, only the shortcodes that WordPress registers are
+	// shortcodes.
+	codeDepth int
+	// consumed are the properties of the style of the element being read that its marks took.
+	consumed []string
+	// styleLost are the properties of the styles of the elements of the HTML of the classic editor that no mark took, by element.
+	styleLost  []tagItems
+	styleIndex map[string]int
 
-	kept, removed, nested, blocking, colorsLost orderedSet
+	kept, removed, nested, blocking, colorsLost, shortcodes orderedSet
+}
+
+// tagItems are the things that are noted of the elements with the name tag, such as <span>.
+type tagItems struct {
+	tag   string
+	items orderedSet
 }
 
 // Elements that are dropped with what they hold.
@@ -142,7 +163,7 @@ var blockRich = map[string]bool{
 	"p": true, "div": true, "h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true, "blockquote": true,
 	"pre": true, "address": true, "figure": true, "figcaption": true, "section": true, "article": true, "aside": true,
 	"header": true, "footer": true, "nav": true, "main": true, "details": true, "summary": true, "li": true, "dt": true,
-	"dd": true,
+	"dd": true, "center": true,
 }
 
 func (c *bodyConv) readRich(n *html.Node, verse, plain bool, at noteAt) (content.RichText, error) {
@@ -174,10 +195,20 @@ func (c *bodyConv) readRich(n *html.Node, verse, plain bool, at noteAt) (content
 	if len(r.blocking.items) > 0 {
 		return nil, legacyf("the text has %s, which rich text cannot have", strings.Join(r.blocking.items, ", "))
 	}
+	if len(r.shortcodes.items) > 0 {
+		return nil, legacyf("%s", reasonShortcodes(r.shortcodes.items))
+	}
 	c.noteItems(at, Changed, "kept only the text of ", "", r.kept.items...)
 	c.noteItems(at, Skipped, "removed ", " with their content", r.removed.items...)
 	c.noteItems(at, Changed, "removed ", "", r.nested.items...)
 	c.noteItems(at, Skipped, "the colors of ", " are not imported: a highlight with a variant has no colors", r.colorsLost.items...)
+	for _, l := range r.styleLost {
+		keys := make([]string, len(l.items.items))
+		for i, item := range l.items.items {
+			keys[i] = keyText(item)
+		}
+		c.noteItems(at, Skipped, "lost ", " of "+l.tag+lostTail, keys...)
+	}
 	return r.assemble(), nil
 }
 
@@ -185,17 +216,21 @@ func (c *bodyConv) readRich(n *html.Node, verse, plain bool, at noteAt) (content
 // link).
 func (r *richReader) enter(n *html.Node) (bool, error) {
 	if n.Type == html.TextNode {
-		if n.Data != "" {
-			r.size += len(n.Data) + richPieceBytes
+		if data := r.textOf(n.Data); data != "" {
+			r.size += len(data) + richPieceBytes
 			if r.verse {
 				// Each line of a verse is a piece and a break; a CR and an LF together are one line break.
-				r.size += richPieceBytes * (strings.Count(n.Data, "\n") + strings.Count(n.Data, "\r") - strings.Count(n.Data, "\r\n"))
+				r.size += richPieceBytes * (strings.Count(data, "\n") + strings.Count(data, "\r") - strings.Count(data, "\r\n"))
 			}
-			r.tokens = append(r.tokens, richToken{kind: tokText, text: strings.ToValidUTF8(n.Data, string(rune(0xFFFD))), marks: r.cur})
+			r.tokens = append(r.tokens, richToken{kind: tokText, text: strings.ToValidUTF8(data, string(rune(0xFFFD))), marks: r.cur})
 		}
 		return false, nil
 	}
 	if n.Type != html.ElementNode {
+		return false, nil
+	}
+	if pc := r.c.pieceOf(n); pc != nil {
+		r.piece(pc)
 		return false, nil
 	}
 	tag := tagText(n.Name)
@@ -216,7 +251,8 @@ func (r *richReader) enter(n *html.Node) (bool, error) {
 		r.blocking.add(tag)
 		return false, nil
 	}
-	frame := richFrame{node: n, marks: r.marks, plain: r.cur, boundary: blockRich[n.Name]}
+	frame := richFrame{node: n, marks: r.marks, plain: r.cur, boundary: blockRich[n.Name], code: n.Name == "pre" || n.Name == "code"}
+	r.consumed = r.consumed[:0]
 	if frame.boundary {
 		r.kept.add(tag)
 		r.tokens = append(r.tokens, richToken{kind: tokBoundary})
@@ -232,8 +268,88 @@ func (r *richReader) enter(n *html.Node) (bool, error) {
 			r.kept.add(tag)
 		}
 	}
+	if r.c.inClassic {
+		r.loseStyle(n, tag)
+	}
+	if frame.code {
+		r.codeDepth++
+	}
 	r.frames = append(r.frames, frame)
 	return true, nil
+}
+
+// maxStyleNotes is how many elements and how many properties of each a text keeps of what it notes of the styles that no mark
+// took: a text can have any number, and the note names only the first few.
+const maxStyleNotes = 100
+
+// loseStyle notes the properties of the style of the element n, called tag, that no mark took.
+func (r *richReader) loseStyle(n *html.Node, tag string) {
+	style := attr(n, "style")
+	if style == "" {
+		return
+	}
+	for _, name := range styleNames(style) {
+		if slices.Contains(r.consumed, name) {
+			continue
+		}
+		i, ok := r.styleIndex[tag]
+		if !ok {
+			if len(r.styleLost) >= maxStyleNotes {
+				return
+			}
+			if r.styleIndex == nil {
+				r.styleIndex = make(map[string]int)
+			}
+			i = len(r.styleLost)
+			r.styleIndex[tag] = i
+			r.styleLost = append(r.styleLost, tagItems{tag: tag})
+		}
+		if len(r.styleLost[i].items.items) < maxStyleNotes {
+			r.styleLost[i].items.add("style." + name)
+		}
+	}
+}
+
+// textOf returns the text of a text node. The shortcodes in the text of the block editor are noted, as WordPress runs them,
+// and the escaped ones ([[foo]]) are the text of the shortcode. The text of the HTML of the classic editor has none: the
+// shortcodes were found before, and what is left is text.
+func (r *richReader) textOf(s string) string {
+	if r.c.classicDepth > 0 || !strings.Contains(s, "[") {
+		return s
+	}
+	isName := textShortcodeFilter()
+	if r.codeDepth > 0 {
+		isName = registeredOnly(isName)
+	}
+	found := findTextShortcodes(s, isName)
+	if len(found) == 0 {
+		return s
+	}
+	var b strings.Builder
+	pos := 0
+	for _, sc := range found {
+		if sc.Open && sc.Close {
+			b.WriteString(s[pos:sc.Start])
+			b.WriteString(s[sc.Start+1 : sc.End-1])
+			pos = sc.End
+			continue
+		}
+		r.shortcodes.add("[" + sc.Name + "]")
+	}
+	b.WriteString(s[pos:])
+	return b.String()
+}
+
+// piece reads an element that stands for a shortcode or a URL in the HTML of the classic editor: a shortcode that is in the
+// text cannot be text; a URL is text, and WordPress may have embedded it.
+func (r *richReader) piece(pc *classicPiece) {
+	if pc.kind == pieceShortcode {
+		r.shortcodes.add("[" + pc.sc.Name + "]")
+		return
+	}
+	r.size += len(pc.url) + richPieceBytes
+	r.tokens = append(r.tokens, richToken{kind: tokText, text: strings.ToValidUTF8(pc.url, string(rune(0xFFFD))), marks: r.cur})
+	r.c.note(r.at, Review, urlRecord, pc.url)
 }
 
 // leave reads the end of n.
@@ -245,6 +361,9 @@ func (r *richReader) leave(n *html.Node) {
 	f := r.frames[last]
 	r.frames = r.frames[:last]
 	r.marks, r.cur = f.marks, f.plain
+	if f.code {
+		r.codeDepth--
+	}
 	if f.boundary {
 		r.tokens = append(r.tokens, richToken{kind: tokBoundary})
 	}
@@ -277,30 +396,127 @@ func (r *richReader) marksOf(n *html.Node, tag string) (add []richMark, handled 
 		add = mark(content.MarkSuperscript)
 	case "a":
 		href := attr(n, "href")
+		if r.c.inClassic && strings.Contains(href, "[") && len(findTextShortcodes(href, textShortcodeFilter())) > 0 {
+			r.c.note(r.at, Review, "the address %q has a shortcode, which whiteroom does not run", href)
+		}
 		l, err := r.c.link(href, attr(n, "target"), attr(n, "rel"), r.at)
 		if err != nil {
 			return nil, false, err
 		}
 		if l == nil {
 			// c.link notes the address that it leaves out; an anchor with no address has none.
-			return nil, strings.TrimSpace(href) != "", nil
+			noAddress := strings.TrimSpace(href) == ""
+			return nil, !noAddress || r.target(n), nil
 		}
 		add = []richMark{{Mark: content.Mark{Type: content.MarkLink, Link: l}, by: tag}}
 	case "mark":
 		if h := r.highlight(n); h != nil {
 			add = []richMark{{Mark: content.Mark{Type: content.MarkHighlight, Highlight: h}, by: tag}}
+			r.useColors(h)
 		}
 	case "span":
-		if decls := styleDecls(attr(n, "style")); strings.EqualFold(decls["text-decoration"], "underline") {
-			add = mark(content.MarkUnderline)
+		decls := styleDecls(attr(n, "style"))
+		decoration := strings.Fields(declValue(decls, "text-decoration"))
+		if slices.Contains(decoration, "underline") {
+			add = append(add, mark(content.MarkUnderline)...)
+			r.consumed = append(r.consumed, "text-decoration")
 		}
+		if slices.Contains(decoration, "line-through") {
+			add = append(add, mark(content.MarkStrike)...)
+			r.consumed = append(r.consumed, "text-decoration")
+		}
+		if heavy(declValue(decls, "font-weight")) {
+			add = append(add, mark(content.MarkBold)...)
+			r.consumed = append(r.consumed, "font-weight")
+		}
+		if style, _, _ := strings.Cut(declValue(decls, "font-style"), " "); style == "italic" || style == "oblique" {
+			add = append(add, mark(content.MarkItalic)...)
+			r.consumed = append(r.consumed, "font-style")
+		}
+		var h *content.Highlight
 		if hasClass(n, "has-inline-color") || r.mappedClass(n) {
-			if h := r.highlight(n); h != nil {
-				add = append(add, richMark{Mark: content.Mark{Type: content.MarkHighlight, Highlight: h}, by: tag})
-			}
+			h = r.highlight(n)
+		} else {
+			h = writtenHighlight(decls)
+		}
+		if h != nil {
+			add = append(add, richMark{Mark: content.Mark{Type: content.MarkHighlight, Highlight: h}, by: tag})
+			r.useColors(h)
 		}
 	}
 	return add, false, nil
+}
+
+// useColors notes that the highlight h took the colors that the style of the element being read wrote: a variant has no colors,
+// which is noted already.
+func (r *richReader) useColors(h *content.Highlight) {
+	if h.Variant != "" || h.Color.Value != "" {
+		r.consumed = append(r.consumed, "color")
+	}
+	if h.Variant != "" || h.BackgroundColor.Value != "" {
+		r.consumed = append(r.consumed, "background-color")
+	}
+}
+
+// target notes the a element n, which has no address, as the place that a link goes to, if it has an id or a name and the HTML
+// is that of the classic editor: its id, or else its name, is to be the anchor of the block that holds it (see bodyConv.targets).
+// It reports whether it did.
+func (r *richReader) target(n *html.Node) bool {
+	c := r.c
+	id, name := attr(n, "id"), attr(n, "name")
+	if !c.inClassic || id == "" && name == "" {
+		return false
+	}
+	if c.targetLeft <= 0 {
+		c.targetsCut = true
+		return false
+	}
+	c.targetLeft--
+	r.size += richPieceBytes
+	if id == "" {
+		id, name = name, ""
+	}
+	c.targets = append(c.targets, id)
+	if name != "" && name != id {
+		c.note(r.at, Skipped, "the anchor %q is not imported: the element has the id %q", name, id)
+	}
+	return true
+}
+
+// heavy reports whether the value of font-weight is bold, bolder, or a weight of 600 to 900.
+func heavy(v string) bool {
+	if v == "bold" || v == "bolder" {
+		return true
+	}
+	n, err := strconv.Atoi(v)
+	return err == nil && n >= 600 && n <= 900
+}
+
+// declValue returns the value of the property of the declarations of a style, in lower case and without !important.
+func declValue(decls map[string]string, property string) string {
+	v, _, _ := strings.Cut(strings.ToLower(decls[property]), "!")
+	return strings.TrimSpace(v)
+}
+
+// writtenColor returns the color that the declarations write for the property, if it is not clear and the rules of the colors
+// (6.5.3) accept it.
+func writtenColor(decls map[string]string, property string) string {
+	if v := decls[property]; v != "" && !transparent(v) && content.CheckColor(v) == nil {
+		return v
+	}
+	return ""
+}
+
+// writtenHighlight returns the highlight that the colors in the declarations of a style make, or nil if there are none.
+func writtenHighlight(decls map[string]string) *content.Highlight {
+	h := content.Highlight{
+		Color:           content.Color{Value: writtenColor(decls, "color")},
+		BackgroundColor: content.Color{Value: writtenColor(decls, "background-color")},
+	}
+	if h == (content.Highlight{}) {
+		return nil
+	}
+	return &h
 }
 
 // mappedClass reports whether the settings map a class of n to a variant: a span with such a class is a highlight too.
@@ -393,12 +609,7 @@ func (r *richReader) highlight(n *html.Node) *content.Highlight {
 		}
 	}
 	decls := styleDecls(attr(n, "style"))
-	written := func(property string) string {
-		if v := decls[property]; v != "" && !transparent(v) && content.CheckColor(v) == nil {
-			return v
-		}
-		return ""
-	}
+	written := func(property string) string { return writtenColor(decls, property) }
 	if variant := r.variantOf(n, classes); variant != "" {
 		if text != "" || background != "" || written("color") != "" || written("background-color") != "" {
 			r.colorsLost.add(tagText(n.Name))

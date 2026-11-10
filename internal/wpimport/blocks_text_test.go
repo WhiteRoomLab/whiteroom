@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/html"
 )
 
 var idMark = regexp.MustCompile(`<(\d+)>`)
@@ -107,6 +108,7 @@ func textBody(t *testing.T, site *content.Site, settings *Settings, text string)
 		t.Fatalf("Body = %v", err)
 	}
 	checkBody(t, imp, site, res)
+	checkNoPieces(t, text, imp, res)
 	noGuard(t, imp)
 	return res, imp
 }
@@ -712,6 +714,40 @@ func tableOfCells(rows, cellsPerRow, last int) string {
 		end = "<tr>" + strings.Repeat("<td>y</td>", last) + "</tr>"
 	}
 	return wpBlock("table", "", `<figure class="wp-block-table"><table><tbody>`+strings.Repeat(row, rows)+end+`</tbody></table></figure>`)
+}
+
+func TestTextCellAlign(t *testing.T) {
+	cell := func(attrs ...string) *html.Node {
+		n := &html.Node{Type: html.ElementNode, Namespace: html.HTML, Name: "td"}
+		for i := 0; i < len(attrs); i += 2 {
+			n.Attrs = append(n.Attrs, html.Attr{Name: attrs[i], Value: attrs[i+1]})
+		}
+		return n
+	}
+	for _, tt := range []struct {
+		name           string
+		cell           *html.Node
+		aligned, other string
+	}{
+		{"nothing", cell(), "", ""},
+		{"data-align", cell("data-align", " Right "), "right", ""},
+		{"the class", cell("class", "x has-text-align-Center"), "center", ""},
+		{"data-align wins over the class", cell("data-align", "left", "class", "has-text-align-right"), "left", ""},
+		{"data-align that is not one", cell("data-align", "justify", "class", "has-text-align-right"), "", "justify"},
+		{"the style when there is neither", cell("style", "width: 1px; Text-Align: CENTER"), "center", ""},
+		{"the style with !important", cell("style", "text-align: right !important"), "right", ""},
+		{"the style that is not an alignment", cell("style", "text-align: justify"), "", "justify"},
+		{"the style has other properties", cell("style", "color: red"), "", ""},
+		{"data-align and the class win over the style", cell("style", "text-align: right", "data-align", "left"), "left", ""},
+		{"the class wins over the style", cell("style", "text-align: right", "class", "has-text-align-center"), "center", ""},
+		{"the attribute align when there is none of the others", cell("align", "Right"), "right", ""},
+		{"the style wins over the attribute align", cell("style", "text-align: left", "align", "right"), "left", ""},
+		{"the attribute align that is not one", cell("align", "char"), "", "char"},
+	} {
+		if aligned, other := cellAlign(tt.cell); aligned != tt.aligned || other != tt.other {
+			t.Errorf("%s: cellAlign = %q, %q, want %q, %q", tt.name, aligned, other, tt.aligned, tt.other)
+		}
+	}
 }
 
 func TestTextTableCells(t *testing.T) {

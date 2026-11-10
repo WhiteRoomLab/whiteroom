@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ type bodyXML struct {
 	id          int
 	typ, status string // "" for post and publish
 	content     string
+	meta        [][2]string // the keys and the values of the postmeta
 }
 
 func bodiesWXR(items ...bodyXML) string {
@@ -26,8 +28,12 @@ func bodiesWXR(items ...bodyXML) string {
 	for _, it := range items {
 		fmt.Fprintf(&b, "<item>\n<title><![CDATA[Item %d]]></title>\n<link>https://example.com/?p=%d</link>\n"+
 			"<content:encoded><![CDATA[%s]]></content:encoded>\n<wp:post_id>%d</wp:post_id>\n"+
-			"<wp:status><![CDATA[%s]]></wp:status>\n<wp:post_type><![CDATA[%s]]></wp:post_type>\n</item>\n",
+			"<wp:status><![CDATA[%s]]></wp:status>\n<wp:post_type><![CDATA[%s]]></wp:post_type>\n",
 			it.id, it.id, it.content, it.id, cmp.Or(it.status, "publish"), cmp.Or(it.typ, "post"))
+		for _, m := range it.meta {
+			fmt.Fprintf(&b, "<wp:postmeta><wp:meta_key><![CDATA[%s]]></wp:meta_key><wp:meta_value><![CDATA[%s]]></wp:meta_value></wp:postmeta>\n", m[0], m[1])
+		}
+		b.WriteString("</item>\n")
 	}
 	b.WriteString(tail)
 	return b.String()
@@ -49,6 +55,8 @@ func blockEntries(rep *Report) []string {
 	}
 	return out
 }
+
+func sortedKeys(m map[string]string) []string { return slices.Sorted(maps.Keys(m)) }
 
 // paragraphDoc writes a paragraph with the attributes attrs and the HTML markup.
 func paragraphDoc(attrs, markup string) string {
@@ -312,6 +320,164 @@ func TestProposeBlocks(t *testing.T) {
 		if want := map[string]string{"early": "early"}; !reflect.DeepEqual(s.Blocks.Presets.Color, want) {
 			t.Errorf("Color = %+v, want %+v", s.Blocks.Presets.Color, want)
 		}
+	})
+
+	const (
+		sizesMsg = "; blocks.imageSizes maps them to the image sizes of the theme of the site"
+		marksMsg = "; blocks.marks maps them to the highlight variants of the theme of the site, and the others keep only their text"
+	)
+	sizesEntry := func(n int, names string) string {
+		return "review: the images use " + plural(n, "image size", "image sizes") + suffix + names + sizesMsg
+	}
+	marksEntry := func(n int, names string) string {
+		return "review: the text uses " + plural(n, "class", "classes") + " of inline elements: " + names + marksMsg
+	}
+	// classicNames proposes the settings for the items, and returns the names of the image sizes and of the marks in them.
+	classicNames := func(t *testing.T, items ...bodyXML) (sizes, marks []string, imp *Import) {
+		t.Helper()
+		s, imp := proposeFrom(t, bodiesWXR(items...), nil, nil)
+		return sortedKeys(s.Blocks.ImageSizes), sortedKeys(s.Blocks.Marks), imp
+	}
+
+	t.Run("the HTML of the classic editor: a content that has no block", func(t *testing.T) {
+		in := bodiesWXR(bodyXML{id: 1, content: `<p><img class="alignleft size-medium wp-image-21" src="x.png"> text</p>` + "\n\n" +
+			`<img class="size-full" src="y.png"><img class="aligncenter size-large size-huge" src="z.png"><img class="no-size" src="w.png">` + "\n\n" +
+			`<span class="marker">a</span> <mark class="note has-vivid-red-color">b</mark>` + "\n\n" +
+			`[gallery ids="1" size="large"] [gallery ids="2"] [gallery size="full"] [gallery size=" "] [[gallery size="skipped"]]` + "\n\n" +
+			`<a title="[gallery size=hidden]">x</a> [galleryx size="other"] [Gallery size="other"] [gallery-2 size="other"]`})
+		s, imp := proposeFrom(t, in, nil, nil)
+		want := emptyBlockSettings()
+		want.ImageSizes = map[string]string{"medium": "medium", "large": "large", "thumbnail": "thumbnail"}
+		want.Marks = map[string]string{"marker": "", "note": ""}
+		want.Presets.Color = map[string]string{"vivid-red": "vivid-red"}
+		if !reflect.DeepEqual(s.Blocks, want) {
+			t.Errorf("Blocks = %+v, want %+v", s.Blocks, want)
+		}
+		// The first size- class of an image counts, and the size full is none; a gallery with no size is thumbnail.
+		sameSet(t, "the entries", blockEntries(imp.Report), []string{
+			presetsMsg("1", "color preset", `"vivid-red" (1 time)`, "color"),
+			sizesEntry(3, `"large" (2 times), "thumbnail" (2 times), "medium" (1 time)`),
+			marksEntry(2, `"marker" (1 time), "note" (1 time)`),
+		})
+	})
+
+	t.Run("the HTML of the classic editor: the HTML between blocks, the classic block and the shortcode block", func(t *testing.T) {
+		in := bodiesWXR(bodyXML{id: 1, content: strings.Join([]string{
+			paragraphDoc("", "<p>a</p>"),
+			`<p><span class="between">x</span> <img class="size-thumbnail" src="q.png"> [gallery size="medium"]</p>`,
+			`<!-- wp:freeform --><p><span class="free">a</span> <img class="size-medium" src="a.png"></p><!-- /wp:freeform -->`,
+			`<!-- wp:shortcode -->[gallery size="large"] <span class="sc">x</span> <img class="size-large" src="b.png"><!-- /wp:shortcode -->`,
+			// The classic editor's HTML in a block that holds blocks.
+			`<!-- wp:group --><div class="wp-block-group"><!-- wp:freeform --><span class="in-group">x</span><!-- /wp:freeform --></div><!-- /wp:group -->`,
+		}, "\n")})
+		s, imp := proposeFrom(t, in, nil, nil)
+		wantSizes := map[string]string{"thumbnail": "thumbnail", "medium": "medium", "large": "large"}
+		wantMarks := map[string]string{"between": "", "free": "", "sc": "", "in-group": ""}
+		if !reflect.DeepEqual(s.Blocks.ImageSizes, wantSizes) || !reflect.DeepEqual(s.Blocks.Marks, wantMarks) {
+			t.Errorf("ImageSizes = %+v, Marks = %+v, want %+v, %+v", s.Blocks.ImageSizes, s.Blocks.Marks, wantSizes, wantMarks)
+		}
+		// Each is counted once, though the classic block is also a block whose HTML is read for spans.
+		sameSet(t, "the entries", blockEntries(imp.Report), []string{
+			sizesEntry(3, `"large" (2 times), "medium" (2 times), "thumbnail" (1 time)`),
+			marksEntry(4, `"between" (1 time), "free" (1 time), "in-group" (1 time), "sc" (1 time)`),
+		})
+	})
+
+	t.Run("the HTML of the classic editor: a delimiter that is not one, and a closer that closes no block", func(t *testing.T) {
+		// <!-- wp:Foo --> is no block, so all of the text is HTML of the classic editor.
+		sizes, marks, _ := classicNames(t, bodyXML{id: 1, content: `<!-- wp:Foo --><span class="foo">x</span><img class="size-large" src="a.png">`})
+		if !slices.Equal(sizes, []string{"large"}) || !slices.Equal(marks, []string{"foo"}) {
+			t.Errorf("sizes = %q, marks = %q, want [large] and [foo]", sizes, marks)
+		}
+		// What follows a closer that closes no block is not read by the conversion as HTML: it is a legacy block of it.
+		sizes, marks, _ = classicNames(t, bodyXML{id: 1, content: paragraphDoc("", "<p>a</p>") +
+			`<p><span class="stray">x</span><img class="size-large" src="a.png"></p><!-- /wp:acme/b --><p><span class="after">y</span></p>`})
+		if len(sizes) != 0 || len(marks) != 0 {
+			t.Errorf("sizes = %q, marks = %q, want none", sizes, marks)
+		}
+	})
+
+	t.Run("the HTML of the classic editor: Elementor", func(t *testing.T) {
+		// The conversion makes one legacy block of the content of an item made with Elementor, whatever it holds.
+		page := `<span class="builder">x</span><img class="size-large" src="a.png">[gallery size="medium"]`
+		mode := func(v string) [][2]string { return [][2]string{{"_elementor_edit_mode", v}} }
+		s, imp := proposeFrom(t, bodiesWXR(
+			bodyXML{id: 1, content: page, meta: mode("builder")},
+			bodyXML{id: 2, content: paragraphDoc(`{"textColor":"builder-color"}`, "<p>x</p>"), meta: mode("1")},
+			bodyXML{id: 3, typ: "page", content: `<span class="mode-0">x</span>`, meta: mode("0")},
+			bodyXML{id: 4, content: `<span class="mode-empty">x</span>`, meta: mode("")},
+			bodyXML{id: 5, content: `<span class="other-meta">x</span>`, meta: [][2]string{{"_elementor_data", "[]"}}},
+		), nil, nil)
+		if want := (map[string]string{"mode-0": "", "mode-empty": "", "other-meta": ""}); !reflect.DeepEqual(s.Blocks.Marks, want) {
+			t.Errorf("Marks = %+v, want %+v", s.Blocks.Marks, want)
+		}
+		if len(s.Blocks.ImageSizes) != 0 || len(s.Blocks.Presets.Color) != 0 {
+			t.Errorf("ImageSizes = %+v, Color = %+v, want none: they are in the items made with Elementor", s.Blocks.ImageSizes, s.Blocks.Presets.Color)
+		}
+		sameSet(t, "the entries", blockEntries(imp.Report), []string{marksEntry(3, `"mode-0" (1 time), "mode-empty" (1 time), "other-meta" (1 time)`)})
+	})
+
+	t.Run("the HTML of the classic editor: the items that are read, and a synced pattern", func(t *testing.T) {
+		// A synced pattern with no block in it is HTML of the classic editor as well; the draft of a post and a page are read.
+		sizes, marks, _ := classicNames(t,
+			bodyXML{id: 1, typ: "wp_block", content: `<span class="in-pattern">x</span><img class="size-pattern" src="a.png">`},
+			bodyXML{id: 2, typ: "page", status: "draft", content: `<span class="in-page">x</span>`},
+			bodyXML{id: 3, status: "trash", content: `<span class="in-trash">x</span>`},
+			bodyXML{id: 4, typ: "attachment", content: `<span class="in-attachment">x</span>`},
+			bodyXML{id: 5, content: `<span class="in-post">x</span>`},
+		)
+		if !slices.Equal(sizes, []string{"pattern"}) || !slices.Equal(marks, []string{"in-page", "in-pattern", "in-post"}) {
+			t.Errorf("sizes = %q, marks = %q", sizes, marks)
+		}
+	})
+
+	t.Run("the HTML of the classic editor: the limits", func(t *testing.T) {
+		item := func(id int, class string, pad int) bodyXML {
+			return bodyXML{id: id, content: `<p><span class="` + class + `">` + strings.Repeat("a", pad) + `</span> [gallery size="` + class + `"]</p>`}
+		}
+		t.Run("the HTML of one block", func(t *testing.T) {
+			lowerLimit(t, &maxBlockHTMLBytes, 100)
+			sizes, marks, _ := classicNames(t, item(1, "small", 10), item(2, "large", 200))
+			// Neither the span nor the gallery of HTML that is longer than the limit is read.
+			if !slices.Equal(sizes, []string{"small"}) || !slices.Equal(marks, []string{"small"}) {
+				t.Errorf("sizes = %q, marks = %q, want [small] and [small]", sizes, marks)
+			}
+		})
+		t.Run("the HTML of one content", func(t *testing.T) {
+			// Each block of the classic editor is 41 bytes, and three do not fit in 90: the third that is read is not.
+			block := func(class string) string {
+				return `<!-- wp:freeform --><p><span class="` + class + `">xxxxxxxxxx</span></p><!-- /wp:freeform -->`
+			}
+			lowerLimit(t, &maxHTMLBytes, 90)
+			_, marks, _ := classicNames(t, bodyXML{id: 1, content: block("one") + block("two") + block("three")})
+			if len(marks) != 2 {
+				t.Errorf("marks = %q, want two of the three, which fit in the HTML that is read", marks)
+			}
+			// The limit is for one content: the next item is read again.
+			_, marks, _ = classicNames(t, bodyXML{id: 1, content: block("one") + block("two")}, bodyXML{id: 2, content: block("three") + block("four")})
+			if len(marks) != 4 {
+				t.Errorf("marks = %q, want the four of the two contents", marks)
+			}
+		})
+		t.Run("the size of the content", func(t *testing.T) {
+			lowerLimit(t, &maxBodyBytes, 100)
+			_, marks, _ := classicNames(t, item(1, "fits", 10), item(2, "big", 200))
+			if !slices.Equal(marks, []string{"fits"}) {
+				t.Errorf("marks = %q, want [fits]", marks)
+			}
+		})
+		t.Run("the attributes of a gallery that are longer than a string may be", func(t *testing.T) {
+			attrs := strings.Repeat("a=1 ", content.MaxTextBytes/4+1)
+			sizes, _, _ := classicNames(t, bodyXML{id: 1, content: `[gallery size="long" ` + attrs + `] [gallery size="short"]`})
+			if !slices.Equal(sizes, []string{"short"}) {
+				t.Errorf("sizes = %q, want [short]", sizes)
+			}
+		})
+		t.Run("the galleries", func(t *testing.T) {
+			lowerLimit(t, &maxWPBlocks, 3)
+			_, _, imp := classicNames(t, bodyXML{id: 1, content: strings.Repeat(`[gallery size="g"] `, 5)})
+			sameSet(t, "the entries", blockEntries(imp.Report), []string{sizesEntry(1, `"g" (3 times)`)})
+		})
 	})
 
 	t.Run("nothing is used", func(t *testing.T) {

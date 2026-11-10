@@ -1,0 +1,42 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_yiuzg7d3",
+      "content": [
+        {
+          "type": "text",
+          "text": "1ページ目の段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_1glw6kzq",
+      "content": [
+        {
+          "type": "text",
+          "text": "2ページ目の段落です。"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "この行は、同じ段落の続きです。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_y0x1ep79",
+      "content": [
+        {
+          "type": "text",
+          "text": "3ページ目の段落です。"
+        }
+      ]
+    }
+  ]
+}

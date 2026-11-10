@@ -1,0 +1,150 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "image",
+      "id": "b_kubgbupb",
+      "attrs": {
+        "media": "med_0000000000WA8XM2HHG6GPGGQW",
+        "link": {
+          "media": "med_0000000000WA8XM2HHG6GPGGQW"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_m239kqgz",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "caption": [
+          {
+            "type": "text",
+            "text": "窓から見た"
+          },
+          {
+            "type": "text",
+            "text": "朝",
+            "marks": [
+              {
+                "type": "italic"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "の景色"
+          }
+        ],
+        "link": {
+          "media": "med_0000000000G76GCE25NPG7XVB8"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_se6r4ig2",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "link": {
+          "media": "med_0000000000FGMPA7HRWRFMH4TE"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_cbhm7o75",
+      "attrs": {
+        "media": "med_0000000000WA8XM2HHG6GPGGQW",
+        "link": {
+          "media": "med_0000000000WA8XM2HHG6GPGGQW"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_aklhaoev",
+      "attrs": {
+        "media": "med_0000000000YCP8H90JTWSXR998",
+        "caption": [
+          {
+            "type": "text",
+            "text": "屋上から見た夕方の空"
+          }
+        ],
+        "link": {
+          "media": "med_0000000000YCP8H90JTWSXR998"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_1xcngjxv",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "caption": [
+          {
+            "type": "text",
+            "text": "窓から見た"
+          },
+          {
+            "type": "text",
+            "text": "朝",
+            "marks": [
+              {
+                "type": "italic"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "の景色"
+          }
+        ],
+        "size": "large"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_nmidvg7w",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "size": "large"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_dcds68dn",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "caption": [
+          {
+            "type": "text",
+            "text": "窓から見た"
+          },
+          {
+            "type": "text",
+            "text": "朝",
+            "marks": [
+              {
+                "type": "italic"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "の景色"
+          }
+        ],
+        "link": {
+          "media": "med_0000000000G76GCE25NPG7XVB8"
+        },
+        "size": "thumbnail"
+      }
+    }
+  ]
+}

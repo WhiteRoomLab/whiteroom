@@ -1,0 +1,115 @@
+{
+  "more": 8,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_zhazpu2n",
+      "content": [
+        {
+          "type": "text",
+          "text": "ブロックのある本文です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_oecbf5g8",
+      "content": [
+        {
+          "type": "text",
+          "text": "ブロックの間の文字です。 空行があっても、同じ段落です。"
+        }
+      ]
+    },
+    {
+      "type": "group",
+      "id": "b_r299lwy3",
+      "content": [
+        {
+          "type": "paragraph",
+          "id": "b_hf23rrgq",
+          "content": [
+            {
+              "type": "text",
+              "text": "グループの中のクラシックのブロックです。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "embed",
+      "id": "b_n4p1ry7t",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "form",
+      "id": "b_gy66jt7y",
+      "attrs": {
+        "form": "frm_00000000007JMRFS5ZA4P95W8G"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_ptjnaukc",
+      "attrs": {
+        "html": "<!-- wp:paragraph -->\n<p>文の中の [foo] は、段落ブロックを legacy にします。</p>\n<!-- /wp:paragraph -->",
+        "reason": "the text has the shortcode [foo], which whiteroom does not run"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_vkikjs52",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "caption": [
+          {
+            "type": "text",
+            "text": "窓から見た"
+          },
+          {
+            "type": "text",
+            "text": "朝",
+            "marks": [
+              {
+                "type": "italic"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "の景色"
+          }
+        ],
+        "link": {
+          "media": "med_0000000000G76GCE25NPG7XVB8"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_qq9jhrdr",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "link": {
+          "media": "med_0000000000FGMPA7HRWRFMH4TE"
+        },
+        "size": "thumbnail"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_csw3sw8f",
+      "content": [
+        {
+          "type": "text",
+          "text": "最後の段落です。"
+        }
+      ]
+    }
+  ]
+}

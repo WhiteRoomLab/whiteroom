@@ -115,32 +115,50 @@
       }
     },
     {
-      "type": "legacy",
+      "type": "image",
       "id": "b_4dq87fxc",
       "attrs": {
-        "html": "<!-- wp:shortcode -->\n[gallery ids=\"50,51\" columns=\"2\"]\n<!-- /wp:shortcode -->",
-        "reason": "the shortcode block is not converted yet"
+        "media": "med_0000000000SHPNF2S2S3ZAA14M",
+        "link": {
+          "media": "med_0000000000SHPNF2S2S3ZAA14M"
+        },
+        "size": "thumbnail"
       }
     },
     {
-      "type": "legacy",
+      "type": "image",
       "id": "b_iftgrd6b",
       "attrs": {
-        "html": "<!-- wp:freeform -->\n<p>クラシックのブロックの中の段落です。</p>\n<!-- /wp:freeform -->",
-        "reason": "the HTML of the classic editor is not converted yet"
-      }
-    },
-    {
-      "type": "legacy",
-      "id": "b_m7879qhj",
-      "attrs": {
-        "html": "\n\n<p>ブロックの外にある、旧エディターの段落です。</p>\n\n",
-        "reason": "the HTML of the classic editor is not converted yet"
+        "media": "med_0000000000M9HE4BHYHYW70J17",
+        "link": {
+          "media": "med_0000000000M9HE4BHYHYW70J17"
+        },
+        "size": "thumbnail"
       }
     },
     {
       "type": "paragraph",
+      "id": "b_m7879qhj",
+      "content": [
+        {
+          "type": "text",
+          "text": "クラシックのブロックの中の段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
       "id": "b_f9x3ipz6",
+      "content": [
+        {
+          "type": "text",
+          "text": "ブロックの外にある、旧エディターの段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_ry0tpgfe",
       "content": [
         {
           "type": "text",
@@ -150,7 +168,7 @@
     },
     {
       "type": "paragraph",
-      "id": "b_ry0tpgfe",
+      "id": "b_ejbykmim",
       "content": [
         {
           "type": "text",

@@ -1,0 +1,190 @@
+{
+  "more": 8,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_7qhykw4d",
+      "content": [
+        {
+          "type": "text",
+          "text": "最初の段落です。空行で段落が分かれます。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_dx85q5fd",
+      "content": [
+        {
+          "type": "text",
+          "text": "2つ目の段落です。"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "1つの改行は、表示のときに、段落の中の改行になります。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_4pamnmob",
+      "content": [
+        {
+          "type": "text",
+          "text": "3つ目の段落は、"
+        },
+        {
+          "type": "text",
+          "text": "太字",
+          "marks": [
+            {
+              "type": "bold"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "斜体",
+          "marks": [
+            {
+              "type": "italic"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "下線",
+          "marks": [
+            {
+              "type": "underline"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "取り消し線",
+          "marks": [
+            {
+              "type": "strike"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "、"
+        },
+        {
+          "type": "text",
+          "text": "会社概要へのリンク",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "entry": "ent_0000000000YQX804BPQBTJ6AFD"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "を使います。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_z0qj9yo6",
+      "content": [
+        {
+          "type": "text",
+          "text": "4つ目の段落は、ここで"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "改行します。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_jkcb8nhc",
+      "content": [
+        {
+          "type": "text",
+          "text": "5つ目と"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_pe4f305e",
+      "content": [
+        {
+          "type": "text",
+          "text": "6つ目は、br が2つ続くので、別の段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_g0fr5i5c",
+      "content": [
+        {
+          "type": "text",
+          "text": " "
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_9lgwaqqo",
+      "attrs": {
+        "textAlign": "center"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "中央にそろえた段落です。字下げの padding-left は取り込みません。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_o1m12qs0",
+      "content": [
+        {
+          "type": "text",
+          "text": "続きの段落です。"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_dv4yye37",
+      "content": [
+        {
+          "type": "text",
+          "text": "2つ目の続きを読むの印は、取り込まれずに消えます。"
+        }
+      ]
+    }
+  ]
+}

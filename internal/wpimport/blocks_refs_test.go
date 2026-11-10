@@ -28,7 +28,7 @@ func TestRefForms(t *testing.T) {
 	var cases []textCase
 	for _, tt := range []struct{ name, attrs string }{
 		{"by its hash, if the ID is not one", `{"id":40,"hash":"1a2b3c4","title":"Other"}`},
-		{"by its hash in capitals", `{"hash":"1A2B3C4D"}`},
+		{"by its ID if the hash is in capitals, which is no hash", `{"hash":"1A2B3C4D","id":31}`},
 		{"by its ID", `{"id":31}`},
 		{"by its ID written as text", `{"id":"31"}`},
 		{"by its title, the first of the forms that have it", `{"title":"Contact"}`},
@@ -47,6 +47,7 @@ func TestRefForms(t *testing.T) {
 		{"that is not in the WXR", `{"id":999,"title":"Missing"}`, `the form "Missing" is not imported`},
 		{"without anything to find it by", `{}`, "the form is not imported"},
 		{"of a hash that is longer than the one of the form", `{"hash":"1a2b3c4d5e6f7a8b9"}`, "the form is not imported"},
+		{"of a hash in capitals, which Contact Form 7 does not look for", `{"hash":"1A2B3C4D"}`, "the form is not imported"},
 	} {
 		want, line := legacyForm(tt.attrs, tt.reason)
 		cases = append(cases, textCase{name: "a form " + tt.name, text: wpForm(tt.attrs), want: jsonList(want), lines: []string{line}})
@@ -76,6 +77,7 @@ func TestRefFindForm(t *testing.T) {
 		form(3, "A", "bbbbbbb3"),
 		form(4, "B", "bbbbbbb4"),
 		{ID: 5, Type: formType, Title: "No hash"},
+		form(6, "D", "DDDDDDD6"),
 	}}, NewReport(Info{File: "site.xml"}))
 	for _, tt := range []struct {
 		name        string
@@ -85,7 +87,9 @@ func TestRefFindForm(t *testing.T) {
 	}{
 		{"the first form with the hash, not a post that has it", 0, "bbbbbbb", "", 3},
 		{"the hash before the ID and the title", 1, "bbbbbbb4", "A", 4},
-		{"the hash in capitals", 0, "BBBBBBB4", "", 4},
+		{"a hash in capitals is not one", 0, "BBBBBBB4", "", 0},
+		{"a hash in capitals is not one: the ID wins", 4, "BBBBBBB3", "", 4},
+		{"the hash is found in a form whose hash is in capitals, as the database matches without regard to case", 0, "ddddddd", "", 6},
 		{"a hash of 7 digits", 0, "aaaaaaa", "", 1},
 		{"a hash of fewer than 7 digits is not one", 4, "bbbbbb", "", 4},
 		{"a hash that is not hexadecimal is not one", 4, "bbbbbbbz", "", 4},
@@ -196,16 +200,13 @@ func TestRefSyncedPatterns(t *testing.T) {
 			lines: []string{
 				legacyLine(hidden(77, "is not published"), "/body/0"), legacyLine(hidden(78, "has a password"), "/body/1"),
 			}},
+		// The paragraphs of the HTML are not made by wpautop in a copy of a pattern, as WordPress does not make them there.
 		{name: "a pattern without content, and a pattern of the classic editor", text: wpRef(65) + wpRef(66),
-			want: jsonList(jsonLegacy(0, "<p>Hello</p>", classicReason)),
-			lines: []string{
-				copied("65", `"Empty"`, "/body"), copied("66", `"Classic"`, "/body/0"), legacyLine(classicReason, "/body/0"),
-			}},
+			want:  jsonList(jsonPara(0, "Hello")),
+			lines: []string{copied("65", `"Empty"`, "/body"), copied("66", `"Classic"`, "/body/0")}},
 		{name: "a pattern that is HTML with a closer and no block is the HTML of the classic editor", text: wpRef(76),
-			want: jsonList(jsonLegacy(0, `<p>Hello</p><!-- /wp:acme/a --><p>World</p>`, classicReason)),
-			lines: []string{
-				copied("76", `"Stray"`, "/body/0"), legacyLine(classicReason, "/body/0"),
-			}},
+			want:  jsonList(jsonPara(0, "Hello"), jsonPara(1, "World")),
+			lines: []string{copied("76", `"Stray"`, "/body/0")}},
 		{name: "the overrides of a pattern are not applied", text: `<!-- wp:block ` + override + ` /-->`,
 			want:  jsonList(join, buy(1)),
 			lines: []string{copied("60", `"Call to action"`, "/body/0"), "skipped: the overrides of the synced pattern 60 are not applied -> /body/0"}},

@@ -26,8 +26,7 @@ var (
 
 const (
 	reasonStray     = "a block closer without an opener ends the blocks; WordPress shows the rest as it is"
-	reasonClassic   = "the HTML of the classic editor is not converted yet"
-	reasonShortcode = "the shortcode block is not converted yet"
+	reasonElementor = "the page was made with Elementor, which showed its own data in place of the content"
 )
 
 // BodyOptions are what Body needs to convert the content of an item.
@@ -46,16 +45,16 @@ type BodyOptions struct {
 
 type BodyResult struct {
 	Blocks content.Blocks
-	// More is the number of blocks at the top before the first read more block at the top, which is not imported, or -1 if
-	// there is none.
+	// More is the number of blocks at the top before the first read more block, or tag in the HTML of the classic editor,
+	// at the top, which is not imported, or -1 if there is none.
 	More int
 }
 
-// Body converts the content of the block editor of opts.Item into blocks (6.5, 6.10.2). The conversion of an entry calls
-// it once for each item, after Site and the conversion of the media. It adds to the report what it did not import, changed,
-// or made a legacy block of, each with the place in the document at opts.Target. The blocks pass Validate as those of an
-// import (6.7), also where the conversion made something that does not: that becomes a legacy block of the original text.
-// The error is for a nil Site or Item.
+// Body converts the content of opts.Item, which the block editor or the classic editor wrote, into blocks (6.5, 6.10.2). The
+// conversion of an entry calls it once for each item, after Site and the conversion of the media. It adds to the report what
+// it did not import, changed, or made a legacy block of, each with the place in the document at opts.Target. The blocks pass
+// Validate as those of an import (6.7), also where the conversion made something that does not: that becomes a legacy block
+// of the original text. The error is for a nil Site or Item.
 func (imp *Import) Body(opts BodyOptions) (*BodyResult, error) {
 	if opts.Site == nil {
 		return nil, errors.New("the site is needed to convert the content")
@@ -71,13 +70,15 @@ func (imp *Import) Body(opts BodyOptions) (*BodyResult, error) {
 
 func newBodyConv(imp *Import, opts BodyOptions) *bodyConv {
 	return &bodyConv{
-		imp:      imp,
-		opts:     opts,
-		ids:      newBlockIDs(opts.Key),
-		anchors:  make(map[string]bool),
-		origins:  make(map[string]origin),
-		patterns: make(map[int64]bool),
-		moreAt:   -1,
+		imp:        imp,
+		opts:       opts,
+		ids:        newBlockIDs(opts.Key),
+		anchors:    make(map[string]bool),
+		origins:    make(map[string]origin),
+		patterns:   make(map[int64]bool),
+		moreTop:    -1,
+		pieceLeft:  maxWPBlocks,
+		targetLeft: maxWPBlocks,
 	}
 }
 
@@ -98,23 +99,51 @@ type bodyConv struct {
 	htmlBytes  int // the bytes of HTML read so far
 	pageBreaks int
 	stopped    bool
-	moreAt     int // the index of the first read more block at the top among the blocks of WordPress, or -1
+	// moreTop is the index of the first read more block or tag at the top among the blocks of WordPress, or -1. moreSub says
+	// where it is in the HTML of the classic editor that block holds: the blocks that origin.sub numbers below it come before.
+	moreTop, moreSub int
+	autop            bool // the content has no block delimiter, so WordPress makes its paragraphs
 	// patterns are the synced patterns that are being copied, by the IDs of their posts.
 	patterns map[int64]bool
 	base     *url.URL // the address that the relative addresses are from, made when the first of them is read
 	baseLen  int      // the length of base as text, found with it
+
+	// classicDepth is more than 0 while the HTML of the classic editor is converted. In it, the shortcodes and the URLs of a line of
+	// their own are elements that stand for pieces, named pieceName.
+	classicDepth int
+	pieceName    string
+	pieces       []*classicPiece
+	// pieceLeft is how many more shortcodes and URLs the conversion may make elements of; piecesCut says that some were left as
+	// text because of it, and cutNoted that the report says so.
+	pieceLeft           int
+	piecesCut, cutNoted bool
+	// inClassic is set while the conversion reads the HTML of the classic editor, as opposed to a shortcode of the block editor
+	// that it reads the same way (classicDepth).
+	inClassic bool
+	// targets are the ids and names of the a elements with no address that the rich text read since a block began, in order: the
+	// block takes them as its anchor. targetLeft is how many more the conversion may take; targetsCut says that it left some
+	// because of it, and targetsNoted that the report says so.
+	targets      []string
+	targetLeft   int
+	targetsCut   bool
+	targetsNoted bool
 }
 
 // origin is the block of WordPress that a block was made from, in the document doc, and the index of the block at the top
 // of the content that holds it. call numbers the conversion of b that made the block: the blocks of one conversion go
 // together, and two copies of a synced pattern are two conversions. guard is set for a legacy block that the validation
-// guard made.
+// guard made. The blocks that the conversion of HTML of the classic editor makes have no b and doc. Those at the top have
+// sub, their number in it from 1, and those it makes of an element that holds no blocks have html, the element as HTML, and
+// what to call it: the guard makes a legacy block of that.
 type origin struct {
 	b     *wpblock.Block
 	doc   string
 	top   int
+	sub   int
 	call  int
 	guard bool
+	html  string
+	what  string
 }
 
 // newOrigin returns the origin of the blocks of a new conversion of b.
@@ -263,7 +292,15 @@ func (c *bodyConv) run() (content.Blocks, int) {
 		return nil, -1
 	case blank(text):
 		return nil, -1
+	case builtWithElementor(c.opts.Item):
+		// Elementor shows its own data in place of the content, which is the HTML that it made of them.
+		blocks := content.Blocks(c.legacyText(text, "the content of the page made with Elementor", reasonElementor, body))
+		blocks.Normalize()
+		c.guard(&blocks)
+		return blocks, -1
 	}
+	// As has_blocks of WordPress: a delimiter that is not one of a block (<!-- wp:Foo -->) is enough to keep wpautop away.
+	c.autop = !strings.Contains(text, "<!-- wp:")
 	parsed, err := wpblock.Parse(text, wpblock.Options{MaxBlocks: maxWPBlocks})
 	if err != nil {
 		c.note(body, Skipped, "the content is not imported: it has more than %d blocks", maxWPBlocks)
@@ -282,15 +319,22 @@ func (c *bodyConv) run() (content.Blocks, int) {
 	c.guard(&blocks)
 
 	more := -1
-	if c.moreAt >= 0 {
+	if c.moreTop >= 0 {
 		more = 0
 		for i := range blocks {
-			if o, ok := c.origins[blocks[i].ID]; ok && o.top < c.moreAt {
+			if o, ok := c.origins[blocks[i].ID]; ok && (o.top < c.moreTop || o.top == c.moreTop && o.sub < c.moreSub) {
 				more++
 			}
 		}
 	}
 	return blocks, more
+}
+
+// builtWithElementor reports whether the item was made with Elementor, as Elementor tells it: its postmeta has an edit mode
+// that PHP counts as true.
+func builtWithElementor(it *wxr.Item) bool {
+	mode, ok := it.Meta.Get("_elementor_edit_mode")
+	return ok && mode != "" && mode != "0"
 }
 
 // withClassic returns parsed, the blocks of the content text, or, if none of them has a name, one block of all of the text,
@@ -453,12 +497,6 @@ func (c *bodyConv) dispatch(doc string, b *wpblock.Block, p bodyPlace, at noteAt
 	return nil, legacyf("the block %q is not converted", b.Name)
 }
 
-// classic converts the HTML that the classic editor wrote: the HTML between blocks, the content without delimiters, and
-// the block core/freeform.
-func (c *bodyConv) classic(_ string, _ *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
-	return nil, legacyf(reasonClassic)
-}
-
 // legacy returns a legacy block of the original text of b, with the reason, and notes it for review. If the text is too
 // long, it returns none, and notes at at that the block is not imported.
 func (c *bodyConv) legacy(doc string, b *wpblock.Block, reason string, at noteAt) []content.Block {
@@ -484,6 +522,7 @@ func (c *bodyConv) legacyHTML(text, reason string, at noteAt) []content.Block {
 }
 
 func (c *bodyConv) legacyText(text, what, reason string, at noteAt) []content.Block {
+	text = c.restorePieces(text)
 	if len(text) > content.MaxTextBytes {
 		c.note(at, Skipped, "%s is not imported: its HTML is too long: %d bytes (max %d)", what, len(text), content.MaxTextBytes)
 		return nil
@@ -508,8 +547,8 @@ func convertMore(c *bodyConv, _ string, b *wpblock.Block, p bodyPlace, at noteAt
 		// WordPress splits the teaser on the content of the post only: in a synced pattern the block is a comment.
 	case p.depth != 1:
 		c.note(at, Skipped, "the more block is removed: it is not at the top of the content")
-	case c.moreAt < 0:
-		c.moreAt = p.top
+	case c.moreTop < 0:
+		c.moreTop, c.moreSub = p.top, 0
 		if hid, _ := b.Attrs.Get("noTeaser").IsTrue(); hid {
 			c.note(noteAt{}, Changed, "the more block hid the text before it on the page (noTeaser); whiteroom shows it")
 		}
@@ -524,8 +563,11 @@ func convertFreeform(c *bodyConv, doc string, b *wpblock.Block, p bodyPlace, at 
 	return c.classic(doc, b, p, at)
 }
 
-func convertShortcode(_ *bodyConv, _ string, _ *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
-	return nil, legacyf(reasonShortcode)
+// convertShortcode converts the content of the shortcode block as WordPress shows it: the HTML of the classic editor, with its
+// paragraphs made.
+func convertShortcode(c *bodyConv, _ string, b *wpblock.Block, p bodyPlace, at noteAt) ([]content.Block, error) {
+	src := classicSource{text: b.HTML(), what: `the block "core/shortcode"`, autop: true, top: len(c.patterns) == 0}
+	return c.classicContent(src, p, at), nil
 }
 
 // limit leaves out the blocks from the one at the top that makes the document have more than content.MaxBlocks blocks.
@@ -699,7 +741,11 @@ func (c *bodyConv) repair(blocks *content.Blocks, errs content.Errors) {
 				(&content.Error{Path: "/" + strconv.Itoa(m.u.index) + m.u.rel, Msg: m.msg}).Error())
 		} else {
 			reason := "the conversion does not pass validation: " + (&content.Error{Path: m.u.rel, Msg: m.msg}).Error()
-			m.repl = c.legacy(m.o.doc, m.o.b, reason, m.u.owner)
+			if m.o.html != "" {
+				m.repl = c.legacyText(m.o.html, m.o.what, reason, m.u.owner)
+			} else {
+				m.repl = c.legacy(m.o.doc, m.o.b, reason, m.u.owner)
+			}
 			if len(m.repl) > 0 {
 				g := m.o
 				g.guard = true
@@ -737,6 +783,12 @@ func (c *bodyConv) repair(blocks *content.Blocks, errs content.Errors) {
 			blk := (*list)[i]
 			if x, ok := c.origins[blk.ID]; ok && !x.guard {
 				if m := repl[x.call]; m != nil {
+					if len(m.repl) > 0 {
+						// The legacy block stands where the first block of the conversion was.
+						g := c.origins[m.repl[0].ID]
+						g.sub = x.sub
+						c.origins[m.repl[0].ID] = g
+					}
 					out = append(out, m.repl...)
 					m.repl = nil
 					continue

@@ -1,0 +1,255 @@
+{
+  "more": -1,
+  "body": [
+    {
+      "type": "paragraph",
+      "id": "b_3ajjzae8",
+      "content": [
+        {
+          "type": "text",
+          "text": "第1章へ移動",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "anchor": "chapter1"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "b_ik6mp2k4",
+      "anchor": "chapter1",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "第1章"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "b_n0xic241",
+      "anchor": "chapter2",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "第2章"
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "id": "b_cg7zy509",
+      "className": "foo",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "caption": [
+          {
+            "type": "text",
+            "text": "figure に書いたキャプション"
+          }
+        ],
+        "size": "large",
+        "align": "center"
+      }
+    },
+    {
+      "type": "legacy",
+      "id": "b_4oy5w9km",
+      "attrs": {
+        "html": "<figure>\n<img class=\"wp-image-130\" src=\"https://example.com/wp-content/uploads/2026/10/photo-a.jpg\" alt=\"窓の外の景色\"><br>\n<img class=\"wp-image-131\" src=\"https://example.com/wp-content/uploads/2026/10/photo-b.png\" alt=\"机の上\"><figcaption>2枚の写真を、1つの figure に並べたものです</figcaption></figure>",
+        "reason": "the element <figure> is not converted"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_dy5yvw4c",
+      "attrs": {
+        "media": "med_0000000000FGMPA7HRWRFMH4TE",
+        "alt": "机の上",
+        "align": "center"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_t7ecengq",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色",
+        "align": "center"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_oc68c0ij",
+      "attrs": {
+        "textAlign": "center"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "写真の下の説明です。"
+        }
+      ]
+    },
+    {
+      "type": "embed",
+      "id": "b_vcwithva",
+      "attrs": {
+        "provider": "youtube",
+        "url": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+      }
+    },
+    {
+      "type": "paragraph",
+      "id": "b_o3wy4je1",
+      "content": [
+        {
+          "type": "text",
+          "text": "色は"
+        },
+        {
+          "type": "text",
+          "text": "赤",
+          "marks": [
+            {
+              "type": "highlight",
+              "attrs": {
+                "color": {
+                  "value": "#cc0000"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "で、"
+        },
+        {
+          "type": "text",
+          "text": "太字",
+          "marks": [
+            {
+              "type": "bold"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "です。"
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "id": "b_mw6105be",
+      "attrs": {
+        "language": "go"
+      },
+      "content": "fmt.Println(a[i], b[key])"
+    },
+    {
+      "type": "list",
+      "id": "b_i1l78rj6",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_jb5y6lyy",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "項目です"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "id": "b_pgzbk1vv",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "次の項目です"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_1hi99x8y",
+      "attrs": {
+        "html": "<ul>\n<li>入れ子のある項目\n<ul>\n<li>入れ子の項目</li>\n</ul>\n<p>入れ子のあとにも、文字があります</p></li>\n</ul>",
+        "reason": "a list item has content after its list"
+      }
+    },
+    {
+      "type": "image",
+      "id": "b_dbs44ddb",
+      "attrs": {
+        "media": "med_0000000000G76GCE25NPG7XVB8",
+        "alt": "窓の外の景色"
+      }
+    },
+    {
+      "type": "heading",
+      "id": "b_umncauxj",
+      "attrs": {
+        "level": 3
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "見出しの中に続きを読むがあります"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "id": "b_4kf4hbaa",
+      "content": [
+        {
+          "type": "text",
+          "text": "会社概要",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "/2026/11/01/revised/%5Bhome_url%5D/about/"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "legacy",
+      "id": "b_t886la81",
+      "attrs": {
+        "html": "[my_shortcode<br />\n  label=\"見直し\"]",
+        "reason": "the shortcode [my_shortcode] is not converted"
+      }
+    }
+  ]
+}

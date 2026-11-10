@@ -15,3 +15,4 @@
 25: /9/attrs/html: removed <script> element and its content
 26: /11/attrs/html: removed <video> element and its content
 26: /12/attrs/html: removed <audio> element and its content
+26: /14/attrs/alt: no alt in ja: neither the block nor its medium has one; rendered without the alt attribute
