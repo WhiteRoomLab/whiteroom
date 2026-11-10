@@ -294,7 +294,8 @@ func TestPublishScheduled(t *testing.T) {
 	sameStore(t, s, after, index, "PublishScheduled() of a published entry")
 }
 
-// TestPublishScheduledDue checks the time: an entry is due when its time is not after now.
+// TestPublishScheduledDue checks that an entry is due at its time in another time zone and after it. TestPublishScheduled
+// checks the time itself and the times before it.
 func TestPublishScheduledDue(t *testing.T) {
 	for _, tt := range []struct {
 		name string
