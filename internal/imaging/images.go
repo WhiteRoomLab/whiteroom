@@ -59,6 +59,8 @@ type Images struct {
 	locks  map[string]*hashLock
 	// jobHook is called, if not nil, by each job of Files while it holds the budget, and done when it ends; for tests.
 	jobHook func(hash string, vs []Variant, weight int64) (done func())
+	// pruneHook is called, if not nil, by Prune before it removes the file name, relative to the directory; for tests.
+	pruneHook func(name string)
 }
 
 // hashLock is held by the call of Info or Files that reads or makes what the cache does not have of an original.
@@ -347,43 +349,49 @@ func (im *Images) lock(ctx context.Context, hash string) (func(), error) {
 
 // Prune removes from the cache directory every file that Info and Files have not used since New, such as those of
 // other versions, of originals and variants that are no longer used, and temporary files, and then the directories
-// left empty. A build calls it after it succeeds, when no Info or Files is running; they wait for it.
+// left empty. A build calls it after it succeeds, when no Info or Files is running; they wait for it. It works in an
+// os.Root of the directory, so that a directory in it replaced by a symbolic link meanwhile leads it nowhere outside.
 func (im *Images) Prune() error {
 	im.inUse.Lock()
 	defer im.inUse.Unlock()
 	im.mu.Lock()
 	used := maps.Clone(im.used)
 	im.mu.Unlock()
+	root, err := os.OpenRoot(im.dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 	var (
 		dirs []string // in the order of the walk, parents first
 		errs []error
 	)
-	err := filepath.WalkDir(im.dir, func(path string, d fs.DirEntry, err error) error {
+	fail := func(err error) { errs = append(errs, fmt.Errorf("%s: %w", im.dir, err)) }
+	err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
-			errs = append(errs, err)
+			fail(err)
 		case d.IsDir():
-			if path != im.dir {
-				dirs = append(dirs, path)
+			if p != "." {
+				dirs = append(dirs, p)
 			}
-		default:
-			rel, err := filepath.Rel(im.dir, path)
-			if err == nil && !used[rel] {
-				err = os.Remove(path)
+		case !used[filepath.FromSlash(p)]:
+			if im.pruneHook != nil {
+				im.pruneHook(filepath.FromSlash(p))
 			}
-			if err != nil {
-				errs = append(errs, err)
+			if err := root.Remove(filepath.FromSlash(p)); err != nil {
+				fail(err)
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		errs = append(errs, err)
+		fail(err)
 	}
 	for _, dir := range slices.Backward(dirs) {
-		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
-			if err := os.Remove(dir); err != nil {
-				errs = append(errs, err)
+		if entries, err := fs.ReadDir(root.FS(), dir); err == nil && len(entries) == 0 {
+			if err := root.Remove(filepath.FromSlash(dir)); err != nil {
+				fail(err)
 			}
 		}
 	}

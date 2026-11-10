@@ -535,6 +535,46 @@ func TestImagesPrune(t *testing.T) {
 	}
 }
 
+// TestImagesPruneStaysInside checks that Prune removes nothing outside the cache directory when a directory in it is
+// replaced by a symbolic link to another directory just before Prune removes a file in it.
+func TestImagesPruneStaysInside(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	im := newImages(t, dir, 0)
+	sub := filepath.Join(versionDir, "files", "zz")
+	name := filepath.Join(sub, "unknown.jpg")
+	for _, p := range []string{filepath.Join(dir, name), filepath.Join(outside, "unknown.jpg")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	swapped := false
+	im.pruneHook = func(n string) {
+		if n != name || swapped {
+			return
+		}
+		swapped = true
+		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, sub)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := im.Prune()
+	if !swapped {
+		t.Fatalf("Prune() = %v without removing %s", err, name)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "unknown.jpg")); err != nil {
+		t.Errorf("the file outside the cache directory after Prune: %v", err)
+	}
+	if err == nil {
+		t.Error("Prune() = nil, want the error of the file that it could not reach")
+	}
+}
+
 // TestImagesPruneWaits checks that Prune waits for the calls of Files that run.
 func TestImagesPruneWaits(t *testing.T) {
 	dir := t.TempDir()
