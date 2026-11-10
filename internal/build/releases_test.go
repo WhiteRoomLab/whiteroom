@@ -350,8 +350,10 @@ func TestRollbackReadOnly(t *testing.T) {
 }
 
 // TestRollbackAtOnce checks that Rollback switches current at once: while Rollback switches it between two releases
-// time after time, readers always find the file of a release through it, and ListReleases always finds both releases
-// and one of them as current.
+// time after time, readers always find current a link to one of them and the file of a release through it, and
+// ListReleases always finds both releases and one of them as current. The link itself is read with readlink(2), which
+// never fails while a rename replaces the link, so a switch that removes current before it makes it again fails the
+// test; only the read through the link may be read again (readThrough).
 func TestRollbackAtOnce(t *testing.T) {
 	dir := makeDir(t,
 		".lock", "releases/"+releaseA+"/public/page", "releases/"+releaseB+"/public/page", "current -> releases/"+releaseA)
@@ -360,6 +362,7 @@ func TestRollbackAtOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	current := filepath.Join(dir, "current")
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for range 4 {
@@ -370,7 +373,12 @@ func TestRollbackAtOnce(t *testing.T) {
 					return
 				default:
 				}
-				page, err := os.ReadFile(filepath.Join(dir, "current", "public", "page"))
+				if target, err := os.Readlink(current); err != nil ||
+					(target != "releases/"+releaseA && target != "releases/"+releaseB) {
+					t.Errorf("current = %q, %v, want a link to a release", target, err)
+					return
+				}
+				page, err := readThrough(filepath.Join(current, "public", "page"))
 				if err != nil || (string(page) != releaseA && string(page) != releaseB) {
 					t.Errorf("the page through current = %q, %v, want that of a release", page, err)
 					return
@@ -394,6 +402,18 @@ func TestRollbackAtOnce(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	checkReleases(t, "after the switches", dir, releaseA, releaseA, releaseB)
+}
+
+// readThrough reads name, a path through current, again at once if the file does not exist, at most 3 more times. On
+// Linux a read that follows a link may fail with ENOENT for a moment when a rename replaces the link: ext4 clears the
+// replaced link while a path walk that takes no locks may still read it (4.3). The bound makes a current that stays
+// unreadable fail the test instead of hanging it.
+func readThrough(name string) ([]byte, error) {
+	data, err := os.ReadFile(name)
+	for i := 0; i < 3 && errors.Is(err, fs.ErrNotExist); i++ {
+		data, err = os.ReadFile(name)
+	}
+	return data, err
 }
 
 // TestRollback builds the sample site and a change of it into one output directory, and checks Rollback to the first
