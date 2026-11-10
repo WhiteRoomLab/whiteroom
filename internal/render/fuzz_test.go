@@ -36,7 +36,6 @@ const conceptRichTextJSON = `[
 // richElements are the elements of the marks, in the order in which they nest, outermost first.
 var richElements = []string{"a", "mark", "strong", "em", "u", "s", "sub", "sup", "code"}
 
-// markElements are the elements of the types of marks.
 var markElements = map[content.MarkType]string{
 	content.MarkLink: "a", content.MarkHighlight: "mark", content.MarkBold: "strong", content.MarkItalic: "em",
 	content.MarkUnderline: "u", content.MarkStrike: "s", content.MarkSubscript: "sub", content.MarkSuperscript: "sup",
@@ -63,7 +62,6 @@ var (
 	templateEscapes = []string{"&amp;", "&lt;", "&gt;", "&#34;", "&#39;", "&#43;"}
 )
 
-// urlAttrs are the attributes whose values are URLs.
 var urlAttrs = []string{"action", "cite", "href", "poster", "src"}
 
 // voidElements are the elements of HTML that have no end tag.

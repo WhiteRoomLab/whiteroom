@@ -400,7 +400,6 @@ func webpInvalidTests() []errorTest {
 	return tests
 }
 
-// allocated returns the bytes of memory that f allocates.
 func allocated(f func()) uint64 {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)

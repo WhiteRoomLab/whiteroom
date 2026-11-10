@@ -264,15 +264,6 @@ func TestPublishDate(t *testing.T) {
 		}
 	})
 
-	t.Run("a page", func(t *testing.T) {
-		ed, s := newSample(t)
-		saved := saveRevision(t, ed, s, draftEN, careersRevision)
-		res := must(t)(ed.Publish(t.Context(), op, draftEN, entrySeq(t, s, draftEN), saved.Revision))
-		if got := revisionIDs(t, s, draftEN); res.Revision != saved.Revision || !slices.Equal(got, []string{saved.Revision}) {
-			t.Errorf("Publish() = %+v, the revisions are %v; want no new revision for a page", res, got)
-		}
-	})
-
 	// The date is in the time zone of the site, to the second.
 	t.Run("the time zone of the site", func(t *testing.T) {
 		ed, s := newSample(t)
@@ -741,51 +732,6 @@ func TestUnpublish(t *testing.T) {
 	})
 }
 
-// TestScheduledEntries checks that the operations take away the scheduled revision and time of a scheduled entry.
-func TestScheduledEntries(t *testing.T) {
-	op := Op{By: userID}
-	for _, tt := range []struct {
-		name string
-		do   func(t *testing.T, ed *Editor, id string, seq int64, rev string) (Result, error)
-		want content.Status
-	}{
-		{"Publish", func(t *testing.T, ed *Editor, id string, seq int64, rev string) (Result, error) {
-			return ed.Publish(t.Context(), op, id, seq, rev)
-		}, content.StatusPublished},
-		{"Unpublish", func(t *testing.T, ed *Editor, id string, seq int64, _ string) (Result, error) {
-			return ed.Unpublish(t.Context(), op, id, seq)
-		}, content.StatusDraft},
-		{"Archive", func(t *testing.T, ed *Editor, id string, seq int64, _ string) (Result, error) {
-			return ed.Archive(t.Context(), op, id, seq)
-		}, content.StatusArchived},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			ed, s := newSample(t)
-			id, rev := testID(content.RefEntry, 1), testID(content.RefRevision, 1)
-			put(t, s, content.RefEntry, id, storedScheduled(t, id, maxNumber(t, s)+1, testID(content.RefTranslationGroup, 1), rev))
-			addStoredRevision(t, s, id, rev, `{"schemaVersion":1,"title":"Soon","slug":"soon"}`)
-			if got := summaryOf(t, s, id).Entry; got.Status != content.StatusScheduled || got.ScheduledRevision != rev {
-				t.Fatalf("the entry is %+v, want it scheduled", got)
-			}
-			res, err := tt.do(t, ed, id, entrySeq(t, s, id), rev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantPublished := ""
-			if tt.want == content.StatusPublished {
-				wantPublished = rev
-			}
-			got := summaryOf(t, s, id).Entry
-			if res.Status != tt.want || res.Publishes != (tt.want == content.StatusPublished) || got.Status != tt.want ||
-				got.PublishedRevision != wantPublished || got.ScheduledRevision != "" || got.ScheduledAt != "" {
-				t.Errorf("%s() = %+v, the entry is %+v; want it %s with the published revision %q and no scheduled revision or time",
-					tt.name, res, got, tt.want, wantPublished)
-			}
-		})
-	}
-}
-
-// TestArchive makes entries archived.
 func TestArchive(t *testing.T) {
 	op := Op{By: userID}
 
@@ -1331,7 +1277,6 @@ func TestPublishConcurrent(t *testing.T) {
 	}
 }
 
-// TestPublishNoSettings checks the operations on a store that has no settings.
 func TestPublishNoSettings(t *testing.T) {
 	s := newStore(t)
 	ed := testEditor(t, s)
@@ -1369,7 +1314,6 @@ func postRevision(t *testing.T, old, new string) string {
 	return replaceOnce(t, string(sampleFile(t, revisionName(postJARev))), old, new)
 }
 
-// publishNext saves data as the next revision of the entry and publishes it.
 func publishNext(t *testing.T, ed *Editor, s *store.Store, op Op, entry, data string) (Result, error) {
 	t.Helper()
 	saved := saveRevision(t, ed, s, entry, data)

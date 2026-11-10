@@ -28,7 +28,6 @@ func testPasswordHash(b byte) string {
 	return "$pbkdf2-sha256$i=600000$" + enc.EncodeToString(bytes.Repeat([]byte{b}, 16)) + "$" + enc.EncodeToString(bytes.Repeat([]byte{b}, 32))
 }
 
-// testTokenHash returns a hash of a token, made of the byte b.
 func testTokenHash(b byte) string {
 	return "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{b}, 32))
 }

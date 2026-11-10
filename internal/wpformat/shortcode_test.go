@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// shortcodeTestNames are the names that the tests of FindShortcodes accept.
 var shortcodeTestNames = []string{"caption", "foo", "foo-bar", "gallery"}
 
 func acceptTestNames(name string, _ byte) bool {

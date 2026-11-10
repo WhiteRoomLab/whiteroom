@@ -625,7 +625,7 @@ func TestCapacityRefusalsChangeNothing(t *testing.T) {
 		t.Errorf("warn was called with %q, want %q", got, want)
 	}
 
-	// Pairs, login names and clients that are all full of ones that wait.
+	// All three tables are full: of pairs that wait, and of login names and clients with five attempts.
 	h = newSizedHarness(t, 2, 2, 2)
 	for i := 1; i <= 2; i++ {
 		h.waitingPair(i, testClient(i))

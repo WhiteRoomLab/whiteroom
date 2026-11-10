@@ -103,7 +103,6 @@ func openDir(t *testing.T, dir string) *Dir {
 	return d
 }
 
-// checkFile checks that f is the file name of files.
 func checkFile(t *testing.T, what string, f content.SiteFile, name string, files map[string]string) {
 	t.Helper()
 	if f.Name != name || string(f.Data) != files[name] {

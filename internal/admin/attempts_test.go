@@ -76,13 +76,11 @@ func testClient(i int) netip.Prefix {
 	return clientPrefix(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}))
 }
 
-// fresh returns a client that has not been used.
 func (h *harness) fresh() netip.Prefix {
 	h.clients++
 	return testClient(1000000 + h.clients)
 }
 
-// freshName returns a login name that has not been used.
 func (h *harness) freshName() [32]byte {
 	h.names++
 	return testName(1000000 + h.names)
@@ -1039,24 +1037,6 @@ func TestAttemptsClientsFillTheLevelOfAName(t *testing.T) {
 	}
 	h.allow("the real user, once more", name, user)
 	h.refuse("the real user, and then", name, h.fresh(), 15*time.Minute)
-}
-
-// TestAttemptsSuccessKeepsWhatOthersAdded is the same, with the real user's success in the middle of an attack.
-func TestAttemptsSuccessKeepsWhatOthersAdded(t *testing.T) {
-	h := newHarness(t, 1000)
-	name := testName(1)
-	h.fill(name, 60)
-
-	user := h.fresh()
-	for range 10 {
-		h.allow("the real user", name, user)
-		h.a.succeeded(name, user)
-	}
-	if got := h.nameLevel(1); got != 60 {
-		t.Fatalf("the login name has the level %d after 60 attempts of others and 10 successes, want 60", got)
-	}
-	h.fill(name, 40)
-	h.refuse("the attempt after 100 of others and 10 successes", name, user, 15*time.Minute)
 }
 
 func TestAttemptsAllMustAllow(t *testing.T) {

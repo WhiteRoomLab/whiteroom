@@ -32,13 +32,6 @@ const (
 	userID    = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
 )
 
-// A Source is a build.Source and an edit.Source.
-var (
-	_ build.Source = (*Source)(nil)
-	_ edit.Source  = (*Source)(nil)
-)
-
-// siteKinds are the kinds of the documents of a site directory.
 var siteKinds = []content.RefKind{
 	content.RefEntry, content.RefTerm, content.RefMedia, content.RefAuthor, content.RefMenu, content.RefForm,
 	content.RefRedirect,
@@ -74,7 +67,6 @@ func openSite(t *testing.T, dir string) siteDir {
 	return siteDir{Dir: d, theme: exampleTheme(t)}
 }
 
-// newStore creates a store in a temporary directory.
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
@@ -95,7 +87,6 @@ func importSample(t *testing.T) *store.Store {
 	return s
 }
 
-// schemaFile returns the schema file of the sample site.
 func schemaFile(t *testing.T) content.SiteFile {
 	t.Helper()
 	return content.SiteFile{Name: "site/schema.yaml", Data: readFile(t, filepath.Join(sampleDir, "site", "schema.yaml"))}
@@ -272,7 +263,6 @@ func publishedRevisions(t *testing.T, entries map[string]content.SiteFile) []str
 	return ids
 }
 
-// originalHashes returns the hashes of the originals of the media in media.
 func originalHashes(t *testing.T, media map[string]content.SiteFile) []string {
 	t.Helper()
 	var hashes []string
@@ -392,8 +382,6 @@ func TestSnapshotDocuments(t *testing.T) {
 // it returns, and the site that it builds.
 func TestSnapshotFixed(t *testing.T) {
 	t.Parallel()
-	const termID = "trm_01JBA4C7E2G5J8K1M4P7R2T5W8" // the category news in ja, whose page is /category/news/
-	const page = "public/category/news/index.html"
 	s := importSample(t)
 	old := snapshotOf(t, s)
 	oldSettings, _, err := old.Settings()
@@ -405,7 +393,7 @@ func TestSnapshotFixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	renamed := replaceOnce(t, string(oldTerms[termID].Data), `"name": "お知らせ"`, `"name": "Latest news"`)
+	renamed := replaceOnce(t, string(oldTerms[newsTerm].Data), `"name": "お知らせ"`, `"name": "Latest news"`)
 	extraID := testID(content.RefTerm, 1)
 	extra := fmt.Sprintf(`{
   "schemaVersion": 1,
@@ -418,7 +406,7 @@ func TestSnapshotFixed(t *testing.T) {
 }
 `, extraID, testID(content.RefTranslationGroup, 1))
 	newSettings := replaceOnce(t, string(oldSettings.Data), "Webサイトの企画と制作", "Websites and more")
-	put(t, s, content.RefTerm, termID, renamed)
+	put(t, s, content.RefTerm, newsTerm, renamed)
 	put(t, s, content.RefTerm, extraID, extra)
 	put(t, s, store.SettingsKind, "", newSettings)
 
@@ -434,7 +422,7 @@ func TestSnapshotFixed(t *testing.T) {
 		t.Errorf("Settings() of a new snapshot = %s, %v; want the saved settings", describe(settings), err)
 	}
 	wantTerms := maps.Clone(oldTerms)
-	wantTerms[termID] = content.SiteFile{Name: oldTerms[termID].Name, Data: []byte(renamed)}
+	wantTerms[newsTerm] = content.SiteFile{Name: oldTerms[newsTerm].Name, Data: []byte(renamed)}
 	wantTerms[extraID] = content.SiteFile{Name: "terms/" + extraID + ".json", Data: []byte(extra)}
 	if terms, err := fresh.Documents(content.RefTerm); err != nil || diffFiles(terms, wantTerms) != "" {
 		t.Errorf("Documents(%q) of a new snapshot: %s, %v; want the saved terms", content.RefTerm, diffFiles(terms, wantTerms), err)
@@ -445,11 +433,11 @@ func TestSnapshotFixed(t *testing.T) {
 	if oldRes.Release == freshRes.Release {
 		t.Errorf("the builds of the two snapshots make the release %s", oldRes.Release)
 	}
-	golden := string(readFile(t, filepath.Join(goldenDir, filepath.FromSlash(page))))
-	if got := string(readFile(t, filepath.Join(oldRelease, filepath.FromSlash(page)))); got != golden {
+	golden := string(readFile(t, filepath.Join(goldenDir, filepath.FromSlash(newsPage))))
+	if got := string(readFile(t, filepath.Join(oldRelease, filepath.FromSlash(newsPage)))); got != golden {
 		t.Errorf("the page of the old snapshot differs from the golden file: %s", firstDiff(got, golden))
 	}
-	got := string(readFile(t, filepath.Join(freshRelease, filepath.FromSlash(page))))
+	got := string(readFile(t, filepath.Join(freshRelease, filepath.FromSlash(newsPage))))
 	if want := `<meta property="og:title" content="Latest news">`; !strings.Contains(got, want) {
 		t.Errorf("the page of the new snapshot lacks %s", want)
 	}

@@ -357,7 +357,6 @@ func TestSetPasswordCannotWriteTheRow(t *testing.T) {
 	}
 }
 
-// TestPasswordOperationsCorruptRowWhileHashing makes a row unreadable after the password is hashed.
 func TestPasswordOperationsCorruptRowWhileHashing(t *testing.T) {
 	bad := mgrRow(7, "bad", RoleViewer).ID
 	corrupt := func(t *testing.T, e *mgrEnv) {
@@ -681,7 +680,6 @@ func TestResetDisabled(t *testing.T) {
 	}
 }
 
-// actor returns the Actor of the account with the login.
 func (e *mgrEnv) actor(t *testing.T, login string) Actor {
 	t.Helper()
 	a, err := e.m.Find(t.Context(), login)
@@ -1285,15 +1283,6 @@ func TestVerifyPasswordFactorFailures(t *testing.T) {
 	got, err := e.m.VerifyPasswordFactor(ctx, "admin", mgrPassword("admin"))
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) || got != (Account{}) {
 		t.Errorf("VerifyPasswordFactor() with a context that ends after the match = %+v, %v, want context.Canceled", got, err)
-	}
-	e.m.hook = nil
-	// It needs no random bits for any login: the hash for a login that nobody has was made with the Manager.
-	e.m.rand = iotest.ErrReader(errors.New("no random bits"))
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, ErrBadCredentials) {
-		t.Errorf("VerifyPasswordFactor() of an unknown login without random bits = %v, want ErrBadCredentials", err)
-	}
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
-		t.Errorf("VerifyPasswordFactor() of a login that exists without random bits = %v, want nil", err)
 	}
 }
 

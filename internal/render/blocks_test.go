@@ -23,7 +23,6 @@ func decodeBlocks(t *testing.T, s string) content.Blocks {
 	return bs
 }
 
-// paragraphJSON returns the JSON of a paragraph with the ID id and the text s.
 func paragraphJSON(id, s string) string {
 	return `{"type": "paragraph", "id": "` + id + `", "content": [{"type": "text", "text": "` + s + `"}]}`
 }

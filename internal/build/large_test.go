@@ -172,6 +172,8 @@ var buildStages = []string{
 }
 
 // maxRetainedPerPost is the most that the live heap may grow for each post of a site, at the end of any stage.
+// Keeping the bodies or the revision files to the end exceeds it by far; reusing the data of list entries, by a little.
+// Revisit it, and the memory figures in 4.3 of the concept (docs/04-publishing.md), when what the build keeps changes.
 const maxRetainedPerPost = 4 << 10
 
 // TestBuildMemory builds the sample site with 100 and with 400 more posts, and checks that the live heap at the end of

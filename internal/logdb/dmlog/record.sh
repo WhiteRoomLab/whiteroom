@@ -1,6 +1,6 @@
 #!/bin/sh
 # Records the workload of internal/store (TestDMLogWorkload) on ext4 through the dm-log-writes target of Linux, for
-# TestDMLogCheck (docs 3.5). It needs root. The PoC of #63 has not run it.
+# TestDMLogCheck (docs 3.5). It needs root, and has not been run yet (6.12, item 130).
 #
 #	usage: record.sh <output dir> <test binary of internal/store>
 #

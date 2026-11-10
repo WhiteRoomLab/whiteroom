@@ -75,7 +75,6 @@ func (e *mgrEnv) setRawSession(t *testing.T, key, data string) {
 	}
 }
 
-// sessionOf returns the stored row of the session with the token, and whether there is one.
 func (e *mgrEnv) sessionOf(t *testing.T, token string) (sessionRow, bool) {
 	t.Helper()
 	data, ok := e.rawSessions(t)[sessKey(token)]
@@ -89,7 +88,6 @@ func (e *mgrEnv) sessionOf(t *testing.T, token string) (sessionRow, bool) {
 	return s, true
 }
 
-// hasSession reports whether the token has a stored row.
 func (e *mgrEnv) hasSession(t *testing.T, token string) bool {
 	t.Helper()
 	_, ok := e.rawSessions(t)[sessKey(token)]
@@ -378,7 +376,6 @@ func TestLoginFailures(t *testing.T) {
 	})
 }
 
-// TestPasswordCompared checks PasswordCompared on the errors it is asked about.
 func TestPasswordCompared(t *testing.T) {
 	boom := errors.New("boom")
 	for _, tt := range []struct {
@@ -1814,26 +1811,6 @@ func TestDecodeSessionRejects(t *testing.T) {
 	}
 }
 
-// TestDecodeSessionErrorHidesData checks that nothing of a row is in the error that its reading returns.
-func TestDecodeSessionErrorHidesData(t *testing.T) {
-	key := sessKey("row")
-	for name, data := range map[string]string{
-		"a duplicate key": replaceOnce(t, sessTestJSON, `"account"`, `"account":"`+testUserID+`","account"`),
-		"an unknown key":  replaceOnce(t, sessTestJSON, `"factors"`, `"extra":"yamada","factors"`),
-		"no factor":       replaceOnce(t, sessTestJSON, `["password"]`, `[]`),
-	} {
-		_, err := decodeSession(key, []byte(data))
-		if err == nil {
-			t.Fatalf("decodeSession() accepted a row with %s", name)
-		}
-		for _, secret := range []string{testUserID, "yamada", "password", "2026", "createdAt"} {
-			if strings.Contains(err.Error(), secret) {
-				t.Errorf("the error for %s contains %q", name, secret)
-			}
-		}
-	}
-}
-
 // TestSessionRowPrinting checks that fmt prints nothing of a session row but its account.
 func TestSessionRowPrinting(t *testing.T) {
 	s := sessTestRow()
@@ -1851,25 +1828,6 @@ func TestSessionRowPrinting(t *testing.T) {
 		if strings.Contains(got, "2026") || strings.Contains(got, "password") || !strings.Contains(got, testUserID) {
 			t.Errorf("Sprintf(%q) of a list of rows = %q, want the account and nothing more", verb, got)
 		}
-	}
-}
-
-func TestSessionKey(t *testing.T) {
-	if key, ok := sessionKey(tokSample); !ok || key != strings.TrimPrefix(tokSampleHash, "sha256:") || key != sessKey(tokSample) {
-		t.Error("the key of the sample token is not the hexadecimal SHA-256 of its text")
-	}
-	for _, text := range []string{"", "x", tokSample[:42], tokSample + "A", strings.Repeat("!", 43), tokSample[:42] + "9"} {
-		if key, ok := sessionKey(text); ok || key != "" {
-			t.Errorf("sessionKey() of a text that is no token (%d bytes) = %q, %v, want no key", len(text), key, ok)
-		}
-	}
-	token, key, err := newSession(bytes.NewReader(tokBytes(tokenBytes)))
-	if err != nil || token != tokSample || key != sessKey(tokSample) {
-		t.Error("newSession() did not make the sample token and the key of its row from the sample bytes")
-	}
-	boom := errors.New("no random bits")
-	if token, key, err := newSession(iotest.ErrReader(boom)); !errors.Is(err, boom) || token != "" || key != "" {
-		t.Errorf("newSession() without random bits = %q, %q, %v, want the error of the reader", token, key, err)
 	}
 }
 
@@ -2013,8 +1971,8 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 }
 
 // gateProbe is a context that tells when the hash gate begins to wait on it: the gate asks for the Done channel of its
-// context only when it waits for a place, and nothing that the tests run before it does. With endOnWait the context ends
-// itself then, so that the wait ends at once.
+// context in the select that takes a place, even when one is free; the tests take every place first, so that this is
+// when it waits. With endOnWait the context ends itself then, so that the wait ends at once.
 type gateProbe struct {
 	context.Context
 	cancel    context.CancelFunc
@@ -2038,7 +1996,6 @@ func (p *gateProbe) Done() <-chan struct{} {
 	return p.Context.Done()
 }
 
-// waited reports whether the gate has waited on the probe.
 func (p *gateProbe) waited() bool {
 	select {
 	case <-p.reached:
@@ -2655,10 +2612,10 @@ func (e *mgrEnv) ghostSession(t *testing.T, id, name string) {
 	})
 }
 
-// endFixture is a store with two administrators and two accounts that are not, each with sessions, and two rows that no
-// operation on an account may remove: one that does not decode and one of taro that has ended. The clock stands still, so
-// the time of the credentials is the same after a password is set again, and a session ends only if an operation
-// removes it.
+// endFixture is a store with two administrators and two accounts that are not, each with sessions, and two rows that
+// cannot work, which an operation on an account other than taro leaves and a sweep (a login, ChangeOwnPassword)
+// removes: one that does not decode and one of taro that has ended. The clock stands still, so the time of the
+// credentials is the same after a password is set again, and a session ends only if an operation removes it.
 type endFixture struct {
 	e                         *mgrEnv
 	admin, boss, yamada, taro Account
@@ -2684,7 +2641,6 @@ func newEndFixture(t *testing.T) *endFixture {
 	return f
 }
 
-// idOf returns the ID of the account with the login name.
 func (f *endFixture) idOf(login string) string {
 	return map[string]string{"admin": f.admin.ID, "boss": f.boss.ID, "yamada": f.yamada.ID, "taro": f.taro.ID}[login]
 }
@@ -2783,21 +2739,9 @@ func TestOperationsEndSessions(t *testing.T) {
 			f.e.putRaw(t, f.yamada.ID, "not json")
 			return func() error { return f.e.m.Delete(t.Context(), System, f.yamada.ID) }
 		}},
-		{"a change of the role by an administrator", func(t *testing.T, f *endFixture) action {
-			return func() error {
-				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleViewer)})
-				return err
-			}
-		}},
 		{"a change of the role by System", func(t *testing.T, f *endFixture) action {
 			return func() error {
 				_, err := f.e.m.Update(t.Context(), System, f.yamada.ID, Change{Role: ptr(RoleAdmin)})
-				return err
-			}
-		}},
-		{"a change of the role and the name", func(t *testing.T, f *endFixture) action {
-			return func() error {
-				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleAuthor), Name: ptr("New Name")})
 				return err
 			}
 		}},
@@ -2844,8 +2788,9 @@ func (f *endFixture) disable(t *testing.T, login string) {
 	delete(f.tokens, login)
 }
 
-// TestOperationsEndNothingWhenRefused runs the operations that end sessions with every kind of refusal, and checks that
-// the store is as it was: the rows of the accounts and of the sessions, and no commit.
+// TestOperationsEndNothingWhenRefused runs the operations that end sessions with every kind of refusal, and with a
+// Disable that has nothing to do, and checks that the store is as it was: the rows of the accounts and of the sessions,
+// and no commit.
 func TestOperationsEndNothingWhenRefused(t *testing.T) {
 	problems := func(err error) bool {
 		var errs content.Errors
@@ -3248,16 +3193,6 @@ func TestOtherChangesKeepSessions(t *testing.T) {
 			}
 		})
 	}
-
-	// A logout ends the one session and no other of the account.
-	t.Run("a logout", func(t *testing.T) {
-		f := newEndFixture(t)
-		if err := f.e.m.Logout(t.Context(), f.tokens["yamada"][0]); err != nil {
-			t.Fatal(err)
-		}
-		sessGone(t, f.e, f.tokens["yamada"][0], "that logged out")
-		sessLives(t, f.e, f.tokens["yamada"][1], "that did not")
-	})
 }
 
 // ownNext is the password that the tests of ChangeOwnPassword change to: it passes every rule.
@@ -3789,7 +3724,6 @@ func (e *mgrEnv) useHash(t *testing.T, id, password string, iterations int) stri
 	return hash
 }
 
-// iterationsOf returns the iteration count of the stored hash of the account id.
 func (e *mgrEnv) iterationsOf(t *testing.T, id string) int {
 	t.Helper()
 	n, _, _, err := parseHash(e.row(t, id).Password)

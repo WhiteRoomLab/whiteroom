@@ -348,7 +348,6 @@ func TestEventsDuringClose(t *testing.T) {
 	}
 }
 
-// TestEventsNotInMemory checks that the engine does not keep the data of events in memory.
 func TestEventsNotInMemory(t *testing.T) {
 	ctx := context.Background()
 	db, err := Create(osFS(t, t.TempDir()), Options{})

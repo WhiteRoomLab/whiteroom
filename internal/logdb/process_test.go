@@ -34,7 +34,6 @@ const (
 // logMarker starts the lines that the helper process prints to stdout to tell where it is.
 const logMarker = "logdb-helper: "
 
-// helperOpts are the options of the helper process.
 type helperOpts struct {
 	Placement       Placement
 	Threshold       int

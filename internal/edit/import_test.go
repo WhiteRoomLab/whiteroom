@@ -22,11 +22,10 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// A Source is a build.Source, and a site directory is one.
+// A Source is a build.Source.
 var (
 	_ Source       = build.Source(nil)
 	_ build.Source = Source(nil)
-	_ Source       = (*sitedir.Dir)(nil)
 )
 
 // openSite opens the site directory dir, with the example theme, as the Source of an import; the test closes it.
@@ -35,7 +34,6 @@ func openSite(t *testing.T, dir string) source {
 	return openSiteWith(t, dir, os.DirFS(themeDir))
 }
 
-// openSiteWith opens the site directory dir with the theme th.
 func openSiteWith(t *testing.T, dir string, th fs.FS) source {
 	t.Helper()
 	d, err := sitedir.Open(dir)
@@ -46,13 +44,11 @@ func openSiteWith(t *testing.T, dir string, th fs.FS) source {
 	return source{Dir: d, theme: th}
 }
 
-// openSample opens the sample site as the Source of an import.
 func openSample(t *testing.T) source {
 	t.Helper()
 	return openSite(t, sampleDir)
 }
 
-// newStore creates a store in a temporary directory.
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
@@ -112,7 +108,6 @@ func readIndex(t *testing.T, tx *store.Tx) indexState {
 	return st
 }
 
-// indexOf returns what the index of s answers.
 func indexOf(t *testing.T, s *store.Store) indexState {
 	t.Helper()
 	var st indexState
@@ -126,7 +121,6 @@ func indexOf(t *testing.T, s *store.Store) indexState {
 	return st
 }
 
-// sameIndex fails the test if the two states of the index differ.
 func sameIndex(t *testing.T, what string, got, want indexState) {
 	t.Helper()
 	if got.Last != want.Last {
@@ -380,7 +374,6 @@ func siteFiles(t *testing.T, dir string) map[string]string {
 	return files
 }
 
-// sameFiles fails the test if the files got are not the files want.
 func sameFiles(t *testing.T, got, want map[string]string) {
 	t.Helper()
 	for _, name := range slices.Sorted(maps.Keys(want)) {
@@ -749,7 +742,7 @@ func TestImportStages(t *testing.T) {
 
 // TestImportBuildOnly imports sites that the build refuses and the Import does not: the duplicates of the output paths that
 // the build finds only after it has written the files of the release, and the images that the build cannot publish, which
-// the Import does not refuse (Q10-A).
+// the Import does not refuse.
 func TestImportBuildOnly(t *testing.T) {
 	t.Parallel()
 	accepts := func(t *testing.T, dir string) {
@@ -810,8 +803,8 @@ func normalizedMedium(t *testing.T, data string) string {
 }
 
 // TestImportNormalized checks that the Import normalizes the documents and the published revisions as a save does, before it
-// validates them, and stores what MarshalJSON writes of them where that changes them (Q14-B): the build refuses values that
-// are not normalized, and accepts what the Import has stored.
+// validates them, and stores what MarshalJSON writes of them where that changes them: the build refuses values that are not
+// normalized, and accepts what the Import has stored.
 func TestImportNormalized(t *testing.T) {
 	t.Parallel()
 	site, err := content.LoadSite(content.SiteFile{Name: settingsName, Data: sampleFile(t, settingsName)},
@@ -936,7 +929,7 @@ func TestImportAsImport(t *testing.T) {
 	}
 }
 
-// TestImportRevisions checks which revisions the Import stores: those that the published entries publish, and no other.
+// TestImportRevisions checks which revisions the Import stores: those that the entries publish or schedule, and no other.
 func TestImportRevisions(t *testing.T) {
 	t.Parallel()
 	// The site directory does not say whose a revision is, and the build never reads the revisions that no entry publishes.

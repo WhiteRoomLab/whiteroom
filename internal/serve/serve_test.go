@@ -69,7 +69,6 @@ func newLogged(t *testing.T, out string) (*Handler, *bytes.Buffer) {
 	return h, logs
 }
 
-// do returns the response of h to req.
 func do(h http.Handler, req *http.Request) *http.Response {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

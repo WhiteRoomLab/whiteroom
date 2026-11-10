@@ -257,31 +257,6 @@ func TestRevisionReadErrors(t *testing.T) {
 	})
 }
 
-// TestCorruptSavedAt changes the saved time of a revision behind the back of the store, and checks that the reads of
-// the revision fail.
-func TestCorruptSavedAt(t *testing.T) {
-	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		s, _ := newStore(t, tb)
-		putWithRevision(t, s)
-		corruptSavedAt(t, s, "x")
-		check := func(what string, err error) {
-			t.Helper()
-			var pe *time.ParseError
-			if want := "revision " + revisionID + `: parsing time "x"`; !errors.As(err, &pe) ||
-				!strings.HasPrefix(err.Error(), want) {
-				t.Errorf("%s = %v, want an error %q... that wraps a *time.ParseError", what, err, want)
-			}
-		}
-		view(t, s, func(tx *Tx) error {
-			_, err := tx.Revision(revisionID)
-			check("Revision()", err)
-			_, err = tx.Revisions(entryID)
-			check("Revisions()", err)
-			return nil
-		})
-	})
-}
-
 // TestSampleSiteRevisions adds every revision of the sample site of internal/build, with the entry that publishes it,
 // in one Update, and reads them back.
 func TestSampleSiteRevisions(t *testing.T) {

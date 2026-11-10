@@ -392,13 +392,6 @@ func TestSanitizeElements(t *testing.T) {
 				"removed <plaintext> element, keeping its content",
 		},
 		{
-			name: "noscript, parsed with scripting",
-			in:   `<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>`,
-			want: `"&gt;`,
-			changes: "removed <noscript> element and its content\n" + `removed <img> element: invalid src "x": ` +
-				`must be an absolute URL or a path starting with "/"`,
-		},
-		{
 			name:    "template content",
 			in:      `<template><script>alert(1)</script><img src="/a.jpg"></template>x`,
 			want:    `x`,

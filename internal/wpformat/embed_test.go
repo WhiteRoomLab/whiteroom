@@ -130,7 +130,4 @@ func TestAutoembedURLsRanges(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("AutoembedURLs(%q) = %v, want %v", s, got, want)
 	}
-	for _, span := range want {
-		t.Logf("%q", s[span.Start:span.End])
-	}
 }

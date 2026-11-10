@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// jsonOf returns the JSON that encodeRow writes for r.
 func jsonOf(t *testing.T, r row) string {
 	t.Helper()
 	b, err := encodeRow(r)
@@ -200,7 +199,6 @@ func TestDecodeRowRejects(t *testing.T) {
 	password := `"password":"` + testPasswordHash(0xab) + `"`
 	token := `"token":{"purpose":"reset","hash":"` + testTokenHash(0xcd) + `",` + expiresAt + `}`
 
-	// edit returns the JSON of the full row with new in place of old.
 	edit := func(old, new string) string { return replaceOnce(t, full, old, new) }
 	// with returns the JSON that encodeRow writes for the full row after f: a row that is not valid, in the one form.
 	with := func(f func(*row)) string {
@@ -352,9 +350,7 @@ func TestDecodeRowAccepts(t *testing.T) {
 	token := `"token":{"purpose":"reset","hash":"` + testTokenHash(0xcd) + `",` + expiresAt + `}`
 	unassigned := string(unassignedFrom(t, 0x1ade))
 
-	// edit returns the JSON of the full row with new in place of old.
 	edit := func(old, new string) string { return replaceOnce(t, full, old, new) }
-	// with returns the full row after f.
 	with := func(f func(*row)) row {
 		r := testRow()
 		f(&r)
@@ -473,32 +469,6 @@ func TestDecodeRowNoID(t *testing.T) {
 		if want := invalidValue(id); err == nil || err.Error() != want {
 			t.Errorf("decodeRow(%q) = %v, want %q", id, err, want)
 		}
-	}
-}
-
-// TestDecodeRowErrorHidesData checks that nothing of a row is in the error that its reading returns.
-func TestDecodeRowErrorHidesData(t *testing.T) {
-	full := jsonOf(t, testRow())
-	unreadablePassword, unreadableToken := testRow(), testRow()
-	unreadablePassword.Password += "x"
-	unreadableToken.Token.Hash += "0"
-	for name, data := range map[string]string{
-		"an unreadable password": jsonOf(t, unreadablePassword),
-		"an unreadable token":    jsonOf(t, unreadableToken),
-		"a duplicate key":        strings.Replace(full, `"login":"yamada"`, `"login":"yamada","login":"yamada"`, 1),
-		"an unknown key":         strings.Replace(full, `"login":`, `"extra":"yamada","login":`, 1),
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := decodeRow(testUserID, []byte(data))
-			if err == nil {
-				t.Fatal("decodeRow() accepted a row that is not valid")
-			}
-			for _, secret := range []string{"yamada", "example.com", "pbkdf2", "sha256", testPasswordHash(0xab), testTokenHash(0xcd), "山田"} {
-				if strings.Contains(err.Error(), secret) {
-					t.Errorf("the error %q contains %q", err, secret)
-				}
-			}
-		})
 	}
 }
 

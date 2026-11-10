@@ -108,9 +108,8 @@ func TestEntryMarshalJSON(t *testing.T) {
 		want string
 	}{
 		{"empty", Entry{}, `{"schemaVersion":1}`},
-		// The bytes of an entry without the scheduled items are those of before they were added.
+		// An entry without the scheduled items keeps the bytes that stored entries have.
 		{"about page", aboutPageEntry, aboutPageEntryJSON},
-		{"scheduled", scheduledEntry, scheduledEntryJSON},
 		{
 			name: "scheduled items alone",
 			in:   Entry{ScheduledRevision: testRevision},
@@ -175,13 +174,11 @@ func TestEntryUnmarshalJSONError(t *testing.T) {
 }
 
 func TestEntryValidate(t *testing.T) {
-	// entry returns aboutPageEntry changed by f.
 	entry := func(f func(e *Entry)) Entry {
 		e := aboutPageEntry
 		f(&e)
 		return e
 	}
-	// scheduled returns scheduledEntry changed by f.
 	scheduled := func(f func(e *Entry)) Entry {
 		e := scheduledEntry
 		f(&e)

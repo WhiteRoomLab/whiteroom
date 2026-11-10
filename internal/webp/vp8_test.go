@@ -490,7 +490,6 @@ func TestLoopFilterSegments(t *testing.T) {
 	}
 }
 
-// simpleEdgeN applies simpleEdge to one segment.
 func simpleEdgeN(b []byte, i, limit int) {
 	// simpleEdge filters 16 segments: give it 16 copies, 8 apart, and keep the first.
 	big := make([]byte, 16*8)

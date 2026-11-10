@@ -106,7 +106,6 @@ func testAccounts(tb testing.TB) (*account.Manager, *store.Store) {
 	return m, s
 }
 
-// testConfig returns the Config of the tests, for the Manager, origin and the trusted proxies.
 func testConfig(m *account.Manager, origin string, proxies ...netip.Prefix) Config {
 	return Config{Origin: origin, TrustedProxies: proxies, Accounts: m}
 }
@@ -270,7 +269,6 @@ var problems = map[string]struct {
 	"internal":               {http.StatusInternalServerError, "the server failed to answer"},
 }
 
-// problemJSON returns the body of the problem with code.
 func problemJSON(code string) string {
 	p := problems[code]
 	return fmt.Sprintf(`{"type":"about:blank","title":%q,"status":%d,"detail":%q,"code":%q}`,

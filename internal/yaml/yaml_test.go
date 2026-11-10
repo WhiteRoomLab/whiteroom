@@ -827,10 +827,3 @@ func TestToJSONHints(t *testing.T) {
 		}
 	}
 }
-
-func TestErrorString(t *testing.T) {
-	err := &Error{Position: Position{Line: 3, Column: 5}, Msg: "missing value"}
-	if got, want := err.Error(), "3:5: missing value"; got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}

@@ -51,7 +51,6 @@ func (x wxrAuthor) xml() string {
 	return b.String()
 }
 
-// wxrPost is an item to write into a WXR.
 type wxrPost struct {
 	id                   int
 	typ, status, creator string // "" for post and publish
@@ -183,7 +182,6 @@ func checkAuthors(t *testing.T, imp *Import, site *content.Site, authors []conte
 	}
 }
 
-// authorID returns the ID of the profile of the user with the login.
 func authorID(t *testing.T, imp *Import, login string) string {
 	t.Helper()
 	_, id, ok := imp.IDs.Lookup(UserObject(login))
@@ -193,7 +191,6 @@ func authorID(t *testing.T, imp *Import, login string) string {
 	return id
 }
 
-// profileOf returns the profile of the user with the login.
 func profileOf(t *testing.T, imp *Import, authors []content.AuthorProfile, login string) content.AuthorProfile {
 	t.Helper()
 	id := authorID(t, imp, login)
@@ -237,17 +234,6 @@ func authorTarget(id, pointer string) string {
 // restSkipped is the line of the report for the user of the REST API that no author is.
 func restSkipped(id int64, name string) string {
 	return fmt.Sprintf("rest.json: skipped: rest %d (user %q): "+notAuthor, id, name, id)
-}
-
-// sameLines compares the lines in any order.
-func sameLines(t *testing.T, got, want []string) {
-	t.Helper()
-	got, want = slices.Clone(got), slices.Clone(want)
-	slices.Sort(got)
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Errorf("the lines are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
 }
 
 // linesAt returns the lines of the report that are about pointer in a document.
@@ -321,7 +307,7 @@ func TestAuthorsOldSamples(t *testing.T) {
 			got = append(got, l)
 		}
 	}
-	sameLines(t, got, []string{nameLine + authorTarget(id, "/name"), slugLine + authorTarget(id, "/slug")})
+	sameSet(t, "the lines", got, []string{nameLine + authorTarget(id, "/name"), slugLine + authorTarget(id, "/slug")})
 
 	// WXR 1.1 has the display name.
 	e, rep = readSample(t, "wordpress-3.3.xml")
@@ -475,7 +461,7 @@ func TestAuthorsNames(t *testing.T) {
 		return authorWho(t, e, file, "changed", login) + "line breaks and tabs in the name are spaces here" +
 			authorTarget(authorID(t, imp, login), "/name")
 	}
-	sameLines(t, linesAt(t, imp.Report, "/name"), []string{
+	sameSet(t, "the lines", linesAt(t, imp.Report, "/name"), []string{
 		linesLine("lines"),
 		emptyLine("empty", "empty"),
 		emptyLine("blank", "blank"),
@@ -621,7 +607,7 @@ func TestAuthorsBio(t *testing.T) {
 					want = append(want, authorWho(t, imp.WXR, "site.xml", string(tt.kind), logins[i])+tt.line+authorTarget(p.ID, "/bio/"+language))
 				}
 			}
-			sameLines(t, linesAt(t, imp.Report, "/bio/"+language), want)
+			sameSet(t, "the lines", linesAt(t, imp.Report, "/bio/"+language), want)
 		})
 	}
 }
@@ -681,12 +667,6 @@ func TestAuthorsLinks(t *testing.T) {
 		}
 	}
 	wantLines(t, imp.Report, want)
-
-	// The message about a website with an email address in it, as the design document gives it.
-	const mailto = "the website is not imported: must be an http or https URL"
-	if n := strings.Count(strings.Join(reportLines(t, imp.Report), "\n"), ": "+mailto+" -> "); n != 1 {
-		t.Errorf("the report has %d lines with %q, want 1", n, mailto)
-	}
 }
 
 func TestAuthorsOldWXR(t *testing.T) {
@@ -835,7 +815,7 @@ func TestAuthorsMatching(t *testing.T) {
 			for _, u := range tt.others {
 				want = append(want, restSkipped(u.ID, u.Name))
 			}
-			sameLines(t, got, want)
+			sameSet(t, "the lines", got, want)
 		})
 	}
 }
@@ -1076,7 +1056,7 @@ func TestAuthorsValidationGuard(t *testing.T) {
 		at := func(kind, msg, pointer string) string {
 			return fmt.Sprintf("hand.xml: %s: author %q: %s", kind, login, msg) + authorTarget(profiles[0].ID, pointer)
 		}
-		sameLines(t, reportLines(t, imp.Report), []string{
+		sameSet(t, "the lines", reportLines(t, imp.Report), []string{
 			at("review", `the names of the author are empty or email addresses; the name is the slug "author" here; correct it`, "/name"),
 			at("changed", fmt.Sprintf("nothing is left of the slug %q; it is %q here", login, "author"), "/slug"),
 			at("review", fmt.Sprintf(noSlugReview, "author"), "/slug"),
@@ -1207,25 +1187,6 @@ func TestIsAuthorEmail(t *testing.T) {
 	} {
 		if got := isAuthorEmail(tt.s, tt.email); got != tt.want {
 			t.Errorf("isAuthorEmail(%q, %q) = %v, want %v", tt.s, tt.email, got, tt.want)
-		}
-	}
-}
-
-func TestHidesLogin(t *testing.T) {
-	for _, tt := range []struct {
-		login, email string
-		want         bool
-	}{
-		{"mary@example.org", "", true},
-		{"erin@localhost", "erin@localhost", true},
-		{"ERIN@localhost", "erin@localhost", true},
-		{"erin", "erin@localhost", false},
-		{"jdoe", "jdoe@example.com", false},
-		{"admin", "", false},
-		{"", "", false},
-	} {
-		if got := hidesLogin(tt.login, tt.email); got != tt.want {
-			t.Errorf("hidesLogin(%q, %q) = %v, want %v", tt.login, tt.email, got, tt.want)
 		}
 	}
 }

@@ -312,7 +312,6 @@ func TestNormalizeSettings(t *testing.T) {
 		nel        = string(rune(0x0085))
 		voicedMark = string(rune(0x3099)) // "か" and voicedMark is the NFD form of "が"
 	)
-	// edit returns s changed by f.
 	edit := func(s *Site, f func(s *Site)) *Site {
 		f(s)
 		return s

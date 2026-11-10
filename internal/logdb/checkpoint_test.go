@@ -42,7 +42,6 @@ func changeF(i int) func(*Tx) error {
 	}
 }
 
-// ckpOf returns the header of the checkpoint of the store in fsys.
 func ckpOf(t *testing.T, fsys vfs.FS) ckpHeader {
 	t.Helper()
 	h, _, err := parseCheckpoint(path.Join(fsys.Name(), "checkpoint"), fileData(t, fsys, "checkpoint"))
@@ -81,7 +80,6 @@ func kv(k, v string) []byte {
 	return slices.Concat(uv(uint64(len(k))), []byte(k), []byte{envPlain}, uv(uint64(len(v))), []byte(v))
 }
 
-// ckpTemps returns the temporary files of checkpoints in fsys.
 func ckpTemps(fsys *simfs.FS) []string {
 	var names []string
 	fsys.Walk(func(p string, _ []byte) {
@@ -109,7 +107,7 @@ func wait[T any](t *testing.T, ch <-chan T, what string) T {
 	panic("unreachable")
 }
 
-// TestCheckpointLayout pins the body of a checkpoint to the layout of the spec.
+// TestCheckpointLayout pins the body of a checkpoint to the layout of concept section 3.5.
 func TestCheckpointLayout(t *testing.T) {
 	fsys, db := newSim(t, Options{Placement: Hybrid, Threshold: 100})
 	inline, file := objData(1, 10), objData(2, 200)
@@ -830,8 +828,8 @@ func TestCloseWritesCheckpoint(t *testing.T) {
 	}
 }
 
-// TestCrashDuringCheckpoint crashes after each operation of a Checkpoint, and checks every crash that simfs can make
-// of it: the checkpoint is the old one or the new one, never a damaged one, and Open recovers the same state.
+// TestCrashDuringCheckpoint crashes after each operation of a Checkpoint, and checks the crash models that simfs.Models
+// gives: the checkpoint is the old one or the new one, never a damaged one, and Open recovers the same state.
 func TestCrashDuringCheckpoint(t *testing.T) {
 	o := Options{Placement: Hybrid, Threshold: 100, SegmentBytes: 300}
 	for _, earlier := range []bool{false, true} {

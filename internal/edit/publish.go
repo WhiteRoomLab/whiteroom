@@ -155,7 +155,7 @@ func (r *run) checkPublishable(site *content.Site, state *content.Entry, rv revi
 	return nil
 }
 
-// stateFile writes the state ent of an entry as MarshalJSON writes it (Q14-B), and keeps the bytes in r.given so that
+// stateFile writes the state ent of an entry as MarshalJSON writes it, and keeps the bytes in r.given so that
 // the problems in them are located in them.
 func (r *run) stateFile(ent content.Entry) (content.SiteFile, error) {
 	data, err := ent.MarshalJSON()

@@ -456,7 +456,6 @@ func calls(tx *Tx) map[string]func() error {
 	}
 }
 
-// writes are the methods of Tx that write.
 var writes = []string{
 	"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex", "PutAccount", "DeleteAccount", "PutSession",
 	"DeleteSession",

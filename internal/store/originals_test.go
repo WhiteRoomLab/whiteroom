@@ -12,7 +12,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -325,8 +324,8 @@ func TestOpenOriginalErrors(t *testing.T) {
 			{
 				name: "unreadable",
 				setup: func(t *testing.T, s *Store, path string) {
-					if os.Geteuid() == 0 || runtime.GOOS == "windows" {
-						t.Skip("every file is readable") // to root, or with a mode that Windows ignores
+					if os.Geteuid() == 0 {
+						t.Skip("every file is readable") // to root
 					}
 					putOriginal(t, s, data)
 					if err := os.Chmod(path, 0); err != nil {

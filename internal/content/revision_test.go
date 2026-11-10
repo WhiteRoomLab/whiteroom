@@ -268,9 +268,6 @@ func TestAboutPage(t *testing.T) {
 	if err := e.UnmarshalJSON([]byte(readTestdata(t, "about-page-entry.json"))); err != nil {
 		t.Fatalf("UnmarshalJSON(about-page-entry.json) = %v", err)
 	}
-	if err := e.Validate(site); err != nil {
-		t.Errorf("Entry.Validate() = %v", err)
-	}
 	r := mustRevision(t, readTestdata(t, "about-page-revision.json"))
 	normalized := mustRevision(t, readTestdata(t, "about-page-revision.json"))
 	normalized.Normalize(site.Type(e.Type))
@@ -619,7 +616,6 @@ func TestRevisionValidateCategory(t *testing.T) {
 	)
 	post := Revision{Title: "t", Slug: "s", Date: "2026-10-25T10:00:00+09:00"}
 	works := Revision{Title: "t", Slug: "s", Fields: Fields{"client": jsontext.Value(`"c"`)}}
-	// withTerms returns r with terms.
 	withTerms := func(r Revision, terms Terms) Revision {
 		r.Terms = terms
 		return r

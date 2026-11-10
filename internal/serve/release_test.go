@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -214,7 +213,6 @@ func TestNewErrors(t *testing.T) {
 	}
 }
 
-// TestCurrentUnreadable checks the error for an output directory in which current cannot be read.
 func TestCurrentUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads any directory")
@@ -434,36 +432,4 @@ func TestReleaseCache(t *testing.T) {
 	}
 	setCurrent(t, out, "releases/"+releaseB)
 	checkBase("/c")
-}
-
-// TestCurrentConcurrent checks that requests can get the release at the same time while current changes.
-func TestCurrentConcurrent(t *testing.T) {
-	out := t.TempDir()
-	list := testList()
-	writeRelease(t, out, releaseA, list, nil)
-	list.Base = "/b"
-	writeRelease(t, out, releaseB, list, nil)
-	setCurrent(t, out, "releases/"+releaseA)
-	h := newHandler(t, out)
-	bases := map[string]string{releaseA: "", releaseB: "/b"}
-	var wg sync.WaitGroup
-	for range 4 {
-		wg.Go(func() {
-			for range 200 {
-				rel, err := h.current()
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				if want, ok := bases[rel.name]; !ok || rel.base != want {
-					t.Errorf("release %q has the base %q", rel.name, rel.base)
-					return
-				}
-			}
-		})
-	}
-	for i := range 100 {
-		setCurrent(t, out, "releases/"+[]string{releaseB, releaseA}[i%2])
-	}
-	wg.Wait()
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
-// bodyXML is an item with a content to write into a WXR.
 type bodyXML struct {
 	id          int
 	typ, status string // "" for post and publish

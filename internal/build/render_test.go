@@ -95,7 +95,6 @@ func readFile(t *testing.T, dir, name string) string {
 	return string(data)
 }
 
-// pageCSSOutputs returns the outputs of b that are page CSS files.
 func pageCSSOutputs(b *builder) []siteplan.Output {
 	var outs []siteplan.Output
 	for _, o := range b.outputs {

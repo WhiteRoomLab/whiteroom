@@ -62,7 +62,6 @@ func checkListed(t *testing.T, what, out, current string, releases ...string) {
 	}
 }
 
-// checkUnlocked checks that no build holds the lock of out.
 func checkUnlocked(t *testing.T, what, out string) {
 	t.Helper()
 	unlock, err := lockOut(openRoot(t, out))

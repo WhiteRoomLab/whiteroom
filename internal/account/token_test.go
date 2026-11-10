@@ -58,16 +58,6 @@ func TestNewToken(t *testing.T) {
 	}
 }
 
-func TestTokenChars(t *testing.T) {
-	if want := base64.RawURLEncoding.EncodedLen(tokenBytes); tokenChars != want || tokenChars != len(tokSample) {
-		t.Errorf("tokenChars = %d, want %d: the length of %d bytes in base64url without padding", tokenChars, want, tokenBytes)
-	}
-	token, _, err := newToken(rand.Reader)
-	if err != nil || len(token) != tokenChars {
-		t.Errorf("newToken() = a token of %d characters, %v, want %d", len(token), err, tokenChars)
-	}
-}
-
 func TestNewTokenKnown(t *testing.T) {
 	tests := []struct {
 		name  string

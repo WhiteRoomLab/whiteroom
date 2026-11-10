@@ -8,7 +8,7 @@
 // Table's Lookup and Ref, and drops from the Table what it cannot import; the writing puts the entities into the site
 // directory. Only reading, the settings, the IDs, the report of what was not imported, Import (the state of an import),
 // the conversion of the terms, of the authors and of the site settings, the conversion of the content of the block editor
-// into blocks (Body), and the guess of the permalinks are here so far.
+// and of the classic editor into blocks (Body), and the guess of the permalinks are here so far.
 package wpimport
 
 import (

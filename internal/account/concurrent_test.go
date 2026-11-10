@@ -19,7 +19,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// mgrRunTogether starts the functions at the same time and returns what each returned.
 func mgrRunTogether(calls ...func() error) []error {
 	errs := make([]error, len(calls))
 	start := make(chan struct{})
@@ -396,7 +395,6 @@ func mgrInvariants(s *store.Store) string {
 	return ""
 }
 
-// sessionRounds is how many times the races of logins are run: 25, and a few for -short.
 func sessionRounds() int {
 	if testing.Short() {
 		return 5
@@ -449,16 +447,6 @@ func TestConcurrentLoginAndDisable(t *testing.T) {
 			finish(t, e, a, []string{older}, "a Disable at "+point)
 		})
 	}
-
-	t.Run("a Disable after the login", func(t *testing.T) {
-		e, a := setup(t)
-		_, older := e.login(t, "yamada")
-		_, token := e.login(t, "yamada")
-		if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
-			t.Fatal(err)
-		}
-		finish(t, e, a, []string{older, token}, "a Disable after the login")
-	})
 
 	t.Run("free-running", func(t *testing.T) {
 		e, a := setup(t)

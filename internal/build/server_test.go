@@ -71,7 +71,6 @@ func serverSource(t testing.TB, siteURL string, prefix bool, sets ...[]testRedir
 	return src
 }
 
-// mustWriteServerFiles writes the server files of b into a new directory, and returns it.
 func mustWriteServerFiles(t *testing.T, b *builder) string {
 	t.Helper()
 	dir, rel := newPublic(t)

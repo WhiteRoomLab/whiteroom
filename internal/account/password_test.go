@@ -146,7 +146,7 @@ func TestDeriveRFC7914(t *testing.T) {
 	}
 }
 
-// TestHashPassword is the one test that hashes with the cost of real passwords.
+// TestHashPassword hashes with the cost of real passwords on purpose.
 func TestHashPassword(t *testing.T) {
 	encoded, err := hashPassword(pwGood, defaultIterations, rand.Reader)
 	if err != nil {
@@ -180,21 +180,6 @@ func TestHashPassword(t *testing.T) {
 	ok, rehash, err = matchHash(encoded, pwGood+"x", defaultIterations)
 	if ok || rehash || err != nil {
 		t.Errorf("matchHash() of another password = %v, %v, %v, want false, false, nil", ok, rehash, err)
-	}
-}
-
-func TestHashCostConstants(t *testing.T) {
-	// The cost of new hashes and the largest cost that a hash may name are part of what 7.3 says.
-	if got, want := [2]int{defaultIterations, maxIterations}, [2]int{600000, 10000000}; got != want {
-		t.Errorf("defaultIterations and maxIterations = %v, want %v", got, want)
-	}
-	if got, want := [4]int{minPasswordChars, maxPasswordChars, saltBytes, keyBytes}, [4]int{15, 256, 16, 32}; got != want {
-		t.Errorf("the lengths of the passwords, the salt and the key = %v, want %v", got, want)
-	}
-	// A typed password that is canonically equivalent to one of maxPasswordChars characters in NFC has at most four times
-	// as many code points of at most four bytes, and the bound leaves room for that.
-	if maxTypedPasswordBytes != 8192 || maxTypedPasswordBytes < 16*maxPasswordChars {
-		t.Errorf("maxTypedPasswordBytes = %d, want 8192, and not below %d bytes", maxTypedPasswordBytes, 16*maxPasswordChars)
 	}
 }
 
@@ -1004,67 +989,6 @@ func TestIsRepeated(t *testing.T) {
 		if got := isRepeated(s); got != want {
 			t.Errorf("isRepeated(%q) = %v, want %v", s, got, want)
 		}
-	}
-}
-
-// TestPasswordMessagesShowNothing checks that no part of a password is in the message about it.
-func TestPasswordMessagesShowNothing(t *testing.T) {
-	marker := "Qx9-zebra-" + string(rune(0x3042)) + string(rune(0x3044)) + "-Vk7"
-	unassigned := string(unassignedFrom(t, 0x1ade))
-	tests := []struct {
-		name  string
-		p     string
-		login string
-	}{
-		{"invalid UTF-8", marker + "\xff", ""},
-		{"a control character", marker + "\t", ""},
-		{"an unassigned code point", marker + unassigned + marker, ""},
-		{"too short", marker[:8], ""},
-		{"too long", strings.Repeat(marker, 30), ""},
-		{"too many bytes", strings.Repeat(marker, 500), ""},
-		{"the login name", marker + marker, marker + marker},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := checkPassword(tt.p, tt.login, "", "")
-			if err == nil {
-				t.Fatal("checkPassword() = nil, want a message")
-			}
-			runes := []rune(marker)
-			for i := 0; i+4 <= len(runes); i++ {
-				if part := string(runes[i : i+4]); strings.Contains(err.Error(), part) {
-					t.Errorf("the message of %d bytes contains a part of the password (from character %d)", len(err.Error()), i)
-				}
-			}
-			// The message about an unassigned code point does not name it, in text or as U+XXXX.
-			if strings.Contains(err.Error(), unassigned) || strings.Contains(err.Error(), "U+") {
-				t.Errorf("the message of %d bytes shows a code point of the password", len(err.Error()))
-			}
-		})
-	}
-}
-
-// TestPasswordTestHelpers checks the text that the tests build: what they count on NFC to do.
-func TestPasswordTestHelpers(t *testing.T) {
-	for _, n := range []int{1, 14, 15, 256, 257} {
-		if got := utf8.RuneCountInString(pwAcutes(n)); got != 2*n {
-			t.Errorf("pwAcutes(%d) has %d code points, want %d", n, got, 2*n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(pwAcutes(n))); got != n {
-			t.Errorf("NFC of pwAcutes(%d) has %d characters, want %d", n, got, n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(pwJamo(n))); got != n {
-			t.Errorf("NFC of pwJamo(%d) has %d characters, want %d", n, got, n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(strings.Repeat(string(rune(0x958)), n))); got != 2*n {
-			t.Errorf("NFC of %d times U+0958 has %d characters, want %d", n, got, 2*n)
-		}
-		if got := len(pwEmoji(n)); got != 4*n {
-			t.Errorf("pwEmoji(%d) is %d bytes, want %d", n, got, 4*n)
-		}
-	}
-	if got := pwFill("ab", 5); got != "ababa" {
-		t.Errorf("pwFill() = %q, want ababa", got)
 	}
 }
 

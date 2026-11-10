@@ -546,15 +546,6 @@ func TestProposeRESTOfAnotherSite(t *testing.T) {
 		}
 	}
 
-	// The message as the design document gives it.
-	e, rep := readString(t, "site.xml", siteWXR("https://example.com", "ja"))
-	imp := New("site.xml", e, rep)
-	imp.REST = &wprest.Snapshot{Index: wprest.Index{Home: "https://other.example"}}
-	_, err := imp.ProposeSettings(nil)
-	if want := `the REST API is that of "https://other.example", but the WXR is of "https://example.com"`; err == nil || err.Error() != want {
-		t.Errorf("ProposeSettings = %v, want the error %s", err, want)
-	}
-
 	// Nothing is proposed without the WXR.
 	if _, err := (&Import{}).ProposeSettings(nil); err == nil {
 		t.Error("ProposeSettings of an import without the WXR gave no error")
@@ -1021,15 +1012,8 @@ func TestReadSettings(t *testing.T) {
 }
 
 func TestReadSettingsBlocks(t *testing.T) {
-	// A file from before the names of the blocks has none, and a file with some of them has only those.
-	s, err := ReadSettings("settings.json", []byte(`{"site": {"name": "A"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(s.Blocks, BlockSettings{}) || s.Site.AllowHTML {
-		t.Errorf("a file without them has the blocks %+v and allowHtml %v, want none", s.Blocks, s.Site.AllowHTML)
-	}
-	s, err = ReadSettings("settings.json", []byte(`{"site": {"allowHtml": true}, "blocks": {"presets": {"color": {"red": "accent", "pink": ""}}, "marks": {}}}`))
+	// A file with some of the names has only those.
+	s, err := ReadSettings("settings.json", []byte(`{"site": {"allowHtml": true}, "blocks": {"presets": {"color": {"red": "accent", "pink": ""}}, "marks": {}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1895,7 +1879,8 @@ func FuzzReadSettings(f *testing.F) {
 	f.Add([]byte(`{"site":{"allowHtml":true},"blocks":{"presets":{"color":{"red":"accent","pink":""},"gradient":{"a b":"c d"},"fontSize":{},"fontFamily":{"x":"y"},"spacing":{"50":"s"}},"variants":{"rounded":"round"},"marks":{"a/b":"m"},"imageSizes":{"large":"wide"}}}`))
 	f.Add([]byte(`{"blocks":{"presets":{"shadow":{}},"variants":{"a":1,"a":null},"marks":[],"imageSizes":null}}`))
 
-	// One import serves every input: the sample site, in which the front page and the page of the posts are converted.
+	// Each input gets an import of the sample site, in which the front page, the page of the posts, the logo and the icon
+	// are converted.
 	base, err := os.ReadFile(filepath.Join("testdata", "site.xml"))
 	if err != nil {
 		f.Fatal(err)

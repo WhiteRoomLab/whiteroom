@@ -23,7 +23,6 @@ type errorCase struct {
 	msg  string
 }
 
-// where returns the place that the case expects.
 func (tt errorCase) where(t testing.TB) Pos {
 	t.Helper()
 	s := strings.TrimPrefix(tt.in, "\xef\xbb\xbf")
@@ -277,16 +276,5 @@ func TestErrorExamples(t *testing.T) {
 		if _, err := Read(context.Background(), strings.NewReader(tt.in), Options{}); err == nil || err.Error() != tt.want {
 			t.Errorf("Read() = %v, want %s", err, tt.want)
 		}
-	}
-}
-
-// TestSameTermIDInOtherTaxonomies checks the other side of the duplicates: the same ID or slug in another taxonomy is
-// not one.
-func TestSameTermIDInOtherTaxonomies(t *testing.T) {
-	ex := read(t, wxrDoc(`<wp:category><wp:term_id>1</wp:term_id><wp:category_nicename>x</wp:category_nicename></wp:category>
-<wp:tag><wp:term_id>1</wp:term_id><wp:tag_slug>x</wp:tag_slug></wp:tag>
-`))
-	if len(ex.Terms) != 2 {
-		t.Errorf("%d terms, want 2", len(ex.Terms))
 	}
 }

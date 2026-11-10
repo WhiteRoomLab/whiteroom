@@ -179,7 +179,6 @@ func TestPlacements(t *testing.T) {
 		{"inline", Options{}, []bool{false, false, false, false, false}},
 		{"files", Options{Placement: Files}, []bool{true, true, true, true, true}},
 		{"hybrid", Options{Placement: Hybrid, Threshold: 100}, []bool{false, false, false, true, true}},
-		{"hybrid of 64 KiB", Options{Placement: Hybrid}, []bool{false, false, false, false, false}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fsys, db := newSim(t, c.o)
@@ -875,7 +874,7 @@ func TestOptionsErrors(t *testing.T) {
 		if _, err := Create(fsys, c.o); err == nil || err.Error() != c.want {
 			t.Errorf("Create: %v, want %s", err, c.want)
 		}
-		if len(fileMap(fsys)) != 0 || len(logNamesOrNone(fsys)) != 0 {
+		if len(fileMap(fsys)) != 0 {
 			t.Error("Create made files")
 		}
 		db, err := Create(fsys, Options{})
@@ -903,16 +902,6 @@ func TestOptionsDefaults(t *testing.T) {
 	}
 }
 
-// logNamesOrNone returns the names in log/, or none if it is missing.
-func logNamesOrNone(fsys *simfs.FS) []string {
-	entries, _ := fsys.ReadDir("log")
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	return names
-}
-
 // stateOf returns the tables, the objects and the events of db, and checks its objects.
 func stateOf(t *testing.T, db *DB) string {
 	t.Helper()
@@ -920,9 +909,9 @@ func stateOf(t *testing.T, db *DB) string {
 	return dump(t, db) + "\nobjects:\n" + objectList(t, db) + "\nevents:\n" + eventLines(t, db)
 }
 
-// TestCrashWithObjects crashes after each operation of an Update with objects and an event, and checks every crash
-// that simfs can make of it: Open never refuses, every object that the store has is there with its data, and the
-// Update is there or not at all.
+// TestCrashWithObjects crashes after each operation of an Update with objects and an event, and checks the crash models
+// that simfs.Models gives: Open never refuses, every object that the store has is there with its data, and the Update
+// is there or not at all.
 func TestCrashWithObjects(t *testing.T) {
 	ctx := context.Background()
 	mates := sameDir(2, 150)

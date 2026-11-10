@@ -361,7 +361,6 @@ const (
 	endFirstError                // it stops at the first operation that fails, and returns its error
 )
 
-// diffUpdate is an Update of the generator.
 type diffUpdate struct {
 	ops []diffOp
 	end diffEnd
@@ -384,7 +383,6 @@ func (g *diffGen) chance(p float64) bool {
 	return g.rng.Float64() < p
 }
 
-// pick returns an element of s at random.
 func pick[T any](g *diffGen, s []T) T {
 	return s[g.rng.IntN(len(s))]
 }

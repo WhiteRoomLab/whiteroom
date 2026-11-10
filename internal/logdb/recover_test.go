@@ -606,7 +606,7 @@ func TestAccept(t *testing.T) {
 }
 
 // TestCrashDuringRecovery crashes after each operation of an Open that cuts a torn tail or removes a torn segment, and
-// checks that every crash that simfs can make of it opens to the same state.
+// checks that every crash model that simfs.Models gives for it opens to the same state.
 func TestCrashDuringRecovery(t *testing.T) {
 	o := Options{SegmentBytes: 100} // a segment of one record
 	built, dumps := build(t, o, 2)

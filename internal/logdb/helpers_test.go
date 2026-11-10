@@ -272,7 +272,6 @@ func commitFrame(salt, seq uint64, table uint32, key, value string) []byte {
 	return appendFrame(nil, salt, appendCommit(nil, seq, []op{{code: opPut, table: table, key: key, value: []byte(value)}}))
 }
 
-// logNames returns the names of the files in log/.
 func logNames(t *testing.T, fsys vfs.FS) []string {
 	t.Helper()
 	entries, err := fsys.ReadDir("log")

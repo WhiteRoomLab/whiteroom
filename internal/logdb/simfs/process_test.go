@@ -11,7 +11,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// mustLock locks name in fsys with mode, and returns its unlock.
 func mustLock(t *testing.T, fsys vfs.FS, name string, mode vfs.LockMode) func() error {
 	t.Helper()
 	unlock, err := fsys.Lock(name, mode)
@@ -21,7 +20,6 @@ func mustLock(t *testing.T, fsys vfs.FS, name string, mode vfs.LockMode) func() 
 	return unlock
 }
 
-// checkLocked checks that a lock of name in fsys with mode fails with ErrLocked.
 func checkLocked(t *testing.T, fsys vfs.FS, name string, mode vfs.LockMode) {
 	t.Helper()
 	if unlock, err := fsys.Lock(name, mode); !errors.Is(err, vfs.ErrLocked) {

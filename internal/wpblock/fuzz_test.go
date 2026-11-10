@@ -8,7 +8,6 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -186,9 +185,6 @@ func checkTokens(t testing.TB, doc string) {
 }
 
 func TestScannerAgainstRegexp(t *testing.T) {
-	for _, tt := range parseTests {
-		checkTokens(t, tt.doc)
-	}
 	r := rand.New(rand.NewPCG(52, 5))
 	for range 3000 {
 		checkTokens(t, soupDocument(r))
@@ -400,7 +396,7 @@ func FuzzDecodeAttrs(f *testing.F) {
 }
 
 func TestDecodeAttrsAgainstJSON(t *testing.T) {
-	// The seeds of FuzzDecodeAttrs, and changes of them, as a test that runs without fuzzing.
+	// Changes of the seeds of FuzzDecodeAttrs, which go test does not run.
 	r := rand.New(rand.NewPCG(52, 6))
 	var seeds []string
 	for _, tt := range decodeTests {
@@ -408,12 +404,13 @@ func TestDecodeAttrsAgainstJSON(t *testing.T) {
 	}
 	seeds = append(seeds, soupAttrs...)
 	pieces := []string{`"`, `\`, `{`, `}`, `[`, `]`, `,`, `:`, "\x00", "\x1f", " ", "\t", "\f", "\x7f", "\xc3", "0", "-", ".", "e", "t", "n", "1e999"}
-	for _, seed := range slices.Clone(seeds) {
+	var changed []string
+	for _, seed := range seeds {
 		for range 20 {
-			seeds = append(seeds, mutate(r, seed, pieces))
+			changed = append(changed, mutate(r, seed, pieces))
 		}
 	}
-	for _, s := range seeds {
+	for _, s := range changed {
 		checkAgainstJSON(t, s)
 	}
 }

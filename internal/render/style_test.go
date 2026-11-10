@@ -1280,7 +1280,6 @@ func TestAttrWarnings(t *testing.T) {
 	checkBlocks(t, tests, attrsTheme, "ja", "", mediaResolver(t))
 }
 
-// TestHighlightCSS checks the classes and the CSS of the colors of highlights.
 func TestHighlightCSS(t *testing.T) {
 	var (
 		primary = highlightMark(content.Highlight{Color: content.Color{Preset: "primary"}})

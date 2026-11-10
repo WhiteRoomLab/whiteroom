@@ -240,7 +240,6 @@ func (w *bitWriter) subimage(pix ...uint32) {
 	w.imageData(0, false, lits(pix...))
 }
 
-// header writes the header of a VP8L bitstream.
 func (w *bitWriter) header(width, height int, alpha bool) {
 	w.write(0x2f, 8)
 	w.write(width-1, 14)
@@ -293,7 +292,6 @@ func chunk(id string, payload []byte) []byte {
 	return b
 }
 
-// riff returns a WebP file of the chunks.
 func riff(chunks ...[]byte) []byte {
 	b := []byte("RIFF\x00\x00\x00\x00WEBP")
 	for _, c := range chunks {
@@ -303,7 +301,6 @@ func riff(chunks ...[]byte) []byte {
 	return b
 }
 
-// vp8xChunk returns a VP8X chunk.
 func vp8xChunk(flags byte, width, height int) []byte {
 	p := make([]byte, 10)
 	p[0] = flags
@@ -312,7 +309,6 @@ func vp8xChunk(flags byte, width, height int) []byte {
 	return chunk("VP8X", p)
 }
 
-// animChunk returns an ANIM chunk.
 func animChunk(bg [4]byte, loops int) []byte {
 	p := append(bg[:], 0, 0)
 	binary.LittleEndian.PutUint16(p[4:], uint16(loops))

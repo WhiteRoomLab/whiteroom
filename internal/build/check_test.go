@@ -15,7 +15,6 @@ const eventGroup = "tg_01JBA4C7M8P2S5V9Y2B6D9G3J6"
 // newID returns an ID with prefix, such as "ent", numbered n, which sorts after the IDs of the fixture.
 func newID(prefix string, n int) string { return fmt.Sprintf("%s_01JF%022d", prefix, n) }
 
-// fileOf returns the name of the file of the document of kind with the ID id.
 func fileOf(kind content.RefKind, id string) string { return kindDirs[kind] + "/" + id + ".json" }
 
 // revisionFile returns the name of the file of the published revision of the entry id.

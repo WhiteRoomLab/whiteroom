@@ -31,7 +31,6 @@ func newParity(t *testing.T) *parity {
 	return &parity{t: t, ed: ed, s: s, dir: copySite(t), base: snapshot(t, s)}
 }
 
-// write puts data into the file name of the copy.
 func (p *parity) write(name, data string) {
 	p.t.Helper()
 	if err := os.WriteFile(filepath.Join(p.dir, filepath.FromSlash(name)), []byte(data), 0o644); err != nil {
@@ -60,7 +59,6 @@ func (p *parity) seq(kind content.RefKind, id string) int64 {
 	return read(p.t, p.s, kind, id).Seq
 }
 
-// predictIDsAt is predictIDs for a clock that is at now.
 func predictIDsAt(t *testing.T, now time.Time, kinds ...content.RefKind) []string {
 	t.Helper()
 	e := testEditor(t, nil)
@@ -253,7 +251,7 @@ func failReads(only int, f failing) func(reader) reader {
 }
 
 // TestLookupFailure checks that a failure to read the index fails the operation with that error, not with problems of
-// validation (Q6-A), and saves nothing.
+// validation, and saves nothing.
 func TestLookupFailure(t *testing.T) {
 	errRead := errors.New("the index cannot be read")
 	op := Op{By: userID}
@@ -288,7 +286,7 @@ func TestLookupFailure(t *testing.T) {
 		{"the summary of a document", func() func(reader) reader { return failReads(0, failing{summary: errRead}) }, every},
 		{"the summaries of the documents", func() func(reader) reader { return failReads(0, failing{summaries: errRead}) }, every},
 		{"the referrers of a document", func() func(reader) reader { return failReads(0, failing{referrers: errRead}) }, []string{"Delete"}},
-		// The sample site has redirects to entries that are not published, whose warnings are old, so every operation
+		// The sample site has a redirect to an entry that is not published, whose warning is old, so every operation
 		// makes the site before the change to tell that its warnings are not new.
 		{"the summaries for the site before the change", func() func(reader) reader {
 			return failReads(2, failing{summaries: errRead})
@@ -322,8 +320,8 @@ func testOpID(n int) string {
 	return opPrefix + strings.TrimPrefix(testID(content.RefEntry, n), "ent_")
 }
 
-// TestOperationID checks the operation IDs (Q13-A): a retry returns the first result and saves nothing; the same ID with
-// another request fails; one that failed has recorded nothing.
+// TestOperationID checks the operation IDs: a retry returns the first result and saves nothing; the same ID with another
+// request fails; one that failed has recorded nothing.
 func TestOperationID(t *testing.T) {
 	ed, s := newSample(t)
 	user := Op{By: userID, ID: testOpID(1)}

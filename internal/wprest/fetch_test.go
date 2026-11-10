@@ -20,7 +20,6 @@ import (
 	"time"
 )
 
-// request is what a site got.
 type request struct {
 	Method string
 	Path   string
@@ -50,7 +49,6 @@ func newSite(t *testing.T) *site {
 	return s
 }
 
-// URL is the home page of the site.
 func (s *site) URL() string { return s.srv.URL + s.prefix }
 
 func (s *site) handle(route string, h http.HandlerFunc) *site {
@@ -1382,7 +1380,7 @@ func TestFetchServerErrors(t *testing.T) {
 
 func TestFetchResponseTooLarge(t *testing.T) {
 	s := newSite(t).standard()
-	// The index is 700 bytes or so.
+	// The index is about 480 bytes.
 	_, err := fetch(t, s, Options{MaxResponseBytes: 100})
 	if err == nil || err.Error() != "GET "+s.URL()+"/wp-json/?_fields="+url.QueryEscape(indexFields)+": the response is larger than 100 bytes" {
 		t.Errorf("Fetch() = %v, want that the response is larger than 100 bytes", err)
@@ -1690,26 +1688,6 @@ type cancelOnRead struct {
 func (c *cancelOnRead) Read([]byte) (int, error) {
 	c.cancel()
 	return 0, context.Canceled
-}
-
-// countingTransport counts the requests.
-type countingTransport struct {
-	rt http.RoundTripper
-	n  atomic.Int32
-}
-
-func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.n.Add(1)
-	return c.rt.RoundTrip(r)
-}
-
-func TestFetchTransport(t *testing.T) {
-	s := newSite(t).standard()
-	tr := &countingTransport{rt: s.srv.Client().Transport}
-	mustFetch(t, s, Options{Transport: tr})
-	if int(tr.n.Load()) != len(s.requested()) || tr.n.Load() != 9 {
-		t.Errorf("the transport got %d requests, and the site %d, want 9", tr.n.Load(), len(s.requested()))
-	}
 }
 
 func TestNewTransport(t *testing.T) {

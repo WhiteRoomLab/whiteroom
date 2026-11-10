@@ -80,7 +80,7 @@ func jsonHeading(n int, keys, attrs, text string) string {
 
 const jsonBold = `{"type":"bold"}`
 
-// img is an image of the medium photo, which is imported, as the classic editor writes it.
+// classicImg is an image of the medium photo, which is imported, as the classic editor writes it.
 func classicImg(class string) string {
 	return `<img class="` + class + `" src="` + photoURL + `" alt="Photo" width="300" height="200" />`
 }

@@ -11,7 +11,6 @@ func wpButton(attrs, inner string) string {
 	return wpBlock("button", attrs, `<div class="wp-block-button">`+inner+`</div>`)
 }
 
-// buttonLink writes the a element of a button.
 func buttonLink(href, text string) string {
 	return `<a class="wp-block-button__link wp-element-button" href="` + href + `">` + text + `</a>`
 }

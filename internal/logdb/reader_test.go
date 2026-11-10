@@ -963,7 +963,6 @@ func TestReaderSnapshot(t *testing.T) {
 	}
 }
 
-// TestReaderReleasesFiles: Close of a reader closes every file that it has opened.
 func TestReaderReleasesFiles(t *testing.T) {
 	if _, err := os.Stat("/proc/self/fd"); err != nil {
 		t.Skip("no /proc/self/fd")

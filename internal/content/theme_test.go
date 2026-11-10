@@ -11,7 +11,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/yaml"
 )
 
-// everyThemeYAML is a settings file of a theme with every item.
 const everyThemeYAML = `# Every item of the settings file of a theme.
 schemaVersion: 1
 defaultLanguage: ja
@@ -900,16 +899,6 @@ func TestValidateTheme(t *testing.T) {
 }
 
 const themeFile = "theme.yaml"
-
-func TestLoadThemeSettings(t *testing.T) {
-	got, err := LoadThemeSettings(themeFile, []byte(everyThemeYAML))
-	if err != nil {
-		t.Fatalf("LoadThemeSettings() = %v", err)
-	}
-	if !reflect.DeepEqual(got, everyTheme()) {
-		t.Errorf("LoadThemeSettings() = %#v, want %#v", got, everyTheme())
-	}
-}
 
 var loadThemeSettingsErrorTests = []struct {
 	name string

@@ -161,7 +161,7 @@ func TestHTMLTextDeep(t *testing.T) {
 	}
 }
 
-// TestHTMLTextDropsMarkup checks, for the text of a long post, that nothing of the markup is left.
+// TestHTMLTextDropsMarkup checks, for the text of a post, that nothing of the markup is left.
 func TestHTMLTextDropsMarkup(t *testing.T) {
 	in := `<!-- wp:paragraph --><p class="x">Lorem <strong>ipsum</strong> <a href="https://example.com/?a=1&amp;b=2">dolor</a></p><!-- /wp:paragraph -->` +
 		`<p>Sit&nbsp;amet<br />consectetur</p><script>var x = "<p>";</script><ul><li>one</li><li>two <em>three</em></li></ul>`

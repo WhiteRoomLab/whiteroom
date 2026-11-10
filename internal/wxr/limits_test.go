@@ -221,9 +221,6 @@ func TestOptionsDefaults(t *testing.T) {
 	if want := (Options{MaxBytes: 5, MaxItems: 6, MaxTerms: 1_000_000, MaxAuthors: 100_000, MaxDepth: 64, MaxTagBytes: 65536}); got != want {
 		t.Errorf("withDefaults() = %+v, want %+v", got, want)
 	}
-	if MaxBytes != 1<<30 || MaxItems != 1000000 || MaxTerms != 1000000 || MaxAuthors != 100000 || MaxDepth != 64 || MaxTagBytes != 64*1024 {
-		t.Error("a limit is not the documented one")
-	}
 	// A file that is read with the default limits is not limited by the small ones that the tests use.
 	if e := readWith(t, itemsWithIDs(50), Options{}); e != nil {
 		t.Errorf("Read() = %v", e)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -79,7 +78,7 @@ func TestRefChangeParity(t *testing.T) {
 }
 
 // TestRefChangeDrafts saves a term with a language that only drafts do not accept: it is saved, with the problems that
-// the drafts have as warnings, located in the bytes that the store has of them (Q16-A, Q8-A).
+// the drafts have as warnings, located in the bytes that the store has of them.
 func TestRefChangeDrafts(t *testing.T) {
 	op := Op{By: userID}
 	// check saves the tag in en, which must succeed with the one warning that the revision rev has.
@@ -139,7 +138,7 @@ func TestRefChangeOldProblems(t *testing.T) {
 	const head = `{"schemaVersion":1,"title":"a\tb","slug":"old","date":"2026-10-25T10:00:00+09:00",`
 	const oldProblem = "/title: contains a line break or tab"
 
-	// A revision that names the tag only in a text is a reference for the index, by the ID that the text is (Q8-A), and
+	// A revision that names the tag only in a text is a reference for the index, by the ID that the text is, and
 	// validation does not look the text up: it has the old problem alone, which the change leaves as it is.
 	t.Run("a reference by a text", func(t *testing.T) {
 		ed, s := newSample(t)
@@ -234,7 +233,7 @@ func newSmallSite(t *testing.T, settings string, files map[string]string) *small
 	}
 	maps.Copy(all, files)
 	for name, data := range all {
-		x.write(t, name, data)
+		writeSite(t, x.dir, name, data)
 	}
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
@@ -261,7 +260,7 @@ func (x *smallSite) refuse(t *testing.T, settings string) (got, want []string) {
 	if snap := snapshot(t, x.s); snap != before {
 		t.Errorf("SaveSettings() has changed the store:\n%s\nwant\n%s", snap, before)
 	}
-	x.write(t, settingsName, settings)
+	writeSite(t, x.dir, settingsName, settings)
 	return got, buildErrors(t, x.dir)
 }
 
@@ -272,18 +271,6 @@ func sameProblem(t *testing.T, got, want []string, name, msg string) {
 	if len(got) != 1 || !strings.HasPrefix(got[0], name+":") || !strings.HasSuffix(got[0], msg) || !slices.Equal(got, want) {
 		t.Errorf("the problems of the Editor:\n%s\nthe problems of the build:\n%s\nwant one in %s: %s",
 			strings.Join(got, "\n"), strings.Join(want, "\n"), name, msg)
-	}
-}
-
-// write puts data into the file name of the site directory.
-func (x *smallSite) write(t *testing.T, name, data string) {
-	t.Helper()
-	path := filepath.Join(x.dir, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -313,7 +300,7 @@ func TestSettingsChangeParity(t *testing.T) {
 			t.Errorf("the settings are %+v with %s, want the settings that were saved", got.Version, got.Data)
 		}
 		// The build does not validate the draft: it succeeds for the same site.
-		x.write(t, settingsName, smallJA)
+		writeSite(t, x.dir, settingsName, smallJA)
 		if got := buildErrors(t, x.dir); len(got) != 0 {
 			t.Errorf("the build of the site with the settings fails: %q", got)
 		}
@@ -374,7 +361,7 @@ func TestSettingsChangeParity(t *testing.T) {
 		if got := lines(res.Warnings); !slices.Equal(got, []string{want}) {
 			t.Errorf("SaveSettings() warnings:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
 		}
-		x.write(t, settingsName, settings(""))
+		writeSite(t, x.dir, settingsName, settings(""))
 		if got := buildErrors(t, x.dir); len(got) != 0 {
 			t.Errorf("the build of the site with the settings fails: %q", got)
 		}
@@ -421,7 +408,7 @@ func callsTo(calls []string, method string) []string {
 	return slices.DeleteFunc(slices.Clone(calls), func(c string) bool { return !strings.HasPrefix(c, method+" ") })
 }
 
-// TestRefChangeCost checks what a save reads of the index when it changes nothing that other documents read (Q16-A): no
+// TestRefChangeCost checks what a save reads of the index when it changes nothing that other documents read: no
 // referrer, no other document, and no model beyond those of the checks across the site. A save of the same bytes, which
 // saves nothing, reads none of that either.
 func TestRefChangeCost(t *testing.T) {
@@ -569,13 +556,12 @@ func TestRefChangeCost(t *testing.T) {
 	})
 }
 
-// count returns the number of the calls that are c.
 func count(calls []string, c string) int {
 	return len(slices.DeleteFunc(slices.Clone(calls), func(x string) bool { return x != c }))
 }
 
 // TestRefChangeLookupFailure checks that a failure to read what the validation of another document needs fails the
-// operation with that error, not with problems, and saves nothing (Q6-A).
+// operation with that error, not with problems, and saves nothing.
 func TestRefChangeLookupFailure(t *testing.T) {
 	errRead := errors.New("the index cannot be read")
 	op := Op{By: userID}
@@ -790,7 +776,7 @@ func TestRefChangeUnits(t *testing.T) {
 		x := newSmallSite(t, strings.Replace(smallSettings, "%s", "", 1), nil)
 		entry, rev := testID(content.RefEntry, 4), testID(content.RefRevision, 4)
 		doc := storedEntry(entry, 704, content.TypePage, "ja", testID(content.RefTranslationGroup, 4), content.StatusPublished, rev)
-		x.write(t, docName(content.RefEntry, entry), doc)
+		writeSite(t, x.dir, docName(content.RefEntry, entry), doc)
 		put(t, x.s, content.RefEntry, entry, doc)
 		got := lines(unitProblems(t, x.ed, x.s, func(r *run) unit { return r.publishedUnit(entry, []byte(doc)) }))
 		want := buildErrors(t, x.dir)
@@ -871,8 +857,8 @@ func TestRefChangeUnits(t *testing.T) {
 		entry, rev := testID(content.RefEntry, 5), testID(content.RefRevision, 5)
 		doc := storedEntry(entry, 705, "nope", "ja", testID(content.RefTranslationGroup, 5), content.StatusPublished, rev)
 		const revision = `{"schemaVersion":1,"title":"a\tb","slug":"a"}`
-		x.write(t, docName(content.RefEntry, entry), doc)
-		x.write(t, revisionName(rev), revision)
+		writeSite(t, x.dir, docName(content.RefEntry, entry), doc)
+		writeSite(t, x.dir, revisionName(rev), revision)
 		put(t, x.s, content.RefEntry, entry, doc)
 		addStoredRevision(t, x.s, entry, rev, revision)
 
@@ -920,9 +906,9 @@ func changeRef(t *testing.T, ed *Editor, s *store.Store, kind content.RefKind, i
 	return warnings, err
 }
 
-// TestRefChangeKinds checks the validation again of what refers to a medium and to an entry, whose Ref the operations of
-// #43 do not change: a medium that becomes a PDF file is not an image any more, and an entry in another language is not
-// the front page of the language. As for a term, the problems are the build's for a copy of the site with the change.
+// TestRefChangeKinds checks the validation again of what refers to a medium and to an entry, whose Ref no operation
+// changes: a medium that becomes a PDF file is not an image any more, and an entry in another language is not the front
+// page of the language. As for a term, the problems are the build's for a copy of the site with the change.
 func TestRefChangeKinds(t *testing.T) {
 	asPDF := func(data []byte) string {
 		var m content.Media
@@ -977,9 +963,9 @@ func TestRefChangeKinds(t *testing.T) {
 }
 
 // TestRefChangeGrid saves each term of the sample site with each language and taxonomy that the site has, and compares the
-// outcome with the build's for a copy of the site with the term as saved (Q16-A): the problems that the Editor refuses it
-// with are some of those that the build finds, and a term that it saves is one that the build builds. They are not all of
-// them when the term is not valid itself, as the other documents are not validated then.
+// outcome with the build's for a copy of the site with the term as saved: the problems that the Editor refuses it with are
+// some of those that the build finds, and a term that it saves is one that the build builds. They are not all of them when
+// the term is not valid itself, as the other documents are not validated then.
 func TestRefChangeGrid(t *testing.T) {
 	terms := []string{"trm_01JB9A00000000000000000001", newsID, "trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7", tagJA, tagEN}
 	for _, id := range terms {

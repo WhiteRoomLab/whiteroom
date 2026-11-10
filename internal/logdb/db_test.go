@@ -875,7 +875,7 @@ func TestClosed(t *testing.T) {
 	}
 }
 
-// TestCloseWhileUpdating checks that Close waits for the Update that runs, and that waiting Updates then fail.
+// TestCloseWhileUpdating checks that Close waits for the Update that runs, and that Updates after it fail.
 func TestCloseWhileUpdating(t *testing.T) {
 	ctx := context.Background()
 	fsys, db := newSim(t, Options{})

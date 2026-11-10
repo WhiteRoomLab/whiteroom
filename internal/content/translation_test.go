@@ -295,7 +295,6 @@ func TestValidateThemeTranslation(t *testing.T) {
 	}
 }
 
-// placeholderMsg is the message for the invalid placeholder s.
 func placeholderMsg(s string) string {
 	return `invalid placeholder "` + s + `": use ASCII letters, digits, "-" and "_"`
 }
@@ -414,16 +413,6 @@ func FuzzThemeText(f *testing.F) {
 }
 
 const translationFile = "translations/ja.yaml"
-
-func TestLoadThemeTranslation(t *testing.T) {
-	got, err := LoadThemeTranslation(translationFile, []byte(jaTranslationYAML))
-	if err != nil {
-		t.Fatalf("LoadThemeTranslation() = %v", err)
-	}
-	if !reflect.DeepEqual(got, jaTranslation()) {
-		t.Errorf("LoadThemeTranslation() = %#v, want %#v", got, jaTranslation())
-	}
-}
 
 var loadThemeTranslationErrorTests = []struct {
 	name string

@@ -117,7 +117,6 @@ func namespaceTexts(th *Theme) map[string]map[string]string {
 	return texts
 }
 
-// templateTexts returns the text of each template of ns by name.
 func templateTexts(ns *template.Template) map[string]string {
 	m := make(map[string]string)
 	for _, x := range ns.Templates() {

@@ -205,7 +205,6 @@ func TestTermNormalize(t *testing.T) {
 
 func TestTermValidate(t *testing.T) {
 	const ctrl = string(rune(0x0001))
-	// term returns x changed by f.
 	term := func(x Term, f func(x *Term)) Term {
 		f(&x)
 		return x

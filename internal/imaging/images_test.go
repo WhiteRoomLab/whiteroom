@@ -76,7 +76,6 @@ func fileName(dir, hash string, v Variant) string {
 	return filepath.Join(dir, versionDir, "files", key[:2], key+ext(v.Format))
 }
 
-// infoOf returns the Info of s from im.
 func infoOf(t *testing.T, im *Images, s *source) Info {
 	t.Helper()
 	info, err := im.Info(s.hash, s.open)
@@ -86,7 +85,6 @@ func infoOf(t *testing.T, im *Images, s *source) Info {
 	return info
 }
 
-// filesOf returns the files of vs of s from im.
 func filesOf(t *testing.T, im *Images, s *source, info Info, vs []Variant) [][]byte {
 	t.Helper()
 	files, err := im.Files(t.Context(), s.hash, s.open, info, vs)

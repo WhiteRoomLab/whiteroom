@@ -223,7 +223,6 @@ func (w *wpSite) authorLink(u wpUser) string {
 	return w.at(w.front() + "author/" + u.slug)
 }
 
-// export is the WXR of the site.
 func (w *wpSite) export() *wxr.Export {
 	e := &wxr.Export{Version: "1.2", Channel: wxr.Channel{Title: "Example", Link: w.home, BaseBlogURL: w.home}}
 	for _, u := range w.users {
@@ -250,7 +249,6 @@ func (w *wpSite) export() *wxr.Export {
 	return e
 }
 
-// snapshot is what the REST API of the site tells.
 func (w *wpSite) snapshot() *wprest.Snapshot {
 	s := &wprest.Snapshot{API: w.home + "/wp-json/", Index: wprest.Index{Name: "Example", Home: w.home}}
 	s.Taxonomies = []wprest.Taxonomy{
@@ -841,7 +839,6 @@ func TestPermalinkArchiveCannotBeTold(t *testing.T) {
 	}
 }
 
-// tpl returns a template of the strings and the tags in parts.
 func tpl(parts ...any) template {
 	var t template
 	for _, p := range parts {

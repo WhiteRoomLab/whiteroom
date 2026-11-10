@@ -437,9 +437,6 @@ func TestInputRead(t *testing.T) {
 	if n, err := testInput("", 0, 0).Read(nil); n != 0 || err != nil {
 		t.Errorf("Read(nil) = %d, %v, want 0, nil", n, err)
 	}
-	// What the decoder asks for when it opens a different encoding is the input, which must be a reader.
-	var _ io.Reader = testInput("", 0, 0)
-	var _ io.ByteReader = testInput("", 0, 0)
 }
 
 // TestInputTextStart checks textPos, which is where the text that is not blank in the last token begins, at the

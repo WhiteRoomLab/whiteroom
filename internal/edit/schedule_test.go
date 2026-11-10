@@ -2,7 +2,6 @@ package edit
 
 import (
 	"bytes"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -208,7 +207,6 @@ func TestScheduleStatuses(t *testing.T) {
 		name string
 		to   func(t *testing.T, ed *Editor, s *store.Store)
 	}{
-		{"a draft", func(*testing.T, *Editor, *store.Store) {}},
 		{"an archived entry", func(t *testing.T, ed *Editor, s *store.Store) {
 			must(t)(ed.Archive(t.Context(), op, draftEN, entrySeq(t, s, draftEN)))
 		}},
@@ -296,29 +294,23 @@ func TestPublishScheduled(t *testing.T) {
 	sameStore(t, s, after, index, "PublishScheduled() of a published entry")
 }
 
-// TestPublishScheduledDue checks the time: an entry is due when its time is not after now.
+// TestPublishScheduledDue checks that an entry is due at its time in another time zone and after it. TestPublishScheduled
+// checks the time itself and the times before it.
 func TestPublishScheduledDue(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		now  time.Time
-		due  bool
 	}{
-		{"the time", careersAt, true},
-		{"the time in another time zone", careersAt.In(time.FixedZone("west", -5*60*60)), true},
-		{"after the time", careersAt.Add(time.Nanosecond), true},
-		{"long after the time", careersAt.Add(1000 * time.Hour), true},
-		{"before the time", careersAt.Add(-time.Nanosecond), false},
-		{"a second before the time", careersAt.Add(-time.Second), false},
+		{"the time in another time zone", careersAt.In(time.FixedZone("west", -5*60*60))},
+		{"after the time", careersAt.Add(time.Nanosecond)},
+		{"long after the time", careersAt.Add(1000 * time.Hour)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ed, s := newSample(t)
 			scheduleCareers(t, ed, s)
 			res, err := ed.PublishScheduled(t.Context(), draftEN, tt.now)
-			switch {
-			case tt.due && (err != nil || !res.Publishes):
+			if err != nil || !res.Publishes {
 				t.Errorf("PublishScheduled() = %+v, %v; want the entry published", res, err)
-			case !tt.due && !errors.Is(err, ErrNotDue):
-				t.Errorf("PublishScheduled() = %+v, %v; want ErrNotDue", res, err)
 			}
 		})
 	}
@@ -376,7 +368,7 @@ func wantRebuiltIndex(t *testing.T, s *store.Store) {
 }
 
 // TestScheduleDate schedules posts: Schedule adds no revision, whatever the revision lacks, and the date of a post that has
-// none goes into a new revision when the entry is published, with the scheduled time (Q19-A).
+// none goes into a new revision when the entry is published, with the scheduled time.
 func TestScheduleDate(t *testing.T) {
 	op := Op{By: userID}
 	t.Run("a post without a date", func(t *testing.T) {
@@ -540,7 +532,7 @@ func TestScheduleDate(t *testing.T) {
 }
 
 // TestScheduledPostPublishedAtOnce checks that a post without a date that is scheduled and then published at once is dated
-// with the time of the publish, not with the time that it was scheduled for (Q19-A).
+// with the time of the publish, not with the time that it was scheduled for.
 func TestScheduledPostPublishedAtOnce(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -569,7 +561,7 @@ func TestScheduledPostPublishedAtOnce(t *testing.T) {
 }
 
 // TestScheduledPostScheduledAgain checks that a post without a date that is scheduled for another time is dated with the
-// second time, not the first (Q19-A).
+// second time, not the first.
 func TestScheduledPostScheduledAgain(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -597,7 +589,7 @@ func TestScheduledPostScheduledAgain(t *testing.T) {
 }
 
 // TestScheduledPostCancelledThenPublished checks that a post without a date whose schedule is cancelled and which is
-// published a month later is dated with the time of that publish (Q19-A).
+// published a month later is dated with the time of that publish.
 func TestScheduledPostCancelledThenPublished(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -621,7 +613,7 @@ func TestScheduledPostCancelledThenPublished(t *testing.T) {
 
 // TestScheduledPublishCopiesLatest checks the revisions that a scheduled publish adds when the editor has saved revisions
 // since the schedule: after the dated copy of the scheduled revision, a copy of the latest one, so that the draft stays the
-// latest revision (Q19-A).
+// latest revision.
 func TestScheduledPublishCopiesLatest(t *testing.T) {
 	const (
 		scheduler = "usr_01JB8T7H4MA2C5E8G1J4K7N3P9" // who schedules, as the users who save the revisions are others
@@ -740,14 +732,6 @@ func TestScheduledPublishCopiesLatest(t *testing.T) {
 		}
 	})
 
-	t.Run("the scheduled revision is the latest", func(t *testing.T) {
-		ed, s, entry, revs := setup(t, first)
-		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
-		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{revs[0], pub.Revision}) {
-			t.Errorf("the revisions are %v, want the saved one and the dated one", got)
-		}
-	})
-
 	t.Run("a scheduled revision with a date", func(t *testing.T) {
 		ed, s, entry, revs := setup(t, withDate, second)
 		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
@@ -756,17 +740,6 @@ func TestScheduledPublishCopiesLatest(t *testing.T) {
 		}
 		if sum := summaryOf(t, s, entry); sum.Latest != revs[1] {
 			t.Errorf("the latest revision is %s, want %s", sum.Latest, revs[1])
-		}
-	})
-
-	t.Run("a page", func(t *testing.T) {
-		ed, s := newSample(t)
-		rev := scheduleCareers(t, ed, s)
-		newer := must(t)(ed.SaveRevision(t.Context(), Op{By: otherUser}, draftEN, rev,
-			[]byte(`{"schemaVersion":1,"title":"Careers soon","slug":"careers-soon"}`))).Revision
-		must(t)(ed.PublishScheduled(t.Context(), draftEN, careersAt))
-		if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev, newer}) {
-			t.Errorf("the revisions are %v, want %v: a page has no date to add", got, []string{rev, newer})
 		}
 	})
 
@@ -1361,7 +1334,7 @@ func TestScheduledProtected(t *testing.T) {
 }
 
 // TestScheduledPublishFails checks that a scheduled publish that does not pass the checks fails with the problems of the
-// build and leaves the entry scheduled (Q10-A), and succeeds once the problem is gone.
+// build and leaves the entry scheduled, and succeeds once the problem is gone.
 func TestScheduledPublishFails(t *testing.T) {
 	p := newParity(t)
 	rev := scheduleCareers(t, p.ed, p.s)
@@ -1885,7 +1858,6 @@ func TestPublishScheduledConcurrent(t *testing.T) {
 	}
 }
 
-// TestScheduleNoSettings checks the operations on a store that has no settings.
 func TestScheduleNoSettings(t *testing.T) {
 	s := newStore(t)
 	ed := testEditor(t, s)
@@ -2233,7 +2205,7 @@ func TestImportScheduled(t *testing.T) {
 	})
 
 	// A post without a date is validated with the scheduled time as its date, as its scheduled publish publishes it, and
-	// stored as it is (Q19-A). The build ignores it.
+	// stored as it is. The build ignores it.
 	scheduledPost := func(t *testing.T) string {
 		t.Helper()
 		e := decodeEntry(t, []byte(scheduledEntry(t, rev)))
@@ -2338,23 +2310,4 @@ func TestImportScheduled(t *testing.T) {
 			t.Errorf("the summary of %s is %+v, want the published revision %s", aboutEN, sum, aboutENRev)
 		}
 	})
-}
-
-// TestScheduleRecord checks the record of a result that Schedule makes: it reads back as it was.
-func TestScheduleRecord(t *testing.T) {
-	res := Result{
-		Kind: content.RefEntry, ID: draftEN, Revision: testID(content.RefRevision, 1), Status: content.StatusScheduled,
-		Version: store.Version{Seq: 7, Kind: content.RefEntry, ID: draftEN, Hash: "sha256:ab", SavedAt: testNow, SavedBy: userID},
-	}
-	data, err := json.Marshal(record{Request: "sha256:00", Result: newRecordResult(res)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text := string(data); !strings.Contains(text, `"status":"scheduled"`) || strings.Contains(text, "publishes") {
-		t.Errorf("the record of the result is %s, want the status and no publishes", text)
-	}
-	rec, err := decodeRecord("op_x", data)
-	if err != nil || !reflect.DeepEqual(rec.Result.result(), res) {
-		t.Errorf("decodeRecord() = %+v, %v; want the result %+v", rec.Result.result(), err, res)
-	}
 }

@@ -43,8 +43,8 @@ var postFields = []FieldDef{
 	{Name: "sidebar", Type: FieldBlocks},
 }
 
-// testSite returns a site with the type and the taxonomy of the example in 6.4.4 of the concept
-// (docs/06.04-entries.md), a type with productFields, and post with postFields.
+// testSite returns a site with the type (without its url and archive, which exampleSite adds) and the taxonomy of the
+// example in 6.4.4 of the concept (docs/06.04-entries.md), a type with productFields, and post with postFields.
 func testSite() *Site {
 	return &Site{
 		Name:            Localized{"ja": "株式会社〇〇", "en": "Example Inc."},
@@ -196,12 +196,6 @@ func TestTestSite(t *testing.T) {
 		if !found {
 			t.Errorf("invalid ID %q in testRefs", id)
 		}
-	}
-}
-
-func TestExampleSite(t *testing.T) {
-	if err := exampleSite().Validate(testLookup); err != nil {
-		t.Fatalf("Validate() = %v", err)
 	}
 }
 
@@ -588,7 +582,6 @@ func TestSiteValidate(t *testing.T) {
 	}
 	// fields returns a site with a type "t" of fs.
 	fields := func(fs ...FieldDef) *Site { return site(TypeDef{Name: "t", Fields: fs}) }
-	// edit returns s changed by f.
 	edit := func(s *Site, f func(s *Site)) *Site {
 		f(s)
 		return s

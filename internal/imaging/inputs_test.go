@@ -44,7 +44,6 @@ func pngOf(t testing.TB, m image.Image) []byte {
 	return bytesOf(t, func(w io.Writer) error { return png.Encode(w, m) })
 }
 
-// jpegSegment returns a JPEG marker segment with data.
 func jpegSegment(marker byte, data []byte) []byte {
 	return append(be.AppendUint16([]byte{0xff, marker}, uint16(2+len(data))), data...)
 }
@@ -110,7 +109,6 @@ func insertPNG(file []byte, chunks ...[]byte) []byte {
 	return slices.Concat(file[:pngIHDREnd], slices.Concat(chunks...), file[pngIHDREnd:])
 }
 
-// iccpChunk returns an iCCP chunk with profile.
 func iccpChunk(t testing.TB, profile []byte) []byte {
 	t.Helper()
 	return pngChunk("iCCP", append([]byte("test\x00\x00"), zlibOf(t, profile)...))
@@ -270,7 +268,6 @@ func riffChunk(id string, data []byte) []byte {
 	return b
 }
 
-// webpFile returns a WebP file of chunks.
 func webpFile(chunks ...[]byte) []byte {
 	data := slices.Concat(chunks...)
 	return slices.Concat([]byte("RIFF"), le.AppendUint32(nil, uint32(4+len(data))), []byte("WEBP"), data)

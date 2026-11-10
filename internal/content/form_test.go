@@ -472,7 +472,6 @@ func TestFormValidate(t *testing.T) {
 		f(&x)
 		return x
 	}
-	// fields returns the contact form with fs for its fields.
 	fields := func(fs ...FormField) Form {
 		return form(contactForm, func(x *Form) { x.Fields = fs })
 	}

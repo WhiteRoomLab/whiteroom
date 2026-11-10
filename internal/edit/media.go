@@ -254,7 +254,7 @@ func (e *Editor) ReplaceMedia(ctx context.Context, op Op, id string, base int64,
 		if err := m.Validate(site); err != nil {
 			return Result{}, sorted(content.LocateErrors(err, f))
 		}
-		// What lookup tells of the medium now, to tell after the save whether it has changed (Q16-A).
+		// What lookup tells of the medium now, to tell after the save whether it has changed.
 		var old *store.Summary
 		tracked := !bytes.Equal(data, cur.Data)
 		if tracked {

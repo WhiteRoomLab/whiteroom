@@ -16,7 +16,6 @@ var update = flag.Bool("update", false, "rewrite the golden files in testdata/ou
 
 const goldenOut = "testdata/out" // the golden files, in a directory for each theme and language
 
-// goldenDocuments are the files of the documents that TestGolden renders.
 var goldenDocuments = []string{
 	"../content/testdata/every-block.json",
 	"../content/testdata/about-page-body.json",
@@ -79,7 +78,6 @@ func goldenResolver(t testing.TB) testResolver {
 	}
 }
 
-// goldenBlocks returns the blocks of the document in the file p.
 func goldenBlocks(t *testing.T, p string) content.Blocks {
 	t.Helper()
 	b, err := os.ReadFile(p)

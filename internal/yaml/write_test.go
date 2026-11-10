@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-// quoteJSON returns s as a JSON string.
 func quoteJSON(s string) string {
 	b, _ := jsontext.AppendQuote(nil, s)
 	return string(b)

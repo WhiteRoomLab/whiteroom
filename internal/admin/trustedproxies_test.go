@@ -52,7 +52,7 @@ func TestForwardedForFromAnUntrustedPeer(t *testing.T) {
 		"if a reverse proxy sends it, add the proxy to TrustedProxies\n"
 	ts := newTestServer(t, httpsOrigin, "10.0.0.0/8")
 
-	// The address is the peer's, as before, and the line says nothing of the request.
+	// The address is the peer's, and the line says nothing of the request.
 	if got := ts.clientAddr(clientRequest("192.0.2.1:1234", false, "203.0.113.9")); got.String() != "192.0.2.1" {
 		t.Errorf("clientAddr = %v, want the address of the peer, 192.0.2.1", got)
 	}

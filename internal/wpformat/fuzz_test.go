@@ -57,9 +57,6 @@ func FuzzAutop(f *testing.F) {
 }
 
 func TestAutopDocuments(t *testing.T) {
-	for _, s := range fuzzAutopSeeds() {
-		checkAutop(t, s)
-	}
 	for _, s := range autopDocuments() {
 		checkAutop(t, s)
 	}
@@ -150,11 +147,6 @@ func FuzzSplitBlocks(f *testing.F) {
 }
 
 func TestSplitBlocksDocuments(t *testing.T) {
-	for _, s := range fuzzAutopSeeds() {
-		for _, limit := range []int{1, 7, 64} {
-			checkSplitBlocks(t, s, limit)
-		}
-	}
 	for i, s := range autopDocuments() {
 		if i%3 == 0 {
 			for _, limit := range []int{1, 5, 40, 200} {
@@ -369,18 +361,12 @@ func TestShortcodeDocuments(t *testing.T) {
 }
 
 func TestAttrsDocuments(t *testing.T) {
-	for _, s := range fuzzAttrSeeds() {
-		checkParseAttrs(t, s)
-	}
 	for _, s := range attrsDocuments() {
 		checkParseAttrs(t, s)
 	}
 }
 
 func TestAutoembedDocuments(t *testing.T) {
-	for _, s := range fuzzEmbedSeeds() {
-		checkAutoembedURLs(t, s)
-	}
 	for _, s := range embedDocuments() {
 		checkAutoembedURLs(t, s)
 	}

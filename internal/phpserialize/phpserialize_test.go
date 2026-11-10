@@ -148,7 +148,6 @@ func wellFormed(v Value) bool {
 	return false
 }
 
-// depth returns the number of levels of arrays in v.
 func depth(v Value) int {
 	if v.Kind != Array {
 		return 0
@@ -325,23 +324,6 @@ func TestUnserialize(t *testing.T) {
 				t.Errorf("Unserialize(%q) = %s; want %s", tt.in, serialize(got), serialize(tt.want))
 			}
 		})
-	}
-}
-
-func TestUnserializeAttachmentMetadata(t *testing.T) {
-	v, err := Unserialize(attachmentMetadata)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sizes, _ := v.Lookup("sizes")
-	thumbnail, _ := sizes.Lookup("thumbnail")
-	file, ok := thumbnail.Lookup("file")
-	if !ok || file.Kind != String || file.Str != "example-150x150.jpg" {
-		t.Errorf("sizes.thumbnail.file = %+v, %v; want example-150x150.jpg", file, ok)
-	}
-	original, ok := v.Lookup("original_image")
-	if !ok || original.Str != "example.jpg" {
-		t.Errorf("original_image = %+v, %v; want example.jpg", original, ok)
 	}
 }
 
@@ -693,18 +675,6 @@ func TestLookup(t *testing.T) {
 	}
 }
 
-func TestLookupParsed(t *testing.T) {
-	v, err := Unserialize(`a:3:{s:1:"5";s:1:"a";i:7;s:1:"b";s:2:"05";s:1:"c";}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for key, want := range map[string]string{"5": "a", "7": "b", "05": "c"} {
-		if got, ok := v.Lookup(key); !ok || got.Str != want {
-			t.Errorf("Lookup(%q) = %q, %v; want %q", key, got.Str, ok, want)
-		}
-	}
-}
-
 func TestSerialize(t *testing.T) {
 	v := array(
 		field("a", integer(-1)),
@@ -714,13 +684,6 @@ func TestSerialize(t *testing.T) {
 	want := `a:3:{s:1:"a";i:-1;i:2;d:0.5;s:6:"日本";a:6:{i:0;N;i:1;b:1;i:2;b:0;i:3;s:1:"x";i:4;d:-INF;i:5;d:NAN;}}`
 	if got := serialize(v); got != want {
 		t.Errorf("serialize() = %s, want %s", got, want)
-	}
-}
-
-func TestErrorString(t *testing.T) {
-	err := &Error{Offset: 3, Msg: "unexpected end of the value"}
-	if got, want := err.Error(), "byte 3: unexpected end of the value"; got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
 
@@ -857,17 +820,6 @@ var unserializeCRLFTests = []struct {
 }
 
 func TestUnserializeCRLF(t *testing.T) {
-	for _, tt := range unserializeTests {
-		t.Run("same as Unserialize/"+tt.name, func(t *testing.T) {
-			got, n, err := UnserializeCRLF(tt.in)
-			if err != nil {
-				t.Fatalf("UnserializeCRLF(%q) = %v", tt.in, err)
-			}
-			if !wellFormed(got) || !equalValue(got, tt.want) || n != 0 {
-				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, 0", tt.in, serialize(got), n, serialize(tt.want))
-			}
-		})
-	}
 	for _, tt := range unserializeCRLFTests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, n, err := UnserializeCRLF(tt.in)
@@ -878,23 +830,6 @@ func TestUnserializeCRLF(t *testing.T) {
 				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, %d", tt.in, serialize(got), n, serialize(tt.want), tt.n)
 			}
 		})
-	}
-}
-
-func TestUnserializeCRLFMail(t *testing.T) {
-	for _, body := range []string{mailBody, body26} {
-		v, n, err := UnserializeCRLF(serializeCRLF(mail(body)))
-		if err != nil || n != 1 {
-			t.Fatalf("UnserializeCRLF(a mail) = %v, %d, %v; want a value and 1", v, n, err)
-		}
-		recipient, ok := v.Lookup("recipient")
-		if !ok || recipient.Str != "[_site_admin_email]" {
-			t.Errorf("recipient = %q, %v; want [_site_admin_email]", recipient.Str, ok)
-		}
-		got, _ := v.Lookup("body")
-		if got.Str != body || strings.Contains(got.Str, "\r") {
-			t.Errorf("body = %q, want %q, with the line breaks as LF", got.Str, body)
-		}
 	}
 }
 

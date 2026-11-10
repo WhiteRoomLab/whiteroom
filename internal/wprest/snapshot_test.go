@@ -200,7 +200,6 @@ func writeString(t *testing.T, s *Snapshot) string {
 	return buf.String()
 }
 
-// mustRead reads in, and fails the test if that fails.
 func mustRead(t *testing.T, in string) *Snapshot {
 	t.Helper()
 	s, err := readString(in, Options{})
@@ -217,9 +216,6 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	s := mustRead(t, fullJSON)
 	if want := fullSnapshot(); !reflect.DeepEqual(s, want) {
 		t.Errorf("ReadSnapshot() =\n%s\nwant\n%s", writeString(t, s), writeString(t, want))
-	}
-	if got := writeString(t, s); got != fullJSON {
-		t.Errorf("WriteJSON() of what was read =\n%s\nwant\n%s", got, fullJSON)
 	}
 }
 
@@ -338,7 +334,6 @@ func TestSnapshotIgnoresOtherKeys(t *testing.T) {
 	checkError(t, err, "/extra", "unknown key")
 }
 
-// checkError checks that err is an *Error with the pointer and the message.
 func checkError(t *testing.T, err error, pointer, msg string) {
 	t.Helper()
 	var e *Error

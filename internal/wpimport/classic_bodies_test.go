@@ -102,7 +102,7 @@ func TestClassicBodies(t *testing.T) {
 			t.Errorf("the report has no sentence with %q", want)
 		}
 	}
-	// A body has the read more tag at the top.
+	// At least two bodies have a read more tag.
 	more := 0
 	for _, r := range results {
 		if r.res.More >= 0 {

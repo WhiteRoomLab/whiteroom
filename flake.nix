@@ -32,7 +32,8 @@
             # For the tests of the server files of internal/build.
             pkgs.nginx
             pkgs.apacheHttpd
-            # For the tests of internal/wpblock against the PHP of WordPress, with WHITEROOM_WP_PARSER.
+            # For the tests of internal/wpblock (WHITEROOM_WP_PARSER) and internal/wpformat
+            # (WHITEROOM_WP_FORMATTING) against the PHP of WordPress.
             # Only the out output: the dev output pulls in the build tools of phpize.
             pkgs.php.unwrapped.out
           ]

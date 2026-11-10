@@ -62,25 +62,23 @@ func TestValidateTestdata(t *testing.T) {
 	tests := []struct {
 		file  string
 		block bool // the file has a block, which is checked as Blocks{b}
-		opts  ValidateOptions
 	}{
 		{file: "about-page-body.json"},
 		{file: "block-example.json", block: true},
 		{file: "wordpress-paragraph.json", block: true},
-		{file: "every-block.json", opts: ValidateOptions{AllowHTML: true, Import: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
 			in := readTestdata(t, tt.file)
 			if !tt.block {
-				assertBlocksValidate(t, mustBlocks(t, in), tt.opts, nil, "")
+				assertBlocksValidate(t, mustBlocks(t, in), ValidateOptions{}, nil, "")
 				return
 			}
 			var b Block
 			if err := b.UnmarshalJSON([]byte(in)); err != nil {
 				t.Fatalf("UnmarshalJSON(%s) = %v", in, err)
 			}
-			assertBlocksValidate(t, Blocks{b}, tt.opts, nil, "")
+			assertBlocksValidate(t, Blocks{b}, ValidateOptions{}, nil, "")
 		})
 	}
 }
@@ -474,7 +472,6 @@ func TestBlocksValidate(t *testing.T) {
 	}
 }
 
-// inList is a list that holds item.
 func inList(item Block) Blocks {
 	return Blocks{{Type: BlockList, ID: "b_00list01", Children: Blocks{item}}}
 }
@@ -710,7 +707,6 @@ func TestValidateBlockGap(t *testing.T) {
 	const media = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
 	text := RichText{{Type: InlineText, Text: "a"}}
 	para := Block{Type: BlockParagraph, ID: "b_0paragr1"}
-	// withGap is b with a blockGap as its style.
 	withGap := func(b Block) Block {
 		b.Style = Style{BlockGap: Length{Preset: "small"}}
 		return b

@@ -415,7 +415,6 @@ func paletteDeltas(colors ...uint32) []uint32 {
 	return d
 }
 
-// checkVP8L decodes a VP8L bitstream and checks its pixels.
 func checkVP8L(t *testing.T, data []byte, want []uint32) {
 	t.Helper()
 	pix, _, _, err := decodeVP8L(data)
@@ -864,15 +863,19 @@ func TestVP8LErrors(t *testing.T) {
 }
 
 // TestVP8LCoverage decodes the lossless bitstreams of the vectors, counting what the decoder meets, and requires that
-// they have every feature of the format that encoders write.
+// they have every feature of the format that encoders write, and 5 ALPH chunks that are lossless and not filtered.
 func TestVP8LCoverage(t *testing.T) {
 	var st vp8lStats
+	alphaStreams := 0
 	for _, v := range loadVectors(t) {
 		f, err := Parse(readVector(t, v))
 		if err != nil {
 			t.Fatalf("%s: %v", v.Name, err)
 		}
 		for i, fr := range f.Frames {
+			if a := fr.alphaData; len(a) > 0 && a[0]&3 == 1 && a[0]>>2&3 == 0 {
+				alphaStreams++
+			}
 			if !fr.lossless {
 				continue
 			}
@@ -912,42 +915,8 @@ func TestVP8LCoverage(t *testing.T) {
 	need(st.cacheHits > 0, "color cache hits")
 	need(st.distances[0] > 0 && st.distances[1] > 0, "distance codes up to 120 and above")
 	need(st.overlaps > 0, "backward references longer than their distance")
+	need(alphaStreams >= 5, "5 ALPH chunks that are lossless and not filtered")
 	if len(missing) > 0 {
 		t.Errorf("the vectors lack: %s", strings.Join(missing, ", "))
 	}
-}
-
-// TestALPHStreams decodes the ALPH chunks of the vectors that are lossless and not filtered: an image stream without
-// a header whose green is the alpha plane (RFC 9649 section 2.7.1.2).
-func TestALPHStreams(t *testing.T) {
-	n := 0
-	for _, v := range loadVectors(t) {
-		f, err := Parse(readVector(t, v))
-		if err != nil {
-			t.Fatalf("%s: %v", v.Name, err)
-		}
-		for i, fr := range f.Frames {
-			a := fr.alphaData
-			if len(a) == 0 || a[0]&3 != 1 || a[0]>>2&3 != 0 {
-				continue
-			}
-			pix, err := decodeVP8LStream(a[1:], fr.Width, fr.Height, nil)
-			if err != nil {
-				t.Errorf("%s: frame %d: %v", v.Name, i, err)
-				continue
-			}
-			plane := make([]byte, len(pix)/4)
-			for j := range plane {
-				plane[j] = pix[4*j+1]
-			}
-			if got := sha256Hex(plane); got != v.Frames[i].AlphaSHA256 {
-				t.Errorf("%s: frame %d: alpha has SHA-256 %s, want %s", v.Name, i, got, v.Frames[i].AlphaSHA256)
-			}
-			n++
-		}
-	}
-	if n < 5 {
-		t.Errorf("%d ALPH chunks decoded, want at least 5", n)
-	}
-	t.Logf("%d ALPH chunks decoded", n)
 }

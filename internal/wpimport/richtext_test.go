@@ -158,7 +158,7 @@ func rtHighlight(h content.Highlight) content.Mark {
 	return content.Mark{Type: content.MarkHighlight, Highlight: &h}
 }
 
-// inlineLine is the short line for a note at the body.
+// bodyNoteLine is the short line for a note at the body.
 func bodyNoteLine(kind Kind, msg string) string { return string(kind) + ": " + msg + " -> /body" }
 
 // colorsLost is the note for the colors of the elements (such as "<mark>, <span>") that a variant wins over.
@@ -235,7 +235,7 @@ func TestRichText(t *testing.T) {
 			want: content.RichText{rtText("a")}, notes: []string{kept("<span>")}},
 		{name: "the settings of a span in a mark", in: `<b><span style="font-weight:bold">a</span></b><i><span style="font-style:italic">b</span>c</i>`,
 			want: content.RichText{rtText("a", rtBold), rtText("bc", rtItalic)}},
-		{name: "the style of a span with a class of a highlight is read as before", in: `<span style="font-weight:bold;color:#111" class="has-inline-color has-vivid-red-color">a</span>`,
+		{name: "a span with a class of a highlight takes its color from the class and the rest from its style", in: `<span style="font-weight:bold;color:#111" class="has-inline-color has-vivid-red-color">a</span>`,
 			want: content.RichText{rtText("a", rtBold, rtHighlight(content.Highlight{Color: content.Color{Preset: "red"}}))}},
 		{name: "a span with no attributes", in: "<span>a</span><span> b</span>", want: content.RichText{rtText("a b")}},
 		{name: "a span with a class", in: `<span class="x">a</span>`, want: content.RichText{rtText("a")}, notes: []string{kept("<span>")}},
@@ -1192,26 +1192,7 @@ func FuzzRichText(f *testing.F) {
 	})
 }
 
-// testParagraph converts a paragraph as the converter of the paragraphs will: it reads the root, the text and the settings
-// of the block, and notes at the block.
-func testParagraph(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
-	root, err := c.root(b, "p")
-	if err != nil {
-		return nil, err
-	}
-	blk := c.newBlock(content.BlockParagraph)
-	own := noteAt{id: blk.ID}
-	text, err := c.richText(root, false, own)
-	if err != nil {
-		return nil, err
-	}
-	pr := c.props(b, root, content.BlockParagraph, own)
-	blk.Text, blk.Anchor, blk.ClassName, blk.Variant, blk.Style = text, pr.anchor, pr.className, pr.variant, pr.style
-	return []content.Block{blk}, nil
-}
-
 func TestBodyWithRichText(t *testing.T) {
-	withConverters(t, map[string]converter{"core/paragraph": testParagraph})
 	imp := linkImport(t)
 	item := bodyItem("")
 	item.Link = "https://example.com/2026/10/hello/"

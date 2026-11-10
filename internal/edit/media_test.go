@@ -131,7 +131,6 @@ func mediaText(t *testing.T, m content.Media) string {
 	return string(data)
 }
 
-// hasOriginal reports whether s has the original with hash.
 func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 	t.Helper()
 	f, err := s.OpenOriginal(hash)
@@ -146,7 +145,6 @@ func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 	return false
 }
 
-// readOriginal returns the original with hash, as the store gives it.
 func readOriginal(t *testing.T, s *store.Store, hash string) []byte {
 	t.Helper()
 	f, err := s.OpenOriginal(hash)
@@ -330,8 +328,8 @@ func TestAddMediaErrors(t *testing.T) {
 	}
 }
 
-// TestAddMediaUnpublishable checks that a file that the build cannot publish is not refused (Q10-A): the sizes are read
-// from the header, and an image of 100 million pixels is the largest that a document accepts.
+// TestAddMediaUnpublishable checks that a file that the build cannot publish is not refused: the sizes are read from
+// the header, and an image of 100 million pixels is the largest that a document accepts.
 func TestAddMediaUnpublishable(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -514,7 +512,7 @@ func TestSaveMedia(t *testing.T) {
 		t.Fatal("the store has other bytes than the sample file")
 	}
 
-	// A change of the alt, saved with the bytes that were given (Q14-B).
+	// A change of the alt, saved with the bytes that were given.
 	changed := replaceOnce(t, orig, `"ja": "会社外観"`, `"ja": "本社の外観"`)
 	res, err := ed.Save(t.Context(), op, content.RefMedia, jpegMedium, first.Seq, []byte(changed))
 	if err != nil {
@@ -551,9 +549,10 @@ func TestSaveMedia(t *testing.T) {
 
 // TestMediaCost checks what the operations on media read of the index. None changes what the validation of other documents
 // reads of a medium (its kind), so none validates what refers to it again: no referrer is read, though published revisions
-// use the medium. Each runs the checks across the site as the other operations do (Q2-A), which cannot find a problem that a
-// medium brings, as siteplan reads no medium: the model of the site after the change and the model before it, which the
-// sample's own warning (a redirect to a draft) makes, each read the summaries of the seven kinds.
+// use the medium. Each runs the checks across the site as the other operations do, which cannot find a problem that a
+// medium brings, as the checks across the site read of a medium only its kind, which these operations keep: the model of
+// the site after the change and the model before it, which the sample's own warning (a redirect to a draft) makes, each
+// read the summaries of the seven kinds.
 func TestMediaCost(t *testing.T) {
 	const models = 2 * 7
 	op := Op{By: userID}
@@ -846,7 +845,7 @@ func TestReplaceMedia(t *testing.T) {
 }
 
 // TestReplaceMediaKinds replaces the file of an image by an image of the same format, and that of a PDF file by a PDF
-// file, which are allowed, and by a file of the other kind, which is refused (Q9-A).
+// file, which are allowed, and by a file of the other kind, which is refused.
 func TestReplaceMediaKinds(t *testing.T) {
 	op := Op{By: userID}
 	t.Run("an image by an image of the same format", func(t *testing.T) {
@@ -1008,8 +1007,8 @@ func TestReplaceMediaDeclaredType(t *testing.T) {
 	}
 }
 
-// TestDeleteMedia deletes media that nothing uses, and refuses those that published content uses (Q8-A): the logo of the
-// site, the images and the files of published revisions, the avatar of an author and the file that a redirect goes to.
+// TestDeleteMedia deletes media that nothing uses, and refuses those that published content uses: the logo of the site,
+// the images and the files of published revisions, the avatar of an author and the file that a redirect goes to.
 func TestDeleteMedia(t *testing.T) {
 	op := Op{By: userID}
 	for _, id := range []string{logoMedium, jpegMedium, pngMedium, pdfMedium} {
@@ -1090,9 +1089,9 @@ func TestDeleteMedia(t *testing.T) {
 	})
 }
 
-// TestMediaOperationID checks the operation IDs (Q13-A) of the operations on files: a retry returns the first result and
-// saves no second document, also after the document has changed; another file, name or type with the ID fails; one that
-// failed has recorded nothing.
+// TestMediaOperationID checks the operation IDs of the operations on files: a retry returns the first result and saves
+// no second document, also after the document has changed; another file, name or type with the ID fails; one that failed
+// has recorded nothing.
 func TestMediaOperationID(t *testing.T) {
 	ed, s := newSample(t)
 	file := testPNG(t, 5, 4, 17)

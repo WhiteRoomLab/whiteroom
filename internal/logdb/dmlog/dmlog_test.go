@@ -23,7 +23,6 @@ func newBuilder(ss int) *builder {
 	return &builder{ss: ss, b: bytes.Repeat([]byte{0xff}, ss)}
 }
 
-// entry appends an entry and data after it.
 func (b *builder) entry(sector, sectors, flags, dataLen uint64, text string, data []byte) {
 	s := bytes.Repeat([]byte{0xff}, b.ss)
 	binary.LittleEndian.PutUint64(s[0:], sector)

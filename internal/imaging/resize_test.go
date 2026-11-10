@@ -79,7 +79,7 @@ func TestCropRect(t *testing.T) {
 	}
 }
 
-// sources returns an image of w x h pixels of each type that resize reads, all of the color c.
+// constantSources returns an image of w x h pixels of each type that resize reads, all of the color c.
 func constantSources(w, h int, c color.NRGBA) []image.Image {
 	r := image.Rect(0, 0, w, h)
 	gray := image.NewGray(r)

@@ -22,7 +22,6 @@ func termSite() *content.Site {
 	}
 }
 
-// wxrTerm is a term to write into a WXR.
 type wxrTerm struct {
 	id                              int // 0 for a term with no wp:term_id, as in WXR 1.0
 	taxonomy                        string
@@ -143,7 +142,6 @@ func checkTerms(t *testing.T, imp *Import, site *content.Site, terms []content.T
 	}
 }
 
-// reportLines returns the lines of the text of the report.
 func reportLines(t *testing.T, rep *Report) []string {
 	t.Helper()
 	var b bytes.Buffer
@@ -179,7 +177,6 @@ func wantLines(t *testing.T, rep *Report, want []string) {
 	t.Errorf("the report is\n%s\nwant\n%s", cut(got), cut(want))
 }
 
-// termAt returns the term of the WXR that is in the taxonomy tax and has the ID id.
 func termAt(t *testing.T, e *wxr.Export, tax string, id int64) *wxr.Term {
 	t.Helper()
 	term := e.Term(tax, id)
@@ -189,7 +186,6 @@ func termAt(t *testing.T, e *wxr.Export, tax string, id int64) *wxr.Term {
 	return term
 }
 
-// idOf returns the ID of the term of WordPress.
 func idOf(t *testing.T, imp *Import, term *wxr.Term) string {
 	t.Helper()
 	_, id, ok := imp.IDs.Lookup(TermObject(term))

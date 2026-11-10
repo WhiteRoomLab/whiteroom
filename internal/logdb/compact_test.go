@@ -30,7 +30,6 @@ func compactCtx(ctx context.Context, db *DB, r Rewrite) error {
 	return db.compact(ctx, r)
 }
 
-// gensOf returns the generations that have segments in fsys.
 func gensOf(t *testing.T, fsys vfs.FS) []uint64 {
 	t.Helper()
 	var gens []uint64
@@ -43,7 +42,6 @@ func gensOf(t *testing.T, fsys vfs.FS) []uint64 {
 	return gens
 }
 
-// recordsOf returns the number of records in the segments of fsys.
 func recordsOf(t *testing.T, fsys vfs.FS) int {
 	t.Helper()
 	n := 0
@@ -64,7 +62,6 @@ func hasTable(d string, table uint32) bool {
 	return false
 }
 
-// baseRecords returns the number of base records in the segments of fsys.
 func baseRecords(t *testing.T, fsys vfs.FS) int {
 	t.Helper()
 	n := 0
@@ -639,8 +636,8 @@ func TestCompactFaults(t *testing.T) {
 	})
 }
 
-// TestCrashDuringCompaction crashes after each operation of a compaction, and checks every crash that simfs can make
-// of it: Open finds generation 1 with the old state or generation 2 with the rewritten one, never a mix.
+// TestCrashDuringCompaction crashes after each operation of a compaction, and checks the crash models that simfs.Models
+// gives: Open finds generation 1 with the old state or generation 2 with the rewritten one, never a mix.
 func TestCrashDuringCompaction(t *testing.T) {
 	withBaseBytes(t, 200)
 	rewrite := Rewrite{

@@ -58,7 +58,7 @@ func (e *Editor) SetClock(now func() time.Time) { e.now = now }
 
 // Op says who does an operation, and which one it is.
 type Op struct {
-	By string // the ID of the user (usr_), of which only the format is checked until there are accounts (#45)
+	By string // the ID of the user (usr_), whose format the Editor checks; the caller checks the account and its permission (6.7)
 	// ID is "op_" and a ULID that the caller makes, or "". With it, the operation is recorded with its request in
 	// the Update that does it, so that a retry returns the result without doing it again; with another request, a
 	// retry fails.

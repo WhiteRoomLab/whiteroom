@@ -157,8 +157,6 @@ type memSource struct {
 	posts            int              // posts that addPosts has added
 }
 
-var _ Source = (*memSource)(nil)
-
 func (s *memSource) Settings() (settings, schema content.SiteFile, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

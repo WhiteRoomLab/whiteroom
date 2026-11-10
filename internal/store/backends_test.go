@@ -41,7 +41,6 @@ func forBackends(t *testing.T, set []testBackend, f func(t *testing.T, tb testBa
 	}
 }
 
-// backendByName returns the backend of allBackends with name.
 func backendByName(name string) (testBackend, bool) {
 	for _, tb := range allBackends {
 		if tb.name == name {

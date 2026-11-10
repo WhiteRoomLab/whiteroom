@@ -47,7 +47,6 @@ func exifData(order binary.AppendByteOrder, o uint16) []byte {
 	return tiffData(order, 8, ifdEntry(order, 0x0100, 3, 1, 3), orientationEntry(order, o), ifdEntry(order, 0x0128, 3, 1, 2))
 }
 
-// markerSegment returns a JPEG marker segment with data.
 func markerSegment(marker byte, data []byte) []byte {
 	b := binary.BigEndian.AppendUint16([]byte{0xff, marker}, uint16(2+len(data)))
 	return append(b, data...)

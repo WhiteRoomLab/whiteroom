@@ -353,7 +353,7 @@ func (p *Publisher) wait(ctx context.Context, cond func() bool) error {
 func (p *Publisher) Releases() (build.Releases, error) { return build.ListReleases(p.o.Out) }
 
 // Rollback publishes the release, one of those that Releases lists, instead of the one that is published, at once
-// (build.Rollback), and pauses the builds until Resume, so that the next build does not undo it (Q14-A). While they are
+// (build.Rollback), and pauses the builds until Resume, so that the next build does not undo it. While they are
 // paused the operations are saved as before, and the builds they ask for wait. No build starts from the call on; Rollback
 // waits for the one that runs to end, which publishes its release before the rollback does.
 //

@@ -33,8 +33,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
-var _ render.Resolver = (*resolver)(nil)
-
 // IDs of media that the tests add to the fixture.
 var (
 	animationID = newID("med", 1)
@@ -61,7 +59,6 @@ func gradient(w, h int) *image.RGBA {
 	return m
 }
 
-// encodeImage returns what encode writes.
 func encodeImage(t testing.TB, encode func(w io.Writer) error) []byte {
 	t.Helper()
 	var b bytes.Buffer

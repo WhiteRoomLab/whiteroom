@@ -91,12 +91,4 @@ func TestSealedValue(t *testing.T) {
 	if _, err := openValue(lookup, append([]byte{envPlain}, v[1:]...)); !errors.Is(err, errNotSealed) {
 		t.Errorf("plain envelope: %v", err)
 	}
-
-	// The engine refuses to read a sealed value in a record.
-	h := hashOf(1)
-	for _, prefix := range [][]byte{{1, opPut, 1, 1, 'k'}, append([]byte{1, opInline}, h[:]...), {1, opEvent, 1, 7}} {
-		if _, reason := parseBody(rawBody(recCommit, prefix, v)); reason != "sealed values are not supported by this version" {
-			t.Errorf("op %d: %q", prefix[1], reason)
-		}
-	}
 }

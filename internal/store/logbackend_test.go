@@ -29,7 +29,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// logOpts returns the options of the log backend with o.
 func logOpts(o logdb.Options) options {
 	return options{log: &o}
 }
@@ -78,7 +77,8 @@ func rawUpdate(t *testing.T, s *Store, f func(tx *logdb.Tx) error) {
 	}
 }
 
-// logTables are the tables of the log backend by the names of the tables that the tests count (3.4).
+// logTables are the tables of the log backend by the names that the tests count them by; versions is the table
+// history (3.4).
 var logTables = map[string]uint32{
 	"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions, "summaries": tableSummaries,
 	"references": tableReferences, "operations": tableOperations, "accounts": tableAccounts, "sessions": tableSessions,
@@ -345,37 +345,6 @@ func flipByte(t *testing.T, fsys vfs.FS, name string, off int64) {
 	if err := errors.Join(err, f.Close()); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// corruptSavedAt changes the saved_at of every revision of s to value behind the back of the store, past the backend.
-func corruptSavedAt(t *testing.T, s *Store, value string) {
-	t.Helper()
-	rawUpdate(t, s, func(tx *logdb.Tx) error {
-		var revs []Revision
-		var err error
-		tx.Scan(tableRevisions, nil, func(key, v []byte) bool {
-			var r Revision
-			if r, err = decodeRevision(string(key), v); err != nil {
-				return false
-			}
-			revs = append(revs, r)
-			return true
-		})
-		if err != nil {
-			return err
-		}
-		for _, r := range revs {
-			sum, err := digest(r.Hash)
-			if err != nil {
-				return err
-			}
-			v := appendRevision(r.Seq, r.Entry, sum, value, r.SavedBy)
-			if err := tx.Put(tableRevisions, []byte(r.ID), v); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 // logLayout is the layout of a data directory of the log backend, whatever the placement: logdb/, the directory of the
@@ -821,8 +790,8 @@ func TestLogTables(t *testing.T) {
 	check("after the Delete")
 }
 
-// TestLogTablesScheduled checks the rows that the schema 3 keeps in summaries and references for an entry that schedules
-// its last revision, which refers to a medium.
+// TestLogTablesScheduled checks the rows of summaries and references for an entry that schedules its last revision,
+// which refers to a medium.
 func TestLogTablesScheduled(t *testing.T) {
 	s, _ := newLogStore(t, logdb.Options{})
 	data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "number": 3, "status": "scheduled", ` +
@@ -970,6 +939,8 @@ func TestLogDamage(t *testing.T) {
 					t.Errorf("%s() = %v, want no error", name, err)
 				case fails && (err == nil || err.Error() != want):
 					t.Errorf("%s() = %v, want an error %q", name, err, want)
+				case strings.Contains(want, "parsing time") && !errors.As(err, new(*time.ParseError)):
+					t.Errorf("%s() = %v, want an error that wraps a *time.ParseError", name, err)
 				case errors.Is(err, fs.ErrNotExist):
 					t.Errorf("%s() = %v, which wraps fs.ErrNotExist", name, err)
 				}
@@ -1099,23 +1070,19 @@ func modes(t *testing.T, dir string) map[string]fs.FileMode {
 	return m
 }
 
-// sqliteDataDir returns a new data directory as the SQLite backend made them before #66: files/ and whiteroom.db, a
-// file with the header of a SQLite database, and no logdb/.
-func sqliteDataDir(t *testing.T) string {
+// dataDirWithoutLog returns a new data directory that has files/ and no logdb/.
+func dataDirWithoutLog(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
 	mkdir(t, dir)
 	mkdir(t, filepath.Join(dir, "files"))
-	if err := os.WriteFile(filepath.Join(dir, "whiteroom.db"), []byte("SQLite format 3\x00"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return dir
 }
 
 // TestLogLayout checks the files of the objects and the originals that the log backend adds to a data directory in each
-// placement, that a crash right after create does not lose the data directory, and the errors of open and create of a
-// data directory that is not one of the store, such as one of the SQLite backend. TestCreate, TestCreateErrors and
-// TestOpenErrors check the files of a new data directory and the errors of each backend.
+// placement, that a crash right after create does not lose the data directory, and the errors of create of a data
+// directory that is not one of the store. TestCreate, TestCreateErrors and TestOpenErrors check the files of a new data
+// directory and the errors of each backend.
 func TestLogLayout(t *testing.T) {
 	const dirMode, fileMode = fs.ModeDir | 0o700, fs.FileMode(0o600)
 	entry, rev := docJSON(content.RefEntry, entryID), revJSON("About")
@@ -1159,19 +1126,6 @@ func TestLogLayout(t *testing.T) {
 		}
 		if err := c.Close(); err != nil {
 			t.Errorf("Close() = %v", err)
-		}
-	})
-
-	t.Run("errors of open", func(t *testing.T) {
-		dir := sqliteDataDir(t)
-		for name, f := range map[string]func(string) (*Store, error){"Open": Open, "OpenReader": OpenReader} {
-			s, err := f(dir)
-			if err == nil {
-				_ = s.Close()
-			}
-			if want := dir + "/logdb: missing directory"; err == nil || err.Error() != want {
-				t.Errorf("%s() of a data directory of the SQLite backend = %v, want %q", name, err, want)
-			}
 		}
 	})
 
@@ -1296,7 +1250,6 @@ type event struct {
 	data   string
 }
 
-// allEvents returns the audit events of s.
 func allEvents(t *testing.T, s *Store) []event {
 	t.Helper()
 	var got []event
@@ -1421,37 +1374,6 @@ func TestLogHooks(t *testing.T) {
 			put(t, s, content.RefEntry, entryID, data, userID, v)
 		})
 	}
-}
-
-func TestLogSecondWriter(t *testing.T) {
-	o := logdb.Options{WriterWait: 50 * time.Millisecond}
-	s, dir := newLogStore(t, o)
-	putWithRevision(t, s)
-	start := time.Now()
-	second, err := open(dir, logOpts(o))
-	if err == nil {
-		_ = second.Close()
-	}
-	if want := dir + "/logdb: another process holds the writer lock"; err == nil || err.Error() != want {
-		t.Errorf("open() while the store is open = %v, want %q", err, want)
-	}
-	if d := time.Since(start); d < o.WriterWait {
-		t.Errorf("open() has waited %v, want at least %v", d, o.WriterWait)
-	}
-	update(t, s, func(tx *Tx) error {
-		_, err := tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID)
-		return err
-	})
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close() = %v", err)
-	}
-	s = reopenLog(t, dir, o)
-	view(t, s, func(tx *Tx) error {
-		if docs, err := tx.Documents(content.RefEntry); err != nil || len(docs) != 2 {
-			t.Errorf("Documents() = %+v, %v; want the entry and the page", docs, err)
-		}
-		return nil
-	})
 }
 
 // TestLogCloseReleasesFiles checks that Close, and an open that fails, close the files of the log backend.
@@ -1680,10 +1602,10 @@ func TestBackupLog(t *testing.T) {
 			err.Error() != copied+": not empty; a new data directory needs a missing or empty directory" {
 			t.Errorf("backupLog() to a data directory = %v, want an error", err)
 		}
-		sqliteDir := sqliteDataDir(t)
-		if err := backupLog(t.Context(), sqliteDir, filepath.Join(t.TempDir(), "copy")); err == nil ||
-			err.Error() != sqliteDir+"/logdb: missing directory" {
-			t.Errorf("backupLog() of a data directory of SQLite = %v, want an error", err)
+		noLog := dataDirWithoutLog(t)
+		if err := backupLog(t.Context(), noLog, filepath.Join(t.TempDir(), "copy")); err == nil ||
+			err.Error() != noLog+"/logdb: missing directory" {
+			t.Errorf("backupLog() of a data directory without logdb/ = %v, want an error", err)
 		}
 		canceled, cancel := context.WithCancel(t.Context())
 		cancel()

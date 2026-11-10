@@ -10,12 +10,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/wpblock"
 )
 
-// htmlOf returns the nodes of markup as the children of a div.
-func htmlOf(t *testing.T, markup string) *html.Node {
-	t.Helper()
-	return richRoot(t, markup)
-}
-
 func TestRoot(t *testing.T) {
 	const notAsWritten = "the HTML of the block is not as WordPress writes it: expected "
 	for _, tt := range []struct {
@@ -119,7 +113,7 @@ func TestStray(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			imp := bodyImport()
 			c := richConv(imp, "", nil)
-			c.stray(htmlOf(t, tt.in), tt.keep, "core/group", noteAt{})
+			c.stray(richRoot(t, tt.in), tt.keep, "core/group", noteAt{})
 			c.flush(nil)
 			var want []string
 			if tt.note {
@@ -131,7 +125,7 @@ func TestStray(t *testing.T) {
 }
 
 func TestHTMLHelpers(t *testing.T) {
-	root := htmlOf(t, `<div id="a" class=" x  y&#9;z "><p class="p">one <b>two</b></p><!-- c --><ul><li class="x">three</li></ul><svg><title>t</title></svg>`+
+	root := richRoot(t, `<div id="a" class=" x  y&#9;z "><p class="p">one <b>two</b></p><!-- c --><ul><li class="x">three</li></ul><svg><title>t</title></svg>`+
 		`<script>js()</script><template><i>no</i></template><noscript>ns</noscript><span>four</span></div>tail`)
 	div := root.FirstChild
 
@@ -203,7 +197,7 @@ func TestHTMLHelpers(t *testing.T) {
 // TestHTMLHelpersDeep checks that the helpers that go through the HTML do not recurse: with a stack that a walk of a hundred
 // thousand levels would fill, they read elements that nest that deep.
 func TestHTMLHelpersDeep(t *testing.T) {
-	root := htmlOf(t, strings.Repeat("<span>", 100000)+"x"+strings.Repeat("</span>", 100000)+"y")
+	root := richRoot(t, strings.Repeat("<span>", 100000)+"x"+strings.Repeat("</span>", 100000)+"y")
 	withStackLimit(func() {
 		if got := elementText(root); got != "xy" {
 			t.Errorf("elementText = %q", got)
