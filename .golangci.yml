@@ -8,6 +8,7 @@ linters:
     - exhaustive
     - forbidigo
     - gomoddirectives
+    - gosec
     - misspell
     - nolintlint
     - unconvert
@@ -397,9 +398,34 @@ linters:
       toolchain-forbidden: true
       tool-forbidden: true
       go-version-pattern: ^1\.\d+\.0$
+    gosec:
+      # Rules that guard servers, crypto and fetched input; the others mostly flag deliberate code, such as G115 and G203.
+      includes:
+        - G107
+        - G108
+        - G110
+        - G112
+        - G114
+        - G305
+        - G401
+        - G402
+        - G403
+        - G405
+        - G406
+        - G501
+        - G502
+        - G503
+        - G504
+        - G505
+        - G506
+        - G507
+        - G704
     nolintlint:
       require-explanation: true
       require-specific: true
+    staticcheck:
+      checks:
+        - all
   exclusions:
     rules:
       # The forbidigo rules are for production code only.
