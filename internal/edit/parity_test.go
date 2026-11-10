@@ -272,7 +272,7 @@ func TestImportedSaveParity(t *testing.T) {
 			_, err := p.ed.SaveSettings(t.Context(), op, p.seq(store.SettingsKind, ""), []byte(data))
 			return err
 		}},
-		// The term is valid in itself, and the revisions that use it are not valid with it (Q16-A).
+		// The term is valid in itself, and the revisions that use it are not valid with it.
 		{"a tag in another language", func(p *parity) error {
 			name := docName(content.RefTerm, tagJA)
 			data := changedTerm(t, sampleFile(t, name), toEnglish)

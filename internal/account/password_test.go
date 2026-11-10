@@ -146,7 +146,7 @@ func TestDeriveRFC7914(t *testing.T) {
 	}
 }
 
-// TestHashPassword is the one test that hashes with the cost of real passwords.
+// TestHashPassword hashes with the cost of real passwords on purpose.
 func TestHashPassword(t *testing.T) {
 	encoded, err := hashPassword(pwGood, defaultIterations, rand.Reader)
 	if err != nil {

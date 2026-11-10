@@ -153,7 +153,7 @@ func TestUpdateNotActive(t *testing.T) {
 		}
 	}
 	e.unchanged(t, before)
-	// An administrator may change them.
+	// System may change them.
 	for _, a := range []Account{pending, off} {
 		before := e.row(t, a.ID)
 		got, err := e.m.Update(t.Context(), System, a.ID, Change{Name: ptr("Renamed")})
@@ -370,8 +370,8 @@ func TestUpdateMissing(t *testing.T) {
 	for _, by := range []Actor{System, By(admin.ID)} {
 		_, err := e.m.Update(t.Context(), by, mgrMissingID, Change{Name: ptr("x")})
 		mgrError(t, err, fs.ErrNotExist, mgrNotFound(mgrMissingID))
-		// The actor that has no right learns nothing.
 	}
+	// The actor that has no right learns nothing.
 	_, err := e.m.Update(t.Context(), By(editor.ID), mgrMissingID, Change{Name: ptr("x")})
 	mgrError(t, err, ErrForbidden, mgrNotAllowed(editor, "manage accounts"))
 	// An empty ID is the account of nobody, also for an actor with no ID.

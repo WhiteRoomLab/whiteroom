@@ -425,7 +425,7 @@ func TestScheduledAtStart(t *testing.T) {
 
 // TestScheduledPostDate checks that a post without a date, scheduled and published when its time comes, is built with the
 // scheduled time as its date: its page is at the dated path, not at one of the time when it was scheduled or when the
-// scheduler called, and a revision that the editor saved since stays the latest one (Q19-A).
+// scheduler called, and a revision that the editor saved since stays the latest one.
 func TestScheduledPostDate(t *testing.T) {
 	t.Parallel()
 	r := newClockRig(t, nil)

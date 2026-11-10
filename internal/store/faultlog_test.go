@@ -46,8 +46,8 @@ func storeFaults(op simfs.Op) []storeFault {
 }
 
 // stopsStore reports whether a fault at op, an operation of an Update, must stop the store, so that every Update
-// returns ErrFailed: the failure of a sync of the log or of the objects of the engine (spec §6), not that of a
-// checkpoint (§8) or of head.
+// returns ErrFailed: the failure of a sync of the log or of the objects of the engine, not that of a checkpoint or of
+// head (concept section 3.5).
 func stopsStore(op simfs.Op) bool {
 	switch op.Kind {
 	case simfs.OpSync, simfs.OpSyncDir:
@@ -70,9 +70,9 @@ func tempNames(fsys *simfs.FS) []string {
 	return names
 }
 
-// TestOriginalAfterFailedSync checks that a failed sync of PutOriginal stops saving originals (finding F2 of phase 12):
-// the sync may drop the names that it would have made durable, which the page cache still has, and which later syncs
-// do not write. Without the stop, a PutOriginal in the same boot found the directory whose name a failed sync of
+// TestOriginalAfterFailedSync checks that a failed sync of PutOriginal stops saving originals (F2 in concept section
+// 3.5): the sync may drop the names that it would have made durable, which the page cache still has, and which later
+// syncs do not write. Without the stop, a PutOriginal in the same boot found the directory whose name a failed sync of
 // files/ had dropped, synced files/ again, which succeeded without the name, and returned nil for an original that
 // every crash then lost. Every PutOriginal after the failed sync fails, also one that runs at the same time, and
 // Updates go on; after a restart of the machine, which a crash models, PutOriginal saves the original again.

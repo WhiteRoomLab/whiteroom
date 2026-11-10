@@ -78,7 +78,8 @@ func rawUpdate(t *testing.T, s *Store, f func(tx *logdb.Tx) error) {
 	}
 }
 
-// logTables are the tables of the log backend by the names of the tables that the tests count (3.4).
+// logTables are the tables of the log backend by the names that the tests count them by; versions is the table
+// history (3.4).
 var logTables = map[string]uint32{
 	"versions": tableHistory, "documents": tableDocuments, "revisions": tableRevisions, "summaries": tableSummaries,
 	"references": tableReferences, "operations": tableOperations, "accounts": tableAccounts, "sessions": tableSessions,
@@ -790,8 +791,8 @@ func TestLogTables(t *testing.T) {
 	check("after the Delete")
 }
 
-// TestLogTablesScheduled checks the rows that the schema 3 keeps in summaries and references for an entry that schedules
-// its last revision, which refers to a medium.
+// TestLogTablesScheduled checks the rows of summaries and references for an entry that schedules its last revision,
+// which refers to a medium.
 func TestLogTablesScheduled(t *testing.T) {
 	s, _ := newLogStore(t, logdb.Options{})
 	data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "number": 3, "status": "scheduled", ` +

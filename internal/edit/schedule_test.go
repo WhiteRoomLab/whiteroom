@@ -367,7 +367,7 @@ func wantRebuiltIndex(t *testing.T, s *store.Store) {
 }
 
 // TestScheduleDate schedules posts: Schedule adds no revision, whatever the revision lacks, and the date of a post that has
-// none goes into a new revision when the entry is published, with the scheduled time (Q19-A).
+// none goes into a new revision when the entry is published, with the scheduled time.
 func TestScheduleDate(t *testing.T) {
 	op := Op{By: userID}
 	t.Run("a post without a date", func(t *testing.T) {
@@ -531,7 +531,7 @@ func TestScheduleDate(t *testing.T) {
 }
 
 // TestScheduledPostPublishedAtOnce checks that a post without a date that is scheduled and then published at once is dated
-// with the time of the publish, not with the time that it was scheduled for (Q19-A).
+// with the time of the publish, not with the time that it was scheduled for.
 func TestScheduledPostPublishedAtOnce(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -560,7 +560,7 @@ func TestScheduledPostPublishedAtOnce(t *testing.T) {
 }
 
 // TestScheduledPostScheduledAgain checks that a post without a date that is scheduled for another time is dated with the
-// second time, not the first (Q19-A).
+// second time, not the first.
 func TestScheduledPostScheduledAgain(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -588,7 +588,7 @@ func TestScheduledPostScheduledAgain(t *testing.T) {
 }
 
 // TestScheduledPostCancelledThenPublished checks that a post without a date whose schedule is cancelled and which is
-// published a month later is dated with the time of that publish (Q19-A).
+// published a month later is dated with the time of that publish.
 func TestScheduledPostCancelledThenPublished(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -612,7 +612,7 @@ func TestScheduledPostCancelledThenPublished(t *testing.T) {
 
 // TestScheduledPublishCopiesLatest checks the revisions that a scheduled publish adds when the editor has saved revisions
 // since the schedule: after the dated copy of the scheduled revision, a copy of the latest one, so that the draft stays the
-// latest revision (Q19-A).
+// latest revision.
 func TestScheduledPublishCopiesLatest(t *testing.T) {
 	const (
 		scheduler = "usr_01JB8T7H4MA2C5E8G1J4K7N3P9" // who schedules, as the users who save the revisions are others
@@ -1333,7 +1333,7 @@ func TestScheduledProtected(t *testing.T) {
 }
 
 // TestScheduledPublishFails checks that a scheduled publish that does not pass the checks fails with the problems of the
-// build and leaves the entry scheduled (Q10-A), and succeeds once the problem is gone.
+// build and leaves the entry scheduled, and succeeds once the problem is gone.
 func TestScheduledPublishFails(t *testing.T) {
 	p := newParity(t)
 	rev := scheduleCareers(t, p.ed, p.s)
@@ -2205,7 +2205,7 @@ func TestImportScheduled(t *testing.T) {
 	})
 
 	// A post without a date is validated with the scheduled time as its date, as its scheduled publish publishes it, and
-	// stored as it is (Q19-A). The build ignores it.
+	// stored as it is. The build ignores it.
 	scheduledPost := func(t *testing.T) string {
 		t.Helper()
 		e := decodeEntry(t, []byte(scheduledEntry(t, rev)))

@@ -129,8 +129,8 @@ func levelVictim(levels map[int]*modelLevel) (int, bool) {
 	return best, found
 }
 
-// wait returns how long an attempt waits for the level l, which is nil if there is none: it is refused when the level
-// is at the burst.
+// levelWait returns how long an attempt waits for the level l, which is nil if there is none: it is refused when the
+// level is at the burst.
 func levelWait(l *modelLevel, burst int, leak, now time.Duration) time.Duration {
 	if l != nil && l.level >= burst {
 		return l.at + leak - now

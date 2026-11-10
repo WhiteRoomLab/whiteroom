@@ -78,7 +78,7 @@ func TestRefChangeParity(t *testing.T) {
 }
 
 // TestRefChangeDrafts saves a term with a language that only drafts do not accept: it is saved, with the problems that
-// the drafts have as warnings, located in the bytes that the store has of them (Q16-A, Q8-A).
+// the drafts have as warnings, located in the bytes that the store has of them.
 func TestRefChangeDrafts(t *testing.T) {
 	op := Op{By: userID}
 	// check saves the tag in en, which must succeed with the one warning that the revision rev has.
@@ -138,7 +138,7 @@ func TestRefChangeOldProblems(t *testing.T) {
 	const head = `{"schemaVersion":1,"title":"a\tb","slug":"old","date":"2026-10-25T10:00:00+09:00",`
 	const oldProblem = "/title: contains a line break or tab"
 
-	// A revision that names the tag only in a text is a reference for the index, by the ID that the text is (Q8-A), and
+	// A revision that names the tag only in a text is a reference for the index, by the ID that the text is, and
 	// validation does not look the text up: it has the old problem alone, which the change leaves as it is.
 	t.Run("a reference by a text", func(t *testing.T) {
 		ed, s := newSample(t)
@@ -408,7 +408,7 @@ func callsTo(calls []string, method string) []string {
 	return slices.DeleteFunc(slices.Clone(calls), func(c string) bool { return !strings.HasPrefix(c, method+" ") })
 }
 
-// TestRefChangeCost checks what a save reads of the index when it changes nothing that other documents read (Q16-A): no
+// TestRefChangeCost checks what a save reads of the index when it changes nothing that other documents read: no
 // referrer, no other document, and no model beyond those of the checks across the site. A save of the same bytes, which
 // saves nothing, reads none of that either.
 func TestRefChangeCost(t *testing.T) {
@@ -562,7 +562,7 @@ func count(calls []string, c string) int {
 }
 
 // TestRefChangeLookupFailure checks that a failure to read what the validation of another document needs fails the
-// operation with that error, not with problems, and saves nothing (Q6-A).
+// operation with that error, not with problems, and saves nothing.
 func TestRefChangeLookupFailure(t *testing.T) {
 	errRead := errors.New("the index cannot be read")
 	op := Op{By: userID}
@@ -907,9 +907,9 @@ func changeRef(t *testing.T, ed *Editor, s *store.Store, kind content.RefKind, i
 	return warnings, err
 }
 
-// TestRefChangeKinds checks the validation again of what refers to a medium and to an entry, whose Ref the operations of
-// #43 do not change: a medium that becomes a PDF file is not an image any more, and an entry in another language is not
-// the front page of the language. As for a term, the problems are the build's for a copy of the site with the change.
+// TestRefChangeKinds checks the validation again of what refers to a medium and to an entry, whose Ref no operation
+// changes: a medium that becomes a PDF file is not an image any more, and an entry in another language is not the front
+// page of the language. As for a term, the problems are the build's for a copy of the site with the change.
 func TestRefChangeKinds(t *testing.T) {
 	asPDF := func(data []byte) string {
 		var m content.Media
@@ -964,9 +964,9 @@ func TestRefChangeKinds(t *testing.T) {
 }
 
 // TestRefChangeGrid saves each term of the sample site with each language and taxonomy that the site has, and compares the
-// outcome with the build's for a copy of the site with the term as saved (Q16-A): the problems that the Editor refuses it
-// with are some of those that the build finds, and a term that it saves is one that the build builds. They are not all of
-// them when the term is not valid itself, as the other documents are not validated then.
+// outcome with the build's for a copy of the site with the term as saved: the problems that the Editor refuses it with are
+// some of those that the build finds, and a term that it saves is one that the build builds. They are not all of them when
+// the term is not valid itself, as the other documents are not validated then.
 func TestRefChangeGrid(t *testing.T) {
 	terms := []string{"trm_01JB9A00000000000000000001", newsID, "trm_01JBA4C7F3H6K9N2Q5S8V1X4Z7", tagJA, tagEN}
 	for _, id := range terms {

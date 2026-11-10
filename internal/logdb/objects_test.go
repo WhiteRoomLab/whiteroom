@@ -909,9 +909,9 @@ func stateOf(t *testing.T, db *DB) string {
 	return dump(t, db) + "\nobjects:\n" + objectList(t, db) + "\nevents:\n" + eventLines(t, db)
 }
 
-// TestCrashWithObjects crashes after each operation of an Update with objects and an event, and checks every crash
-// that simfs can make of it: Open never refuses, every object that the store has is there with its data, and the
-// Update is there or not at all.
+// TestCrashWithObjects crashes after each operation of an Update with objects and an event, and checks the crash models
+// that simfs.Models gives: Open never refuses, every object that the store has is there with its data, and the Update
+// is there or not at all.
 func TestCrashWithObjects(t *testing.T) {
 	ctx := context.Background()
 	mates := sameDir(2, 150)

@@ -77,8 +77,8 @@ func newMgr(t *testing.T) *mgrEnv {
 	return newMgrOn(t, s, dir)
 }
 
-// newMgrOn makes a Manager of the store s whose hashes have pwLow iterations, the hash for nobody too, so that only
-// TestNew and TestDefaultIterations pay for a hash of the real count.
+// newMgrOn makes a Manager of the store s whose hashes have pwLow iterations, the hash for nobody too, so that, of the
+// tests of a Manager, only TestNew and TestDefaultIterations pay for a hash of the real count.
 func newMgrOn(t *testing.T, s *store.Store, dir string) *mgrEnv {
 	t.Helper()
 	m, err := newManager(s, pwLow, rand.Reader)
@@ -1595,14 +1595,14 @@ func TestUnreadableRowDoesNotHideAnAccount(t *testing.T) {
 	}
 }
 
-// TestRowFromOlderUnicode is the lock-out of the final review: a build with older Unicode tables wrote a name that is in
-// NFC for those and not for these, and a build that checked the name again when it read the row could not read the row,
-// or any other, until the row was removed with the store's own API. Now the row is read, and every operation works.
+// TestRowFromOlderUnicode checks a row whose name a build with older Unicode tables wrote, in NFC for those tables and
+// not for these: the row is read and every operation works. Checking the name again when a row is read would stop every
+// account until the row was removed.
 func TestRowFromOlderUnicode(t *testing.T) {
 	// U+1ADD was not assigned in Unicode 16.0 and is a mark of class 220 since 17.0.
 	name := "q" + acute + string(rune(0x1add)) + " Yamada"
 	if nfc.IsNormalized(name) {
-		t.Skip("the name is in NFC with these tables")
+		t.Fatalf("%q is in NFC, want a name that these tables change", name)
 	}
 	e := newMgr(t)
 	ctx := t.Context()

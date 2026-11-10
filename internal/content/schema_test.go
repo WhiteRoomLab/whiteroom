@@ -798,8 +798,8 @@ func FuzzUnmarshalSchema(f *testing.F) {
 	})
 }
 
-// marshalSchemaYAML is a schema file with what everySchemaYAML has not: every kind of number in min and max,
-// untranslatable fields, groups and lists in groups and in lists, and every item of post, page, category and tag.
+// marshalSchemaYAML adds to everySchemaYAML numbers of every form in min and max, a required text field that is not
+// translatable, a group and a list in a group, and a type with an archive and a body.
 const marshalSchemaYAML = `schemaVersion: 1
 authorUrl: /writers/{slug}/
 taxonomies:

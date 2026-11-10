@@ -1974,8 +1974,8 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 }
 
 // gateProbe is a context that tells when the hash gate begins to wait on it: the gate asks for the Done channel of its
-// context only when it waits for a place, and nothing that the tests run before it does. With endOnWait the context ends
-// itself then, so that the wait ends at once.
+// context in the select that takes a place, even when one is free; the tests take every place first, so that this is
+// when it waits. With endOnWait the context ends itself then, so that the wait ends at once.
 type gateProbe struct {
 	context.Context
 	cancel    context.CancelFunc
@@ -2616,10 +2616,10 @@ func (e *mgrEnv) ghostSession(t *testing.T, id, name string) {
 	})
 }
 
-// endFixture is a store with two administrators and two accounts that are not, each with sessions, and two rows that no
-// operation on an account may remove: one that does not decode and one of taro that has ended. The clock stands still, so
-// the time of the credentials is the same after a password is set again, and a session ends only if an operation
-// removes it.
+// endFixture is a store with two administrators and two accounts that are not, each with sessions, and two rows that
+// cannot work, which an operation on an account other than taro leaves and a sweep (a login, ChangeOwnPassword)
+// removes: one that does not decode and one of taro that has ended. The clock stands still, so the time of the
+// credentials is the same after a password is set again, and a session ends only if an operation removes it.
 type endFixture struct {
 	e                         *mgrEnv
 	admin, boss, yamada, taro Account
@@ -2793,8 +2793,9 @@ func (f *endFixture) disable(t *testing.T, login string) {
 	delete(f.tokens, login)
 }
 
-// TestOperationsEndNothingWhenRefused runs the operations that end sessions with every kind of refusal, and checks that
-// the store is as it was: the rows of the accounts and of the sessions, and no commit.
+// TestOperationsEndNothingWhenRefused runs the operations that end sessions with every kind of refusal, and with a
+// Disable that has nothing to do, and checks that the store is as it was: the rows of the accounts and of the sessions,
+// and no commit.
 func TestOperationsEndNothingWhenRefused(t *testing.T) {
 	problems := func(err error) bool {
 		var errs content.Errors

@@ -639,8 +639,8 @@ func TestCompactFaults(t *testing.T) {
 	})
 }
 
-// TestCrashDuringCompaction crashes after each operation of a compaction, and checks every crash that simfs can make
-// of it: Open finds generation 1 with the old state or generation 2 with the rewritten one, never a mix.
+// TestCrashDuringCompaction crashes after each operation of a compaction, and checks the crash models that simfs.Models
+// gives: Open finds generation 1 with the old state or generation 2 with the rewritten one, never a mix.
 func TestCrashDuringCompaction(t *testing.T) {
 	withBaseBytes(t, 200)
 	rewrite := Rewrite{

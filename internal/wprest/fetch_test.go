@@ -1382,7 +1382,7 @@ func TestFetchServerErrors(t *testing.T) {
 
 func TestFetchResponseTooLarge(t *testing.T) {
 	s := newSite(t).standard()
-	// The index is 700 bytes or so.
+	// The index is about 480 bytes.
 	_, err := fetch(t, s, Options{MaxResponseBytes: 100})
 	if err == nil || err.Error() != "GET "+s.URL()+"/wp-json/?_fields="+url.QueryEscape(indexFields)+": the response is larger than 100 bytes" {
 		t.Errorf("Fetch() = %v, want that the response is larger than 100 bytes", err)

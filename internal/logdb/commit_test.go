@@ -11,7 +11,8 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
 
-// checkCrashes checks the state that each crash of fsys leaves after reopening.
+// checkCrashes checks the state after reopening of the crashes that keep, and that lose, every change that is not
+// durable.
 func checkCrashes(t *testing.T, fsys *simfs.FS, o Options, want map[string]string) {
 	t.Helper()
 	for _, m := range []simfs.Model{keepAll(fsys), loseAll} {
@@ -248,8 +249,8 @@ func TestRolloverFaults(t *testing.T) {
 	}
 }
 
-// TestCrashDuringUpdate crashes after each operation of an Update, or of a Close, and checks every crash that simfs
-// can make of it: Open never refuses, an acknowledged Update is there, and one that failed is there or not at all.
+// TestCrashDuringUpdate crashes after each operation of an Update, or of a Close, and checks the crash models that
+// simfs.Models gives: Open never refuses, an acknowledged Update is there, and one that failed is there or not at all.
 func TestCrashDuringUpdate(t *testing.T) {
 	update := func(db *DB) error {
 		return db.Update(context.Background(), func(tx *Tx) error {

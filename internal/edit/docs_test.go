@@ -348,7 +348,7 @@ func TestSaveKinds(t *testing.T) {
 	}
 }
 
-// TestSaveNormalized checks Q14-B: the bytes that the store keeps are those given if normalizing changes nothing, and
+// TestSaveNormalized checks that the bytes that the store keeps are those given if normalizing changes nothing, and
 // else those that MarshalJSON writes.
 func TestSaveNormalized(t *testing.T) {
 	ed, s := newSample(t)
@@ -723,7 +723,7 @@ func TestSaveSettings(t *testing.T) {
 		}
 	}
 
-	// A URL is normalized, so what is stored is what MarshalSettings writes of the normalized settings (Q14-B).
+	// A URL is normalized, so what is stored is what MarshalSettings writes of the normalized settings.
 	upper := replaceOnce(t, changed, `"https://example.com"`, `"HTTPS://Example.COM"`)
 	res = must(t)(ed.SaveSettings(t.Context(), op, cur.Seq, []byte(upper)))
 	var site content.Site

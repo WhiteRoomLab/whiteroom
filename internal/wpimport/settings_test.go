@@ -1879,7 +1879,8 @@ func FuzzReadSettings(f *testing.F) {
 	f.Add([]byte(`{"site":{"allowHtml":true},"blocks":{"presets":{"color":{"red":"accent","pink":""},"gradient":{"a b":"c d"},"fontSize":{},"fontFamily":{"x":"y"},"spacing":{"50":"s"}},"variants":{"rounded":"round"},"marks":{"a/b":"m"},"imageSizes":{"large":"wide"}}}`))
 	f.Add([]byte(`{"blocks":{"presets":{"shadow":{}},"variants":{"a":1,"a":null},"marks":[],"imageSizes":null}}`))
 
-	// One import serves every input: the sample site, in which the front page and the page of the posts are converted.
+	// Each input gets an import of the sample site, in which the front page, the page of the posts, the logo and the icon
+	// are converted.
 	base, err := os.ReadFile(filepath.Join("testdata", "site.xml"))
 	if err != nil {
 		f.Fatal(err)

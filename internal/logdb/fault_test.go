@@ -62,8 +62,8 @@ func checkpointOp(op simfs.Op) bool {
 }
 
 // stopsStore reports whether the fault f at op, an operation of the run c, must stop the store, so that every Update
-// returns ErrFailed: the failure of a sync of the log or of the objects, or of the undo of a commit (spec §6), or of
-// the WriteAt of the base-end of a compaction (§9). Not that of a checkpoint (§8), or of the sync of head, which only
+// returns ErrFailed: the failure of a sync of the log or of the objects, or of the undo of a commit, or of the WriteAt
+// of the base-end of a compaction (concept section 3.5). Not that of a checkpoint, or of the sync of head, which only
 // Close makes.
 func stopsStore(c *cleanRun, op simfs.Op, f namedFault) bool {
 	if end, ok := c.hooks["compact:base-end"]; ok && op.N == end-1 || len(f.faults) > 1 {

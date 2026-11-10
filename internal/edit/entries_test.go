@@ -391,7 +391,7 @@ func TestSaveRevision(t *testing.T) {
 	if now := read(t, s, content.RefEntry, entry); now.Version != entryDoc.Version || res.Version != entryDoc.Version {
 		t.Errorf("the entry is at %+v, SaveRevision() returned %+v, want %+v", now.Version, res.Version, entryDoc.Version)
 	}
-	// The bytes that were given are stored as they are, since normalizing changes nothing (Q14-B).
+	// The bytes that were given are stored as they are, since normalizing changes nothing.
 	if got := revisionData(t, s, res.Revision); string(got) != first {
 		t.Errorf("the stored revision is %s, want the bytes that were given", got)
 	}
@@ -673,8 +673,8 @@ func TestSaveRevisionTheme(t *testing.T) {
 	}
 }
 
-// TestSaveRevisionNormalized checks Q14-B for revisions: what is stored is what MarshalJSON writes if normalizing has
-// changed the revision, and the problems are located in the bytes that were given.
+// TestSaveRevisionNormalized checks, for revisions, that what is stored is what MarshalJSON writes if normalizing has
+// changed the revision, and that the problems are located in the bytes that were given.
 func TestSaveRevisionNormalized(t *testing.T) {
 	ed, s := newSample(t)
 	ids := predictIDs(t, content.RefEntry, content.RefTranslationGroup, content.RefRevision)
@@ -736,7 +736,7 @@ func (f failSummaryOf) Summary(kind content.RefKind, id string) (store.Summary, 
 }
 
 // TestSaveRevisionLookupFailure checks that a failure of the lookup of a reference fails the operation with its error and
-// not with problems of validation (Q6-A).
+// not with problems of validation.
 func TestSaveRevisionLookupFailure(t *testing.T) {
 	ed, s := newSample(t)
 	entry := newDraft(t, ed, content.TypePage, "ja")
@@ -845,9 +845,9 @@ func worksRevision(client, year string) string {
 	return `{"schemaVersion":1,"title":"A","slug":"a","fields":{"client":"` + client + `","year":` + year + `}}`
 }
 
-// TestSaveRevisionSynced checks Q7-A: a field that keeps one value in every translation that differs from the value in the
-// latest revision of another translation is a warning, which is at the field in the bytes that were given; the values are
-// not copied.
+// TestSaveRevisionSynced checks that a field that keeps one value in every translation, which differs from the value in
+// the latest revision of another translation, is a warning, which is at the field in the bytes that were given; the values
+// are not copied.
 func TestSaveRevisionSynced(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}

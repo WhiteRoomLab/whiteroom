@@ -497,7 +497,7 @@ var attacks = []sanitizeTest{
 		changes: scriptRemoved,
 	},
 	{
-		// External images are allowed (6.12).
+		// External images are allowed (6.5.4; 6.12, item 99).
 		name:    "hacked WordPress: 1x1 tracking image",
 		in:      `<img src="https://evil.example/pixel.gif?u=1" width="1" height="1" alt="" style="display:none">`,
 		want:    `<img src="https://evil.example/pixel.gif?u=1" width="1" height="1" alt="">`,

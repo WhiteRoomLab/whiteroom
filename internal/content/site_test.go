@@ -43,8 +43,8 @@ var postFields = []FieldDef{
 	{Name: "sidebar", Type: FieldBlocks},
 }
 
-// testSite returns a site with the type and the taxonomy of the example in 6.4.4 of the concept
-// (docs/06.04-entries.md), a type with productFields, and post with postFields.
+// testSite returns a site with the type (without its url and archive, which exampleSite adds) and the taxonomy of the
+// example in 6.4.4 of the concept (docs/06.04-entries.md), a type with productFields, and post with postFields.
 func testSite() *Site {
 	return &Site{
 		Name:            Localized{"ja": "株式会社〇〇", "en": "Example Inc."},

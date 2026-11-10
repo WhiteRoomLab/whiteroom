@@ -19,7 +19,7 @@ const (
 	ckpPath  = "/data/logdb/checkpoint"
 )
 
-// crc32c is the CRC of the spec, computed without the package's table.
+// crc32c is the CRC of concept section 3.5, computed without the package's table.
 func crc32c(parts ...[]byte) uint32 {
 	return crc32.Checksum(slices.Concat(parts...), crc32.MakeTable(crc32.Castagnoli))
 }
@@ -99,7 +99,7 @@ func TestErrorTexts(t *testing.T) {
 	}
 }
 
-// TestValues pins the constants of the format to the numbers of the spec.
+// TestValues pins the constants of the format to the numbers of concept section 3.5.
 func TestValues(t *testing.T) {
 	if got := crc32.Checksum([]byte("123456789"), castagnoli); got != 0xe3069283 {
 		t.Errorf("check value %#x, want the one of CRC-32C", got)

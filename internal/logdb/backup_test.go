@@ -16,8 +16,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// pairF returns a function for Update that makes the commit n of TestBackupWhileWriting: a pair of keys, an object and
-// an event, all with n.
+// pairF returns a function for Update that makes the commit n: a pair of keys, an object and an event, all with n.
 func pairF(n int) func(*Tx) error {
 	return func(tx *Tx) error {
 		v := []byte(strconv.Itoa(n))
@@ -185,7 +184,7 @@ func TestBackupCopiesCheckpointAndObjects(t *testing.T) {
 		}
 		closeDB(t, copyDB)
 	}
-	// Only the files of the store are copied, with their modes.
+	// Only the files of the store are copied.
 	if got := fileNames(dst); len(got) != len(fileNames(fsys)) {
 		t.Errorf("files of the copy %v, of the store %v", got, fileNames(fsys))
 	}

@@ -86,7 +86,7 @@ func makeShortcodeImport() (*Import, shortcodeIDs, error) {
 		imp.AddRef(a.kind, id, a.ref)
 		ids[a.id] = id
 	}
-	// Not imported, but with an ID, as the plan gives one to every attachment.
+	// Not imported, but with an ID: the attachment 44, and the forms 32 and 35.
 	for _, post := range []int64{44, 32, 35} {
 		id, err := imp.IDs.Assign(PostObject(e.Post(post)), content.RefMedia)
 		if err != nil {
