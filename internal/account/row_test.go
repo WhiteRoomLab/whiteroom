@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// jsonOf returns the JSON that encodeRow writes for r.
 func jsonOf(t *testing.T, r row) string {
 	t.Helper()
 	b, err := encodeRow(r)
@@ -200,7 +199,6 @@ func TestDecodeRowRejects(t *testing.T) {
 	password := `"password":"` + testPasswordHash(0xab) + `"`
 	token := `"token":{"purpose":"reset","hash":"` + testTokenHash(0xcd) + `",` + expiresAt + `}`
 
-	// edit returns the JSON of the full row with new in place of old.
 	edit := func(old, new string) string { return replaceOnce(t, full, old, new) }
 	// with returns the JSON that encodeRow writes for the full row after f: a row that is not valid, in the one form.
 	with := func(f func(*row)) string {
@@ -352,9 +350,7 @@ func TestDecodeRowAccepts(t *testing.T) {
 	token := `"token":{"purpose":"reset","hash":"` + testTokenHash(0xcd) + `",` + expiresAt + `}`
 	unassigned := string(unassignedFrom(t, 0x1ade))
 
-	// edit returns the JSON of the full row with new in place of old.
 	edit := func(old, new string) string { return replaceOnce(t, full, old, new) }
-	// with returns the full row after f.
 	with := func(f func(*row)) row {
 		r := testRow()
 		f(&r)

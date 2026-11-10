@@ -148,7 +148,6 @@ func wellFormed(v Value) bool {
 	return false
 }
 
-// depth returns the number of levels of arrays in v.
 func depth(v Value) int {
 	if v.Kind != Array {
 		return 0

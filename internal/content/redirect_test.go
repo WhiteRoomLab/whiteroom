@@ -154,7 +154,6 @@ func TestRedirectValidate(t *testing.T) {
 		return "/to: invalid target " + strconv.Quote(s) + ": use the ID of an entry, a term, an author or a medium, " +
 			`a path starting with "/", or an http or https URL`
 	}
-	// redirect returns x changed by f.
 	redirect := func(x Redirect, f func(x *Redirect)) Redirect {
 		f(&x)
 		return x

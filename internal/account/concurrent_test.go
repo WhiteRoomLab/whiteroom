@@ -19,7 +19,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// mgrRunTogether starts the functions at the same time and returns what each returned.
 func mgrRunTogether(calls ...func() error) []error {
 	errs := make([]error, len(calls))
 	start := make(chan struct{})
@@ -396,7 +395,6 @@ func mgrInvariants(s *store.Store) string {
 	return ""
 }
 
-// sessionRounds is how many times the races of logins are run: 25, and a few for -short.
 func sessionRounds() int {
 	if testing.Short() {
 		return 5

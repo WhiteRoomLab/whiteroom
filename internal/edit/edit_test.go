@@ -168,7 +168,6 @@ func putSite(t *testing.T, s *store.Store, dir string) {
 	}
 }
 
-// sampleFile returns the file name of the sample site.
 func sampleFile(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(sampleDir, filepath.FromSlash(name)))

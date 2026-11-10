@@ -59,7 +59,6 @@ func (bs benchSet) revisions() int {
 	return bs.entries + bs.second
 }
 
-// benchKind is a kind of the documents of the sets.
 type benchKind uint8
 
 const (
@@ -161,7 +160,6 @@ type benchSave struct {
 	events [][]byte
 }
 
-// benchUsers is the number of the users who save.
 const benchUsers = 10
 
 func benchUser(n int) string {
@@ -190,7 +188,6 @@ func (bs benchSet) save(r *rand.Rand, ref benchRef) benchSave {
 	return sv
 }
 
-// loadSave makes the save ref of the load of bs.
 func (bs benchSet) loadSave(ref benchRef) benchSave {
 	return bs.save(benchRand(benchStreamSet, ref.save), ref)
 }
@@ -266,7 +263,6 @@ func benchEntryJSON(r *rand.Rand, index int, rev string) []byte {
 	return benchPad(b, benchSize(r, "entry"))
 }
 
-// benchTermJSON returns the JSON of the term index.
 func benchTermJSON(r *rand.Rand, index int) []byte {
 	taxonomy := "category"
 	if index%2 == 0 {

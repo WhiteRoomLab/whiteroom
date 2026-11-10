@@ -27,7 +27,6 @@ func limitedClassic(t *testing.T, imp *Import, text string) (*bodyConv, *BodyRes
 	return limitedClassicItem(t, imp, bodyItem(text))
 }
 
-// limitedClassicItem is limitedClassic for the item.
 func limitedClassicItem(t *testing.T, imp *Import, item *wxr.Item) (*bodyConv, *BodyResult) {
 	t.Helper()
 	start := time.Now()

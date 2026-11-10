@@ -34,7 +34,6 @@ func equalInfo(a, b Info) bool {
 		a.Animated == b.Animated && a.Format == b.Format && a.ICC == b.ICC && slices.Equal(a.Warnings, b.Warnings)
 }
 
-// with returns info with icc and warnings.
 func (info Info) with(icc string, warnings ...string) Info {
 	info.ICC, info.Warnings = icc, warnings
 	return info

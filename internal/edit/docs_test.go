@@ -260,7 +260,6 @@ func TestCreateErrors(t *testing.T) {
 	}
 }
 
-// TestSave checks the versions that Save makes.
 func TestSave(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -540,7 +539,6 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// TestDeleteErrors checks the other errors of Delete.
 func TestDeleteErrors(t *testing.T) {
 	const id = "rdr_01JBD3A4B5C6D7E8F9G0H1J2K3"
 	user := Op{By: userID}
@@ -685,7 +683,6 @@ func TestDeleteUsedBySettings(t *testing.T) {
 	}
 }
 
-// TestSaveSettings checks the versions that SaveSettings makes.
 func TestSaveSettings(t *testing.T) {
 	ed, s := newSample(t)
 	op := Op{By: userID}
@@ -788,7 +785,6 @@ func TestSaveSettingsErrors(t *testing.T) {
 	}
 }
 
-// TestNoSettings checks an Editor on a store that has no settings document.
 func TestNoSettings(t *testing.T) {
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {

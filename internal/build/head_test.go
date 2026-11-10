@@ -65,7 +65,6 @@ func jpegVariant(w, h int) imaging.Variant {
 	return imaging.Variant{Width: w, Height: h, Format: mediafile.JPEG}
 }
 
-// headLines returns the lines of the head of the page at path.
 func headLines(t *testing.T, b *builder, path string) []string {
 	t.Helper()
 	p := pageAt(b, path)
@@ -75,7 +74,6 @@ func headLines(t *testing.T, b *builder, path string) []string {
 	return strings.Split(string(b.head(p)), "\n")
 }
 
-// checkHeads checks the lines of the heads of the pages of b by path.
 func checkHeads(t *testing.T, b *builder, want map[string][]string) {
 	t.Helper()
 	for _, path := range slices.Sorted(maps.Keys(want)) {
@@ -140,7 +138,6 @@ func TestHead(t *testing.T) {
 	siteImage := []string{
 		ogLine("og:image", ogp), ogLine("og:image:width", "1200"), ogLine("og:image:height", "630"), largeLine,
 	}
-	// lines returns the lines of groups, one after another.
 	lines := func(groups ...[]string) []string { return slices.Concat(groups...) }
 	const enPost = site + "/en/2026/10/25/new-service/"
 	sameAs := `"sameAs":["https://x.com/example","https://example.com/","https://example.com/%E8%91%97%E8%80%85/"]`

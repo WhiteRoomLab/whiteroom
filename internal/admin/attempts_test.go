@@ -76,13 +76,11 @@ func testClient(i int) netip.Prefix {
 	return clientPrefix(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}))
 }
 
-// fresh returns a client that has not been used.
 func (h *harness) fresh() netip.Prefix {
 	h.clients++
 	return testClient(1000000 + h.clients)
 }
 
-// freshName returns a login name that has not been used.
 func (h *harness) freshName() [32]byte {
 	h.names++
 	return testName(1000000 + h.names)

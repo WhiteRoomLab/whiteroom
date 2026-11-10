@@ -51,7 +51,6 @@ func (x wxrAuthor) xml() string {
 	return b.String()
 }
 
-// wxrPost is an item to write into a WXR.
 type wxrPost struct {
 	id                   int
 	typ, status, creator string // "" for post and publish
@@ -183,7 +182,6 @@ func checkAuthors(t *testing.T, imp *Import, site *content.Site, authors []conte
 	}
 }
 
-// authorID returns the ID of the profile of the user with the login.
 func authorID(t *testing.T, imp *Import, login string) string {
 	t.Helper()
 	_, id, ok := imp.IDs.Lookup(UserObject(login))
@@ -193,7 +191,6 @@ func authorID(t *testing.T, imp *Import, login string) string {
 	return id
 }
 
-// profileOf returns the profile of the user with the login.
 func profileOf(t *testing.T, imp *Import, authors []content.AuthorProfile, login string) content.AuthorProfile {
 	t.Helper()
 	id := authorID(t, imp, login)

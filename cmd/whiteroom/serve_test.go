@@ -20,7 +20,6 @@ import (
 
 const htmlType = "text/html; charset=utf-8"
 
-// chanWriter sends each Write on its channel.
 type chanWriter chan string
 
 func (w chanWriter) Write(p []byte) (int, error) {

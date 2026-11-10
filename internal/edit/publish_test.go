@@ -732,7 +732,6 @@ func TestUnpublish(t *testing.T) {
 	})
 }
 
-// TestArchive makes entries archived.
 func TestArchive(t *testing.T) {
 	op := Op{By: userID}
 
@@ -1278,7 +1277,6 @@ func TestPublishConcurrent(t *testing.T) {
 	}
 }
 
-// TestPublishNoSettings checks the operations on a store that has no settings.
 func TestPublishNoSettings(t *testing.T) {
 	s := newStore(t)
 	ed := testEditor(t, s)
@@ -1316,7 +1314,6 @@ func postRevision(t *testing.T, old, new string) string {
 	return replaceOnce(t, string(sampleFile(t, revisionName(postJARev))), old, new)
 }
 
-// publishNext saves data as the next revision of the entry and publishes it.
 func publishNext(t *testing.T, ed *Editor, s *store.Store, op Op, entry, data string) (Result, error) {
 	t.Helper()
 	saved := saveRevision(t, ed, s, entry, data)

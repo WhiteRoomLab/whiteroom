@@ -34,7 +34,6 @@ func openSite(t *testing.T, dir string) source {
 	return openSiteWith(t, dir, os.DirFS(themeDir))
 }
 
-// openSiteWith opens the site directory dir with the theme th.
 func openSiteWith(t *testing.T, dir string, th fs.FS) source {
 	t.Helper()
 	d, err := sitedir.Open(dir)
@@ -45,13 +44,11 @@ func openSiteWith(t *testing.T, dir string, th fs.FS) source {
 	return source{Dir: d, theme: th}
 }
 
-// openSample opens the sample site as the Source of an import.
 func openSample(t *testing.T) source {
 	t.Helper()
 	return openSite(t, sampleDir)
 }
 
-// newStore creates a store in a temporary directory.
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
@@ -111,7 +108,6 @@ func readIndex(t *testing.T, tx *store.Tx) indexState {
 	return st
 }
 
-// indexOf returns what the index of s answers.
 func indexOf(t *testing.T, s *store.Store) indexState {
 	t.Helper()
 	var st indexState
@@ -125,7 +121,6 @@ func indexOf(t *testing.T, s *store.Store) indexState {
 	return st
 }
 
-// sameIndex fails the test if the two states of the index differ.
 func sameIndex(t *testing.T, what string, got, want indexState) {
 	t.Helper()
 	if got.Last != want.Last {
@@ -379,7 +374,6 @@ func siteFiles(t *testing.T, dir string) map[string]string {
 	return files
 }
 
-// sameFiles fails the test if the files got are not the files want.
 func sameFiles(t *testing.T, got, want map[string]string) {
 	t.Helper()
 	for _, name := range slices.Sorted(maps.Keys(want)) {

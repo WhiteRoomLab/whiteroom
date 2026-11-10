@@ -102,7 +102,6 @@ func place(t testing.TB, s, sub string, nth int) Pos {
 	return posAt(s, idx)
 }
 
-// firstDiff describes where got and want differ.
 func firstDiff(got, want []byte) string {
 	g, w := strings.Split(string(got), "\n"), strings.Split(string(want), "\n")
 	for i := 0; i < min(len(g), len(w)); i++ {

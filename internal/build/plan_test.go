@@ -14,7 +14,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
-// pageAt returns the page of b at path, or nil.
 func pageAt(b *builder, path string) *page {
 	for _, pg := range b.pages {
 		if pg.path == path {
@@ -24,7 +23,6 @@ func pageAt(b *builder, path string) *page {
 	return nil
 }
 
-// outputAt returns the output of b at path, or nil.
 func outputAt(b *builder, path string) *siteplan.Output {
 	for i := range b.outputs {
 		if b.outputs[i].Path == path {
@@ -47,7 +45,6 @@ func outputFiles(t *testing.T, b *builder) map[string]string {
 	return files
 }
 
-// entryIDs returns the IDs of es.
 func entryIDs(es []*entryDoc) []string {
 	ids := make([]string, len(es))
 	for i, d := range es {

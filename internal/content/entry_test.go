@@ -174,13 +174,11 @@ func TestEntryUnmarshalJSONError(t *testing.T) {
 }
 
 func TestEntryValidate(t *testing.T) {
-	// entry returns aboutPageEntry changed by f.
 	entry := func(f func(e *Entry)) Entry {
 		e := aboutPageEntry
 		f(&e)
 		return e
 	}
-	// scheduled returns scheduledEntry changed by f.
 	scheduled := func(f func(e *Entry)) Entry {
 		e := scheduledEntry
 		f(&e)

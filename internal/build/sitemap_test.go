@@ -60,7 +60,6 @@ func readSitemap(t *testing.T, dir, name string) []string {
 	return urls
 }
 
-// mustWriteSitemap writes the sitemap of b into a new directory, which it returns.
 func mustWriteSitemap(t *testing.T, b *builder) string {
 	t.Helper()
 	dir, pub := newPublic(t)

@@ -258,7 +258,6 @@ func benchClose(t *testing.T, s *Store, c *vfs.Counter) int64 {
 	return int64(d)
 }
 
-// count sets the counts of the result to those of c.
 func (r *benchResult) count(c *vfs.Counter) {
 	counts := c.Counts()
 	r.Counts = &counts
@@ -847,7 +846,6 @@ type benchMount struct {
 	Point, Device, Type, Options string
 }
 
-// benchSettings are the settings of the benchmarks.
 type benchSettings struct {
 	Seed, Runs                              int
 	Backends                                map[string]*benchOptions
@@ -1044,7 +1042,6 @@ var (
 	})
 )
 
-// benchMetrics returns the rows of the table of bs.
 func benchMetrics(bs benchSet) []benchMetric {
 	disk := func(f func(d benchDisk) int64, scale float64) func(benchSet, benchResult) (float64, bool) {
 		return benchOf(func(r benchResult) (float64, bool) {
@@ -1141,7 +1138,6 @@ type benchTable struct {
 	Rows []benchRow
 }
 
-// benchSummary returns the table of each set of results.
 func benchSummary(results []benchResult, sets []benchSet) []benchTable {
 	var tables []benchTable
 	for _, bs := range sets {

@@ -36,12 +36,10 @@ func buildSource(t *testing.T) *memSource {
 	return src
 }
 
-// buildOptions returns the options to build src into out with the cache directory cache and workers.
 func buildOptions(src Source, out, cache string, workers int) Options {
 	return Options{Source: src, Out: out, CacheDir: cache, Workers: workers}
 }
 
-// mustBuild builds src into out with the cache directory cache and workers, and returns the result, failing on errors.
 func mustBuild(t *testing.T, src Source, out, cache string, workers int) *Result {
 	t.Helper()
 	res, err := Build(t.Context(), buildOptions(src, out, cache, workers))

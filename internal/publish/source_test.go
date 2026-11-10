@@ -32,7 +32,6 @@ const (
 	userID    = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
 )
 
-// siteKinds are the kinds of the documents of a site directory.
 var siteKinds = []content.RefKind{
 	content.RefEntry, content.RefTerm, content.RefMedia, content.RefAuthor, content.RefMenu, content.RefForm,
 	content.RefRedirect,
@@ -68,7 +67,6 @@ func openSite(t *testing.T, dir string) siteDir {
 	return siteDir{Dir: d, theme: exampleTheme(t)}
 }
 
-// newStore creates a store in a temporary directory.
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
@@ -89,7 +87,6 @@ func importSample(t *testing.T) *store.Store {
 	return s
 }
 
-// schemaFile returns the schema file of the sample site.
 func schemaFile(t *testing.T) content.SiteFile {
 	t.Helper()
 	return content.SiteFile{Name: "site/schema.yaml", Data: readFile(t, filepath.Join(sampleDir, "site", "schema.yaml"))}
@@ -266,7 +263,6 @@ func publishedRevisions(t *testing.T, entries map[string]content.SiteFile) []str
 	return ids
 }
 
-// originalHashes returns the hashes of the originals of the media in media.
 func originalHashes(t *testing.T, media map[string]content.SiteFile) []string {
 	t.Helper()
 	var hashes []string

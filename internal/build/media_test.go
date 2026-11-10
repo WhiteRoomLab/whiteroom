@@ -59,7 +59,6 @@ func gradient(w, h int) *image.RGBA {
 	return m
 }
 
-// encodeImage returns what encode writes.
 func encodeImage(t testing.TB, encode func(w io.Writer) error) []byte {
 	t.Helper()
 	var b bytes.Buffer

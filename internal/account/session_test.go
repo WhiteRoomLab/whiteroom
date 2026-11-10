@@ -75,7 +75,6 @@ func (e *mgrEnv) setRawSession(t *testing.T, key, data string) {
 	}
 }
 
-// sessionOf returns the stored row of the session with the token, and whether there is one.
 func (e *mgrEnv) sessionOf(t *testing.T, token string) (sessionRow, bool) {
 	t.Helper()
 	data, ok := e.rawSessions(t)[sessKey(token)]
@@ -89,7 +88,6 @@ func (e *mgrEnv) sessionOf(t *testing.T, token string) (sessionRow, bool) {
 	return s, true
 }
 
-// hasSession reports whether the token has a stored row.
 func (e *mgrEnv) hasSession(t *testing.T, token string) bool {
 	t.Helper()
 	_, ok := e.rawSessions(t)[sessKey(token)]
@@ -378,7 +376,6 @@ func TestLoginFailures(t *testing.T) {
 	})
 }
 
-// TestPasswordCompared checks PasswordCompared on the errors it is asked about.
 func TestPasswordCompared(t *testing.T) {
 	boom := errors.New("boom")
 	for _, tt := range []struct {
@@ -1999,7 +1996,6 @@ func (p *gateProbe) Done() <-chan struct{} {
 	return p.Context.Done()
 }
 
-// waited reports whether the gate has waited on the probe.
 func (p *gateProbe) waited() bool {
 	select {
 	case <-p.reached:
@@ -2645,7 +2641,6 @@ func newEndFixture(t *testing.T) *endFixture {
 	return f
 }
 
-// idOf returns the ID of the account with the login name.
 func (f *endFixture) idOf(login string) string {
 	return map[string]string{"admin": f.admin.ID, "boss": f.boss.ID, "yamada": f.yamada.ID, "taro": f.taro.ID}[login]
 }
@@ -3729,7 +3724,6 @@ func (e *mgrEnv) useHash(t *testing.T, id, password string, iterations int) stri
 	return hash
 }
 
-// iterationsOf returns the iteration count of the stored hash of the account id.
 func (e *mgrEnv) iterationsOf(t *testing.T, id string) int {
 	t.Helper()
 	n, _, _, err := parseHash(e.row(t, id).Password)

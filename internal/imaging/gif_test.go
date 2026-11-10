@@ -91,7 +91,6 @@ func rendered(w, h int, frame *image.Paletted) *image.NRGBA {
 	return out
 }
 
-// nrgbaOf returns the pixels of m as NRGBA.
 func nrgbaOf(m image.Image) *image.NRGBA {
 	b := m.Bounds()
 	out := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))

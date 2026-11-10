@@ -45,13 +45,11 @@ func fewModels(p []simfs.Pending, subsets int) []simfs.Model {
 	return crashModels(p, subsets)
 }
 
-// tableKey is a key of a table.
 type tableKey struct {
 	table uint32
 	key   string
 }
 
-// keyValue is a key of a table with its value.
 type keyValue struct {
 	tableKey
 	value string
@@ -95,7 +93,6 @@ const (
 	stepClose
 )
 
-// step is a step of a scenario.
 type step struct {
 	name    string
 	kind    stepKind
@@ -188,7 +185,6 @@ func (m *model) clone() *model {
 	return &n
 }
 
-// after returns the model after s.
 func (m *model) after(s *step) *model {
 	switch s.kind {
 	case stepUpdate:
@@ -681,7 +677,6 @@ func updateStep(name string, u *update) step {
 	return step{name: name, kind: stepUpdate, update: u}
 }
 
-// matrixScenarios are the scenarios of the matrices.
 func matrixScenarios() []scenario {
 	return []scenario{commitsScenario(), compactionScenario(), tornTailScenario(), tornSegmentScenario()}
 }

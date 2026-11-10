@@ -16,7 +16,6 @@ import (
 	"unicode/utf8"
 )
 
-// strs returns all the strings in ex.
 func strs(ex *Export) []string {
 	ch := ex.Channel
 	all := []string{ex.Version, ex.WordPress, ch.Title, ch.Link, ch.Description, ch.PubDate, ch.Language, ch.Generator, ch.BaseSiteURL, ch.BaseBlogURL}

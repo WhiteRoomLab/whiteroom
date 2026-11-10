@@ -131,7 +131,6 @@ func mediaText(t *testing.T, m content.Media) string {
 	return string(data)
 }
 
-// hasOriginal reports whether s has the original with hash.
 func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 	t.Helper()
 	f, err := s.OpenOriginal(hash)
@@ -146,7 +145,6 @@ func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 	return false
 }
 
-// readOriginal returns the original with hash, as the store gives it.
 func readOriginal(t *testing.T, s *store.Store, hash string) []byte {
 	t.Helper()
 	f, err := s.OpenOriginal(hash)

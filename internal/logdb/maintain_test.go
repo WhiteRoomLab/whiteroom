@@ -321,7 +321,6 @@ func TestMaintainCompactAndGC(t *testing.T) {
 	}
 }
 
-// reopenNoHook is reopen with o without its hook.
 func reopenNoHook(t *testing.T, fsys vfs.FS, o Options) *DB {
 	t.Helper()
 	o.Hook = nil
@@ -535,7 +534,6 @@ func TestCrashDuringGC(t *testing.T) {
 	t.Logf("%d crash points, %d crashes", n, crashes)
 }
 
-// oldCommit returns the body of a commit of an old generation.
 func oldCommit(seq uint64) []byte {
 	return appendCommit(nil, seq, []op{{code: opPut, table: 1, key: "old", value: []byte("x")}})
 }

@@ -213,7 +213,6 @@ func TestNewErrors(t *testing.T) {
 	}
 }
 
-// TestCurrentUnreadable checks the error for an output directory in which current cannot be read.
 func TestCurrentUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads any directory")

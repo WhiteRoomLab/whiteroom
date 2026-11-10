@@ -556,7 +556,6 @@ func TestRefChangeCost(t *testing.T) {
 	})
 }
 
-// count returns the number of the calls that are c.
 func count(calls []string, c string) int {
 	return len(slices.DeleteFunc(slices.Clone(calls), func(x string) bool { return x != c }))
 }

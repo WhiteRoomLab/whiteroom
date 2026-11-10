@@ -52,7 +52,6 @@ func notAssigned(r rune) string {
 	return fmt.Sprintf("contains %U, which is not assigned in Unicode %s", r, unicode.Version)
 }
 
-// problem is the path and the message of one of the problems of an Input or a Change.
 type problem struct{ path, msg string }
 
 func assertProblems(t *testing.T, got content.Errors, want ...problem) {
@@ -74,7 +73,6 @@ func assertProblems(t *testing.T, got content.Errors, want ...problem) {
 	}
 }
 
-// validInput returns an Input with nothing wrong in it.
 func validInput() Input {
 	return Input{Login: "yamada", Name: "山田 太郎", Email: "yamada@example.com", Role: RoleEditor}
 }

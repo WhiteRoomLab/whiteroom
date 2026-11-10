@@ -145,7 +145,6 @@ func TestVectors(t *testing.T) {
 	}
 }
 
-// checkVector returns what is inconsistent in v.
 func checkVector(v vector) []error {
 	var errs []error
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }

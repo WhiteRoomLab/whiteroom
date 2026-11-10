@@ -46,7 +46,6 @@ func buildSample(t *testing.T, out, cache string) (stdout, stderr string) {
 	return stdout, stderr
 }
 
-// currentOf returns the release that out/current points to.
 func currentOf(t *testing.T, out string) string {
 	t.Helper()
 	target, err := os.Readlink(filepath.Join(out, "current"))
@@ -171,7 +170,6 @@ func failingBuild(t *testing.T, what string, ctx context.Context, want string, a
 	}
 }
 
-// checkMissing checks that name does not exist.
 func checkMissing(t *testing.T, what, name string) {
 	t.Helper()
 	if _, err := os.Lstat(name); !errors.Is(err, fs.ErrNotExist) {

@@ -23,7 +23,6 @@ type errorCase struct {
 	msg  string
 }
 
-// where returns the place that the case expects.
 func (tt errorCase) where(t testing.TB) Pos {
 	t.Helper()
 	s := strings.TrimPrefix(tt.in, "\xef\xbb\xbf")

@@ -71,7 +71,6 @@ func newRig(t *testing.T) *rig {
 	return &rig{Publisher: p, t: t, s: s, opts: opts}
 }
 
-// runner is a Publisher that runs.
 type runner struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -155,7 +154,6 @@ func (h *hold) lastBefore(n int) *Build {
 	return h.lasts[n-1]
 }
 
-// await waits for the held build.
 func (h *hold) await(t *testing.T) {
 	t.Helper()
 	select {
@@ -390,7 +388,6 @@ func quietPublisher(t *testing.T) *Publisher {
 	return p
 }
 
-// reasons returns the reasons of the requests.
 func reasons(requests []Request) []string {
 	var got []string
 	for _, q := range requests {
@@ -1294,7 +1291,6 @@ func TestSnapshotFailure(t *testing.T) {
 	}
 }
 
-// TestNew checks the errors of New.
 func TestNew(t *testing.T) {
 	t.Parallel()
 	good := Options{Store: newStore(t), Schema: schemaFile(t), Theme: exampleTheme(t), Out: filepath.Join(t.TempDir(), "out"), CacheDir: t.TempDir()}

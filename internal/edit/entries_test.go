@@ -37,7 +37,6 @@ const (
 	testNowJST = "2026-11-07T19:00:00+09:00"
 )
 
-// lines returns the lines of the problems es.
 func lines(es content.Errors) []string {
 	var out []string
 	for _, e := range es {
@@ -52,7 +51,6 @@ func newDraft(t *testing.T, ed *Editor, typ, language string) string {
 	return must(t)(ed.CreateEntry(t.Context(), Op{By: userID}, typ, language)).ID
 }
 
-// revisionData returns the JSON of the revision id.
 func revisionData(t *testing.T, s *store.Store, id string) []byte {
 	t.Helper()
 	var data []byte
@@ -67,7 +65,6 @@ func revisionData(t *testing.T, s *store.Store, id string) []byte {
 	return data
 }
 
-// summaryOf returns the summary of the entry id.
 func summaryOf(t *testing.T, s *store.Store, id string) store.Summary {
 	t.Helper()
 	var sum store.Summary
@@ -98,7 +95,6 @@ func revisionIDs(t *testing.T, s *store.Store, id string) []string {
 	return ids
 }
 
-// maxNumber returns the largest number of the entries of s.
 func maxNumber(t *testing.T, s *store.Store) int {
 	t.Helper()
 	var n int
@@ -275,7 +271,6 @@ func TestCreateEntryErrors(t *testing.T) {
 	}
 }
 
-// TestCreateEntryNoSettings checks the entry of a store that has no settings.
 func TestCreateEntryNoSettings(t *testing.T) {
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {

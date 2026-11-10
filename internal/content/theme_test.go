@@ -11,7 +11,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/yaml"
 )
 
-// everyThemeYAML is a settings file of a theme with every item.
 const everyThemeYAML = `# Every item of the settings file of a theme.
 schemaVersion: 1
 defaultLanguage: ja

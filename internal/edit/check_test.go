@@ -31,7 +31,6 @@ func newParity(t *testing.T) *parity {
 	return &parity{t: t, ed: ed, s: s, dir: copySite(t), base: snapshot(t, s)}
 }
 
-// write puts data into the file name of the copy.
 func (p *parity) write(name, data string) {
 	p.t.Helper()
 	if err := os.WriteFile(filepath.Join(p.dir, filepath.FromSlash(name)), []byte(data), 0o644); err != nil {
@@ -60,7 +59,6 @@ func (p *parity) seq(kind content.RefKind, id string) int64 {
 	return read(p.t, p.s, kind, id).Seq
 }
 
-// predictIDsAt is predictIDs for a clock that is at now.
 func predictIDsAt(t *testing.T, now time.Time, kinds ...content.RefKind) []string {
 	t.Helper()
 	e := testEditor(t, nil)

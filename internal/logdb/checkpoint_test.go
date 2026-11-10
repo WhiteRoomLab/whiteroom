@@ -42,7 +42,6 @@ func changeF(i int) func(*Tx) error {
 	}
 }
 
-// ckpOf returns the header of the checkpoint of the store in fsys.
 func ckpOf(t *testing.T, fsys vfs.FS) ckpHeader {
 	t.Helper()
 	h, _, err := parseCheckpoint(path.Join(fsys.Name(), "checkpoint"), fileData(t, fsys, "checkpoint"))
@@ -81,7 +80,6 @@ func kv(k, v string) []byte {
 	return slices.Concat(uv(uint64(len(k))), []byte(k), []byte{envPlain}, uv(uint64(len(v))), []byte(v))
 }
 
-// ckpTemps returns the temporary files of checkpoints in fsys.
 func ckpTemps(fsys *simfs.FS) []string {
 	var names []string
 	fsys.Walk(func(p string, _ []byte) {

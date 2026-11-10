@@ -258,7 +258,6 @@ func (d *diffStore) removeCheckpoint(t *testing.T) {
 	}
 }
 
-// update runs u in an Update of d.
 func (d *diffStore) update(t *testing.T, u diffUpdate) diffLines {
 	l := d.lines()
 	err := d.s.Update(t.Context(), func(tx *Tx) error {
@@ -282,7 +281,6 @@ func (d *diffStore) update(t *testing.T, u diffUpdate) diffLines {
 	return l
 }
 
-// lines returns lines for d to add to.
 func (d *diffStore) lines() diffLines {
 	if d.shown == nil {
 		d.shown = map[Version]string{}
@@ -452,7 +450,6 @@ func line(lines []string, i int) string {
 	return "(no line)"
 }
 
-// update runs u on each store.
 func (r *diffRun) update(step string, u diffUpdate) {
 	r.t.Helper()
 	l := r.compare(step, func(d *diffStore) diffLines { return d.update(r.t, u) })

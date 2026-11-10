@@ -36,7 +36,6 @@ func jsonLegacy(n int, html, reason string) string {
 	return fmt.Sprintf(`{"type":"legacy","id":"<%d>","attrs":{"html":%s,"reason":%s}}`, n, strconv.Quote(html), strconv.Quote(reason))
 }
 
-// jsonItem is the JSON of a list item with the blocks.
 func jsonItem(blocks ...string) string {
 	return `{"type":"listItem","content":` + jsonList(blocks...) + `}`
 }
@@ -138,7 +137,6 @@ func wpBlock(name, attrs, markup string) string {
 	return fmt.Sprintf("<!-- wp:%s %s-->\n%s\n<!-- /wp:%s -->", name, attrs, markup, name)
 }
 
-// wpPara is a paragraph of WordPress with the text.
 func wpPara(text string) string { return wpBlock("paragraph", "", "<p>"+text+"</p>") }
 
 const lostSuffix = "; whiteroom has no such settings"

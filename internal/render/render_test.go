@@ -151,7 +151,6 @@ func newRenderer(t testing.TB, th *theme.Theme, language, base string, res Resol
 	return New(tr, res)
 }
 
-// warningStrings returns the String of each of ws.
 func warningStrings(ws []Warning) []string {
 	var s []string
 	for _, w := range ws {

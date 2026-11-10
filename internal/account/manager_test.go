@@ -131,7 +131,6 @@ func (e *mgrEnv) add(t *testing.T, login string, role Role) Account {
 	return a
 }
 
-// rows returns the rows as they are stored.
 func (e *mgrEnv) rows(t *testing.T) []row {
 	t.Helper()
 	var rows []row
@@ -146,7 +145,6 @@ func (e *mgrEnv) rows(t *testing.T) []row {
 	return rows
 }
 
-// row returns the stored row of the account id.
 func (e *mgrEnv) row(t *testing.T, id string) row {
 	t.Helper()
 	rows := e.rows(t)
@@ -280,7 +278,6 @@ func mgrRow(n int, login string, role Role) row {
 	}
 }
 
-// putAuthor puts the author profile id into the store.
 func (e *mgrEnv) putAuthor(t *testing.T, id string) {
 	t.Helper()
 	data := `{"schemaVersion": 1, "id": "` + id + `", "slug": "` + strings.ToLower(id[len(id)-4:]) + `"}`
@@ -299,7 +296,6 @@ const (
 	mgrOtherAuthorID = "aut_01JB8Y6T2RG7M4XK9P2D5W8NQ4"
 )
 
-// mgrProblems checks that err is content.Errors with the problems.
 func mgrProblems(t *testing.T, err error, want ...problem) {
 	t.Helper()
 	var errs content.Errors
@@ -310,7 +306,6 @@ func mgrProblems(t *testing.T, err error, want ...problem) {
 	assertProblems(t, errs, want...)
 }
 
-// mgrError checks that err wraps is and has the text.
 func mgrError(t *testing.T, err, is error, text string) {
 	t.Helper()
 	switch {
@@ -370,7 +365,6 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// mgrCountingReader reads from r and counts the bytes that it gives.
 type mgrCountingReader struct {
 	r io.Reader
 	n atomic.Int64
@@ -913,7 +907,6 @@ func TestInviteProblems(t *testing.T) {
 	}
 }
 
-// mgrFindID returns the ID of the account with the login.
 func mgrFindID(t *testing.T, e *mgrEnv, login string) string {
 	t.Helper()
 	a, err := e.m.Find(t.Context(), login)

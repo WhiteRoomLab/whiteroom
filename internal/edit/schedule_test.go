@@ -1857,7 +1857,6 @@ func TestPublishScheduledConcurrent(t *testing.T) {
 	}
 }
 
-// TestScheduleNoSettings checks the operations on a store that has no settings.
 func TestScheduleNoSettings(t *testing.T) {
 	s := newStore(t)
 	ed := testEditor(t, s)

@@ -16,7 +16,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
-// exampleFS returns the files of the sample theme in a MapFS.
 func exampleFS(tb testing.TB) fstest.MapFS {
 	tb.Helper()
 	dir := os.DirFS(exampleDir)

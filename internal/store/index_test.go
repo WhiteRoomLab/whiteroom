@@ -145,7 +145,6 @@ type indexDoc struct {
 	data []byte
 }
 
-// A few IDs for the tests of the index.
 const (
 	medium2    = "med_01JE0000000000000000000002"
 	term2      = "trm_01JE0000000000000000000002"

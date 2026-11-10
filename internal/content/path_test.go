@@ -81,7 +81,6 @@ func TestEntryPath(t *testing.T) {
 		s.Types[i].URL = rule
 		return s
 	}
-	// edit returns testSite changed by f.
 	edit := func(f func(s *Site)) *Site {
 		s := testSite()
 		f(s)
@@ -104,7 +103,6 @@ func TestEntryPath(t *testing.T) {
 	english := Entry{ID: testEnglishPage, Number: 4, Type: TypePage, Language: "en"}
 	works := Entry{ID: testEntryID, Number: 5, Type: "works", Language: "ja"}
 	worksRev := Revision{Slug: "example-corporate-site"}
-	// entry returns e changed by f, and revision returns r changed by f.
 	entry := func(e Entry, f func(e *Entry)) Entry {
 		f(&e)
 		return e
@@ -375,7 +373,6 @@ func TestTermPath(t *testing.T) {
 	// mini is a term of series, which is hierarchical, and web one of works_category, which is not.
 	mini := Term{ID: testSeriesChild, Taxonomy: "series", Language: "ja", Slug: "mini", Parent: testSeries}
 	web := Term{ID: testWorksTerm, Taxonomy: "works_category", Language: "ja", Slug: "web"}
-	// term returns x changed by f.
 	term := func(x Term, f func(x *Term)) Term {
 		f(&x)
 		return x
@@ -706,7 +703,6 @@ func FuzzEntryPath(f *testing.F) {
 	})
 }
 
-// unmarshalTestdata reads the testdata file name as a T.
 func unmarshalTestdata[T any](t *testing.T, name string) T {
 	t.Helper()
 	var v T

@@ -251,7 +251,6 @@ func TestLoginAccounting(t *testing.T) {
 	want("after a login that the store failed", 1, 3, 3)
 }
 
-// waitFor waits until cond is true.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

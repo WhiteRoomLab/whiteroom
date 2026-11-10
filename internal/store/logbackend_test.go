@@ -29,7 +29,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// logOpts returns the options of the log backend with o.
 func logOpts(o logdb.Options) options {
 	return options{log: &o}
 }
@@ -1251,7 +1250,6 @@ type event struct {
 	data   string
 }
 
-// allEvents returns the audit events of s.
 func allEvents(t *testing.T, s *Store) []event {
 	t.Helper()
 	var got []event

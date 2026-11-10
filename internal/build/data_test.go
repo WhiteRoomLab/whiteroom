@@ -140,7 +140,6 @@ func warningTexts(b *builder) []string {
 	return texts
 }
 
-// checkFields checks the values of the fields of e, by name.
 func checkFields(t *testing.T, e *Entry, want map[string]any) {
 	t.Helper()
 	for _, name := range slices.Sorted(maps.Keys(want)) {
@@ -584,7 +583,6 @@ func TestPostData(t *testing.T) {
 	}
 }
 
-// TestTermData checks the data of terms on their lists.
 func TestTermData(t *testing.T) {
 	src := testSource(t)
 	b := mustLoad(t, src)

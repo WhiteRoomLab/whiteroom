@@ -582,7 +582,6 @@ func TestSiteValidate(t *testing.T) {
 	}
 	// fields returns a site with a type "t" of fs.
 	fields := func(fs ...FieldDef) *Site { return site(TypeDef{Name: "t", Fields: fs}) }
-	// edit returns s changed by f.
 	edit := func(s *Site, f func(s *Site)) *Site {
 		f(s)
 		return s

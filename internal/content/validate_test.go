@@ -472,7 +472,6 @@ func TestBlocksValidate(t *testing.T) {
 	}
 }
 
-// inList is a list that holds item.
 func inList(item Block) Blocks {
 	return Blocks{{Type: BlockList, ID: "b_00list01", Children: Blocks{item}}}
 }
@@ -708,7 +707,6 @@ func TestValidateBlockGap(t *testing.T) {
 	const media = "med_01JB8Z3K5QH2V6T9C4R7Y1E8B5"
 	text := RichText{{Type: InlineText, Text: "a"}}
 	para := Block{Type: BlockParagraph, ID: "b_0paragr1"}
-	// withGap is b with a blockGap as its style.
 	withGap := func(b Block) Block {
 		b.Style = Style{BlockGap: Length{Preset: "small"}}
 		return b

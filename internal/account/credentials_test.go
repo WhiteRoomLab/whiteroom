@@ -357,7 +357,6 @@ func TestSetPasswordCannotWriteTheRow(t *testing.T) {
 	}
 }
 
-// TestPasswordOperationsCorruptRowWhileHashing makes a row unreadable after the password is hashed.
 func TestPasswordOperationsCorruptRowWhileHashing(t *testing.T) {
 	bad := mgrRow(7, "bad", RoleViewer).ID
 	corrupt := func(t *testing.T, e *mgrEnv) {
@@ -681,7 +680,6 @@ func TestResetDisabled(t *testing.T) {
 	}
 }
 
-// actor returns the Actor of the account with the login.
 func (e *mgrEnv) actor(t *testing.T, login string) Actor {
 	t.Helper()
 	a, err := e.m.Find(t.Context(), login)

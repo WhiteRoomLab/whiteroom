@@ -616,7 +616,6 @@ func TestRevisionValidateCategory(t *testing.T) {
 	)
 	post := Revision{Title: "t", Slug: "s", Date: "2026-10-25T10:00:00+09:00"}
 	works := Revision{Title: "t", Slug: "s", Fields: Fields{"client": jsontext.Value(`"c"`)}}
-	// withTerms returns r with terms.
 	withTerms := func(r Revision, terms Terms) Revision {
 		r.Terms = terms
 		return r

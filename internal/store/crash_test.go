@@ -208,7 +208,6 @@ func mediaJSON(id string, data []byte) []byte {
 	return fmt.Appendf(nil, `{"schemaVersion": 1, "id": "%s", "hash": "%s", "size": %d}`, id, sum(data), len(data))
 }
 
-// putDoc returns an update that puts data as the document of kind with id.
 func putDoc(kind content.RefKind, id string, data []byte) func(tx *Tx) error {
 	return func(tx *Tx) error {
 		_, err := tx.Put(kind, id, data, userID)
@@ -231,7 +230,6 @@ func updates(us ...func(tx *Tx) error) func(tx *Tx) error {
 // scenarioOperation is the ID of the operation that a step of the scenario puts.
 const scenarioOperation = "op_entry"
 
-// theScenario is the scenario of the matrices.
 var theScenario = sync.OnceValue(func() *matrixScenario {
 	o := matrixOriginals()
 	media := []string{mediaID, "med_01JE0000000000000000000001", "med_01JE0000000000000000000002"}
@@ -544,7 +542,6 @@ func hasObject(tx *Tx, hash string) (bool, error) {
 	return err == nil, err
 }
 
-// textVersion appends v to b.
 func textVersion(b []byte, v Version) []byte {
 	b = strconv.AppendInt(b, v.Seq, 10)
 	b = append(b, " "+string(v.Kind)+" "+v.ID+" "+v.Hash+" "+v.SavedBy+" "...)
@@ -559,7 +556,6 @@ type mrun struct {
 	s    *Store // nil while closed
 }
 
-// do runs st on the store of r.
 func (r *mrun) do(ctx context.Context, st *mstep) error {
 	switch st.kind {
 	case mOpen:
@@ -650,7 +646,6 @@ func writer(fsys vfs.FS, o logdb.Options) *mrun {
 	return &mrun{log: true, open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
 }
 
-// openReader opens a reader of the store with o in the data directory fsys.
 func openReader(fsys vfs.FS, o logdb.Options) (*Store, error) {
 	return openLogReader("data", options{log: &o, fs: fsys})
 }
@@ -747,7 +742,6 @@ func probedAt(refs *matrixRefs, j, done int) wanted {
 		at: fmt.Sprintf("the state after %d steps and the probe", j), stateRef: -1}
 }
 
-// matches reports whether st is the state w.
 func (w wanted) matches(st matrixState) bool {
 	if st.reads != w.reads || !slices.Equal(st.events, w.events) {
 		return false

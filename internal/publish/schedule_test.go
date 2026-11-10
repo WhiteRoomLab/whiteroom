@@ -181,7 +181,6 @@ func (r *clockRig) newPage(slug string) (entry, revision string) {
 	return entry, r.saveRevision(entry, data).Revision
 }
 
-// wantStatus checks the status of the entry in the store.
 func (r *clockRig) wantStatus(entry string, want content.Status) content.Entry {
 	r.t.Helper()
 	state, _ := r.entryState(entry)
@@ -191,7 +190,6 @@ func (r *clockRig) wantStatus(entry string, want content.Status) content.Entry {
 	return state
 }
 
-// wantPublished checks that the entry is published with the revision, by the user.
 func (r *clockRig) wantPublished(entry, revision, by string) {
 	r.t.Helper()
 	state := r.wantStatus(entry, content.StatusPublished)
@@ -218,7 +216,6 @@ func (r *clockRig) stepWith(ctx context.Context) {
 	r.step(ctx)
 }
 
-// noStep checks that no step is due.
 func (r *clockRig) noStep() {
 	r.t.Helper()
 	if r.reread || r.stepping {
@@ -1118,7 +1115,6 @@ func TestScheduleReadFailure(t *testing.T) {
 	}
 }
 
-// TestRunStopsTimer checks that Run stops the timer of the scheduler when it returns.
 func TestRunStopsTimer(t *testing.T) {
 	t.Parallel()
 	r := newClockRig(t, nil)

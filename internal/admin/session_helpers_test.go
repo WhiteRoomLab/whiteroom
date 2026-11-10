@@ -60,7 +60,6 @@ func newSecretWatch() *secretWatch {
 	return &secretWatch{passwords: make(map[string]bool), tokens: make(map[string]bool)}
 }
 
-// password watches for p.
 func (w *secretWatch) password(p string) {
 	if len(p) < minSecretLength {
 		return
@@ -175,7 +174,6 @@ func (ts *testServer) inviteAccount(t *testing.T, login string, role account.Rol
 	return a
 }
 
-// loginBody returns the body of a login.
 func loginBody(login, password string) string {
 	body, err := json.Marshal(map[string]string{"login": login, "password": password})
 	if err != nil {
@@ -209,7 +207,6 @@ func from(addr string) []string {
 	return []string{"RemoteAddr", addr}
 }
 
-// join puts the lists of headers one after the other.
 func join(headers ...[]string) []string {
 	return slices.Concat(headers...)
 }
@@ -307,7 +304,6 @@ func (ts *testServer) checkAnswer(t *testing.T, what string, res *http.Response,
 	checkHeaders(t, what, res, ts.https)
 }
 
-// checkNoCookie checks that res sets no cookie.
 func checkNoCookie(t *testing.T, what string, res *http.Response) {
 	t.Helper()
 	if got := res.Header.Values("Set-Cookie"); len(got) != 0 {
@@ -357,7 +353,6 @@ func (ts *testServer) levels(login, addr string) (pair, name, client int) {
 	return pair, name, client
 }
 
-// nothingCounted checks that the attempts keep count of nothing.
 func (ts *testServer) nothingCounted(t *testing.T, what string) {
 	t.Helper()
 	if p, n, c := ts.counted(); p != 0 || n != 0 || c != 0 {

@@ -415,7 +415,6 @@ func paletteDeltas(colors ...uint32) []uint32 {
 	return d
 }
 
-// checkVP8L decodes a VP8L bitstream and checks its pixels.
 func checkVP8L(t *testing.T, data []byte, want []uint32) {
 	t.Helper()
 	pix, _, _, err := decodeVP8L(data)

@@ -295,7 +295,6 @@ func TestValidateThemeTranslation(t *testing.T) {
 	}
 }
 
-// placeholderMsg is the message for the invalid placeholder s.
 func placeholderMsg(s string) string {
 	return `invalid placeholder "` + s + `": use ASCII letters, digits, "-" and "_"`
 }

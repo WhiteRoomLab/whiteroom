@@ -117,7 +117,6 @@ func (e *boolEncoder) putTree(tree []int8, probs []uint8, v int) {
 	}
 }
 
-// testVP8 describes a key frame to write.
 type testVP8 struct {
 	width, height  int
 	hscale, vscale int // the scale fields above the sizes

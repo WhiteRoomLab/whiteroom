@@ -20,7 +20,6 @@ import (
 	"time"
 )
 
-// request is what a site got.
 type request struct {
 	Method string
 	Path   string
@@ -50,7 +49,6 @@ func newSite(t *testing.T) *site {
 	return s
 }
 
-// URL is the home page of the site.
 func (s *site) URL() string { return s.srv.URL + s.prefix }
 
 func (s *site) handle(route string, h http.HandlerFunc) *site {
