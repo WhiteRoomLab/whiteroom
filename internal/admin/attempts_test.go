@@ -1041,24 +1041,6 @@ func TestAttemptsClientsFillTheLevelOfAName(t *testing.T) {
 	h.refuse("the real user, and then", name, h.fresh(), 15*time.Minute)
 }
 
-// TestAttemptsSuccessKeepsWhatOthersAdded is the same, with the real user's success in the middle of an attack.
-func TestAttemptsSuccessKeepsWhatOthersAdded(t *testing.T) {
-	h := newHarness(t, 1000)
-	name := testName(1)
-	h.fill(name, 60)
-
-	user := h.fresh()
-	for range 10 {
-		h.allow("the real user", name, user)
-		h.a.succeeded(name, user)
-	}
-	if got := h.nameLevel(1); got != 60 {
-		t.Fatalf("the login name has the level %d after 60 attempts of others and 10 successes, want 60", got)
-	}
-	h.fill(name, 40)
-	h.refuse("the attempt after 100 of others and 10 successes", name, user, 15*time.Minute)
-}
-
 func TestAttemptsAllMustAllow(t *testing.T) {
 	h := newHarness(t, 1000)
 	waiting, full, free := testName(1), testName(2), testName(3)

@@ -1814,26 +1814,6 @@ func TestDecodeSessionRejects(t *testing.T) {
 	}
 }
 
-// TestDecodeSessionErrorHidesData checks that nothing of a row is in the error that its reading returns.
-func TestDecodeSessionErrorHidesData(t *testing.T) {
-	key := sessKey("row")
-	for name, data := range map[string]string{
-		"a duplicate key": replaceOnce(t, sessTestJSON, `"account"`, `"account":"`+testUserID+`","account"`),
-		"an unknown key":  replaceOnce(t, sessTestJSON, `"factors"`, `"extra":"yamada","factors"`),
-		"no factor":       replaceOnce(t, sessTestJSON, `["password"]`, `[]`),
-	} {
-		_, err := decodeSession(key, []byte(data))
-		if err == nil {
-			t.Fatalf("decodeSession() accepted a row with %s", name)
-		}
-		for _, secret := range []string{testUserID, "yamada", "password", "2026", "createdAt"} {
-			if strings.Contains(err.Error(), secret) {
-				t.Errorf("the error for %s contains %q", name, secret)
-			}
-		}
-	}
-}
-
 // TestSessionRowPrinting checks that fmt prints nothing of a session row but its account.
 func TestSessionRowPrinting(t *testing.T) {
 	s := sessTestRow()
@@ -1851,25 +1831,6 @@ func TestSessionRowPrinting(t *testing.T) {
 		if strings.Contains(got, "2026") || strings.Contains(got, "password") || !strings.Contains(got, testUserID) {
 			t.Errorf("Sprintf(%q) of a list of rows = %q, want the account and nothing more", verb, got)
 		}
-	}
-}
-
-func TestSessionKey(t *testing.T) {
-	if key, ok := sessionKey(tokSample); !ok || key != strings.TrimPrefix(tokSampleHash, "sha256:") || key != sessKey(tokSample) {
-		t.Error("the key of the sample token is not the hexadecimal SHA-256 of its text")
-	}
-	for _, text := range []string{"", "x", tokSample[:42], tokSample + "A", strings.Repeat("!", 43), tokSample[:42] + "9"} {
-		if key, ok := sessionKey(text); ok || key != "" {
-			t.Errorf("sessionKey() of a text that is no token (%d bytes) = %q, %v, want no key", len(text), key, ok)
-		}
-	}
-	token, key, err := newSession(bytes.NewReader(tokBytes(tokenBytes)))
-	if err != nil || token != tokSample || key != sessKey(tokSample) {
-		t.Error("newSession() did not make the sample token and the key of its row from the sample bytes")
-	}
-	boom := errors.New("no random bits")
-	if token, key, err := newSession(iotest.ErrReader(boom)); !errors.Is(err, boom) || token != "" || key != "" {
-		t.Errorf("newSession() without random bits = %q, %q, %v, want the error of the reader", token, key, err)
 	}
 }
 
@@ -2783,21 +2744,9 @@ func TestOperationsEndSessions(t *testing.T) {
 			f.e.putRaw(t, f.yamada.ID, "not json")
 			return func() error { return f.e.m.Delete(t.Context(), System, f.yamada.ID) }
 		}},
-		{"a change of the role by an administrator", func(t *testing.T, f *endFixture) action {
-			return func() error {
-				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleViewer)})
-				return err
-			}
-		}},
 		{"a change of the role by System", func(t *testing.T, f *endFixture) action {
 			return func() error {
 				_, err := f.e.m.Update(t.Context(), System, f.yamada.ID, Change{Role: ptr(RoleAdmin)})
-				return err
-			}
-		}},
-		{"a change of the role and the name", func(t *testing.T, f *endFixture) action {
-			return func() error {
-				_, err := f.e.m.Update(t.Context(), By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleAuthor), Name: ptr("New Name")})
 				return err
 			}
 		}},

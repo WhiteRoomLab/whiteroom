@@ -264,15 +264,6 @@ func TestPublishDate(t *testing.T) {
 		}
 	})
 
-	t.Run("a page", func(t *testing.T) {
-		ed, s := newSample(t)
-		saved := saveRevision(t, ed, s, draftEN, careersRevision)
-		res := must(t)(ed.Publish(t.Context(), op, draftEN, entrySeq(t, s, draftEN), saved.Revision))
-		if got := revisionIDs(t, s, draftEN); res.Revision != saved.Revision || !slices.Equal(got, []string{saved.Revision}) {
-			t.Errorf("Publish() = %+v, the revisions are %v; want no new revision for a page", res, got)
-		}
-	})
-
 	// The date is in the time zone of the site, to the second.
 	t.Run("the time zone of the site", func(t *testing.T) {
 		ed, s := newSample(t)

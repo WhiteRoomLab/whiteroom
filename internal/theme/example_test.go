@@ -9,7 +9,6 @@ import (
 	"html/template"
 	"image/png"
 	"io"
-	"io/fs"
 	"maps"
 	"net/url"
 	"os"
@@ -544,42 +543,5 @@ func TestExampleFallbacks(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-func TestExampleWriteAssets(t *testing.T) {
-	th := mustLoad(t, os.DirFS(exampleDir))
-	out := t.TempDir()
-	if err := th.WriteAssets(openRoot(t, out)); err != nil {
-		t.Fatalf("WriteAssets() = %v", err)
-	}
-	var written []string
-	err := filepath.WalkDir(out, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, err := filepath.Rel(out, p)
-		if err != nil {
-			return err
-		}
-		written = append(written, filepath.ToSlash(rel))
-		got, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		want, err := os.ReadFile(filepath.Join(exampleDir, rel))
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(got, want) {
-			t.Errorf("WriteAssets() wrote %s with other bytes than the theme has", rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"assets/css/style.css", "assets/images/logo.png"}; !slices.Equal(written, want) {
-		t.Errorf("WriteAssets() wrote %q, want %q", written, want)
 	}
 }

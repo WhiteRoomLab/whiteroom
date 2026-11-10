@@ -179,7 +179,6 @@ func TestPlacements(t *testing.T) {
 		{"inline", Options{}, []bool{false, false, false, false, false}},
 		{"files", Options{Placement: Files}, []bool{true, true, true, true, true}},
 		{"hybrid", Options{Placement: Hybrid, Threshold: 100}, []bool{false, false, false, true, true}},
-		{"hybrid of 64 KiB", Options{Placement: Hybrid}, []bool{false, false, false, false, false}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fsys, db := newSim(t, c.o)

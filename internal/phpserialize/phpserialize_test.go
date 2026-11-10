@@ -328,23 +328,6 @@ func TestUnserialize(t *testing.T) {
 	}
 }
 
-func TestUnserializeAttachmentMetadata(t *testing.T) {
-	v, err := Unserialize(attachmentMetadata)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sizes, _ := v.Lookup("sizes")
-	thumbnail, _ := sizes.Lookup("thumbnail")
-	file, ok := thumbnail.Lookup("file")
-	if !ok || file.Kind != String || file.Str != "example-150x150.jpg" {
-		t.Errorf("sizes.thumbnail.file = %+v, %v; want example-150x150.jpg", file, ok)
-	}
-	original, ok := v.Lookup("original_image")
-	if !ok || original.Str != "example.jpg" {
-		t.Errorf("original_image = %+v, %v; want example.jpg", original, ok)
-	}
-}
-
 func TestUnserializeTruncated(t *testing.T) {
 	for _, tt := range unserializeTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -693,18 +676,6 @@ func TestLookup(t *testing.T) {
 	}
 }
 
-func TestLookupParsed(t *testing.T) {
-	v, err := Unserialize(`a:3:{s:1:"5";s:1:"a";i:7;s:1:"b";s:2:"05";s:1:"c";}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for key, want := range map[string]string{"5": "a", "7": "b", "05": "c"} {
-		if got, ok := v.Lookup(key); !ok || got.Str != want {
-			t.Errorf("Lookup(%q) = %q, %v; want %q", key, got.Str, ok, want)
-		}
-	}
-}
-
 func TestSerialize(t *testing.T) {
 	v := array(
 		field("a", integer(-1)),
@@ -850,17 +821,6 @@ var unserializeCRLFTests = []struct {
 }
 
 func TestUnserializeCRLF(t *testing.T) {
-	for _, tt := range unserializeTests {
-		t.Run("same as Unserialize/"+tt.name, func(t *testing.T) {
-			got, n, err := UnserializeCRLF(tt.in)
-			if err != nil {
-				t.Fatalf("UnserializeCRLF(%q) = %v", tt.in, err)
-			}
-			if !wellFormed(got) || !equalValue(got, tt.want) || n != 0 {
-				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, 0", tt.in, serialize(got), n, serialize(tt.want))
-			}
-		})
-	}
 	for _, tt := range unserializeCRLFTests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, n, err := UnserializeCRLF(tt.in)

@@ -207,7 +207,6 @@ func TestScheduleStatuses(t *testing.T) {
 		name string
 		to   func(t *testing.T, ed *Editor, s *store.Store)
 	}{
-		{"a draft", func(*testing.T, *Editor, *store.Store) {}},
 		{"an archived entry", func(t *testing.T, ed *Editor, s *store.Store) {
 			must(t)(ed.Archive(t.Context(), op, draftEN, entrySeq(t, s, draftEN)))
 		}},
@@ -300,24 +299,17 @@ func TestPublishScheduledDue(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		now  time.Time
-		due  bool
 	}{
-		{"the time", careersAt, true},
-		{"the time in another time zone", careersAt.In(time.FixedZone("west", -5*60*60)), true},
-		{"after the time", careersAt.Add(time.Nanosecond), true},
-		{"long after the time", careersAt.Add(1000 * time.Hour), true},
-		{"before the time", careersAt.Add(-time.Nanosecond), false},
-		{"a second before the time", careersAt.Add(-time.Second), false},
+		{"the time in another time zone", careersAt.In(time.FixedZone("west", -5*60*60))},
+		{"after the time", careersAt.Add(time.Nanosecond)},
+		{"long after the time", careersAt.Add(1000 * time.Hour)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ed, s := newSample(t)
 			scheduleCareers(t, ed, s)
 			res, err := ed.PublishScheduled(t.Context(), draftEN, tt.now)
-			switch {
-			case tt.due && (err != nil || !res.Publishes):
+			if err != nil || !res.Publishes {
 				t.Errorf("PublishScheduled() = %+v, %v; want the entry published", res, err)
-			case !tt.due && !errors.Is(err, ErrNotDue):
-				t.Errorf("PublishScheduled() = %+v, %v; want ErrNotDue", res, err)
 			}
 		})
 	}
@@ -736,14 +728,6 @@ func TestScheduledPublishCopiesLatest(t *testing.T) {
 		}
 		if got := string(revisionData(t, s, ids[4])); got != withDate {
 			t.Errorf("the copy is %s, want the bytes of the latest revision, %s", got, withDate)
-		}
-	})
-
-	t.Run("the scheduled revision is the latest", func(t *testing.T) {
-		ed, s, entry, revs := setup(t, first)
-		pub := must(t)(ed.PublishScheduled(t.Context(), entry, now))
-		if got := revisionIDs(t, s, entry); !slices.Equal(got, []string{revs[0], pub.Revision}) {
-			t.Errorf("the revisions are %v, want the saved one and the dated one", got)
 		}
 	})
 

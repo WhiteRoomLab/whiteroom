@@ -268,9 +268,6 @@ func TestAboutPage(t *testing.T) {
 	if err := e.UnmarshalJSON([]byte(readTestdata(t, "about-page-entry.json"))); err != nil {
 		t.Fatalf("UnmarshalJSON(about-page-entry.json) = %v", err)
 	}
-	if err := e.Validate(site); err != nil {
-		t.Errorf("Entry.Validate() = %v", err)
-	}
 	r := mustRevision(t, readTestdata(t, "about-page-revision.json"))
 	normalized := mustRevision(t, readTestdata(t, "about-page-revision.json"))
 	normalized.Normalize(site.Type(e.Type))

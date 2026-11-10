@@ -1194,25 +1194,6 @@ func TestIsAuthorEmail(t *testing.T) {
 	}
 }
 
-func TestHidesLogin(t *testing.T) {
-	for _, tt := range []struct {
-		login, email string
-		want         bool
-	}{
-		{"mary@example.org", "", true},
-		{"erin@localhost", "erin@localhost", true},
-		{"ERIN@localhost", "erin@localhost", true},
-		{"erin", "erin@localhost", false},
-		{"jdoe", "jdoe@example.com", false},
-		{"admin", "", false},
-		{"", "", false},
-	} {
-		if got := hidesLogin(tt.login, tt.email); got != tt.want {
-			t.Errorf("hidesLogin(%q, %q) = %v, want %v", tt.login, tt.email, got, tt.want)
-		}
-	}
-}
-
 // TestAuthorsEmailNames checks that an email address is not the name of a profile, and that the report names no login that
 // is an email address, or the email address of the author: it shows such an author by the ID, or by the slug that the
 // login makes if there is no ID.

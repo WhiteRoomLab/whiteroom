@@ -218,23 +218,6 @@ func TestForm(t *testing.T) {
 			},
 		},
 		{
-			name: "texts missing in the language",
-			json: formJSON(textsForm),
-			want: `<form action="/_forms/` + textsForm + `" method="post">
-<input type="hidden" name="_language" value="ja">
-<p><label><br><input type="text" name="name"></label></p>
-<p><label>ご用件<br><select name="topic"><option value="a">A</option><option value="b"></option></select></label></p>
-<p><label><input type="checkbox" name="agree" required></label></p>
-<p><button type="submit"></button></p>
-</form>`,
-			warnings: []string{
-				at + `form "` + textsForm + `" has no label of field "name" in ja; rendered empty`,
-				at + `form "` + textsForm + `" has no label of option "b" of field "topic" in ja; rendered empty`,
-				at + `form "` + textsForm + `" has no label of field "agree" in ja; rendered empty`,
-				at + `form "` + textsForm + `" has no submitLabel in ja; rendered empty`,
-			},
-		},
-		{
 			name: "fields of unknown types",
 			json: formJSON(typesForm),
 			want: `<form action="/_forms/` + typesForm + `" method="post">

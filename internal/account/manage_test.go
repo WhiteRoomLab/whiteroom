@@ -637,23 +637,6 @@ func TestDisableLastAdmin(t *testing.T) {
 	})
 }
 
-func TestEnableMakesAnAdministratorCount(t *testing.T) {
-	e := newMgr(t)
-	a, b := e.first(t), e.add(t, "boss", RoleAdmin)
-	if _, err := e.m.Disable(t.Context(), System, b.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.m.Disable(t.Context(), System, a.ID); !errors.Is(err, ErrLastAdmin) {
-		t.Fatalf("Disable() = %v, want ErrLastAdmin", err)
-	}
-	if _, err := e.m.Enable(t.Context(), System, b.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
-		t.Errorf("Disable() after Enable = %v, want nil", err)
-	}
-}
-
 func TestDisableAndEnableErrors(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)

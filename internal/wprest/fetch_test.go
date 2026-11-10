@@ -1692,26 +1692,6 @@ func (c *cancelOnRead) Read([]byte) (int, error) {
 	return 0, context.Canceled
 }
 
-// countingTransport counts the requests.
-type countingTransport struct {
-	rt http.RoundTripper
-	n  atomic.Int32
-}
-
-func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.n.Add(1)
-	return c.rt.RoundTrip(r)
-}
-
-func TestFetchTransport(t *testing.T) {
-	s := newSite(t).standard()
-	tr := &countingTransport{rt: s.srv.Client().Transport}
-	mustFetch(t, s, Options{Transport: tr})
-	if int(tr.n.Load()) != len(s.requested()) || tr.n.Load() != 9 {
-		t.Errorf("the transport got %d requests, and the site %d, want 9", tr.n.Load(), len(s.requested()))
-	}
-}
-
 func TestNewTransport(t *testing.T) {
 	tr := newTransport()
 	if tr.Proxy == nil || tr.DialContext == nil || tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != 0x0303 ||

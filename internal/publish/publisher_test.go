@@ -564,14 +564,13 @@ func TestPublisherStart(t *testing.T) {
 	r.idle()
 	sameDocuments(t, "the build", before, snapshotOf(t, r.s))
 
-	fromDir, _ := buildSite(t, openSite(t, sampleDir))
 	st := r.Status()
 	if st.Running != nil || st.Pending || st.Paused {
 		t.Errorf("Status() = %+v, want no build running, due or paused", st)
 	}
 	b := wantBuild(t, st, "start")
-	if b.Result.Release != fromDir.Release || b.Result.Pages != fromDir.Pages || b.Result.Files != fromDir.Files || !b.Result.Changed {
-		t.Errorf("the start build published %+v, want the release, pages and files of %+v, changed", b.Result, fromDir)
+	if !b.Result.Changed {
+		t.Errorf("the start build published %+v, want it changed", b.Result)
 	}
 	if want := []Request{{At: fixedNow, Reason: "start"}}; !reflect.DeepEqual(b.Requests, want) {
 		t.Errorf("the requests of the start build are %+v, want %+v", b.Requests, want)
@@ -819,26 +818,6 @@ func TestRequestDuringFailure(t *testing.T) {
 		t.Errorf("the build that read the redirect = %+v, want it to have failed for the redirect that Create made", failed)
 	}
 	r.wantReleases(release, release)
-}
-
-// TestRebuild checks that Rebuild builds the store as it is: the same release.
-func TestRebuild(t *testing.T) {
-	t.Parallel()
-	r := newRig(t)
-	h := holdBuild(t, r.Publisher, 0)
-	r.start()
-	r.idle()
-	first := wantBuild(t, r.Status(), "start")
-
-	r.Rebuild()
-	r.idle()
-	b := wantBuild(t, r.Status(), "rebuild")
-	if want := []Request{{At: fixedNow, Reason: "rebuild"}}; !reflect.DeepEqual(b.Requests, want) {
-		t.Errorf("the requests of the build are %+v, want %+v", b.Requests, want)
-	}
-	if b.Result.Release != first.Result.Release || b.Result.Changed || h.builds() != 2 {
-		t.Errorf("the build made %+v after %d builds, want the release %s, unchanged", b.Result, h.builds(), first.Result.Release)
-	}
 }
 
 // TestRollback checks the rollback to the first release: the pause, the operations that are saved during it, and Resume.

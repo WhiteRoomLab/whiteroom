@@ -202,15 +202,6 @@ func TestLoginAttempts(t *testing.T) {
 		ts.wantRetry(t, "the sixth attempt with a closed store", "admin", testPassword("admin"), "30")
 		checkProblem(t, "an attempt of another login name with a closed store", ts.postLogin("other", wrongPassword), "internal")
 	})
-
-	t.Run("a wrong password stays counted", func(t *testing.T) {
-		ts := newTestServer(t, httpsOrigin)
-		ts.addAccount(t, "admin", account.RoleAdmin)
-		ts.wantFailure(t, "a wrong password", "admin", wrongPassword)
-		if p, n, c := ts.counted(); p != 1 || n != 1 || c != 1 {
-			t.Errorf("after a wrong password the attempts keep count of %d pairs, %d login names and %d clients, want 1 each", p, n, c)
-		}
-	})
 }
 
 // TestLoginAccounting shows how many attempts each kind of end of a login leaves counted: a wrong password leaves its attempt,

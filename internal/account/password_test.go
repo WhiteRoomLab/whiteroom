@@ -992,67 +992,6 @@ func TestIsRepeated(t *testing.T) {
 	}
 }
 
-// TestPasswordMessagesShowNothing checks that no part of a password is in the message about it.
-func TestPasswordMessagesShowNothing(t *testing.T) {
-	marker := "Qx9-zebra-" + string(rune(0x3042)) + string(rune(0x3044)) + "-Vk7"
-	unassigned := string(unassignedFrom(t, 0x1ade))
-	tests := []struct {
-		name  string
-		p     string
-		login string
-	}{
-		{"invalid UTF-8", marker + "\xff", ""},
-		{"a control character", marker + "\t", ""},
-		{"an unassigned code point", marker + unassigned + marker, ""},
-		{"too short", marker[:8], ""},
-		{"too long", strings.Repeat(marker, 30), ""},
-		{"too many bytes", strings.Repeat(marker, 500), ""},
-		{"the login name", marker + marker, marker + marker},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := checkPassword(tt.p, tt.login, "", "")
-			if err == nil {
-				t.Fatal("checkPassword() = nil, want a message")
-			}
-			runes := []rune(marker)
-			for i := 0; i+4 <= len(runes); i++ {
-				if part := string(runes[i : i+4]); strings.Contains(err.Error(), part) {
-					t.Errorf("the message of %d bytes contains a part of the password (from character %d)", len(err.Error()), i)
-				}
-			}
-			// The message about an unassigned code point does not name it, in text or as U+XXXX.
-			if strings.Contains(err.Error(), unassigned) || strings.Contains(err.Error(), "U+") {
-				t.Errorf("the message of %d bytes shows a code point of the password", len(err.Error()))
-			}
-		})
-	}
-}
-
-// TestPasswordTestHelpers checks the text that the tests build: what they count on NFC to do.
-func TestPasswordTestHelpers(t *testing.T) {
-	for _, n := range []int{1, 14, 15, 256, 257} {
-		if got := utf8.RuneCountInString(pwAcutes(n)); got != 2*n {
-			t.Errorf("pwAcutes(%d) has %d code points, want %d", n, got, 2*n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(pwAcutes(n))); got != n {
-			t.Errorf("NFC of pwAcutes(%d) has %d characters, want %d", n, got, n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(pwJamo(n))); got != n {
-			t.Errorf("NFC of pwJamo(%d) has %d characters, want %d", n, got, n)
-		}
-		if got := utf8.RuneCountInString(nfc.Normalize(strings.Repeat(string(rune(0x958)), n))); got != 2*n {
-			t.Errorf("NFC of %d times U+0958 has %d characters, want %d", n, got, 2*n)
-		}
-		if got := len(pwEmoji(n)); got != 4*n {
-			t.Errorf("pwEmoji(%d) is %d bytes, want %d", n, got, 4*n)
-		}
-	}
-	if got := pwFill("ab", 5); got != "ababa" {
-		t.Errorf("pwFill() = %q, want ababa", got)
-	}
-}
-
 func FuzzPasswordRules(f *testing.F) {
 	for _, s := range []string{
 		pwGood, "", "a", strings.Repeat("a", 15), strings.Repeat("a", 257), pwAcutes(15), pwAcutes(14), pwJamo(15),

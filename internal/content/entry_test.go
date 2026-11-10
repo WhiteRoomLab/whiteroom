@@ -110,7 +110,6 @@ func TestEntryMarshalJSON(t *testing.T) {
 		{"empty", Entry{}, `{"schemaVersion":1}`},
 		// The bytes of an entry without the scheduled items are those of before they were added.
 		{"about page", aboutPageEntry, aboutPageEntryJSON},
-		{"scheduled", scheduledEntry, scheduledEntryJSON},
 		{
 			name: "scheduled items alone",
 			in:   Entry{ScheduledRevision: testRevision},

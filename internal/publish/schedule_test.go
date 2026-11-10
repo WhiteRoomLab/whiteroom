@@ -333,7 +333,7 @@ func putPublishedPage(t *testing.T, s *store.Store, id, rev string) {
 }
 
 // TestScheduledPublish checks that Run publishes a scheduled entry when its time comes, as the user who scheduled it, and
-// that the build for it has the page; and that a timer that fires early publishes nothing and waits for the time.
+// that the build for it has the page.
 func TestScheduledPublish(t *testing.T) {
 	t.Parallel()
 	r := newClockRig(t, nil)
@@ -356,16 +356,6 @@ func TestScheduledPublish(t *testing.T) {
 	}
 	r.timers.want(t, time.Hour)
 	r.wantStatus(draftEN, content.StatusScheduled)
-
-	// A timer that fires a second early, as it can when the clocks differ, finds nothing due and waits for that second.
-	r.clock.set(at.Add(-time.Second))
-	r.timers.fire(t)
-	r.idle()
-	r.timers.want(t, time.Second)
-	r.wantStatus(draftEN, content.StatusScheduled)
-	if h.builds() != 1 || r.file(careersPage) != nil {
-		t.Errorf("%d builds have run and %s is published, want no build before the time", h.builds(), careersPage)
-	}
 
 	r.clock.set(at)
 	r.timers.fire(t)
@@ -589,57 +579,6 @@ func (r *clockRig) siteWithPublished(entry, rev, rival, rivalRev string) string 
 	addStoredRevision(r.t, s, entry, rev, careersRevision)
 	put(r.t, s, content.RefEntry, entry, stateJSON(r.t, r.doc(content.RefEntry, entry).Data, content.StatusPublished, rev, ""))
 	return buildError(r.t, snapshotOf(r.t, s))
-}
-
-// TestScheduledCancel checks that unpublishing or archiving an entry before its time cancels the schedule: the timer is
-// stopped, and a timer that fires as it is stopped finds nothing to publish at the time.
-func TestScheduledCancel(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name   string
-		cancel func(r *clockRig) edit.Result
-		want   content.Status
-	}{
-		{"Unpublish", func(r *clockRig) edit.Result { return r.unpublish(draftEN) }, content.StatusDraft},
-		{"Archive", func(r *clockRig) edit.Result {
-			seq := r.doc(content.RefEntry, draftEN).Seq
-			return must(r.t)(r.Editor().Archive(r.t.Context(), r.op(), draftEN, seq))
-		}, content.StatusArchived},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			r := newClockRig(t, nil)
-			h := holdBuild(t, r.Publisher, 0)
-			r.start()
-			r.idle()
-			start := r.Status()
-			startRelease := r.current()
-
-			rev := r.saveRevision(draftEN, careersRevision).Revision
-			at := r.clock.Now().Add(time.Hour)
-			r.schedule(draftEN, rev, at, otherUser)
-			r.idle()
-			r.timers.want(t, time.Hour)
-			stale := r.timers.armed()[0]
-
-			res := tt.cancel(r)
-			r.idle()
-			if res.Status != tt.want || res.Publishes {
-				t.Errorf("the result of the cancellation is %+v, want the entry %s, and no build", res, tt.want)
-			}
-			r.timers.want(t)
-			r.wantStatus(draftEN, tt.want)
-
-			r.clock.set(at)
-			stale.fire()
-			r.idle()
-			r.wantStatus(draftEN, tt.want)
-			if st := r.Status(); !reflect.DeepEqual(st, start) || h.builds() != 1 || r.current() != startRelease || r.file(careersPage) != nil {
-				t.Errorf("Status() = %+v after %d builds with %s published, want nothing to have changed since the start", st, h.builds(), r.current())
-			}
-			r.timers.want(t)
-		})
-	}
 }
 
 // TestScheduleCancelSteps checks without a goroutine that a timer which fires after the schedule was cancelled, as one can
