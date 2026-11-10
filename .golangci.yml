@@ -399,13 +399,14 @@ linters:
       tool-forbidden: true
       go-version-pattern: ^1\.\d+\.0$
     gosec:
-      # Rules that guard servers, crypto and fetched input; the others mostly flag deliberate code, such as G115 and G203.
+      # Rules that guard servers, crypto, file walks and fetched input; the others mostly flag deliberate code (G115, G203).
       includes:
         - G107
         - G108
         - G110
         - G112
         - G114
+        - G122
         - G305
         - G401
         - G402
@@ -432,6 +433,11 @@ linters:
       - path: _test\.go
         linters:
           - forbidigo
+      # Tests walk only their own temporary directories.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: G122
 
 formatters:
   enable:
