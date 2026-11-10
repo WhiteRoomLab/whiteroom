@@ -626,8 +626,10 @@ func TestServeRelease(t *testing.T) {
 	get("/", servedPage("A"))
 }
 
-// TestServeConcurrent checks requests at the same time while current changes between releases with other bases: each
-// is served from one release, with its server.json and its files.
+// TestServeConcurrent sends requests from 4 goroutines, at least 100 each and more until the last switch of current
+// between releases with other bases. It checks that each is served from one release, with its server.json and its
+// files, and that none fails while a rename replaces current, because the handler reads the link itself and opens the
+// release by its name (4.3, 9.5). A response is checked as it is; no request is sent again.
 func TestServeConcurrent(t *testing.T) {
 	out := t.TempDir()
 	writeRelease(t, out, releaseA, testList(), map[string]string{"index.html": "A"})
@@ -638,10 +640,24 @@ func TestServeConcurrent(t *testing.T) {
 	h := newHandler(t, out)
 	plain := "404 " + plainNotFound.body
 	want := map[string][]string{"/": {"200 A", plain}, "/b/": {"200 B", plain}}
+	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	// Deferred, so that the requests also stop if setCurrent ends the test.
+	defer func() {
+		close(stop)
+		wg.Wait()
+	}()
 	for range 4 {
 		wg.Go(func() {
-			for i := range 100 {
+			for i := 0; ; i++ {
+				// At least 100 requests each, so that they are checked also where goroutines cannot run in parallel.
+				if i >= 100 {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+				}
 				target := []string{"/", "/b/"}[i%2]
 				res := do(h, httptest.NewRequest(http.MethodGet, target, nil))
 				body, _ := io.ReadAll(res.Body)
@@ -652,10 +668,9 @@ func TestServeConcurrent(t *testing.T) {
 			}
 		})
 	}
-	for i := range 100 {
+	for i := range 200 {
 		setCurrent(t, out, "releases/"+[]string{releaseB, releaseA}[i%2])
 	}
-	wg.Wait()
 }
 
 func TestContentType(t *testing.T) {
