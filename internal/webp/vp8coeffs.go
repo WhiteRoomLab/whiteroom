@@ -62,14 +62,14 @@ func (d *vp8Decoder) readCoefficients(br *boolDecoder, top, left *nzFlags, y2 bo
 // readBlock reads the tokens of a block from position first, with the probabilities of its type and the context ctx
 // from its neighbors, and writes the coefficients times the factors q (DC and AC) into out, in raster order. It
 // returns the position of dct_eob, or 16.
-func (br *boolDecoder) readBlock(p *[numBands][numCtx][numProbs]uint8, ctx int, q [2]int32, first int, out *[16]int16,
+func (d *boolDecoder) readBlock(p *[numBands][numCtx][numProbs]uint8, ctx int, q [2]int32, first int, out *[16]int16,
 	st *vp8Stats) int {
 	for n := first; n < 16; n++ {
 		probs := &p[coeffBands[n]][ctx]
-		if !br.readBool(probs[0]) {
+		if !d.readBool(probs[0]) {
 			return n
 		}
-		for !br.readBool(probs[1]) {
+		for !d.readBool(probs[1]) {
 			if st != nil {
 				st.tokens[10]++
 			}
@@ -79,15 +79,15 @@ func (br *boolDecoder) readBlock(p *[numBands][numCtx][numProbs]uint8, ctx int, 
 			probs = &p[coeffBands[n]][0]
 		}
 		var v int32
-		if !br.readBool(probs[2]) {
+		if !d.readBool(probs[2]) {
 			v, ctx = 1, 1
 		} else {
-			v, ctx = br.readLarge(probs), 2
+			v, ctx = d.readLarge(probs), 2
 		}
 		if st != nil {
 			st.tokens[tokenIndex(v)]++
 		}
-		if br.readFlag() {
+		if d.readFlag() {
 			v = -v
 		}
 		// The product is kept in 16 bits, as in the reference decoder and libwebp.
@@ -97,32 +97,32 @@ func (br *boolDecoder) readBlock(p *[numBands][numCtx][numProbs]uint8, ctx int, 
 }
 
 // readLarge reads the rest of a token whose value is at least 2, and the extra bits of its category.
-func (br *boolDecoder) readLarge(p *[numProbs]uint8) int32 {
-	if !br.readBool(p[3]) {
-		if !br.readBool(p[4]) {
+func (d *boolDecoder) readLarge(p *[numProbs]uint8) int32 {
+	if !d.readBool(p[3]) {
+		if !d.readBool(p[4]) {
 			return 2
 		}
-		if !br.readBool(p[5]) {
+		if !d.readBool(p[5]) {
 			return 3
 		}
 		return 4
 	}
-	if !br.readBool(p[6]) {
-		if !br.readBool(p[7]) {
-			return 5 + int32(btoi(br.readBool(159)))
+	if !d.readBool(p[6]) {
+		if !d.readBool(p[7]) {
+			return 5 + int32(btoi(d.readBool(159)))
 		}
-		v := 7 + 2*int32(btoi(br.readBool(165)))
-		return v + int32(btoi(br.readBool(145)))
+		v := 7 + 2*int32(btoi(d.readBool(165)))
+		return v + int32(btoi(d.readBool(145)))
 	}
 	var cat int
-	if !br.readBool(p[8]) {
-		cat = btoi(br.readBool(p[9]))
+	if !d.readBool(p[8]) {
+		cat = btoi(d.readBool(p[9]))
 	} else {
-		cat = 2 + btoi(br.readBool(p[10]))
+		cat = 2 + btoi(d.readBool(p[10]))
 	}
 	v := int32(0)
 	for _, prob := range catProbs[cat] {
-		v = 2*v + int32(btoi(br.readBool(prob)))
+		v = 2*v + int32(btoi(d.readBool(prob)))
 	}
 	return v + [4]int32{11, 19, 35, 67}[cat]
 }
