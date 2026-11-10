@@ -60,8 +60,8 @@ func New(s *store.Store) (*Manager, error) {
 
 // NewWithIterations is New with the count of the iterations of the password hashes. It is for the tests of other packages,
 // which need cheap hashes: the real count takes about 80 ms for a hash, and ten times as long under the race detector.
-// Production code uses New, and a test of this package checks that no file of the module but a test refers to it. The
-// count must be from 1 to 10000000.
+// Production code uses New, and a forbidigo rule of .golangci.yml checks that no file of the module but a test refers
+// to it. The count must be from 1 to 10000000.
 func NewWithIterations(s *store.Store, iterations int) (*Manager, error) {
 	return newManager(s, iterations, rand.Reader)
 }
