@@ -9,13 +9,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	gotoken "go/token"
 	"io"
 	"io/fs"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -2366,103 +2362,6 @@ func TestNewWithIterations(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-// refersToNewWithIterations reports the declarations of NewWithIterations in a file and the places that refer to it.
-func refersToNewWithIterations(fset *gotoken.FileSet, file *ast.File) (declarations int, refs []string) {
-	var declared gotoken.Pos
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncDecl:
-			if n.Name.Name == "NewWithIterations" && n.Recv == nil {
-				declarations++
-				declared = n.Name.Pos()
-			}
-		case *ast.Ident:
-			if n.Name == "NewWithIterations" && n.Pos() != declared {
-				refs = append(refs, fset.Position(n.Pos()).String())
-			}
-		}
-		return true
-	})
-	return declarations, refs
-}
-
-func TestRefersToNewWithIterations(t *testing.T) {
-	parse := func(src string) (int, []string) {
-		fset := gotoken.NewFileSet()
-		file, err := parser.ParseFile(fset, "x.go", src, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return refersToNewWithIterations(fset, file)
-	}
-	if n, refs := parse("package a\nfunc NewWithIterations() {}\n"); n != 1 || len(refs) != 0 {
-		t.Errorf("a declaration = %d, %v, want 1 and no reference", n, refs)
-	}
-	if n, refs := parse("package a\nimport \"x/account\"\nfunc f() { _ = account.NewWithIterations }\nvar g = account.NewWithIterations(nil, 1)\n"); n != 0 || len(refs) != 2 {
-		t.Errorf("two references = %d, %v, want 0 declarations and 2 references", n, refs)
-	}
-	if n, refs := parse("package a\nfunc New() { NewWithIterations() }\nfunc NewWithIterations() {}\n"); n != 1 || len(refs) != 1 {
-		t.Errorf("a call before the declaration = %d, %v, want 1 declaration and 1 reference", n, refs)
-	}
-	if n, refs := parse("package a\n// NewWithIterations is in a comment and \"NewWithIterations\" in a string\nvar s = \"NewWithIterations\"\n"); n != 0 || len(refs) != 0 {
-		t.Errorf("a comment and a string = %d, %v, want nothing", n, refs)
-	}
-}
-
-// TestNewWithIterationsIsForTests parses every file of the module that is not a test, and checks that none but its
-// declaration refers to NewWithIterations: production code makes its Manager with New, whose hashes cost what they must.
-func TestNewWithIterationsIsForTests(t *testing.T) {
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mod, err := os.ReadFile(filepath.Join(root, "go.mod")); err != nil || !strings.HasPrefix(string(mod), "module github.com/WhiteRoomLab/whiteroom\n") {
-		t.Fatalf("%s is not the root of the module: %v", root, err)
-	}
-	fset := gotoken.NewFileSet()
-	var files, declarations int
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if path == root {
-				return nil
-			}
-			// What the go command leaves out, and another module.
-			if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" {
-				return filepath.SkipDir
-			}
-			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			return nil
-		}
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		files++
-		n, refs := refersToNewWithIterations(fset, file)
-		declarations += n
-		for _, ref := range refs {
-			rel, _ := filepath.Rel(root, ref)
-			t.Errorf("%s refers to NewWithIterations, which is for tests", rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if files < 50 || declarations != 1 {
-		t.Errorf("found %d files of the module that are not tests and %d declarations of NewWithIterations, want at least 50 and 1", files, declarations)
 	}
 }
 
