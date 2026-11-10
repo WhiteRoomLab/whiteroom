@@ -3,16 +3,409 @@ version: "2"
 linters:
   default: standard
   enable:
+    - depguard
     - errorlint
     - exhaustive
+    - forbidigo
+    - gomoddirectives
     - misspell
     - nolintlint
     - unconvert
     - usestdlibvars
   settings:
+    depguard:
+      # *.go stays in one directory; a module entry without $ is a prefix that also matches the packages below.
+      rules:
+        no-external-modules:
+          list-mode: strict
+          files:
+            - $all
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/
+        to-publish:
+          list-mode: lax
+          files:
+            - $all
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/publish$
+              desc: どのパッケージも publish を使わない
+        to-edit:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/publish/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/edit$
+              desc: publish のほかは edit を使わない（edit のテストが build を使うので、build が使うと循環する）
+        to-account:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/admin/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/account$
+              desc: admin のほかは、まだ account を使わない
+        to-wpimport:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/wpimport/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/wpimport$
+              desc: どのパッケージも、まだ wpimport を使わない
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/wpblock$
+              desc: wpimport のほかは、まだ wpblock を使わない
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/wpformat$
+              desc: wpimport のほかは、まだ wpformat を使わない
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/wprest$
+              desc: wpimport のほかは、まだ wprest を使わない
+        to-simfs:
+          list-mode: lax
+          files:
+            - "!$test"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+              desc: simfs は、テストの模擬のファイルシステムで、テストだけが使う
+        to-dmlog:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/store/*_test.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
+              desc: dmlog は、store のテストだけが使う
+        stdlib-only:
+          list-mode: strict
+          # Every package with a rule of its own is excluded here; other files may import only the standard library.
+          files:
+            - $all
+            - "!**/cmd/whiteroom/*.go"
+            - "!**/internal/account/*.go"
+            - "!**/internal/admin/*.go"
+            - "!**/internal/build/*.go"
+            - "!**/internal/build/gen/*.go"
+            - "!**/internal/content/*.go"
+            - "!**/internal/edit/*.go"
+            - "!**/internal/imaging/*.go"
+            - "!**/internal/logdb/*.go"
+            - "!**/internal/logdb/simfs/*.go"
+            - "!**/internal/mediafile/*_test.go"
+            - "!**/internal/publish/*.go"
+            - "!**/internal/render/*.go"
+            - "!**/internal/sanitize/*.go"
+            - "!**/internal/serve/*.go"
+            - "!**/internal/sitedir/*.go"
+            - "!**/internal/siteplan/*.go"
+            - "!**/internal/store/*.go"
+            - "!**/internal/theme/*.go"
+            - "!**/internal/wpimport/*.go"
+          allow:
+            - $gostd
+        content:
+          list-mode: strict
+          files:
+            - "**/internal/content/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/nfc$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        mediafile-test:
+          list-mode: strict
+          files:
+            - "**/internal/mediafile/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+        theme:
+          list-mode: strict
+          files:
+            - "**/internal/theme/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        render:
+          list-mode: strict
+          files:
+            - "**/internal/render/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/sanitize$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/imaging$
+              desc: render は imaging を使わず、画像のファイルを Resolver の Image から受け取る（build が imaging で作る）
+        sanitize:
+          list-mode: strict
+          files:
+            - "**/internal/sanitize/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/html$
+        imaging:
+          list-mode: strict
+          files:
+            - "**/internal/imaging/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/imaging$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/webp$
+        build:
+          list-mode: strict
+          files:
+            - "**/internal/build/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/imaging$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/render$
+            - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/store$
+              desc: build は store を使わない（保存先からのビルドは publish を通る）
+        build-test:
+          list-mode: strict
+          files:
+            - "**/internal/build/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/imaging$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/render$
+            - github.com/WhiteRoomLab/whiteroom/internal/serve$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        build/gen:
+          list-mode: strict
+          files:
+            - "**/internal/build/gen/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+        sitedir:
+          list-mode: strict
+          files:
+            - "**/internal/sitedir/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/build$
+              desc: sitedir は build を使わない（build のテストが sitedir を使うので、循環する）
+        serve:
+          list-mode: strict
+          files:
+            - "**/internal/serve/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/build$
+              desc: serve は build を使わない（build のテストが serve を使うので、循環する）
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/admin$
+              desc: serve と admin は別のサーバーで、お互いを使わない
+        siteplan:
+          list-mode: strict
+          files:
+            - "**/internal/siteplan/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        edit:
+          list-mode: strict
+          files:
+            - "**/internal/edit/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        edit-test:
+          list-mode: strict
+          files:
+            - "**/internal/edit/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        publish:
+          list-mode: strict
+          files:
+            - "**/internal/publish/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        publish-test:
+          list-mode: strict
+          files:
+            - "**/internal/publish/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+        store:
+          list-mode: strict
+          files:
+            - "**/internal/store/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        store-test:
+          list-mode: strict
+          files:
+            - "**/internal/store/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+        logdb:
+          list-mode: strict
+          files:
+            - "**/internal/logdb/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        logdb-test:
+          list-mode: strict
+          files:
+            - "**/internal/logdb/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        logdb/simfs:
+          list-mode: strict
+          files:
+            - "**/internal/logdb/simfs/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        account:
+          list-mode: strict
+          files:
+            - "**/internal/account/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/nfc$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+        admin:
+          list-mode: strict
+          files:
+            - "**/internal/admin/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/account$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/serve$
+              desc: admin と serve は別のサーバーで、お互いを使わない
+        admin-test:
+          list-mode: strict
+          files:
+            - "**/internal/admin/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+        wpimport:
+          list-mode: strict
+          files:
+            - "**/internal/wpimport/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/html$
+            - github.com/WhiteRoomLab/whiteroom/internal/phpserialize$
+            - github.com/WhiteRoomLab/whiteroom/internal/wpblock$
+            - github.com/WhiteRoomLab/whiteroom/internal/wpformat$
+            - github.com/WhiteRoomLab/whiteroom/internal/wprest$
+            - github.com/WhiteRoomLab/whiteroom/internal/wxr$
+        wpimport-test:
+          list-mode: strict
+          files:
+            - "**/internal/wpimport/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/html$
+            - github.com/WhiteRoomLab/whiteroom/internal/phpserialize$
+            - github.com/WhiteRoomLab/whiteroom/internal/render$
+            - github.com/WhiteRoomLab/whiteroom/internal/theme$
+            - github.com/WhiteRoomLab/whiteroom/internal/wpblock$
+            - github.com/WhiteRoomLab/whiteroom/internal/wpformat$
+            - github.com/WhiteRoomLab/whiteroom/internal/wprest$
+            - github.com/WhiteRoomLab/whiteroom/internal/wxr$
+        cmd/whiteroom:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/serve$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^account\.NewWithIterations$
+          pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/account$
+          msg: テストだけが使う（本番のコードは account.New）
+    gomoddirectives:
+      toolchain-forbidden: true
+      tool-forbidden: true
+      go-version-pattern: ^1\.\d+\.0$
     nolintlint:
       require-explanation: true
       require-specific: true
+  exclusions:
+    rules:
+      # The forbidigo rules are for production code only.
+      - path: _test\.go
+        linters:
+          - forbidigo
 
 formatters:
   enable:
