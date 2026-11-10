@@ -110,7 +110,7 @@ func (r *run) validateRevision(site *content.Site, ent *content.Entry, rev, prev
 }
 
 // checkRevision validates rev as validateRevision does: its problems are the error, except for the missing items that
-// only a revision to be published needs (6.4.2), which are the warnings that it returns (Q4-A).
+// only a revision to be published needs (6.4.2), which are the warnings that it returns.
 func (r *run) checkRevision(site *content.Site, ent *content.Entry, rev, prev *content.Revision, f content.SiteFile) (content.Errors, error) {
 	errs, err := r.validateRevision(site, ent, rev, prev, false, f)
 	if err != nil {
@@ -159,7 +159,7 @@ func (r *run) publishedCheck(model func() (*siteplan.Site, error), ent *content.
 }
 
 // publishedWarnings returns the problems that the site would have if the entry ent, with the revision rev whose ID is id,
-// were published, which model is the model of the site without it, as warnings (Q4-A): those that the checks of the
+// were published, which model is the model of the site without it, as warnings: those that the checks of the
 // build find in a site in which it is.
 func (r *run) publishedWarnings(model func() (*siteplan.Site, error), ent *content.Entry, id string, rev *content.Revision) (content.Errors, error) {
 	problems, warnings, err := r.publishedCheck(model, ent, id, rev)
@@ -181,7 +181,7 @@ func sameValue(a, b jsontext.Value) bool {
 
 // syncedWarnings returns the warnings for the fields of typ that keep one value in every translation (translatable: false,
 // 6.4.5) whose values in rev, the revision that the entry ent is to get, differ from those in the latest revision of
-// another entry of its translation group, of the same type (Q7-A). They are located in f.
+// another entry of its translation group, of the same type. They are located in f.
 func (r *run) syncedWarnings(model func() (*siteplan.Site, error), typ *content.TypeDef, ent *content.Entry, rev *content.Revision, f content.SiteFile) (content.Errors, error) {
 	var synced []string
 	if typ != nil {
@@ -237,9 +237,9 @@ func orNone(id string) string {
 // SaveRevision adds data, the JSON of a revision, to the entry entry as its latest one, and does not publish it. base is
 // the ID of the latest revision that the caller has read, "" if there is none, which the entry must still have: else the
 // error wraps ErrConflict, and nothing is added. The revision is normalized and validated as a draft: its problems are the
-// error (Q4-A). The warnings are the items that only a revision to be published needs, the problems that the site would
+// error. The warnings are the items that only a revision to be published needs, the problems that the site would
 // have if the entry were published with it, and the fields that keep one value in every translation (translatable:
-// false) with a value that differs from that of another translation (Q7-A), which the operation leaves as they are. The
+// false) with a value that differs from that of another translation (6.4.5), which the operation leaves as they are. The
 // result has the ID of the revision and the version of the entry document, which the operation does not change.
 func (e *Editor) SaveRevision(ctx context.Context, op Op, entry, base string, data []byte) (Result, error) {
 	if err := checkOp(op); err != nil {
@@ -489,7 +489,7 @@ func (r *run) copyRevision(id string) (rev, prev *content.Revision, err error) {
 }
 
 // checkDeletable returns the error that an entry whose document is data cannot be deleted, if its status is published or
-// scheduled: it must be unpublished first (Q8-A).
+// scheduled: it must be unpublished first.
 func checkDeletable(id string, data []byte) error {
 	var entry content.Entry
 	if err := entry.UnmarshalJSON(data); err != nil {

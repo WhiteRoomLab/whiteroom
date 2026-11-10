@@ -1,6 +1,7 @@
 // Package wpformat redoes, for the importer, what WordPress 7.1.4 does with the body of a post when it shows the post, so
-// that the result is the same string: the paragraphs of wpautop and the pages of <!--nextpage-->. It also splits large
-// HTML outside of block elements. It uses only the standard library.
+// that the result is the same: the paragraphs of wpautop, the pages of <!--nextpage-->, the shortcodes that do_shortcode
+// finds and their attributes (FindShortcodes, ParseAttrs), and the URLs that autoembed tries to embed (AutoembedURLs). It
+// also splits large HTML outside of block elements. It uses only the standard library.
 package wpformat
 
 import "strings"

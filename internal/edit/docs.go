@@ -117,7 +117,7 @@ func problemAt(f content.SiteFile, path, msg string) content.Errors {
 	return content.LocateErrors(&content.Error{Path: path, Msg: msg}, f)
 }
 
-// normalized normalizes d, which was decoded from given, and returns what to store (Q14-B): given, if normalizing has
+// normalized normalizes d, which was decoded from given, and returns what to store: given, if normalizing has
 // not changed what d writes, else what it writes now.
 func normalized(d normalizer, given []byte) ([]byte, error) {
 	was, err := d.marshal()
@@ -148,7 +148,7 @@ func (r *run) validate(d document, site *content.Site, f content.SiteFile) error
 	return nil
 }
 
-// current returns the current version of the document of kind with id, which must be the version base (Q5): else the
+// current returns the current version of the document of kind with id, which must be the version base: else the
 // error wraps ErrConflict, and if there is none, fs.ErrNotExist.
 func (r *run) current(kind content.RefKind, id string, base int64) (store.Document, error) {
 	d, err := r.tx.Document(kind, id)
@@ -232,7 +232,7 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 // uploadedBy) is a problem, as ReplaceMedia replaces the file.
 //
 // If the save changes what the validation of other documents reads of this one (a term's taxonomy or language), what
-// refers to it is validated again as the build validates it (Q16-A). A problem that this brings to a document, or to a
+// refers to it is validated again as the build validates it (6.7). A problem that this brings to a document, or to a
 // published entry or its published revision, which the build validates, or to a scheduled entry or its scheduled revision,
 // which its scheduled publish validates, fails the save, located in the bytes that the store has; one that it brings only
 // to an entry that is neither published nor scheduled, or to the latest revision of one that does not publish or schedule
@@ -312,7 +312,7 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 // maxListed is the most files that the error of a deletion names.
 const maxListed = 10
 
-// uses finds what refers to the document of kind with id (Q8). If a document, the published revision of an entry or the
+// uses finds what refers to the document of kind with id. If a document, the published revision of an entry or the
 // scheduled revision of a scheduled entry does, the error is that it cannot be deleted, which names their files. Otherwise
 // the warnings are those for the entries whose last revision, which is neither published nor scheduled, refers to it.
 func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
@@ -422,7 +422,7 @@ func (d *settingsDoc) marshal() ([]byte, error) { return d.site.MarshalSettings(
 // validated with the schema file and with what the store has.
 //
 // What the build validates of every other document reads the settings, so a save that changes them validates again every
-// document of every kind, every published and scheduled revision and the latest revision of every entry (Q16-A), which
+// document of every kind, every published and scheduled revision and the latest revision of every entry, which
 // takes a time that grows with the site. The problems that this brings fail the save and the warnings are in the result,
 // as for Save. If the settings that it replaces do not load, every problem is new.
 func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byte) (Result, error) {

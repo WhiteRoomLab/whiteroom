@@ -36,7 +36,7 @@ var errNotEmpty = errors.New("the store is not empty: Import needs a store witho
 
 // Import imports the site that src reads into s, which must have no documents, as the user by: the settings, every
 // document, the revisions that its entries publish or schedule and the original of every medium, with the IDs and the
-// numbers that its files have (Q12-A). The revisions that no entry publishes or schedules are not read, and the theme and
+// numbers that its files have. The revisions that no entry publishes or schedules are not read, and the theme and
 // the schema file are read only to validate the site.
 //
 // It runs in the stages of the build (4.3), each of which stops at its problems: reading the site; decoding its
@@ -45,7 +45,7 @@ var errNotEmpty = errors.New("the store is not empty: Import needs a store witho
 // which it saves in the store, against their documents. Then one Update stores everything and checks the site across its
 // documents with the code of the build (internal/siteplan), on the model that the index of the store gives. It validates
 // also the entries that are not published, and normalizes the documents as a save does before it validates them; it
-// stores them as their files have them unless that changes them (Q14-B).
+// stores them as their files have them unless that changes them.
 //
 // The problems are the error, content.Errors with the files, lines and columns of the files that the source gave. Where
 // the build finds the same problem in a stage that Import has too, they are the build's lines; the exceptions are the
@@ -318,7 +318,7 @@ func (im *importer) validateRevision(d *imported, ent *content.Entry, id, pointe
 // originals saves the original of every medium in the store, and not only those that published content uses, which the
 // build checks; and checks it against the document of its medium: that it exists, its size and its hash, and the format and
 // the size in pixels that internal/mediafile reads from it. What the build finds only after it has read more of an image,
-// such as a side of more than 65535 pixels, is not refused (Q10-A).
+// such as a side of more than 65535 pixels, is not refused.
 func (im *importer) originals() (content.Errors, error) {
 	var errs content.Errors
 	for _, d := range im.docs[content.RefMedia] {

@@ -129,7 +129,7 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 
 // PublishScheduled publishes the scheduled revision of the entry entry if its status is scheduled and its scheduled time is
 // not after now: it does what Publish does with that revision, with the same checks, and the entry is saved as the user who
-// saved its current version, who scheduled it (Q9-A). It has no user and no operation ID: the scheduler that calls it
+// saved its current version, who scheduled it. It has no user and no operation ID: the scheduler that calls it
 // retries by itself, and the state of the entry tells whether it is done. An entry that is not scheduled, or not due, is the
 // error that wraps ErrNotDue, and nothing is saved. The state of the entry is validated first, with its schedule, so that a
 // scheduledAt that does not parse, or a scheduled revision that the store does not have, is a problem of the document. The

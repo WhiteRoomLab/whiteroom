@@ -13,7 +13,7 @@ import (
 
 // A save can make other documents invalid without changing them: when it changes what their validation reads of the
 // saved document (its Ref, which a lookup tells), or the site settings. They are validated again as the build validates
-// them (Q16-A), each as a unit, under the state after the change and, if that has problems, under the state before it, to
+// them (6.7), each as a unit, under the state after the change and, if that has problems, under the state before it, to
 // tell the problems that are new. New problems in what the build validates are errors, and so are those in a scheduled
 // entry and its scheduled revision, which its scheduled publish validates in the same way; those only in drafts, which are
 // not validated, are warnings.

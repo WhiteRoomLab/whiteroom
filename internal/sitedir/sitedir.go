@@ -1,4 +1,4 @@
-// Package sitedir reads a site from a directory, which keeps it until there is a database:
+// Package sitedir reads a site from a directory (4.3), which whiteroom build builds and edit.Import imports into a store:
 //
 //	site/settings.json    the settings document
 //	site/schema.yaml      the schema file
