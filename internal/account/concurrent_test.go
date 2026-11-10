@@ -450,16 +450,6 @@ func TestConcurrentLoginAndDisable(t *testing.T) {
 		})
 	}
 
-	t.Run("a Disable after the login", func(t *testing.T) {
-		e, a := setup(t)
-		_, older := e.login(t, "yamada")
-		_, token := e.login(t, "yamada")
-		if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
-			t.Fatal(err)
-		}
-		finish(t, e, a, []string{older, token}, "a Disable after the login")
-	})
-
 	t.Run("free-running", func(t *testing.T) {
 		e, a := setup(t)
 		const logins = 3

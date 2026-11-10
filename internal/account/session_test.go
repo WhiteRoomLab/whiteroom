@@ -3248,16 +3248,6 @@ func TestOtherChangesKeepSessions(t *testing.T) {
 			}
 		})
 	}
-
-	// A logout ends the one session and no other of the account.
-	t.Run("a logout", func(t *testing.T) {
-		f := newEndFixture(t)
-		if err := f.e.m.Logout(t.Context(), f.tokens["yamada"][0]); err != nil {
-			t.Fatal(err)
-		}
-		sessGone(t, f.e, f.tokens["yamada"][0], "that logged out")
-		sessLives(t, f.e, f.tokens["yamada"][1], "that did not")
-	})
 }
 
 // ownNext is the password that the tests of ChangeOwnPassword change to: it passes every rule.

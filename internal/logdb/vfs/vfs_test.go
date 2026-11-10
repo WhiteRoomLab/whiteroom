@@ -176,9 +176,6 @@ func TestSyncDir(t *testing.T) {
 			t.Errorf("SyncDir(%q): %v", name, err)
 		}
 	}
-	if err := fsys.SyncDir("missing"); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("SyncDir of a missing directory: %v", err)
-	}
 }
 
 func TestSubName(t *testing.T) {

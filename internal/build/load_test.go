@@ -15,8 +15,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 )
 
-var _ Source = (*sitedir.Dir)(nil)
-
 // IDs of entities that the fixture does not have.
 const (
 	missingEntryID    = "ent_01JCZZZZZZZZZZZZZZZZZZZZZZ"

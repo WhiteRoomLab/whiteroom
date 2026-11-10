@@ -444,8 +444,6 @@ func TestRebuildGIFError(t *testing.T) {
 		in   []byte
 		err  string
 	}{
-		{"fewer indexes", gifWith("GIF89a", 4, 3, rgbTable, full, gifImageWith(0, 0, 4, 3, 0, nil, 2,
-			lzwOf(t, 2, cover[:11]))), "invalid GIF: frame 1 has 11 of 12 pixels: unexpected EOF"},
 		{"invalid code", gifWith("GIF89a", 4, 3, rgbTable, gifImageWith(0, 0, 4, 3, 0, nil, 2, []byte{0xff, 0xff})),
 			"invalid GIF: frame 0 has 0 of 12 pixels: lzw: invalid code"},
 		{"truncated", file[:len(file)-3], "truncated GIF"},

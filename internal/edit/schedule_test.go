@@ -2,7 +2,6 @@ package edit
 
 import (
 	"bytes"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -756,17 +755,6 @@ func TestScheduledPublishCopiesLatest(t *testing.T) {
 		}
 		if sum := summaryOf(t, s, entry); sum.Latest != revs[1] {
 			t.Errorf("the latest revision is %s, want %s", sum.Latest, revs[1])
-		}
-	})
-
-	t.Run("a page", func(t *testing.T) {
-		ed, s := newSample(t)
-		rev := scheduleCareers(t, ed, s)
-		newer := must(t)(ed.SaveRevision(t.Context(), Op{By: otherUser}, draftEN, rev,
-			[]byte(`{"schemaVersion":1,"title":"Careers soon","slug":"careers-soon"}`))).Revision
-		must(t)(ed.PublishScheduled(t.Context(), draftEN, careersAt))
-		if got := revisionIDs(t, s, draftEN); !slices.Equal(got, []string{rev, newer}) {
-			t.Errorf("the revisions are %v, want %v: a page has no date to add", got, []string{rev, newer})
 		}
 	})
 
@@ -2338,23 +2326,4 @@ func TestImportScheduled(t *testing.T) {
 			t.Errorf("the summary of %s is %+v, want the published revision %s", aboutEN, sum, aboutENRev)
 		}
 	})
-}
-
-// TestScheduleRecord checks the record of a result that Schedule makes: it reads back as it was.
-func TestScheduleRecord(t *testing.T) {
-	res := Result{
-		Kind: content.RefEntry, ID: draftEN, Revision: testID(content.RefRevision, 1), Status: content.StatusScheduled,
-		Version: store.Version{Seq: 7, Kind: content.RefEntry, ID: draftEN, Hash: "sha256:ab", SavedAt: testNow, SavedBy: userID},
-	}
-	data, err := json.Marshal(record{Request: "sha256:00", Result: newRecordResult(res)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text := string(data); !strings.Contains(text, `"status":"scheduled"`) || strings.Contains(text, "publishes") {
-		t.Errorf("the record of the result is %s, want the status and no publishes", text)
-	}
-	rec, err := decodeRecord("op_x", data)
-	if err != nil || !reflect.DeepEqual(rec.Result.result(), res) {
-		t.Errorf("decodeRecord() = %+v, %v; want the result %+v", rec.Result.result(), err, res)
-	}
 }

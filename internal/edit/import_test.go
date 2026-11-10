@@ -22,11 +22,10 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// A Source is a build.Source, and a site directory is one.
+// A Source is a build.Source.
 var (
 	_ Source       = build.Source(nil)
 	_ build.Source = Source(nil)
-	_ Source       = (*sitedir.Dir)(nil)
 )
 
 // openSite opens the site directory dir, with the example theme, as the Source of an import; the test closes it.

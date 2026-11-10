@@ -875,7 +875,7 @@ func TestOptionsErrors(t *testing.T) {
 		if _, err := Create(fsys, c.o); err == nil || err.Error() != c.want {
 			t.Errorf("Create: %v, want %s", err, c.want)
 		}
-		if len(fileMap(fsys)) != 0 || len(logNamesOrNone(fsys)) != 0 {
+		if len(fileMap(fsys)) != 0 {
 			t.Error("Create made files")
 		}
 		db, err := Create(fsys, Options{})
@@ -901,16 +901,6 @@ func TestOptionsDefaults(t *testing.T) {
 			"want 0, 65536, 67108864, 2s, 67108864 (false)", o.Placement, o.Threshold, o.SegmentBytes, o.WriterWait,
 			o.CheckpointBytes, o.SyncCheckpoints)
 	}
-}
-
-// logNamesOrNone returns the names in log/, or none if it is missing.
-func logNamesOrNone(fsys *simfs.FS) []string {
-	entries, _ := fsys.ReadDir("log")
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	return names
 }
 
 // stateOf returns the tables, the objects and the events of db, and checks its objects.

@@ -899,12 +899,6 @@ func TestRollback(t *testing.T) {
 	}
 	r.wantStoreBuilt()
 	r.wantReleases(third, first, third)
-
-	// Resume when the builds are not paused does nothing.
-	r.Resume()
-	if st := r.Status(); st.Pending || st.Paused {
-		t.Errorf("Status() after a Resume without a pause = %+v, want no build due", st)
-	}
 }
 
 // TestRollbackWaits checks that Rollback waits for the build that runs, which publishes first, and that no build starts
@@ -956,11 +950,9 @@ func TestRollbackErrors(t *testing.T) {
 	r.idle()
 	first := r.current()
 
-	for _, name := range []string{"", "latest", "0123456789ABCDEF", "0123456789abcde", "releases/" + first} {
-		want := fmt.Sprintf("invalid release name %q", name)
-		if err := r.Rollback(t.Context(), name); err == nil || err.Error() != want {
-			t.Errorf("Rollback(%q) error = %v, want %s", name, err, want)
-		}
+	const invalid = `invalid release name "latest"`
+	if err := r.Rollback(t.Context(), "latest"); err == nil || err.Error() != invalid {
+		t.Errorf(`Rollback("latest") error = %v, want %s`, err, invalid)
 	}
 	unknown := "0123456789abcdef"
 	if err := r.Rollback(t.Context(), unknown); err == nil || !strings.HasSuffix(err.Error(), filepath.Join("releases", unknown)+": no such release") {

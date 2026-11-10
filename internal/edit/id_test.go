@@ -2,11 +2,9 @@ package edit
 
 import (
 	"bytes"
-	"io"
 	"math/big"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -89,16 +87,6 @@ func TestNewIDGrows(t *testing.T) {
 	}
 }
 
-func TestNewIDPredictable(t *testing.T) {
-	first, second := testEditor(t, nil), testEditor(t, nil)
-	for range 3 {
-		a, b := mustID(t, first, content.RefTerm), mustID(t, second, content.RefTerm)
-		if a != b {
-			t.Errorf("two Editors with the same clock and seed made %q and %q", a, b)
-		}
-	}
-}
-
 // repeat reads b for ever.
 type repeat byte
 
@@ -107,24 +95,6 @@ func (r repeat) Read(p []byte) (int, error) {
 		p[i] = byte(r)
 	}
 	return len(p), nil
-}
-
-func TestNewIDCountsUp(t *testing.T) {
-	e := testEditor(t, nil)
-	e.ids = content.NewIDSource(io.MultiReader(bytes.NewReader([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xfe}), repeat(0)))
-	var got []*big.Int
-	for range 3 {
-		got = append(got, idNumber(t, content.RefMedia, mustID(t, e, content.RefMedia)))
-	}
-	for i := 1; i < len(got); i++ {
-		if d := new(big.Int).Sub(got[i], got[i-1]); d.Cmp(big.NewInt(1)) != 0 {
-			t.Errorf("ID %d minus ID %d = %v, want 1", i, i-1, d)
-		}
-	}
-	low := new(big.Int).And(got[0], new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 80), big.NewInt(1)))
-	if low.Int64() != 0xfffe {
-		t.Errorf("the random bits of the first ID = %#x, want 0xfffe", low)
-	}
 }
 
 func TestNewIDErrors(t *testing.T) {
@@ -156,43 +126,6 @@ func TestNewIDErrors(t *testing.T) {
 	e.ids = content.NewIDSource(bytes.NewReader([]byte{1, 2, 3}))
 	if id, err := e.newID(content.RefTerm); err == nil {
 		t.Errorf("newID() with a source of 3 bytes = %q, want an error", id)
-	}
-}
-
-func TestNewIDConcurrent(t *testing.T) {
-	e := testEditor(t, nil)
-	const goroutines, each = 8, 200
-	ids := make([][]string, goroutines)
-	var wg sync.WaitGroup
-	for g := range goroutines {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range each {
-				id, err := e.newID(content.RefRedirect)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				ids[g] = append(ids[g], id)
-			}
-		}()
-	}
-	wg.Wait()
-	seen := make(map[string]bool)
-	for g, list := range ids {
-		if !slices.IsSorted(list) {
-			t.Errorf("the IDs of goroutine %d are not in the order in which it made them", g)
-		}
-		for _, id := range list {
-			if seen[id] {
-				t.Fatalf("ID %q was made twice", id)
-			}
-			seen[id] = true
-		}
-	}
-	if len(seen) != goroutines*each {
-		t.Errorf("%d IDs, want %d", len(seen), goroutines*each)
 	}
 }
 

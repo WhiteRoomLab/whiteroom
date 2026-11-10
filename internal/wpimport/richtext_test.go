@@ -1192,26 +1192,7 @@ func FuzzRichText(f *testing.F) {
 	})
 }
 
-// testParagraph converts a paragraph as the converter of the paragraphs will: it reads the root, the text and the settings
-// of the block, and notes at the block.
-func testParagraph(c *bodyConv, _ string, b *wpblock.Block, _ bodyPlace, _ noteAt) ([]content.Block, error) {
-	root, err := c.root(b, "p")
-	if err != nil {
-		return nil, err
-	}
-	blk := c.newBlock(content.BlockParagraph)
-	own := noteAt{id: blk.ID}
-	text, err := c.richText(root, false, own)
-	if err != nil {
-		return nil, err
-	}
-	pr := c.props(b, root, content.BlockParagraph, own)
-	blk.Text, blk.Anchor, blk.ClassName, blk.Variant, blk.Style = text, pr.anchor, pr.className, pr.variant, pr.style
-	return []content.Block{blk}, nil
-}
-
 func TestBodyWithRichText(t *testing.T) {
-	withConverters(t, map[string]converter{"core/paragraph": testParagraph})
 	imp := linkImport(t)
 	item := bodyItem("")
 	item.Link = "https://example.com/2026/10/hello/"

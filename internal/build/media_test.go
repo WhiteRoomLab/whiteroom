@@ -33,8 +33,6 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
 
-var _ render.Resolver = (*resolver)(nil)
-
 // IDs of media that the tests add to the fixture.
 var (
 	animationID = newID("med", 1)

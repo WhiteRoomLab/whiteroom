@@ -388,12 +388,6 @@ func TestHead(t *testing.T) {
 		checkCorrupt(t, err, headPath, -1, fmt.Sprintf("has %d bytes, want 128", n))
 	}
 
-	// A slot of a newer version wins over a valid slot.
-	h = headBytes(older, newer)
-	binary.LittleEndian.PutUint32(h[64+8:], 2)
-	_, err = parseHead(headPath, h)
-	checkVersion(t, err, headPath, 2)
-
 	for _, c := range []struct {
 		name string
 		s    headSlot

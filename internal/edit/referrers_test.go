@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -234,7 +233,7 @@ func newSmallSite(t *testing.T, settings string, files map[string]string) *small
 	}
 	maps.Copy(all, files)
 	for name, data := range all {
-		x.write(t, name, data)
+		writeSite(t, x.dir, name, data)
 	}
 	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
@@ -261,7 +260,7 @@ func (x *smallSite) refuse(t *testing.T, settings string) (got, want []string) {
 	if snap := snapshot(t, x.s); snap != before {
 		t.Errorf("SaveSettings() has changed the store:\n%s\nwant\n%s", snap, before)
 	}
-	x.write(t, settingsName, settings)
+	writeSite(t, x.dir, settingsName, settings)
 	return got, buildErrors(t, x.dir)
 }
 
@@ -272,18 +271,6 @@ func sameProblem(t *testing.T, got, want []string, name, msg string) {
 	if len(got) != 1 || !strings.HasPrefix(got[0], name+":") || !strings.HasSuffix(got[0], msg) || !slices.Equal(got, want) {
 		t.Errorf("the problems of the Editor:\n%s\nthe problems of the build:\n%s\nwant one in %s: %s",
 			strings.Join(got, "\n"), strings.Join(want, "\n"), name, msg)
-	}
-}
-
-// write puts data into the file name of the site directory.
-func (x *smallSite) write(t *testing.T, name, data string) {
-	t.Helper()
-	path := filepath.Join(x.dir, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -313,7 +300,7 @@ func TestSettingsChangeParity(t *testing.T) {
 			t.Errorf("the settings are %+v with %s, want the settings that were saved", got.Version, got.Data)
 		}
 		// The build does not validate the draft: it succeeds for the same site.
-		x.write(t, settingsName, smallJA)
+		writeSite(t, x.dir, settingsName, smallJA)
 		if got := buildErrors(t, x.dir); len(got) != 0 {
 			t.Errorf("the build of the site with the settings fails: %q", got)
 		}
@@ -374,7 +361,7 @@ func TestSettingsChangeParity(t *testing.T) {
 		if got := lines(res.Warnings); !slices.Equal(got, []string{want}) {
 			t.Errorf("SaveSettings() warnings:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
 		}
-		x.write(t, settingsName, settings(""))
+		writeSite(t, x.dir, settingsName, settings(""))
 		if got := buildErrors(t, x.dir); len(got) != 0 {
 			t.Errorf("the build of the site with the settings fails: %q", got)
 		}
@@ -790,7 +777,7 @@ func TestRefChangeUnits(t *testing.T) {
 		x := newSmallSite(t, strings.Replace(smallSettings, "%s", "", 1), nil)
 		entry, rev := testID(content.RefEntry, 4), testID(content.RefRevision, 4)
 		doc := storedEntry(entry, 704, content.TypePage, "ja", testID(content.RefTranslationGroup, 4), content.StatusPublished, rev)
-		x.write(t, docName(content.RefEntry, entry), doc)
+		writeSite(t, x.dir, docName(content.RefEntry, entry), doc)
 		put(t, x.s, content.RefEntry, entry, doc)
 		got := lines(unitProblems(t, x.ed, x.s, func(r *run) unit { return r.publishedUnit(entry, []byte(doc)) }))
 		want := buildErrors(t, x.dir)
@@ -871,8 +858,8 @@ func TestRefChangeUnits(t *testing.T) {
 		entry, rev := testID(content.RefEntry, 5), testID(content.RefRevision, 5)
 		doc := storedEntry(entry, 705, "nope", "ja", testID(content.RefTranslationGroup, 5), content.StatusPublished, rev)
 		const revision = `{"schemaVersion":1,"title":"a\tb","slug":"a"}`
-		x.write(t, docName(content.RefEntry, entry), doc)
-		x.write(t, revisionName(rev), revision)
+		writeSite(t, x.dir, docName(content.RefEntry, entry), doc)
+		writeSite(t, x.dir, revisionName(rev), revision)
 		put(t, x.s, content.RefEntry, entry, doc)
 		addStoredRevision(t, x.s, entry, rev, revision)
 

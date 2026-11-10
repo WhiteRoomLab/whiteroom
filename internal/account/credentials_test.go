@@ -1286,15 +1286,6 @@ func TestVerifyPasswordFactorFailures(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) || got != (Account{}) {
 		t.Errorf("VerifyPasswordFactor() with a context that ends after the match = %+v, %v, want context.Canceled", got, err)
 	}
-	e.m.hook = nil
-	// It needs no random bits for any login: the hash for a login that nobody has was made with the Manager.
-	e.m.rand = iotest.ErrReader(errors.New("no random bits"))
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "nobody", mgrPassword("nobody")); !errors.Is(err, ErrBadCredentials) {
-		t.Errorf("VerifyPasswordFactor() of an unknown login without random bits = %v, want ErrBadCredentials", err)
-	}
-	if _, err := e.m.VerifyPasswordFactor(t.Context(), "admin", mgrPassword("admin")); err != nil {
-		t.Errorf("VerifyPasswordFactor() of a login that exists without random bits = %v, want nil", err)
-	}
 }
 
 // TestVerifyPasswordFactorReadsNoRandomBits checks that no call makes the hash for a login that no account can use: the

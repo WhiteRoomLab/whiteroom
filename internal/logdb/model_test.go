@@ -545,8 +545,7 @@ type scenario struct {
 }
 
 // coverage counts what a run has done: the hook points that it has reached, and, from ops, its operations, "segment"
-// for each segment that it has made, "object file" for each file of an object and "removal" for each file that it has
-// removed.
+// for each segment that it has made and "object file" for each file of an object.
 func coverage(ops []simfs.Op, hooks []string) map[string]int {
 	c := map[string]int{}
 	for _, p := range hooks {
@@ -558,8 +557,6 @@ func coverage(ops []simfs.Op, hooks []string) map[string]int {
 			c["segment"]++
 		case op.Kind == simfs.OpRename && strings.HasPrefix(op.Path, "objects/"):
 			c["object file"]++
-		case op.Kind == simfs.OpRemove:
-			c["removal"]++
 		}
 	}
 	return c

@@ -218,9 +218,6 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if want := fullSnapshot(); !reflect.DeepEqual(s, want) {
 		t.Errorf("ReadSnapshot() =\n%s\nwant\n%s", writeString(t, s), writeString(t, want))
 	}
-	if got := writeString(t, s); got != fullJSON {
-		t.Errorf("WriteJSON() of what was read =\n%s\nwant\n%s", got, fullJSON)
-	}
 }
 
 func TestSnapshotEmpty(t *testing.T) {

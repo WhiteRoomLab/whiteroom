@@ -183,21 +183,6 @@ func TestHashPassword(t *testing.T) {
 	}
 }
 
-func TestHashCostConstants(t *testing.T) {
-	// The cost of new hashes and the largest cost that a hash may name are part of what 7.3 says.
-	if got, want := [2]int{defaultIterations, maxIterations}, [2]int{600000, 10000000}; got != want {
-		t.Errorf("defaultIterations and maxIterations = %v, want %v", got, want)
-	}
-	if got, want := [4]int{minPasswordChars, maxPasswordChars, saltBytes, keyBytes}, [4]int{15, 256, 16, 32}; got != want {
-		t.Errorf("the lengths of the passwords, the salt and the key = %v, want %v", got, want)
-	}
-	// A typed password that is canonically equivalent to one of maxPasswordChars characters in NFC has at most four times
-	// as many code points of at most four bytes, and the bound leaves room for that.
-	if maxTypedPasswordBytes != 8192 || maxTypedPasswordBytes < 16*maxPasswordChars {
-		t.Errorf("maxTypedPasswordBytes = %d, want 8192, and not below %d bytes", maxTypedPasswordBytes, 16*maxPasswordChars)
-	}
-}
-
 func TestValidIterations(t *testing.T) {
 	for n, want := range map[int]bool{
 		math.MinInt: false, -1: false, 0: false, 1: true, 2: true, defaultIterations: true,

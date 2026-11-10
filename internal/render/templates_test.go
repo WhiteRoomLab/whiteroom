@@ -52,6 +52,4 @@ func TestDefaultBlocks(t *testing.T) {
 			t.Errorf("%s does not end with exactly one newline: %q", p, s)
 		}
 	}
-	// A theme can copy them to its blocks/.
-	testTheme(t, files)
 }

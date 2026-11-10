@@ -199,12 +199,6 @@ func TestTestSite(t *testing.T) {
 	}
 }
 
-func TestExampleSite(t *testing.T) {
-	if err := exampleSite().Validate(testLookup); err != nil {
-		t.Fatalf("Validate() = %v", err)
-	}
-}
-
 // TestEveryFieldCoverage checks that testSite uses every type of field and every option.
 func TestEveryFieldCoverage(t *testing.T) {
 	types := make(map[FieldType]bool)

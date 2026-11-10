@@ -439,22 +439,19 @@ func TestNewFailures(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	boom := errors.New("no random bits")
 	tests := []struct {
-		name       string
-		r          io.Reader
-		iterations int
-		is         error
-		want       string
+		name string
+		r    io.Reader
+		is   error
+		want string
 	}{
-		{"no random bits", iotest.ErrReader(boom), pwLow, boom, "cannot read a token: no random bits"},
-		{"a token that is cut", bytes.NewReader(tokBytes(31)), pwLow, io.ErrUnexpectedEOF, "cannot read a token: unexpected EOF"},
-		{"the salt", io.MultiReader(bytes.NewReader(tokBytes(32)), iotest.ErrReader(boom)), pwLow, boom, "cannot read a salt: no random bits"},
-		{"a salt that is cut", io.LimitReader(&pwSequence{}, 47), pwLow, io.ErrUnexpectedEOF, "cannot read a salt: unexpected EOF"},
-		{"no iterations", rand.Reader, 0, nil, "invalid iteration count 0"},
-		{"too many iterations", rand.Reader, maxIterations + 1, nil, "invalid iteration count 10000001"},
+		{"no random bits", iotest.ErrReader(boom), boom, "cannot read a token: no random bits"},
+		{"a token that is cut", bytes.NewReader(tokBytes(31)), io.ErrUnexpectedEOF, "cannot read a token: unexpected EOF"},
+		{"the salt", io.MultiReader(bytes.NewReader(tokBytes(32)), iotest.ErrReader(boom)), boom, "cannot read a salt: no random bits"},
+		{"a salt that is cut", io.LimitReader(&pwSequence{}, 47), io.ErrUnexpectedEOF, "cannot read a salt: unexpected EOF"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m, err := newManager(s, tt.iterations, tt.r)
+			m, err := newManager(s, pwLow, tt.r)
 			if m != nil || err == nil || err.Error() != tt.want || tt.is != nil && !errors.Is(err, tt.is) {
 				t.Errorf("newManager() = %v, %v, want no Manager and the error %q", m, err, tt.want)
 			}

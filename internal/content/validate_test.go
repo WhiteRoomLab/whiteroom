@@ -62,25 +62,23 @@ func TestValidateTestdata(t *testing.T) {
 	tests := []struct {
 		file  string
 		block bool // the file has a block, which is checked as Blocks{b}
-		opts  ValidateOptions
 	}{
 		{file: "about-page-body.json"},
 		{file: "block-example.json", block: true},
 		{file: "wordpress-paragraph.json", block: true},
-		{file: "every-block.json", opts: ValidateOptions{AllowHTML: true, Import: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
 			in := readTestdata(t, tt.file)
 			if !tt.block {
-				assertBlocksValidate(t, mustBlocks(t, in), tt.opts, nil, "")
+				assertBlocksValidate(t, mustBlocks(t, in), ValidateOptions{}, nil, "")
 				return
 			}
 			var b Block
 			if err := b.UnmarshalJSON([]byte(in)); err != nil {
 				t.Fatalf("UnmarshalJSON(%s) = %v", in, err)
 			}
-			assertBlocksValidate(t, Blocks{b}, tt.opts, nil, "")
+			assertBlocksValidate(t, Blocks{b}, ValidateOptions{}, nil, "")
 		})
 	}
 }

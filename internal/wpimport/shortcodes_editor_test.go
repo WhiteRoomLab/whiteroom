@@ -45,9 +45,9 @@ func TestShortcodeBlockEditor(t *testing.T) {
 			want:  jsonList(jsonLegacy(0, wpPara(`[contact-form-7 id="32"]`), "the form 32 is not imported")),
 			lines: []string{legacyLine("the form 32 is not imported", "/body/0")}},
 		{name: "a paragraph of an old form", text: wpPara(`[contact-form 5]`), want: jsonList(jsonFormBlock(0, scIDs[34]))},
-		{name: "a paragraph of a caption", text: wpPara(`[caption width="300"]` + scImg("wp-image-21") + ` Words[/caption]`),
+		{name: "a paragraph of a caption", text: wpPara(`[caption width="300"]` + classicImg("wp-image-21") + ` Words[/caption]`),
 			want: jsonList(jsonImage(0, mediaIDs.photo, "", `"alt":"Photo","caption":[`+jsonText("Words")+`]`))},
-		{name: "a paragraph of a caption with text that looks like a shortcode: WordPress shows it as it is", text: wpPara(`[caption width="300"]` + scImg("wp-image-21") + ` Words [br] and [[x]][/caption]`),
+		{name: "a paragraph of a caption with text that looks like a shortcode: WordPress shows it as it is", text: wpPara(`[caption width="300"]` + classicImg("wp-image-21") + ` Words [br] and [[x]][/caption]`),
 			want: jsonList(jsonImage(0, mediaIDs.photo, "", `"alt":"Photo","caption":[`+jsonText("Words [br] and [[x]]")+`]`))},
 		{name: "a paragraph of an embed", text: wpPara(`[embed]` + ytURL + `[/embed]`), want: jsonList(jsonEmbed(0, "youtube", ytURL))},
 		{name: "a paragraph of a shortcode that is not converted is a legacy block of the block", text: wpPara(`[box]x[/box]`),
@@ -174,7 +174,7 @@ func TestShortcodeBlock(t *testing.T) {
 				jsonLegacy(2, `[video src="a.mp4"]`, "whiteroom has no video blocks yet (stage 2)"),
 				jsonBlock("paragraph", 3, "", "", jsonList(jsonText("Outro "), jsonText("bold", jsonBold)))),
 			lines: []string{gallery(1, "/body/1"), legacyLine("whiteroom has no video blocks yet (stage 2)", "/body/2")}},
-		{name: "a form, a caption and a URL", text: shortcodeBlock("\n[contact-form-7 id=\"31\"]\n\n[caption width=\"300\"]" + scImg("wp-image-21") + " Words[/caption]\n\n" + ytURL + "\n"),
+		{name: "a form, a caption and a URL", text: shortcodeBlock("\n[contact-form-7 id=\"31\"]\n\n[caption width=\"300\"]" + classicImg("wp-image-21") + " Words[/caption]\n\n" + ytURL + "\n"),
 			want: jsonList(jsonFormBlock(0, mediaIDs.contact), jsonImage(1, mediaIDs.photo, "", `"alt":"Photo","caption":[`+jsonText("Words")+`]`), jsonEmbed(2, "youtube", ytURL))},
 		{name: "nothing", text: shortcodeBlock("\n ") + wpPara("x"), want: jsonList(jsonPara(0, "x"))},
 		{name: "text with a shortcode in it", text: shortcodeBlock("Look [foo] here"),
@@ -354,7 +354,7 @@ func TestShortcodeGuard(t *testing.T) {
 	})
 	t.Run("a caption goes with its text", func(t *testing.T) {
 		refuseBlocks(t, content.BlockImage, "media")
-		text := `[caption width="300"]` + scImg("wp-image-21") + ` Words[/caption]`
+		text := `[caption width="300"]` + classicImg("wp-image-21") + ` Words[/caption]`
 		res := convert(t, text)
 		got, _ := res.Blocks.MarshalJSON()
 		if want := withIDs(jsonList(jsonLegacy(1, text, reason))); string(got) != want {

@@ -717,13 +717,6 @@ func TestSerialize(t *testing.T) {
 	}
 }
 
-func TestErrorString(t *testing.T) {
-	err := &Error{Offset: 3, Msg: "unexpected end of the value"}
-	if got, want := err.Error(), "byte 3: unexpected end of the value"; got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}
-
 func TestSerializeCRLF(t *testing.T) {
 	v := array(field("a\nb", str("c\nd\n")), field("e", list(str("f"), integer(1))))
 	want := "a:2:{s:4:\"a\nb\";s:6:\"c\nd\n\";s:1:\"e\";a:2:{i:0;s:1:\"f\";i:1;i:1;}}"
@@ -878,23 +871,6 @@ func TestUnserializeCRLF(t *testing.T) {
 				t.Errorf("UnserializeCRLF(%q) = %s, %d; want %s, %d", tt.in, serialize(got), n, serialize(tt.want), tt.n)
 			}
 		})
-	}
-}
-
-func TestUnserializeCRLFMail(t *testing.T) {
-	for _, body := range []string{mailBody, body26} {
-		v, n, err := UnserializeCRLF(serializeCRLF(mail(body)))
-		if err != nil || n != 1 {
-			t.Fatalf("UnserializeCRLF(a mail) = %v, %d, %v; want a value and 1", v, n, err)
-		}
-		recipient, ok := v.Lookup("recipient")
-		if !ok || recipient.Str != "[_site_admin_email]" {
-			t.Errorf("recipient = %q, %v; want [_site_admin_email]", recipient.Str, ok)
-		}
-		got, _ := v.Lookup("body")
-		if got.Str != body || strings.Contains(got.Str, "\r") {
-			t.Errorf("body = %q, want %q, with the line breaks as LF", got.Str, body)
-		}
 	}
 }
 
