@@ -626,7 +626,7 @@ func TestServeRelease(t *testing.T) {
 	get("/", servedPage("A"))
 }
 
-// TestServeConcurrent sends requests at the same time: at least 100 each, and more until the last switch of current
+// TestServeConcurrent sends requests from 4 goroutines, at least 100 each and more until the last switch of current
 // between releases with other bases. It checks that each is served from one release, with its server.json and its
 // files, and that none fails while a rename replaces current, because the handler reads the link itself and opens the
 // release by its name (4.3, 9.5). A response is checked as it is; no request is sent again.
