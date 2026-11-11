@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 )
@@ -70,7 +71,7 @@ func (e *Editor) CreateEntry(ctx context.Context, op Op, typ, language string) (
 	if err := checkOp(op); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "createEntry", params: []string{typ, language}}
+	q := request{name: "createEntry", params: []string{typ, language}, action: audit.EntryCreate}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		site, settings, err := r.site()
 		if err != nil {
@@ -253,8 +254,11 @@ func (e *Editor) SaveRevision(ctx context.Context, op Op, entry, base string, da
 			return Result{}, err
 		}
 	}
-	q := request{name: "saveRevision", params: []string{entry, base}, data: data}
+	q := request{name: "saveRevision", params: []string{entry, base}, data: data, action: audit.EntrySaveRevision, noVersion: true}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
+		if base != "" {
+			r.note("base", base)
+		}
 		sum, err := r.rd.Summary(content.RefEntry, entry)
 		if err != nil {
 			return Result{}, err
@@ -366,7 +370,7 @@ func (e *Editor) CreateTranslation(ctx context.Context, op Op, source, language 
 	if err := content.CheckID(content.RefEntry, source); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "createTranslation", params: []string{source, language}}
+	q := request{name: "createTranslation", params: []string{source, language}, action: audit.EntryCreateTranslation}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		sum, err := r.rd.Summary(content.RefEntry, source)
 		if err != nil {

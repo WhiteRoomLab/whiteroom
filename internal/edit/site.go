@@ -39,17 +39,26 @@ func (e *Editor) reader(tx *store.Tx) reader {
 
 // run is an operation in the transaction of its Update, or in the View that makes the model of the site before it.
 type run struct {
-	e     *Editor
-	ctx   context.Context
-	tx    *store.Tx
-	rd    reader
-	by    string            // the user, who saves
-	given map[string][]byte // the files that the caller gave, by name, in which problems in them are located
-	err   error             // the first error of lookup, which fails the operation instead of the problems of validation
+	e      *Editor
+	ctx    context.Context
+	tx     *store.Tx
+	rd     reader
+	by     string            // the user, who saves
+	given  map[string][]byte // the files that the caller gave, by name, in which problems in them are located
+	err    error             // the first error of lookup, which fails the operation instead of the problems of validation
+	detail map[string]string // what the record of the operation in the activity log tells besides its result
 }
 
 func newRun(e *Editor, ctx context.Context, tx *store.Tx, by string) *run {
 	return &run{e: e, ctx: ctx, tx: tx, rd: e.reader(tx), by: by, given: make(map[string][]byte)}
+}
+
+// note adds an item to the detail of the record of the operation.
+func (r *run) note(key, value string) {
+	if r.detail == nil {
+		r.detail = make(map[string]string)
+	}
+	r.detail[key] = value
 }
 
 // refKinds are the kinds of the entities that validation looks up.

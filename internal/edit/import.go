@@ -8,7 +8,9 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
@@ -397,10 +399,11 @@ func originalProblems(f content.SiteFile, m *content.Media, info mediafile.Info,
 // gave. If there are problems, nothing is stored.
 func (im *importer) write() (content.Errors, error) {
 	var warnings content.Errors
-	_, err := im.ed.run(im.ctx, Op{By: im.by}, request{name: "import"}, func(r *run) (Result, error) {
+	_, err := im.ed.run(im.ctx, Op{By: im.by}, request{name: "import", action: audit.SiteImport}, func(r *run) (Result, error) {
 		if err := checkEmpty(r.tx); err != nil {
 			return Result{}, err
 		}
+		im.noteCounts(r)
 		r.given[im.settings.Name] = im.settings.Data
 		if _, err := r.tx.Put(store.SettingsKind, "", im.settings.Data, im.by); err != nil {
 			return Result{}, err
@@ -437,6 +440,19 @@ func (im *importer) write() (content.Errors, error) {
 		return nil, err
 	}
 	return warnings, nil
+}
+
+// noteCounts adds to the detail of the record how many documents of each kind, revisions and originals the import stores.
+func (im *importer) noteCounts(r *run) {
+	for _, kind := range importKinds {
+		r.note(string(kind), strconv.Itoa(len(im.docs[kind])))
+	}
+	r.note("revisions", strconv.Itoa(len(im.revisions)))
+	originals := make(map[string]bool)
+	for _, d := range im.docs[content.RefMedia] {
+		originals[d.v.(*content.Media).Hash] = true
+	}
+	r.note("originals", strconv.Itoa(len(originals)))
 }
 
 // errorsOf returns the problems in err: those of content.Errors, a *content.Error, or else err as one at the root.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -134,6 +135,19 @@ func (e *Editor) uploadTime(site *content.Site) (string, error) {
 	return e.now().In(zone).Format(time.RFC3339), nil
 }
 
+// maxNoted is the most bytes of a value in the detail of the record of an operation that the caller has given.
+const maxNoted = content.MaxFileNameBytes
+
+// noteFile adds the original o of a medium, with the format that its contents give, to the detail of the record.
+func (r *run) noteFile(o store.Original, info mediafile.Info, declaredType string) {
+	r.note("hash", o.Hash)
+	r.note("size", strconv.FormatInt(o.Size, 10))
+	r.note("mimeType", info.MIMEType)
+	if declaredType != "" {
+		r.note("declaredType", audit.Truncate(declaredType, maxNoted))
+	}
+}
+
 // declaredWarning returns the warning, located at /mimeType in f, the document of the medium, that the file is of the
 // type got, which its contents give, and not of declared, which the upload said: none if declared is "" or the same.
 func declaredWarning(f content.SiteFile, got, declared string) content.Errors {
@@ -165,8 +179,9 @@ func (e *Editor) AddMedia(ctx context.Context, op Op, file io.Reader, fileName, 
 	if err != nil {
 		return Result{}, err
 	}
-	q := request{name: "addMedia", params: []string{o.Hash, fileName, declaredType}}
+	q := request{name: "addMedia", params: []string{o.Hash, fileName, declaredType}, action: audit.MediaAdd}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
+		r.noteFile(o, info, declaredType)
 		site, settings, err := r.site()
 		if err != nil {
 			return Result{}, err
@@ -180,6 +195,7 @@ func (e *Editor) AddMedia(ctx context.Context, op Op, file io.Reader, fileName, 
 			Width: info.Width, Height: info.Height, UploadedAt: uploadedAt, UploadedBy: r.by,
 		}
 		m.Normalize()
+		r.note("fileName", audit.Truncate(m.FileName, maxNoted))
 		data, err := m.MarshalJSON()
 		if err != nil {
 			return Result{}, err
@@ -220,8 +236,12 @@ func (e *Editor) ReplaceMedia(ctx context.Context, op Op, id string, base int64,
 	if err != nil {
 		return Result{}, err
 	}
-	q := request{name: "replaceMedia", params: []string{id, strconv.FormatInt(base, 10), o.Hash, declaredType}}
+	q := request{
+		name: "replaceMedia", params: []string{id, strconv.FormatInt(base, 10), o.Hash, declaredType},
+		action: audit.MediaReplace, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
+		r.noteFile(o, info, declaredType)
 		cur, err := r.current(content.RefMedia, id, base)
 		if err != nil {
 			return Result{}, err

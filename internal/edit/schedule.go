@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -53,8 +54,13 @@ func (e *Editor) Schedule(ctx context.Context, op Op, entry string, base int64, 
 		return Result{}, err
 	}
 	at = at.Truncate(time.Second)
-	q := request{name: "schedule", params: []string{entry, strconv.FormatInt(base, 10), revision, at.UTC().Format(time.RFC3339)}}
+	instant := at.UTC().Format(time.RFC3339)
+	q := request{
+		name: "schedule", params: []string{entry, strconv.FormatInt(base, 10), revision, instant},
+		action: audit.EntrySchedule, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
+		r.note("at", instant)
 		cur, ent, err := r.currentEntry(entry, base)
 		if err != nil {
 			return Result{}, err
@@ -148,7 +154,7 @@ func (e *Editor) PublishScheduled(ctx context.Context, entry string, now time.Ti
 	if err := content.CheckID(content.RefEntry, entry); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "publishScheduled", params: []string{entry}}
+	q := request{name: "publishScheduled", params: []string{entry}, action: audit.EntryPublishScheduled}
 	return e.run(ctx, Op{}, q, func(r *run) (Result, error) {
 		before := sync.OnceValues(r.before)
 		cur, err := r.tx.Document(content.RefEntry, entry)
