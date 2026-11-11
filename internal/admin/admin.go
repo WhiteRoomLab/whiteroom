@@ -40,6 +40,7 @@ type Config struct {
 	// X-Forwarded-For header that is not read; nil discards them.
 	ErrorLog *log.Logger
 	// Now is the clock of the limits of login attempts, and of the log lines that are limited to one a minute; nil is time.Now.
+	// It should be monotonic: a clock that goes back makes the waits longer.
 	Now func() time.Time
 }
 

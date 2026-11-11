@@ -29,7 +29,7 @@
 | 1. プロジェクトの目的 | [01-purpose.md](01-purpose.md) |
 | 2. 全体アーキテクチャ（概念） | [02-architecture.md](02-architecture.md) |
 | 3. ストレージ設計（3.1〜3.4） | [03-storage.md](03-storage.md) |
-| 3.5 保存の層の自作の検証（PoC） | [03.05-log-engine.md](03.05-log-engine.md) |
+| 3.5 保存の層のエンジン（案） | [03.05-log-engine.md](03.05-log-engine.md) |
 | 4. コンテンツ編集・ビルド・公開 | [04-publishing.md](04-publishing.md) |
 | 5. テーマと編集体験（5.1〜5.3） | [05-theme.md](05-theme.md) |
 | 5.4 テーマの形式（案） | [05.04-theme-format.md](05.04-theme-format.md) |
