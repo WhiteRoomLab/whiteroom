@@ -121,6 +121,8 @@ func TestSetPasswordWrongTokens(t *testing.T) {
 	}
 	var want []string
 	for _, tt := range tests {
+		// Each in a minute of its own: only the first refusalsPerMinute of a minute are recorded one by one.
+		e.clock.add(time.Minute)
 		a, err := e.m.SetPassword(t.Context(), mgrClient, tt.token, mgrPassword("yamada"))
 		if !errors.Is(err, ErrInvalidToken) || a != (Account{}) {
 			t.Errorf("SetPassword() with %s = %+v, %v, want ErrInvalidToken", tt.name, a, err)

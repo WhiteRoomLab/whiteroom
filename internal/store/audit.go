@@ -185,11 +185,12 @@ func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte) 
 
 // VerifyAudit reads every record of the audit log, and checks that it is as the store has written it: that each
 // record can be read, that the numbers of a log are 1, 2 and so on, that each record has the hash of the one before it,
-// and that the last of each log is the head in the table. It fails with an error that wraps audit.ErrBroken, and names
-// the log, the number of the record and that of the event, if one of them is not. A rewrite of the records that also
-// makes the chain and the heads of the table agree is found only by anchors, the heads that were kept outside the store
-// (audit.ParseHead): each must be the hash of the record of its number. It returns the errors of the reads, and the end
-// of ctx, as they are.
+// and that the last of each log is the head in the table. The activity log has a record, since every store of the table
+// schema 6 or later has store.create or store.upgrade in it (which of them it has is not looked at); the login history
+// may have none. It fails with an error that wraps audit.ErrBroken, and names the log, the number of the record and that
+// of the event, if one of them is not. A rewrite of the records that also makes the chain and the heads of the table
+// agree is found only by anchors, the heads that were kept outside the store (audit.ParseHead): each must be the hash of
+// the record of its number. It returns the errors of the reads, and the end of ctx, as they are.
 func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 	byRecord := map[anchorKey][][sha256.Size]byte{}
 	for i, a := range anchors {
@@ -251,6 +252,9 @@ func checkEnds(ends map[audit.Log]*chainEnd, heads, anchors []audit.Head) error 
 		end := ends[log]
 		head, hasHead := byLog[log]
 		switch {
+		case end == nil && !hasHead && log == audit.ActivityLog:
+			return brokenError(fmt.Sprintf("audit log %q: the log has no record, but every store of the table schema 6 or "+
+				"later has store.create or store.upgrade as its first", log))
 		case end == nil && !hasHead:
 		case end == nil:
 			return brokenError(fmt.Sprintf("audit log %q: the table has the head of record %d, but the log has no record",

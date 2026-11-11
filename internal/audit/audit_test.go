@@ -35,10 +35,11 @@ var (
 	at      = time.Date(2026, 11, 11, 7, 30, 15, 123_456_789, time.UTC)
 )
 
-// full returns a record with every field set.
+// full returns a record of the login history with every field set: only the login history may have a client, a login
+// name and a session.
 func full() Record {
 	return Record{
-		Log: ActivityLog, N: 12, Prev: hash64, At: at, Actor: userA, Action: EntrySaveRevision, Result: "failed",
+		Log: LoginLog, N: 12, Prev: hash64, At: at, Actor: userA, Action: LoginFailure, Result: "failed",
 		Target: Target{Kind: "entry", ID: entryID}, Account: userB, Session: session,
 		Client: Client{Addr: "2001:db8::1", UserAgent: "Mozilla/5.0"}, Login: "yamada", Operation: operation,
 		Changed: true, Before: Version{Seq: 3, Hash: hash64}, After: Version{Seq: 4, Hash: hash64b},
@@ -46,9 +47,16 @@ func full() Record {
 	}
 }
 
-const fullJSON = `{"log":"activity","n":12,` +
+// activity returns r as a record of the activity log, which has no client, login name and session.
+func activity(r Record) Record {
+	r.Log, r.Action = ActivityLog, EntrySaveRevision
+	r.Client, r.Login, r.Session = Client{}, "", ""
+	return r
+}
+
+const fullJSON = `{"log":"login","n":12,` +
 	`"prev":"sha256:abababababababababababababababababababababababababababababababab",` +
-	`"at":"2026-11-11T07:30:15.123456789Z","actor":"usr_01JB8T7H4MA2C5E8G1J4K7N3P6","action":"entry.saveRevision",` +
+	`"at":"2026-11-11T07:30:15.123456789Z","actor":"usr_01JB8T7H4MA2C5E8G1J4K7N3P6","action":"login.failure",` +
 	`"result":"failed","target":{"kind":"entry","id":"ent_01JB8W2N5KD3F6H9J1M4P7R2T5"},` +
 	`"account":"usr_01JB8T7H4MA2C5E8G1J4K7N3P7",` +
 	`"session":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",` +
@@ -90,8 +98,9 @@ func TestEncode(t *testing.T) {
 
 func TestEncodeDecode(t *testing.T) {
 	for name, r := range map[string]Record{
-		"full":    full(),
-		"minimal": {Log: LoginLog, N: 1, At: at, Action: Login},
+		"full":          full(),
+		"full activity": activity(full()),
+		"minimal":       {Log: LoginLog, N: 1, At: at, Action: Login},
 		"a deletion": {Log: ActivityLog, N: 2, Prev: hash64, At: at, Action: EntryDelete,
 			Target: Target{Kind: "entry", ID: entryID}, Before: Version{Seq: 5, Hash: hash64}, After: Version{Seq: 6}},
 		"settings": {Log: ActivityLog, N: 3, At: at, Actor: System, Action: SettingsSave,
@@ -181,11 +190,20 @@ func TestDecodeRefuses(t *testing.T) {
 	if r, err := Decode(other); err != nil || r.Action != "entry.teleport" || r.N != 7 {
 		t.Errorf("Decode() of a record with an unknown action = %+v, %v; want the record", r, err)
 	}
+	// So is a record of the activity log that has a client, a login name and a session, which Check refuses.
+	withClient := []byte(`{"log":"activity","n":8,"at":"2026-11-11T07:30:15Z","action":"entry.create","session":"` + session +
+		`","client":{"addr":"192.0.2.1"},"login":"yamada"}`)
+	if r, err := Decode(withClient); err != nil || r.Client.Addr != "192.0.2.1" || r.Login != "yamada" || r.Session != session {
+		t.Errorf("Decode() of a record of the activity log with a client = %+v, %v; want the record", r, err)
+	}
 }
 
 func TestCheck(t *testing.T) {
 	if err := full().Check(); err != nil {
-		t.Fatalf("Check() of the full record = %v", err)
+		t.Fatalf("Check() of the full record of the login history = %v", err)
+	}
+	if err := activity(full()).Check(); err != nil {
+		t.Fatalf("Check() of the full record of the activity log = %v", err)
 	}
 	// N, Prev and At are for the store.
 	if err := (Record{Log: LoginLog, Action: Login}).Check(); err != nil {
@@ -207,9 +225,18 @@ func TestCheck(t *testing.T) {
 		{"an unknown log", func(r *Record) { r.Log = "audit" }, "log:"},
 		{"an unknown action", func(r *Record) { r.Action = "entry.teleport" }, "action:"},
 		{"no action", func(r *Record) { r.Action = "" }, "action:"},
-		{"an action of the other log", func(r *Record) { r.Action = Login }, "action: login belongs to the login log"},
+		{"an action of the other log", func(r *Record) { r.Action = Build }, "action: build belongs to the activity log"},
 		{"a login action in the activity log", func(r *Record) { r.Log, r.Action = ActivityLog, SessionEnd }, "action:"},
-		{"an activity action in the login log", func(r *Record) { r.Log, r.Action = LoginLog, Build }, "action:"},
+		{"an address in the activity log", func(r *Record) { *r = activity(*r); r.Client.Addr = "192.0.2.1" },
+			"client: the activity log has none"},
+		{"a user agent in the activity log", func(r *Record) { *r = activity(*r); r.Client.UserAgent = secret },
+			"client: the activity log has none"},
+		{"a login name in the activity log", func(r *Record) { *r = activity(*r); r.Login = secret },
+			"login: the activity log has none"},
+		{"a session in the activity log", func(r *Record) { *r = activity(*r); r.Session = session },
+			"session: the activity log has none"},
+		{"every field of the login history in the activity log", func(r *Record) { r.Log, r.Action = ActivityLog, Build },
+			"client: the activity log has none"},
 		{"an actor that is no user", func(r *Record) { r.Actor = secret }, "actor:"},
 		{"an actor of another kind", func(r *Record) { r.Actor = entryID }, "actor:"},
 		{"an actor in lower case", func(r *Record) { r.Actor = strings.ToLower(userA) }, "actor:"},
@@ -291,7 +318,14 @@ func TestCheck(t *testing.T) {
 		})
 	}
 
-	// What Check takes.
+	// What Check takes. The changes are of the record of the login history with every field, but those of onActivity, which
+	// make a record of the activity log.
+	onActivity := func(a Action, kind, id string) func(r *Record) {
+		return func(r *Record) {
+			*r = activity(*r)
+			r.Action, r.Target = a, Target{Kind: kind, ID: id}
+		}
+	}
 	for name, change := range map[string]func(r *Record){
 		"a login of 64 bytes":     func(r *Record) { r.Login = strings.Repeat("a", 64) },
 		"a user agent of 512":     func(r *Record) { r.Client.UserAgent = strings.Repeat("a", 512) },
@@ -308,16 +342,15 @@ func TestCheck(t *testing.T) {
 		"a mapped address":        func(r *Record) { r.Client.Addr = "::ffff:192.0.2.1" },
 		"a version of seq 0":      func(r *Record) { r.Before = Version{} },
 		"a deletion":              func(r *Record) { r.After = Version{Seq: 9} },
-		"a user target":           func(r *Record) { r.Target = Target{Kind: "user", ID: userB} },
-		"a term target":           func(r *Record) { r.Action, r.Target = TermSave, Target{Kind: "term", ID: termID} },
-		"a media target":          func(r *Record) { r.Action, r.Target = MediaAdd, Target{Kind: "media", ID: mediaID} },
-		"an author target":        func(r *Record) { r.Action, r.Target = AuthorSave, Target{Kind: "author", ID: authorID} },
-		"a menu target":           func(r *Record) { r.Action, r.Target = MenuSave, Target{Kind: "menu", ID: menuID} },
-		"a form target":           func(r *Record) { r.Action, r.Target = FormSave, Target{Kind: "form", ID: formID} },
-		"a redirect target": func(r *Record) {
-			r.Action, r.Target = RedirectSave, Target{Kind: "redirect", ID: redirectID}
-		},
-		"no target": func(r *Record) { r.Target = Target{} },
+		"no target":               func(r *Record) { r.Target = Target{} },
+		"an activity record":      func(r *Record) { *r = activity(*r) },
+		"a user target":           onActivity(AccountUpdate, "user", userB),
+		"a term target":           onActivity(TermSave, "term", termID),
+		"a media target":          onActivity(MediaAdd, "media", mediaID),
+		"an author target":        onActivity(AuthorSave, "author", authorID),
+		"a menu target":           onActivity(MenuSave, "menu", menuID),
+		"a form target":           onActivity(FormSave, "form", formID),
+		"a redirect target":       onActivity(RedirectSave, "redirect", redirectID),
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := full()

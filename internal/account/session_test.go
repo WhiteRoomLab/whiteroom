@@ -1923,7 +1923,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 	if look, err := readSession(ended, key, now); err == nil || err.Error() != gone || look.state == sessionLive {
 		t.Errorf("readSession() = %v, %v, want an error that the transaction has ended", look.state, err)
 	}
-	if p, err := startSession(e.hist(ended), yamada, key, "", now, audit.Login, mgrClient); err == nil || err.Error() != gone || !reflect.DeepEqual(p, Principal{}) {
+	if p, err := startSession(e.hist(ended), yamada, key, "", now, audit.Login, mgrClient, nil); err == nil || err.Error() != gone || !reflect.DeepEqual(p, Principal{}) {
 		t.Errorf("startSession() = %+v, %v, want an error that the transaction has ended", p, err)
 	}
 	if err := putSession(ended, key, live); err == nil || err.Error() != gone {
@@ -1953,7 +1953,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 		token := tokSample
 		e.setSession(t, sessKey(token), live)
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(e.hist(tx), yamada, sessKey("new"), token, now, audit.Login, mgrClient)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), token, now, audit.Login, mgrClient, nil)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -1968,7 +1968,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 			e.setSession(t, sessKey("over "+strconv.Itoa(i)), live)
 		}
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient, nil)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -1988,7 +1988,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 	})
 	t.Run("the new session", func(t *testing.T) {
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient, nil)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,55 +20,256 @@ import (
 func TestFailureLimitCounts(t *testing.T) {
 	var l failureLimit
 	minute := time.Date(2026, 11, 8, 12, 3, 0, 0, time.UTC)
-	wrong, unknown := failure{audit.LoginFailure, failWrongPassword}, failure{audit.TokenFailure, tokenUnknown}
+	wrong, unknown := failure{audit.LoginFailure, failWrongPassword}, failure{audit.LoginFailure, failUnknownLogin}
+	busy, token := failure{audit.LoginFailure, failBusy()}, failure{audit.TokenFailure, tokenUnknown}
+	late := minute.Add(59 * time.Second)
 
 	for i := range failuresPerMinute {
-		if !l.admit(minute.Add(time.Duration(i)*time.Second+999*time.Millisecond), wrong) {
-			t.Fatalf("failure %d of the minute is refused, want the first %d recorded", i+1, failuresPerMinute)
+		if !l.admit(minute.Add(time.Duration(i)*time.Second+999*time.Millisecond), classCompared, wrong) {
+			t.Fatalf("failure %d of the minute that cost a hash is refused, want the first %d recorded", i+1, failuresPerMinute)
+		}
+	}
+	// The class of the refusals has its places of its own: the failures that cost a hash did not use them.
+	for i := range refusalsPerMinute {
+		if !l.admit(minute.Add(time.Duration(i)*time.Second), classRefused, busy) {
+			t.Fatalf("failure %d of the minute that cost no hash is refused, want the first %d recorded", i+1, refusalsPerMinute)
 		}
 	}
 	if l.pending() {
 		t.Error("counts are pending after the failures that are recorded")
 	}
 	// The failures after them are counted, of any kind, until the minute is over.
-	if l.admit(minute.Add(59*time.Second), wrong) || l.admit(minute.Add(59*time.Second), unknown) || l.admit(minute.Add(59*time.Second), wrong) {
-		t.Error("a failure after the first 60 of the minute is recorded")
+	if l.admit(late, classCompared, wrong) || l.admit(late, classCompared, unknown) || l.admit(late, classCompared, wrong) {
+		t.Error("a failure that costs a hash, after the first 60 of the minute, is recorded")
+	}
+	if l.admit(late, classRefused, token) || l.admit(late, classRefused, busy) {
+		t.Error("a failure that costs no hash, after the first 10 of the minute, is recorded")
 	}
 	if !l.pending() {
 		t.Fatal("no counts are pending after failures that were not recorded")
 	}
-	// The next minute begins again, and what was counted stays.
-	if !l.admit(minute.Add(time.Minute), wrong) {
+	// The next minute begins again, in both classes, and what was counted stays.
+	if !l.admit(minute.Add(time.Minute), classCompared, wrong) || !l.admit(minute.Add(time.Minute), classRefused, token) {
 		t.Error("the first failure of the next minute is refused")
 	}
 	for i := 1; i < failuresPerMinute; i++ {
-		if !l.admit(minute.Add(time.Minute+time.Duration(i)*time.Millisecond), unknown) {
-			t.Fatalf("failure %d of the next minute is refused", i+1)
+		if !l.admit(minute.Add(time.Minute+time.Duration(i)*time.Millisecond), classCompared, unknown) {
+			t.Fatalf("failure %d of the next minute that costs a hash is refused", i+1)
 		}
 	}
-	if l.admit(minute.Add(2*time.Minute-1), unknown) {
-		t.Error("the 61st failure of the next minute is recorded")
+	for i := 1; i < refusalsPerMinute; i++ {
+		if !l.admit(minute.Add(time.Minute+time.Duration(i)*time.Millisecond), classRefused, token) {
+			t.Fatalf("failure %d of the next minute that costs no hash is refused", i+1)
+		}
+	}
+	if l.admit(minute.Add(2*time.Minute-1), classCompared, unknown) || l.admit(minute.Add(2*time.Minute-1), classRefused, token) {
+		t.Error("a failure after the places of the next minute is recorded")
 	}
 
 	got := l.take()
-	if got == nil || got.counts[wrong] != 2 || got.counts[unknown] != 2 || len(got.counts) != 2 ||
-		!got.from.Equal(minute) || !got.to.Equal(minute.Add(2*time.Minute)) {
-		t.Fatalf("take() = %+v, want 2 and 2, from %v to %v", got, minute, minute.Add(2*time.Minute))
+	if got == nil || got.counts[wrong] != 2 || got.counts[unknown] != 2 || got.counts[busy] != 1 || got.counts[token] != 2 ||
+		len(got.counts) != 4 || !got.from.Equal(minute) || !got.to.Equal(minute.Add(2*time.Minute)) {
+		t.Fatalf("take() = %+v, want 2, 2, 1 and 2, from %v to %v", got, minute, minute.Add(2*time.Minute))
 	}
 	if l.pending() || l.take() != nil {
 		t.Error("counts are pending after take")
 	}
 
 	// restore counts them again, with what came meanwhile.
-	l.restore(got)
-	l.admit(minute.Add(10*time.Minute), wrong)
+	l.restore(got, time.Time{})
+	l.admit(minute.Add(10*time.Minute), classCompared, wrong)
 	for range failuresPerMinute {
-		l.admit(minute.Add(10*time.Minute), wrong)
+		l.admit(minute.Add(10*time.Minute), classCompared, wrong)
 	}
 	back := l.take()
-	if back == nil || back.counts[wrong] != 3 || back.counts[unknown] != 2 || !back.from.Equal(minute) || !back.to.Equal(minute.Add(11*time.Minute)) {
-		t.Errorf("take() after restore = %+v, want 3 and 2, from %v to %v", back, minute, minute.Add(11*time.Minute))
+	if back == nil || back.counts[wrong] != 3 || back.counts[unknown] != 2 || back.counts[busy] != 1 || back.counts[token] != 2 ||
+		!back.from.Equal(minute) || !back.to.Equal(minute.Add(11*time.Minute)) {
+		t.Errorf("take() after restore = %+v, want 3, 2, 1 and 2, from %v to %v", back, minute, minute.Add(11*time.Minute))
 	}
+}
+
+// TestFailureLimitClassesAreApart checks that a class that is used up leaves the places of the other whole, whichever is
+// used up first.
+func TestFailureLimitClassesAreApart(t *testing.T) {
+	at := time.Date(2026, 11, 8, 12, 3, 30, 0, time.UTC)
+	wrong, busy := failure{audit.LoginFailure, failWrongPassword}, failure{audit.LoginFailure, failBusy()}
+	for _, tt := range []struct {
+		name         string
+		first, other failureClass
+		firstFailure failure
+		otherFailure failure
+		firstN       int
+		otherN       int
+	}{
+		{"the refusals first", classRefused, classCompared, busy, wrong, refusalsPerMinute, failuresPerMinute},
+		{"the failures that cost a hash first", classCompared, classRefused, wrong, busy, failuresPerMinute, refusalsPerMinute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var l failureLimit
+			for range tt.firstN + 5 {
+				l.admit(at, tt.first, tt.firstFailure)
+			}
+			for i := range tt.otherN {
+				if !l.admit(at, tt.other, tt.otherFailure) {
+					t.Fatalf("failure %d of the other class is refused after the first class was used up, want %d recorded", i+1, tt.otherN)
+				}
+			}
+			if l.admit(at, tt.other, tt.otherFailure) {
+				t.Errorf("failure %d of the other class is recorded", tt.otherN+1)
+			}
+			got := l.take()
+			if got == nil || got.counts[tt.firstFailure] != 5 || got.counts[tt.otherFailure] != 1 || len(got.counts) != 2 {
+				t.Errorf("take() = %+v, want 5 of the first kind and 1 of the other", got)
+			}
+		})
+	}
+}
+
+// TestFailureLimitValues checks the numbers of 7.4: 60 failures that cost a hash and 10 that cost none are recorded in a
+// minute, which makes at most 70 records of failures.
+func TestFailureLimitValues(t *testing.T) {
+	if failuresPerMinute != 60 || refusalsPerMinute != 10 || failureLimits != [numClasses]int{classCompared: 60, classRefused: 10} {
+		t.Errorf("the limits are %d and %d (%v), want 60 and 10", failuresPerMinute, refusalsPerMinute, failureLimits)
+	}
+	if recordTimeout != 5*time.Second {
+		t.Errorf("a record that stands alone waits %v for the store, want 5s", recordTimeout)
+	}
+}
+
+func TestFailureLimitCountsWhatCouldNotBeWritten(t *testing.T) {
+	var l failureLimit
+	minute := time.Date(2026, 11, 8, 12, 3, 0, 0, time.UTC)
+	wrong := failure{audit.LoginFailure, failWrongPassword}
+	if !l.admit(minute.Add(10*time.Second), classCompared, wrong) {
+		t.Fatal("the first failure is refused")
+	}
+	// The record of the failure that was let in could not be written: it is counted for the minute of its place, and the
+	// place is not given back.
+	l.count(minute.Add(10*time.Second), wrong)
+	for range failuresPerMinute - 1 {
+		if !l.admit(minute.Add(20*time.Second), classCompared, wrong) {
+			t.Fatal("a failure of the places that are left is refused")
+		}
+	}
+	if l.admit(minute.Add(30*time.Second), classCompared, wrong) {
+		t.Error("the place of a failure that could not be written was given back")
+	}
+	got := l.take()
+	if got == nil || got.counts[wrong] != 2 || !got.from.Equal(minute) || !got.to.Equal(minute.Add(time.Minute)) {
+		t.Errorf("take() = %+v, want the failure that could not be written and the one over the limit, in the minute of 12:03", got)
+	}
+	l.count(minute.Add(5*time.Minute+59*time.Second), wrong)
+	if got := l.take(); got == nil || got.counts[wrong] != 1 || !got.from.Equal(minute.Add(5*time.Minute)) ||
+		!got.to.Equal(minute.Add(6*time.Minute)) {
+		t.Errorf("take() = %+v, want 1, from 12:08 to 12:09", got)
+	}
+}
+
+// TestFailureLimitTakesOncePerMinute checks that an Update takes the counts once in a minute of the clock, that take takes
+// them in any minute and marks none, and that restore gives the minute back.
+func TestFailureLimitTakesOncePerMinute(t *testing.T) {
+	minute := time.Date(2026, 11, 8, 12, 3, 0, 0, time.UTC)
+	wrong, busy := failure{audit.LoginFailure, failWrongPassword}, failure{audit.LoginFailure, failBusy()}
+	at := func(minutes, seconds int) time.Time {
+		return minute.Add(time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second)
+	}
+
+	t.Run("an Update takes the counts once in a minute", func(t *testing.T) {
+		var l failureLimit
+		// Nothing is counted: nothing is taken, and the minute is not marked.
+		if got, marked := l.takeForUpdate(at(0, 1)); got != nil || !marked.IsZero() {
+			t.Fatalf("takeForUpdate() without counts = %+v, %v, want nil and no minute", got, marked)
+		}
+		l.count(at(0, 5), wrong)
+		got, marked := l.takeForUpdate(at(0, 10))
+		if got == nil || got.counts[wrong] != 1 || !marked.Equal(minute) {
+			t.Fatalf("takeForUpdate() = %+v, %v, want the count and the minute %v", got, marked, minute)
+		}
+		// What is counted after that waits for the next minute, at any time of this one.
+		l.count(at(0, 20), busy)
+		l.count(at(0, 59), wrong)
+		if again, marked := l.takeForUpdate(at(0, 59)); again != nil || !marked.IsZero() {
+			t.Errorf("takeForUpdate() in the minute in which one took = %+v, %v, want nil and no minute", again, marked)
+		}
+		if !l.pending() {
+			t.Error("the counts are gone, though no one has taken them")
+		}
+		next, marked := l.takeForUpdate(at(1, 0))
+		if next == nil || next.counts[busy] != 1 || next.counts[wrong] != 1 || len(next.counts) != 2 || !marked.Equal(at(1, 0)) ||
+			!next.from.Equal(minute) || !next.to.Equal(at(1, 0)) {
+			t.Errorf("takeForUpdate() in the next minute = %+v, %v, want the counts of 12:03, and the minute 12:04", next, marked)
+		}
+		if l.pending() {
+			t.Error("counts are pending after they were taken")
+		}
+	})
+
+	t.Run("take takes them in any minute and marks none", func(t *testing.T) {
+		var l failureLimit
+		l.count(at(0, 5), wrong)
+		if got, _ := l.takeForUpdate(at(0, 10)); got == nil {
+			t.Fatal("takeForUpdate() took nothing")
+		}
+		l.count(at(0, 20), busy)
+		if got := l.take(); got == nil || got.counts[busy] != 1 || len(got.counts) != 1 {
+			t.Errorf("take() in the minute in which an Update took = %+v, want the count that came after it", got)
+		}
+		// With no Update in the minute before it, an Update takes what comes after take: take marked nothing.
+		var m failureLimit
+		m.count(at(0, 5), wrong)
+		if got := m.take(); got == nil || got.counts[wrong] != 1 {
+			t.Fatalf("take() = %+v, want the count", got)
+		}
+		m.count(at(0, 30), busy)
+		if got, marked := m.takeForUpdate(at(0, 40)); got == nil || got.counts[busy] != 1 || !marked.Equal(minute) {
+			t.Errorf("takeForUpdate() after take in the same minute = %+v, %v, want the count and the minute", got, marked)
+		}
+	})
+
+	t.Run("restore gives the minute back", func(t *testing.T) {
+		var l failureLimit
+		l.count(at(0, 5), wrong)
+		got, marked := l.takeForUpdate(at(0, 10))
+		if got == nil {
+			t.Fatal("takeForUpdate() took nothing")
+		}
+		l.count(at(0, 20), busy) // comes while the Update runs
+		l.restore(got, marked)
+		again, marked := l.takeForUpdate(at(0, 30))
+		if again == nil || again.counts[wrong] != 1 || again.counts[busy] != 1 || !marked.Equal(minute) {
+			t.Errorf("takeForUpdate() after restore, in the same minute = %+v, %v, want what was taken and what came meanwhile", again, marked)
+		}
+
+		// What take returned has no minute to give back, and restore marks nothing.
+		var m failureLimit
+		m.count(at(0, 5), wrong)
+		if taken := m.take(); taken != nil {
+			m.restore(taken, time.Time{})
+		}
+		if got, marked := m.takeForUpdate(at(0, 10)); got == nil || !marked.Equal(minute) {
+			t.Errorf("takeForUpdate() after take and restore = %+v, %v, want the count and the minute", got, marked)
+		}
+	})
+
+	t.Run("restore leaves the minute that another Update has marked", func(t *testing.T) {
+		var l failureLimit
+		l.count(at(0, 5), wrong)
+		first, firstMarked := l.takeForUpdate(at(0, 10))
+		l.count(at(1, 5), busy)
+		if second, _ := l.takeForUpdate(at(1, 10)); second == nil {
+			t.Fatal("the Update of the next minute took nothing")
+		}
+		// The first Update, which is slow, does not commit now: the counts come back, and the minute 12:04 stays marked.
+		l.restore(first, firstMarked)
+		l.count(at(1, 20), wrong)
+		if got, marked := l.takeForUpdate(at(1, 30)); got != nil || !marked.IsZero() {
+			t.Errorf("takeForUpdate() in the minute that an Update marked = %+v, %v, want nil", got, marked)
+		}
+		got, _ := l.takeForUpdate(at(2, 0))
+		if got == nil || got.counts[wrong] != 2 || len(got.counts) != 1 || !got.from.Equal(minute) || !got.to.Equal(at(2, 0)) {
+			t.Errorf("takeForUpdate() in the minute 12:05 = %+v, want the two counts that wait, from 12:03", got)
+		}
+	})
 }
 
 func TestFailureLimitIsPerMinuteOfTheClock(t *testing.T) {
@@ -74,16 +277,21 @@ func TestFailureLimitIsPerMinuteOfTheClock(t *testing.T) {
 	var l failureLimit
 	jst := time.FixedZone("JST", 9*3600)
 	base := time.Date(2026, 11, 8, 21, 0, 30, 0, jst)
-	wrong := failure{audit.LoginFailure, failWrongPassword}
+	wrong, busy := failure{audit.LoginFailure, failWrongPassword}, failure{audit.LoginFailure, failBusy()}
 	for range failuresPerMinute {
-		if !l.admit(base, wrong) {
+		if !l.admit(base, classCompared, wrong) {
 			t.Fatal("a failure of the first 60 is refused")
 		}
 	}
-	if l.admit(base.UTC(), wrong) {
-		t.Error("the 61st failure, in another zone for the same instant, is recorded")
+	for range refusalsPerMinute {
+		if !l.admit(base, classRefused, busy) {
+			t.Fatal("a refusal of the first 10 is refused")
+		}
 	}
-	if !l.admit(base.Add(30*time.Second), wrong) {
+	if l.admit(base.UTC(), classCompared, wrong) || l.admit(base.UTC(), classRefused, busy) {
+		t.Error("the failure after the places, in another zone for the same instant, is recorded")
+	}
+	if !l.admit(base.Add(30*time.Second), classCompared, wrong) || !l.admit(base.Add(30*time.Second), classRefused, busy) {
 		t.Error("the first failure of the next minute is refused")
 	}
 }
@@ -160,7 +368,11 @@ func TestFailureLimit(t *testing.T) {
 
 	t.Run("every kind is counted, by reason", func(t *testing.T) {
 		e := setup(t)
+		// The places of both classes are used up, so that every failure after them is counted.
 		e.failures(t, failuresPerMinute)
+		for range refusalsPerMinute {
+			e.m.LoginRefused(t.Context(), mgrClient, "someone", RefusedBusy)
+		}
 		before := e.mark(t)
 		// One of each kind of failure that the people who are not logged in make.
 		e.failures(t, 2)
@@ -257,6 +469,25 @@ func TestFailureLimit(t *testing.T) {
 		}
 	})
 
+	t.Run("an Update that does not commit leaves its minute to the next one", func(t *testing.T) {
+		e := setup(t)
+		e.failures(t, failuresPerMinute+4)
+		boom := errors.New("boom")
+		err := e.m.logged(t.Context(), func(_ *store.Tx, h *history) error {
+			if err := h.add(audit.Record{Log: audit.LoginLog, Action: audit.Logout, Session: sessKey("x")}); err != nil {
+				return err
+			}
+			return boom
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("logged() = %v, want the error of the function", err)
+		}
+		// The Update took the counts, and gave them back with the minute: the next Update of the same minute takes them.
+		before := e.mark(t)
+		e.login(t, "yamada")
+		e.gained(t, before, "login.suppressed", "login")
+	})
+
 	t.Run("a login whose session is not written counts them again", func(t *testing.T) {
 		e := setup(t)
 		_, token := e.login(t, "yamada")
@@ -317,28 +548,43 @@ func TestFailureLimit(t *testing.T) {
 			wg.Go(func() {
 				e.m.LoginRefused(t.Context(), Client{Addr: netip.MustParseAddr(fmt.Sprintf("203.0.113.%d", i%250+1))}, "x", RefusedRateLimited)
 			})
+			wg.Go(func() {
+				if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+					t.Errorf("Login() = %v, want ErrBadCredentials", err)
+				}
+			})
 		}
 		wg.Wait()
 		if err := e.m.FlushSuppressed(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		// 60 are recorded one by one. The others are counted, and a record that is written while they are counted takes the
-		// counts, so they may be in more than one record: all of them are there.
-		recorded, counted := 0, 0
+		// 60 that cost a hash and 10 that cost none are recorded one by one. The others are counted, and a record that is
+		// written while they are counted takes the counts, so they may be in more than one record: all of them are there.
+		recorded, refused, counted := 0, 0, map[string]int{}
 		for _, r := range e.records(t, before) {
 			if r.Action == audit.LoginFailure {
 				recorded++
+				if r.Result == "rate-limited" {
+					refused++
+				}
 			}
 			if r.Action == audit.LoginSuppressed {
-				var c int
-				if _, err := fmt.Sscan(r.Detail["loginFailureRateLimited"], &c); err != nil {
-					t.Fatalf("the counts of a record are %v: %v", r.Detail, err)
+				for _, key := range []string{"loginFailureRateLimited", "loginFailureWrongPassword"} {
+					if r.Detail[key] == "" {
+						continue
+					}
+					var c int
+					if _, err := fmt.Sscan(r.Detail[key], &c); err != nil {
+						t.Fatalf("the counts of a record are %v: %v", r.Detail, err)
+					}
+					counted[key] += c
 				}
-				counted += c
 			}
 		}
-		if recorded != failuresPerMinute || counted != n-failuresPerMinute {
-			t.Errorf("%d refusals at once have made %d records and %d counts, want %d and %d", n, recorded, counted, failuresPerMinute, n-failuresPerMinute)
+		if recorded != failuresPerMinute+refusalsPerMinute || refused != refusalsPerMinute ||
+			counted["loginFailureRateLimited"] != n-refusalsPerMinute || counted["loginFailureWrongPassword"] != n-failuresPerMinute {
+			t.Errorf("%d refusals and %d wrong passwords at once have made %d records (%d refusals) and the counts %v, want %d, %d, and %d and %d counted",
+				n, n, recorded, refused, counted, failuresPerMinute+refusalsPerMinute, refusalsPerMinute, n-refusalsPerMinute, n-failuresPerMinute)
 		}
 	})
 }
@@ -420,15 +666,55 @@ func TestRecordErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("a failure that is not allowed by the limit is not an error", func(t *testing.T) {
-		e, got := setup(t)
-		e.failures(t, failuresPerMinute)
-		if err := e.s.Close(); err != nil {
-			t.Fatal(err)
+	t.Run("a failure that is not allowed by the limit of its class is not an error", func(t *testing.T) {
+		closeStore := func(e *mgrEnv) {
+			t.Helper()
+			if err := e.s.Close(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		e.m.LoginRefused(t.Context(), mgrClient, "yamada", RefusedBusy)
-		if len(*got) != 0 {
-			t.Errorf("OnRecordError was called with %+v, want none: the failure is counted, and not written", *got)
+		// refuse and guess make one failure of each class with a store that fails when its record is written: a login that
+		// is refused is recorded at once, and a login that fails is recorded after the password was compared.
+		refuse := func(e *mgrEnv) {
+			closeStore(e)
+			e.m.LoginRefused(t.Context(), mgrClient, "yamada", RefusedBusy)
+		}
+		guess := func(e *mgrEnv) {
+			e.m.hook = func(point string) {
+				if point == "verified" {
+					e.m.hook = nil
+					closeStore(e)
+				}
+			}
+			if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+				t.Errorf("Login() = %v, want ErrBadCredentials", err)
+			}
+		}
+		useUpGuesses := func(e *mgrEnv) { e.failures(t, failuresPerMinute) }
+		useUpRefusals := func(e *mgrEnv) {
+			for range refusalsPerMinute {
+				e.m.LoginRefused(t.Context(), mgrClient, "yamada", RefusedBusy)
+			}
+		}
+		for _, tt := range []struct {
+			name     string
+			useUp    func(e *mgrEnv)
+			fail     func(e *mgrEnv)
+			wantCall int
+		}{
+			{"a refusal, when the refusals are used up", useUpRefusals, refuse, 0},
+			{"a login, when the failures that cost a hash are used up", useUpGuesses, guess, 0},
+			// A class that is used up does not stop the other from being tried.
+			{"a refusal, when only the failures that cost a hash are used up", useUpGuesses, refuse, 1},
+			{"a login, when only the refusals are used up", useUpRefusals, guess, 1},
+		} {
+			e, got := setup(t)
+			tt.useUp(e)
+			tt.fail(e)
+			if len(*got) != tt.wantCall {
+				t.Errorf("%s: OnRecordError was called with %+v, want %d calls: a failure that is over its limit is counted, and not written",
+					tt.name, *got, tt.wantCall)
+			}
 		}
 	})
 
@@ -450,6 +736,401 @@ func TestRecordErrors(t *testing.T) {
 		e.gained(t, before, "login.failure/busy")
 		if len(*got) != 0 {
 			t.Errorf("OnRecordError was called with %+v, want none", *got)
+		}
+	})
+}
+
+// TestRefusalsDoNotCrowdOutGuesses checks that the logins that are refused before a hash is made and the tokens that are
+// refused, which cost nothing to send, use only the places of their own in a minute, and leave the places of the failures
+// that cost a hash, which record the address and the login name of a guess.
+func TestRefusalsDoNotCrowdOutGuesses(t *testing.T) {
+	minute := mgrTime.Truncate(time.Minute)
+	cheap := Client{Addr: netip.MustParseAddr("198.51.100.1"), UserAgent: "cheap"}
+	guesser := Client{Addr: netip.MustParseAddr("2001:db8::99"), UserAgent: "guesser"}
+	setup := func(t *testing.T) (*mgrEnv, Account) {
+		t.Helper()
+		e := newMgr(t)
+		e.first(t)
+		return e, e.add(t, "yamada", RoleEditor)
+	}
+	summary := func(from time.Time, counts map[string]string) audit.Record {
+		detail := map[string]string{"from": from.Format(time.RFC3339), "to": from.Add(time.Minute).Format(time.RFC3339)}
+		for key, n := range counts {
+			detail[key] = n
+		}
+		return audit.Record{Log: audit.LoginLog, Action: audit.LoginSuppressed, Detail: detail}
+	}
+	refused := func(c Client, login, result string) audit.Record {
+		return audit.Record{Log: audit.LoginLog, Action: audit.LoginFailure, Result: result, Client: c.record(), Login: login}
+	}
+	repeat := func(n int, r audit.Record) []audit.Record {
+		out := make([]audit.Record, n)
+		for i := range out {
+			out[i] = r
+		}
+		return out
+	}
+
+	t.Run("more refusals than places, and then a guess", func(t *testing.T) {
+		e, yamada := setup(t)
+		before := e.mark(t)
+		for range refusalsPerMinute + 5 {
+			e.m.LoginRefused(t.Context(), cheap, "x", RefusedTooLong)
+		}
+		if _, _, err := e.m.Login(t.Context(), guesser, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+		}
+		// The guess has its address and its login name, and the refusals over their places are counted before it.
+		want := slices.Concat(repeat(refusalsPerMinute, refused(cheap, "x", "too-long")), []audit.Record{
+			summary(minute, map[string]string{"loginFailureTooLong": "5"}),
+			{Log: audit.LoginLog, Action: audit.LoginFailure, Result: "wrong-password", Account: yamada.ID, Client: guesser.record(), Login: "yamada"},
+		})
+		histWant(t, e.records(t, before), want...)
+	})
+
+	t.Run("a password that is too long, which Login turns away, is a refusal", func(t *testing.T) {
+		e, _ := setup(t)
+		before := e.mark(t)
+		long := strings.Repeat("p", maxTypedPasswordBytes+1)
+		for range refusalsPerMinute + 1 {
+			if _, _, err := e.m.Login(t.Context(), cheap, "yamada", long, ""); !errors.Is(err, ErrBadCredentials) {
+				t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+			}
+		}
+		e.failures(t, failuresPerMinute)
+		records := e.records(t, before)
+		if len(records) != refusalsPerMinute+1+failuresPerMinute {
+			t.Fatalf("the records are %q, want %d refusals, the counts of one, and %d guesses", e.added(t, before), refusalsPerMinute, failuresPerMinute)
+		}
+		if got := histShape(records[refusalsPerMinute]); !reflect.DeepEqual(got, summary(minute, map[string]string{"loginFailureTooLong": "1"})) {
+			t.Errorf("the record after the refusals is %+v, want the count of the refusal over the places", got)
+		}
+		for i, r := range records {
+			want := "login.failure/wrong-password"
+			switch {
+			case i < refusalsPerMinute:
+				want = "login.failure/too-long"
+			case i == refusalsPerMinute:
+				want = "login.suppressed"
+			}
+			if recordName(r) != want {
+				t.Fatalf("record %d is %s, want %s", i+1, recordName(r), want)
+			}
+		}
+	})
+
+	t.Run("a token that is refused is a refusal", func(t *testing.T) {
+		e, _ := setup(t)
+		before := e.mark(t)
+		for range refusalsPerMinute + 2 {
+			if _, err := e.m.SetPassword(t.Context(), cheap, "x", mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+				t.Fatalf("SetPassword() = %v, want ErrInvalidToken", err)
+			}
+		}
+		e.failures(t, failuresPerMinute)
+		var tokens, guesses int
+		var counts map[string]string
+		for _, r := range e.records(t, before) {
+			switch recordName(r) {
+			case "token.failure/malformed":
+				tokens++
+			case "login.failure/wrong-password":
+				guesses++
+			case "login.suppressed":
+				counts = r.Detail
+			}
+		}
+		if tokens != refusalsPerMinute || guesses != failuresPerMinute || counts["tokenFailureMalformed"] != "2" || len(counts) != 3 {
+			t.Errorf("%d refused tokens and %d wrong passwords were recorded, with the counts %v, want %d, %d and the count of 2 tokens",
+				tokens, guesses, counts, refusalsPerMinute, failuresPerMinute)
+		}
+	})
+
+	t.Run("each class begins again with the next minute", func(t *testing.T) {
+		e, yamada := setup(t)
+		for range refusalsPerMinute + 2 {
+			e.m.LoginRefused(t.Context(), cheap, "x", RefusedBusy)
+		}
+		e.failures(t, failuresPerMinute+3)
+		e.clock.add(time.Minute)
+		before := e.mark(t)
+		for range refusalsPerMinute + 1 {
+			e.m.LoginRefused(t.Context(), cheap, "x", RefusedBusy)
+		}
+		e.failures(t, failuresPerMinute+1)
+
+		// The first record of the minute has what the minute before counted: three guesses. An Update takes the counts once
+		// in a minute, so the refusal and the guess over the places of this minute, which are counted after it, wait.
+		want := slices.Concat([]audit.Record{summary(minute, map[string]string{"loginFailureWrongPassword": "3"})},
+			repeat(refusalsPerMinute, refused(cheap, "x", "busy")),
+			repeat(failuresPerMinute, audit.Record{Log: audit.LoginLog, Action: audit.LoginFailure, Result: "wrong-password",
+				Account: yamada.ID, Client: mgrClient.record(), Login: "yamada"}),
+		)
+		histWant(t, e.records(t, before), want...)
+		if !e.m.limit.pending() {
+			t.Fatal("the failures over the places of the minute are not counted")
+		}
+		before = e.mark(t)
+		if err := e.m.FlushSuppressed(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		histWant(t, e.records(t, before), summary(minute.Add(time.Minute),
+			map[string]string{"loginFailureBusy": "1", "loginFailureWrongPassword": "1"}))
+	})
+}
+
+// TestUnwrittenFailureIsCounted checks that a failure that took a place and whose record could not be written is
+// reported, is counted for the next login.suppressed, which a store that writes again then takes, and does not give its
+// place back, so that a store that does not answer keeps no more than the places of a minute waiting.
+func TestUnwrittenFailureIsCounted(t *testing.T) {
+	old := recordTimeout
+	recordTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { recordTimeout = old })
+	e := newMgr(t)
+	e.first(t)
+	e.add(t, "yamada", RoleEditor)
+	type reported struct {
+		operation string
+		err       error
+	}
+	var got []reported
+	e.m.OnRecordError(func(operation string, err error) { got = append(got, reported{operation, err}) })
+
+	// Another Update holds the writer of the store, so that a record waits for it as long as recordTimeout, and is not
+	// written.
+	held, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var releaseOnce sync.Once
+	stop := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(stop)
+	go func() {
+		done <- e.s.Update(context.Background(), func(*store.Tx) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	before := e.mark(t)
+
+	other := Client{Addr: netip.MustParseAddr("198.51.100.2"), UserAgent: "other"}
+	if _, _, err := e.m.Login(t.Context(), other, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+	}
+	e.m.LoginRefused(t.Context(), other, "yamada", RefusedRateLimited)
+	if _, err := e.m.SetPassword(t.Context(), other, "x", mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("SetPassword() = %v, want ErrInvalidToken", err)
+	}
+	var operations []string
+	for _, r := range got {
+		operations = append(operations, r.operation)
+		if !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Errorf("OnRecordError was called with %v, want the end of the time that a record waits", r.err)
+		}
+	}
+	if want := []string{"login.failure", "login.failure", "token.failure"}; !slices.Equal(operations, want) {
+		t.Fatalf("OnRecordError was called for %q, want %q: once for each failure", operations, want)
+	}
+	e.unchanged(t, before)
+	// The failures are counted, in the minute in which they came, and their places are not given back.
+	if !e.m.limit.pending() || e.m.limit.written != [numClasses]int{classCompared: 1, classRefused: 2} {
+		t.Errorf("the failures are counted = %v, and have used the places %v, want true and 1 and 2", e.m.limit.pending(), e.m.limit.written)
+	}
+
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("the Update that held the writer = %v", err)
+	}
+	// Once the store writes again, the counts are recorded, with the minute and the reasons.
+	if err := e.m.FlushSuppressed(t.Context()); err != nil {
+		t.Fatalf("FlushSuppressed() = %v", err)
+	}
+	minute := mgrTime.Truncate(time.Minute)
+	histWant(t, e.records(t, before), audit.Record{Log: audit.LoginLog, Action: audit.LoginSuppressed, Detail: map[string]string{
+		"from": minute.Format(time.RFC3339), "to": minute.Add(time.Minute).Format(time.RFC3339),
+		"loginFailureWrongPassword": "1", "loginFailureRateLimited": "1", "tokenFailureMalformed": "1",
+	}})
+	if e.m.limit.pending() {
+		t.Error("the counts are pending after the record that took them")
+	}
+
+	// The place of the guess that was not written is not given back: of the 60 that follow in the same minute, 59 are
+	// recorded, and the last is counted.
+	before = e.mark(t)
+	e.failures(t, failuresPerMinute)
+	records := e.records(t, before)
+	if len(records) != failuresPerMinute-1 {
+		t.Errorf("%d guesses after the one that was not written have made %d records, want %d", failuresPerMinute, len(records), failuresPerMinute-1)
+	}
+	if !e.m.limit.pending() {
+		t.Error("the last of the guesses is not counted")
+	}
+
+	// FlushSuppressed marked no minute, and no Update has taken counts in this one: the next Update takes the guess that
+	// was counted.
+	before = e.mark(t)
+	e.login(t, "yamada")
+	e.gained(t, before, "login.suppressed", "login")
+}
+
+// TestSuppressedOncePerMinute checks that the Updates of the failures that are recorded take the counts once in a minute
+// of the Manager's clock. Refusals over their places and guesses that come by turns, the worst that a flood can do, make
+// 70 records of failures and one record of the counts in a minute, and not one record of the counts for each guess; what is
+// counted after it is recorded by the first Update of the next minute, or by FlushSuppressed in the same minute, and in
+// the end the records tell every count.
+func TestSuppressedOncePerMinute(t *testing.T) {
+	minute := mgrTime.Truncate(time.Minute)
+	cheap := Client{Addr: netip.MustParseAddr("198.51.100.1"), UserAgent: "cheap"}
+	guesser := Client{Addr: netip.MustParseAddr("2001:db8::99"), UserAgent: "guesser"}
+	const overGuesses = 5
+
+	// setup uses up the places of the refusals, and then makes failuresPerMinute turns of a refusal over its places and a
+	// guess, and overGuesses guesses over their places: the refusals that are counted are refused 60 times, the guesses
+	// 5 times.
+	setup := func(t *testing.T) (*mgrEnv, mgrMark) {
+		t.Helper()
+		e := newMgr(t)
+		e.first(t)
+		e.add(t, "yamada", RoleEditor)
+		before := e.mark(t)
+		for range refusalsPerMinute {
+			e.m.LoginRefused(t.Context(), cheap, "x", RefusedBusy)
+		}
+		for range failuresPerMinute {
+			e.m.LoginRefused(t.Context(), cheap, "x", RefusedBusy)
+			if _, _, err := e.m.Login(t.Context(), guesser, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+				t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+			}
+		}
+		e.failures(t, overGuesses)
+		return e, before
+	}
+	// summaries returns the records of the counts of records, and the sum of each count in them.
+	summaries := func(t *testing.T, records []audit.Record) (n int, sum map[string]int) {
+		t.Helper()
+		sum = map[string]int{}
+		for _, r := range records {
+			if r.Action != audit.LoginSuppressed {
+				continue
+			}
+			n++
+			for key, value := range r.Detail {
+				if key == "from" || key == "to" {
+					continue
+				}
+				c, err := strconv.Atoi(value)
+				if err != nil {
+					t.Fatalf("the count %s of a record of the counts is %q", key, value)
+				}
+				sum[key] += c
+			}
+		}
+		return n, sum
+	}
+	// wantSum is every count that was not recorded: the refusals after the first 10, and the guesses after the first 60.
+	wantSum := map[string]int{"loginFailureBusy": failuresPerMinute, "loginFailureWrongPassword": overGuesses}
+
+	t.Run("one record of the counts in the minute", func(t *testing.T) {
+		e, before := setup(t)
+		names := e.added(t, before)
+		var refusals, guesses int
+		for _, name := range names {
+			switch name {
+			case "login.failure/busy":
+				refusals++
+			case "login.failure/wrong-password":
+				guesses++
+			}
+		}
+		n, _ := summaries(t, e.records(t, before))
+		// 70 records of failures and 1 of the counts, and not the 130 that a record of the counts for each guess made.
+		if refusals != refusalsPerMinute || guesses != failuresPerMinute || n != 1 || len(names) != 71 {
+			t.Fatalf("the minute has made %d records, %d refusals, %d guesses and %d of the counts, want 71, %d, %d and 1",
+				len(names), refusals, guesses, n, refusalsPerMinute, failuresPerMinute)
+		}
+		// It is the one that the first guess took: before the guess, after the refusals that were recorded, and with the
+		// refusal that was counted before it.
+		records := e.records(t, before)
+		if got := histShape(records[refusalsPerMinute]); !reflect.DeepEqual(got, audit.Record{Log: audit.LoginLog,
+			Action: audit.LoginSuppressed, Detail: map[string]string{
+				"from": minute.Format(time.RFC3339), "to": minute.Add(time.Minute).Format(time.RFC3339), "loginFailureBusy": "1",
+			}}) {
+			t.Errorf("the record of the counts is %+v, want the one refusal that was counted before the first guess", got)
+		}
+		if !e.m.limit.pending() {
+			t.Error("the counts that came after it are gone")
+		}
+	})
+
+	t.Run("the first Update of the next minute takes the rest", func(t *testing.T) {
+		e, before := setup(t)
+		e.clock.add(time.Minute)
+		// The places of the new minute are free, and this guess is recorded, with the counts before it.
+		if _, _, err := e.m.Login(t.Context(), guesser, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+		}
+		records := e.records(t, before)
+		n, sum := summaries(t, records)
+		if n != 2 || !reflect.DeepEqual(sum, wantSum) {
+			t.Errorf("the records have %d of the counts, which add up to %v, want 2, and %v: every count is in one", n, sum, wantSum)
+		}
+		last := records[len(records)-2]
+		if last.Action != audit.LoginSuppressed || last.Detail["from"] != minute.Format(time.RFC3339) ||
+			last.Detail["to"] != minute.Add(time.Minute).Format(time.RFC3339) || last.Detail["loginFailureBusy"] != "59" ||
+			last.Detail["loginFailureWrongPassword"] != "5" {
+			t.Errorf("the record before the guess of the next minute is %+v, want the counts of the minute before", last)
+		}
+		if e.m.limit.pending() {
+			t.Error("counts are pending after the record that took them")
+		}
+	})
+
+	t.Run("FlushSuppressed writes the rest in the same minute", func(t *testing.T) {
+		e, before := setup(t)
+		if err := e.m.FlushSuppressed(t.Context()); err != nil {
+			t.Fatalf("FlushSuppressed() = %v", err)
+		}
+		n, sum := summaries(t, e.records(t, before))
+		if n != 2 || !reflect.DeepEqual(sum, wantSum) {
+			t.Errorf("the records have %d of the counts, which add up to %v, want 2 (the one of the Update and the one of the flush), and %v", n, sum, wantSum)
+		}
+		if e.m.limit.pending() {
+			t.Error("counts are pending after FlushSuppressed")
+		}
+		// Nothing is left to take: a later write of the login history has only its own record.
+		before = e.mark(t)
+		e.login(t, "yamada")
+		e.gained(t, before, "login")
+		if err := e.m.FlushSuppressed(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		e.gained(t, before, "login")
+	})
+
+	t.Run("a flood of three minutes, with a flush in each", func(t *testing.T) {
+		// The server flushes every minute: each minute has 70 records of failures, the record of the counts that the Update
+		// took, and the one of the flush. A turn of a refusal and a guess has the refusal counted from the 11th turn on.
+		e := newMgr(t)
+		e.first(t)
+		e.add(t, "yamada", RoleEditor)
+		for minutes := range 3 {
+			before := e.mark(t)
+			for range failuresPerMinute + 20 {
+				e.m.LoginRefused(t.Context(), cheap, "x", RefusedBusy)
+				if _, _, err := e.m.Login(t.Context(), guesser, "yamada", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+					t.Fatalf("Login() = %v, want ErrBadCredentials", err)
+				}
+			}
+			if err := e.m.FlushSuppressed(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			records := e.records(t, before)
+			n, sum := summaries(t, records)
+			if len(records) != failuresPerMinute+refusalsPerMinute+2 || n != 2 ||
+				sum["loginFailureBusy"] != failuresPerMinute+20-refusalsPerMinute || sum["loginFailureWrongPassword"] != 20 {
+				t.Errorf("minute %d of a flood has made %d records, %d of them of the counts, which add up to %v, want %d, 2, and %d busy and 20 wrong passwords",
+					minutes+1, len(records), n, sum, failuresPerMinute+refusalsPerMinute+2, failuresPerMinute+20-refusalsPerMinute)
+			}
+			e.clock.add(time.Minute)
 		}
 	})
 }

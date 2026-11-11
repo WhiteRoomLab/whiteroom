@@ -270,6 +270,12 @@ func TestRecordRefused(t *testing.T) {
 		{"a long detail", func(r *audit.Record) { r.Detail = map[string]string{"a": strings.Repeat("x", 2049)} },
 			"audit record: detail a: too long"},
 		{"no log", func(r *audit.Record) { r.Log = "" }, "audit record: log:"},
+		{"a client in the activity log", func(r *audit.Record) { r.Client = audit.Client{Addr: "192.0.2.1", UserAgent: "test"} },
+			"audit record: client: the activity log has none"},
+		{"a login name in the activity log", func(r *audit.Record) { r.Login = "yamada" },
+			"audit record: login: the activity log has none"},
+		{"a session in the activity log", func(r *audit.Record) { r.Session = strings.Repeat("0f", 32) },
+			"audit record: session: the activity log has none"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := eventRecord("refused")
@@ -1194,6 +1200,71 @@ func TestVerifyAudit(t *testing.T) {
 			if tt.name == "a record dropped" {
 				if got := len(allRecords(t, s)); got != 8 {
 					t.Errorf("ReadAudit() reads %d records, want the 8 that are there", got)
+				}
+			}
+		})
+	}
+}
+
+// TestVerifyAuditNeedsTheActivityLog checks that a store of the table schema 6 whose activity log has neither a record nor
+// a head is found without heads that were kept outside the store: every such store has store.create or store.upgrade as
+// the first record of its activity log. The login history may have none.
+func TestVerifyAuditNeedsTheActivityLog(t *testing.T) {
+	const missing = `audit log "activity": the log has no record, but every store of the table schema 6 or later has ` +
+		`store.create or store.upgrade as its first`
+	check := func(t *testing.T, dir string, writer *Store, want string) {
+		t.Helper()
+		reader, err := openLogReader(dir, options{})
+		if err != nil {
+			t.Fatalf("openLogReader() = %v", err)
+		}
+		t.Cleanup(func() { _ = reader.Close() })
+		for who, st := range map[string]*Store{"the writer": writer, "a reader": reader} {
+			err := st.VerifyAudit(t.Context(), nil)
+			switch {
+			case want == "" && err != nil:
+				t.Errorf("VerifyAudit() of %s = %v, want nil", who, err)
+			case want != "" && (err == nil || err.Error() != want || !errors.Is(err, audit.ErrBroken)):
+				t.Errorf("VerifyAudit() of %s = %v, want %q that wraps audit.ErrBroken", who, err, want)
+			}
+		}
+	}
+
+	t.Run("a store with documents whose records and heads are all gone", func(t *testing.T) {
+		s, dir := newLogStore(t, logdb.Options{})
+		putWithRevision(t, s)
+		s = closeAndRewrite(t, s, dir, dropAuditRewrite())
+		if heads, err := s.AuditHeads(t.Context()); err != nil || len(heads) != 0 {
+			t.Fatalf("AuditHeads() = %v, %v; want no head", heads, err)
+		}
+		check(t, dir, s, missing)
+	})
+
+	// The events of auditFixture are 1, 2, 4, 5, 7 and 8 of the activity log, and 3, 6 and 9 of the login history.
+	for _, tt := range []struct {
+		name    string
+		rewrite logdb.Rewrite
+		want    string
+	}{
+		{"every record and both heads dropped", dropAuditRewrite(), missing},
+		{"the activity log dropped with its head",
+			rewriteEvents(nil, []uint64{1, 2, 4, 5, 7, 8}, map[audit.Log]*audit.Head{audit.ActivityLog: nil}), missing},
+		{"the activity log dropped, and its head kept",
+			rewriteEvents(nil, []uint64{1, 2, 4, 5, 7, 8}, nil),
+			`audit log "activity": the table has the head of record 6, but the log has no record`},
+		{"the login history dropped with its head",
+			rewriteEvents(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil}), ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, dir, heads := auditFixture(t)
+			s = closeAndRewrite(t, s, dir, tt.rewrite)
+			check(t, dir, s, tt.want)
+			// The heads that were kept outside the store find what the store alone does not: the login history is gone.
+			if tt.want == "" {
+				err := s.VerifyAudit(t.Context(), heads)
+				if want := `audit log "login": the head kept outside the store is record 3, but the log has no record`; err == nil ||
+					err.Error() != want {
+					t.Errorf("VerifyAudit() with the heads kept outside = %v, want %q", err, want)
 				}
 			}
 		})

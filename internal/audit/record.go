@@ -57,7 +57,8 @@ var targetKinds = []content.RefKind{
 }
 
 // Check returns why r cannot be written, naming the field, or nil. It does not look at N, Prev and At, which the store
-// sets, and its errors show no value.
+// sets, and its errors show no value. A record of the activity log has no client, login name and session: only the
+// login history keeps what tells who someone is.
 func (r Record) Check() error {
 	want, known := logOf[r.Action]
 	switch {
@@ -69,6 +70,12 @@ func (r Record) Check() error {
 		return fmt.Errorf("action: %s belongs to the %s log, not to the %s log", r.Action, want, r.Log)
 	case r.Actor != "" && r.Actor != System && content.CheckID(content.RefUser, r.Actor) != nil:
 		return errors.New(`actor: use a user ID or "system"`)
+	case r.Log == ActivityLog && r.Client != Client{}:
+		return errors.New("client: the activity log has none")
+	case r.Log == ActivityLog && r.Login != "":
+		return errors.New("login: the activity log has none")
+	case r.Log == ActivityLog && r.Session != "":
+		return errors.New("session: the activity log has none")
 	}
 	if err := checkText("result", r.Result, maxWord, false); err != nil {
 		return err

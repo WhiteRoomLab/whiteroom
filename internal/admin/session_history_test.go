@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -264,6 +265,37 @@ func TestLoginHistoryClientOfAUnixSocket(t *testing.T) {
 	if len(records) != 1 || records[0].Client != clientRecord("::", "") {
 		t.Errorf("the record of a login over a Unix socket is %+v, want the client ::", records)
 	}
+}
+
+// TestLoginHistoryRefusalsDoNotCrowdOutGuesses shows that 11 logins in a minute with a password of more than 8 KiB, which
+// cost no hash, use only the 10 places of the refusals: the eleventh is counted, and a wrong password that follows is
+// recorded with the address and the User-Agent of its client. The answers are the same as ever.
+func TestLoginHistoryRefusalsDoNotCrowdOutGuesses(t *testing.T) {
+	ts := newTestServer(t, httpsOrigin)
+	admin := ts.addAccount(t, "admin", account.RoleAdmin)
+	peer := func(addr string) []string { return []string{"RemoteAddr", addr + ":4000", "User-Agent", testAgent} }
+	long := strings.Repeat("p", 8193)
+	n := len(ts.loginRecords(t))
+	var want []audit.Record
+	for i := 1; i <= 11; i++ {
+		addr := fmt.Sprintf("198.51.100.%d", i)
+		ts.wantFailure(t, "a password of more than 8 KiB", "admin", long, peer(addr)...)
+		if i <= 10 {
+			want = append(want, audit.Record{
+				Log: audit.LoginLog, Action: audit.LoginFailure, Result: "too-long", Login: "admin", Client: clientRecord(addr, testAgent),
+			})
+		}
+	}
+	ts.wantFailure(t, "a wrong password", "admin", wrongPassword, peer("203.0.113.9")...)
+	minute := ts.clock.now().Truncate(time.Minute)
+	want = append(want,
+		audit.Record{Log: audit.LoginLog, Action: audit.LoginSuppressed, Detail: map[string]string{
+			"from": minute.Format(time.RFC3339), "to": minute.Add(time.Minute).Format(time.RFC3339), "loginFailureTooLong": "1",
+		}},
+		audit.Record{Log: audit.LoginLog, Action: audit.LoginFailure, Result: "wrong-password", Account: admin.ID, Login: "admin",
+			Client: clientRecord("203.0.113.9", testAgent)},
+	)
+	ts.wantRecords(t, "11 passwords of more than 8 KiB and a wrong password", n, want...)
 }
 
 // TestLoginHistoryRefusedWhenTheStoreFails shows that a record that cannot be written changes no answer, and is logged: a

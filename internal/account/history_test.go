@@ -158,6 +158,56 @@ func TestLoginRecord(t *testing.T) {
 	})
 }
 
+// TestLoginRecordsRehash checks that the record of a login that made the password hash again says so, since the row of
+// the account is written with it, and that no other record of the start of a session does.
+func TestLoginRecordsRehash(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	yamada := e.add(t, "yamada", RoleEditor)
+	// The Manager's hashes have pwLow iterations: this one has fewer, and the login makes it again.
+	e.useHash(t, yamada.ID, mgrPassword("yamada"), pwLow-1)
+	before := e.mark(t)
+	_, token, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
+	if err != nil {
+		t.Fatalf("Login() = %v", err)
+	}
+	if got := e.iterationsOf(t, yamada.ID); got != pwLow {
+		t.Fatalf("the stored hash has %d iterations after the login, want %d: the hash was made again", got, pwLow)
+	}
+	histWant(t, e.records(t, before), audit.Record{
+		Log: audit.LoginLog, Action: audit.Login, Account: yamada.ID, Session: sessKey(token), Client: mgrClient.record(),
+		Detail: map[string]string{"rehashed": "true"},
+	})
+
+	// The next login finds a hash that is as new as the Manager's, which is not written, and the record does not say it.
+	before = e.mark(t)
+	_, token, err = e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
+	if err != nil {
+		t.Fatalf("Login() = %v", err)
+	}
+	histWant(t, e.records(t, before), audit.Record{
+		Log: audit.LoginLog, Action: audit.Login, Account: yamada.ID, Session: sessKey(token), Client: mgrClient.record(),
+	})
+
+	// The session that a change of the password starts is not a login that made a hash again, and its record does not
+	// say so, whichever hash the account had.
+	e.useHash(t, yamada.ID, mgrPassword("yamada"), pwLow-1)
+	before = e.mark(t)
+	_, fresh, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, token, mgrPassword("yamada"), "yamada has another long password")
+	if err != nil {
+		t.Fatalf("ChangeOwnPassword() = %v", err)
+	}
+	var started []audit.Record
+	for _, r := range e.loginRecords(t, before) {
+		if r.Action == audit.SessionStart {
+			started = append(started, r)
+		}
+	}
+	histWant(t, started, audit.Record{
+		Log: audit.LoginLog, Action: audit.SessionStart, Account: yamada.ID, Session: sessKey(fresh), Client: mgrClient.record(),
+	})
+}
+
 // TestLoginRecordsWhatItRemoves checks that a login says why each session that it removes is gone: those that cannot
 // work, with the reason and, for a session that ran out, the time at which it did, and then the new session.
 func TestLoginRecordsWhatItRemoves(t *testing.T) {

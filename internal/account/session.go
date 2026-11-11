@@ -263,15 +263,21 @@ func removeSessions(h *history, id, reason string) error {
 // PasswordCompared and keeps its text and its chain.
 //
 // A password hash with fewer iterations than the Manager's is made again, with the password that matched, and written in
-// the Update that writes the session: CredentialsChangedAt and the account's other sessions stay as they are. A login
-// or a VerifyPasswordFactor that matched the old hash and reads the account after that fails, once.
+// the Update that writes the session: CredentialsChangedAt and the account's other sessions stay as they are, and the
+// record of the login says rehashed. A login or a VerifyPasswordFactor that matched the old hash and reads the account
+// after that fails, once.
 func (m *Manager) Login(ctx context.Context, c Client, login, password, previous string) (Principal, string, error) {
 	found, ok, rehash, why, err := m.verify(ctx, login, password)
 	switch {
 	case err != nil:
 		return Principal{}, "", err
 	case !ok:
-		m.loginFailed(ctx, c, login, why.account, why.result)
+		// A password that is too long is turned away before a hash is made, as the server does for one.
+		class := classCompared
+		if why.result == failTooLong {
+			class = classRefused
+		}
+		m.loginFailed(ctx, class, c, login, why.account, why.result)
 		return Principal{}, "", ErrBadCredentials
 	}
 	out, token, err := m.openSession(ctx, c, found, rehash, password, previous)
@@ -280,21 +286,23 @@ func (m *Manager) Login(ctx context.Context, c Client, login, password, previous
 		if errors.Is(err, ErrBadCredentials) {
 			result = failChanged
 		}
-		m.loginFailed(ctx, c, login, found.ID, result)
+		m.loginFailed(ctx, classCompared, c, login, found.ID, result)
 		return Principal{}, "", compared(err)
 	}
 	return out, token, nil
 }
 
 // openSession is the part of Login after the password matched the row found: it makes the hash again if rehash, and
-// writes the session.
+// writes the session. The record of the login then says rehashed, since the row of the account changes with it.
 func (m *Manager) openSession(ctx context.Context, c Client, found row, rehash bool, password, previous string) (Principal, string, error) {
 	var upgraded string
+	var detail map[string]string
 	if rehash {
 		var err error
 		if upgraded, err = m.newHash(ctx, password); err != nil {
 			return Principal{}, "", err
 		}
+		detail = map[string]string{"rehashed": "true"}
 	}
 	token, key, err := newSession(m.rand)
 	if err != nil {
@@ -316,7 +324,7 @@ func (m *Manager) openSession(ctx context.Context, c Client, found row, rehash b
 				return err
 			}
 		}
-		out, err = startSession(h, r, key, previous, m.now(), audit.Login, c)
+		out, err = startSession(h, r, key, previous, m.now(), audit.Login, c, detail)
 		return err
 	})
 	if err != nil {
@@ -354,8 +362,8 @@ func PasswordCompared(err error) bool {
 
 // startSession writes the session with the key for the account r in h, after the removals that Login describes, and
 // records them and the start of the session: started is audit.Login for a login and audit.SessionStart for a session
-// that takes the place of another.
-func startSession(h *history, r row, key, previous string, now time.Time, started audit.Action, c Client) (Principal, error) {
+// that takes the place of another, and detail is the detail of that record.
+func startSession(h *history, r row, key, previous string, now time.Time, started audit.Action, c Client, detail map[string]string) (Principal, error) {
 	live, err := sweepSessions(h, now)
 	if err != nil {
 		return Principal{}, err
@@ -387,7 +395,9 @@ func startSession(h *history, r row, key, previous string, now time.Time, starte
 	if err := putSession(h.tx, key, s); err != nil {
 		return Principal{}, err
 	}
-	if err := h.add(sessionRecord(started, key, r.ID, c)); err != nil {
+	start := sessionRecord(started, key, r.ID, c)
+	start.Detail = detail
+	if err := h.add(start); err != nil {
 		return Principal{}, err
 	}
 	return s.principal(r), nil
@@ -556,7 +566,7 @@ func (m *Manager) ChangeOwnPassword(ctx context.Context, c Client, token, curren
 		if err := removeSessions(h, r.ID, endedPassword); err != nil {
 			return err
 		}
-		if out, err = startSession(h, changed, key, "", now, audit.SessionStart, c); err != nil {
+		if out, err = startSession(h, changed, key, "", now, audit.SessionStart, c, nil); err != nil {
 			return err
 		}
 		return recordAccount(tx, audit.AccountChangePassword, r.ID, r.ID, changeDetail(before, changed))
