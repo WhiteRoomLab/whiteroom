@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -248,6 +249,7 @@ func TestConcurrentStress(t *testing.T) {
 	boss := e.add(t, "boss", RoleAdmin)
 	logins := []string{"one", "two", "three", "four", "five"}
 	emails := []string{"a@example.com", "B@example.com", "c@example.com", "d@example.com", "E@example.com"}
+	started := e.mark(t)
 
 	var mu sync.Mutex
 	succeeded := make(map[int]int) // how many operations of each kind succeeded
@@ -324,9 +326,10 @@ func TestConcurrentStress(t *testing.T) {
 						remember("", tok)
 					}
 				case 8:
-					if token != "" {
-						_, err = e.m.SetPassword(ctx, mgrClient, token, "the long password of "+login)
+					if token == "" {
+						continue
 					}
+					_, err = e.m.SetPassword(ctx, mgrClient, token, "the long password of "+login)
 				}
 				if err != nil && !mgrStressExpected(err) {
 					t.Errorf("an operation failed with %v", err)
@@ -352,6 +355,35 @@ func TestConcurrentStress(t *testing.T) {
 	checker.Wait()
 	if msg := mgrInvariants(e.s); msg != "" {
 		t.Error(msg)
+	}
+
+	// Each operation that succeeded made one record in the activity log, and each that was refused made none.
+	made := make(map[audit.Action]int)
+	for _, r := range e.activityRecords(t, started) {
+		made[r.Action]++
+	}
+	for _, c := range []struct {
+		action audit.Action
+		kinds  []int
+	}{
+		{audit.AccountInvite, []int{0, 1}}, {audit.AccountUpdate, []int{2, 3}}, {audit.AccountDisable, []int{4}},
+		{audit.AccountEnable, []int{5}}, {audit.AccountDelete, []int{6}}, {audit.AccountReset, []int{7}},
+		{audit.AccountSetPassword, []int{8}},
+	} {
+		want := 0
+		for _, kind := range c.kinds {
+			want += succeeded[kind]
+		}
+		if made[c.action] != want {
+			t.Errorf("the activity log has %d records of %s, want %d: the number of operations that succeeded", made[c.action], c.action, want)
+		}
+		delete(made, c.action)
+	}
+	if len(made) != 0 {
+		t.Errorf("the activity log has records of other actions than the operations that ran: %v", made)
+	}
+	if err := e.s.VerifyAudit(ctx, nil); err != nil {
+		t.Errorf("VerifyAudit() = %v", err)
 	}
 }
 

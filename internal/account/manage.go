@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -11,8 +12,8 @@ import (
 // account, need ManageAccounts (or System). The role of the last active administrator cannot be changed. A change of the
 // role ends the account's sessions in the same Update, so that the next login is authenticated as the new role; a change
 // of the login name, the name, the email address or the link to an author profile keeps them. A Change that changes
-// nothing writes nothing. The problems of c are content.Errors; for a change that needs only EditSelf, the problem of an
-// email address that another account has does not say which.
+// nothing writes no row, and its record says so. The problems of c are content.Errors; for a change that needs only
+// EditSelf, the problem of an email address that another account has does not say which.
 func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Account, error) {
 	c.normalize()
 	var out Account
@@ -54,7 +55,7 @@ func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Ac
 		}
 		out = next.account()
 		if next == cur {
-			return nil
+			return recordAccount(tx, audit.AccountUpdate, by.recorded(), id, nil)
 		}
 		// A link to an author profile that is deleted later is left as it is: only a new link is checked.
 		var login, email, author string
@@ -74,9 +75,11 @@ func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Ac
 			return err
 		}
 		if next.Role != cur.Role {
-			return removeSessions(h, id, endedRole)
+			if err := removeSessions(h, id, endedRole); err != nil {
+				return err
+			}
 		}
-		return nil
+		return recordAccount(tx, audit.AccountUpdate, by.recorded(), id, changeDetail(cur, next))
 	})
 	if err != nil {
 		return Account{}, err
@@ -98,9 +101,13 @@ func (m *Manager) Enable(ctx context.Context, by Actor, id string) (Account, err
 	return m.setDisabled(ctx, by, id, false)
 }
 
-// setDisabled disables or enables the account id, and returns it as it is if it already is. Disabling removes the
-// account's sessions after the checks, in the same Update.
+// setDisabled disables or enables the account id, and returns it as it is, with a record that it changed nothing, if it
+// already is. Disabling removes the account's sessions after the checks, in the same Update.
 func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled bool) (Account, error) {
+	action := audit.AccountEnable
+	if disabled {
+		action = audit.AccountDisable
+	}
 	var out Account
 	err := m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
@@ -114,11 +121,12 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 		if i < 0 {
 			return notFound(id)
 		}
-		next := rows[i]
-		if next.Disabled == disabled {
-			out = next.account()
-			return nil
+		cur := rows[i]
+		if cur.Disabled == disabled {
+			out = cur.account()
+			return recordAccount(tx, action, by.recorded(), id, nil)
 		}
+		next := cur
 		next.Disabled, next.Token = disabled, tokenRow{}
 		ending := noAdminLost
 		if disabled {
@@ -129,9 +137,11 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 		}
 		out = next.account()
 		if disabled {
-			return removeSessions(h, id, endedDisabled)
+			if err := removeSessions(h, id, endedDisabled); err != nil {
+				return err
+			}
 		}
-		return nil
+		return recordAccount(tx, action, by.recorded(), id, changeDetail(cur, next))
 	})
 	if err != nil {
 		return Account{}, err
@@ -144,13 +154,16 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 // The last active administrator cannot be deleted, also not by System. Only an administrator, or System, may. System can
 // also remove a row that cannot be read, however many there are, one at a time and without reading the others, which is
 // how the repair of #49 clears them; the rule of the last active administrator cannot count such a row, and the
-// sessions that name it go too. Any other removal needs every row to be readable, as every operation that writes does.
+// sessions that name it go too, and the record says that the row could not be read, and tells nothing else of it. Any
+// other removal needs every row to be readable, as every operation that writes does.
 func (m *Manager) Delete(ctx context.Context, by Actor, id string) error {
 	return m.logged(ctx, func(tx *store.Tx, h *history) error {
 		if by.system {
 			removed, err := removeUnreadable(tx, id)
 			if removed {
-				err = removeSessions(h, id, endedDeleted)
+				if err = removeSessions(h, id, endedDeleted); err == nil {
+					err = recordAccount(tx, audit.AccountDelete, audit.System, id, map[string]string{"unreadable": "true"})
+				}
 			}
 			if removed || err != nil {
 				return err
@@ -163,12 +176,16 @@ func (m *Manager) Delete(ctx context.Context, by Actor, id string) error {
 		if err := authorize(rows, by, ManageAccounts, id); err != nil {
 			return err
 		}
-		if indexOfID(rows, id) < 0 {
+		i := indexOfID(rows, id)
+		if i < 0 {
 			return notFound(id)
 		}
 		if err := remove(tx, rows, id, "it cannot be deleted"); err != nil {
 			return err
 		}
-		return removeSessions(h, id, endedDeleted)
+		if err := removeSessions(h, id, endedDeleted); err != nil {
+			return err
+		}
+		return recordAccount(tx, audit.AccountDelete, by.recorded(), id, deletedDetail(rows[i]))
 	})
 }

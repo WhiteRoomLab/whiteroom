@@ -34,8 +34,9 @@ var (
 
 // Manager does the account operations of 7.3 on the table accounts of a store, and the logins and sessions on the table
 // sessions. Every operation that writes is one Update of the store, which reads every account first, so that the rules
-// that look at all of them hold whatever else runs. It computes only a few password hashes at once, whatever number of
-// calls need one (see gated). It is safe for concurrent use.
+// that look at all of them hold whatever else runs. An account operation that succeeds, also one that changes nothing,
+// adds one record to the activity log in that Update (7.4); a refused one adds none. It computes only a few password
+// hashes at once, whatever number of calls need one (see gated). It is safe for concurrent use.
 type Manager struct {
 	st         *store.Store
 	now        func() time.Time

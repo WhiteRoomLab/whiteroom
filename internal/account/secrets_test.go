@@ -51,6 +51,11 @@ func TestSecretsNotStored(t *testing.T) {
 			prints = append(prints, fmt.Sprintf(verb, a), fmt.Sprintf(verb, &a), fmt.Sprintf(verb, []Account{a}))
 		}
 	}
+	var personal []mgrSecret // the names and the email addresses, which a record of an account operation never shows
+	known := func(in Input) Input {
+		personal = append(personal, mgrSecret{"the name of " + in.Login, in.Name}, mgrSecret{"the email address of " + in.Login, in.Email})
+		return in
+	}
 	hashes := make(map[string]bool) // the password hashes that the rows have held, which no record may show
 	snap := func() {
 		for _, r := range e.rows(t) {
@@ -97,12 +102,12 @@ func TestSecretsNotStored(t *testing.T) {
 	password("the new password of cafe", cafeThree)
 	password("the password of yamada after the change through the session", yamadaThree)
 
-	admin, err := e.m.CreateFirst(ctx, mgrInput("admin", RoleAdmin), adminFirst)
+	admin, err := e.m.CreateFirst(ctx, known(mgrInput("admin", RoleAdmin)), adminFirst)
 	keep(err)
 	show(admin)
 	snap()
 
-	yamada, tokenA, err := e.m.Invite(ctx, By(admin.ID), mgrInput("yamada", RoleEditor))
+	yamada, tokenA, err := e.m.Invite(ctx, By(admin.ID), known(mgrInput("yamada", RoleEditor)))
 	keep(err)
 	show(yamada)
 	token("the invitation of yamada", tokenA)
@@ -124,7 +129,7 @@ func TestSecretsNotStored(t *testing.T) {
 	keep(err)
 	show(a)
 
-	taro, tokenB, err := e.m.Invite(ctx, By(admin.ID), mgrInput("taro", RoleAuthor))
+	taro, tokenB, err := e.m.Invite(ctx, By(admin.ID), known(mgrInput("taro", RoleAuthor)))
 	keep(err)
 	show(taro)
 	token("the invitation of taro", tokenB)
@@ -144,7 +149,7 @@ func TestSecretsNotStored(t *testing.T) {
 	show(a)
 	snap()
 
-	cafe, tokenD, err := e.m.Invite(ctx, System, mgrInput("cafe", RoleViewer))
+	cafe, tokenD, err := e.m.Invite(ctx, System, known(mgrInput("cafe", RoleViewer)))
 	keep(err)
 	show(cafe)
 	token("the invitation of cafe", tokenD)
@@ -159,7 +164,7 @@ func TestSecretsNotStored(t *testing.T) {
 	snap()
 
 	// Two tokens stay pending: the rows hold their hashes.
-	pending, tokenE, err := e.m.Invite(ctx, System, mgrInput("pending", RoleViewer))
+	pending, tokenE, err := e.m.Invite(ctx, System, known(mgrInput("pending", RoleViewer)))
 	keep(err)
 	show(pending)
 	token("the invitation of pending", tokenE)
@@ -171,6 +176,27 @@ func TestSecretsNotStored(t *testing.T) {
 	for _, acc := range list {
 		show(acc)
 	}
+
+	// An account with a name and an email address that no record may show, which is invited, changed, disabled, enabled,
+	// reset and deleted, so that every account operation has made a record. The names and the addresses that it is changed
+	// to are personal too.
+	temp, tokenG, err := e.m.Invite(ctx, By(admin.ID), known(Input{
+		Login: "temp", Name: "Marker Name Of Temp", Email: "marker.temp@example.org", Role: RoleViewer,
+	}))
+	keep(err)
+	token("the invitation of temp", tokenG)
+	personal = append(personal, mgrSecret{"the new name of temp", "Marker New Name Of Temp"},
+		mgrSecret{"the new email address of temp", "marker.newtemp@example.org"})
+	_, err = e.m.Update(ctx, By(admin.ID), temp.ID, Change{Name: ptr("Marker New Name Of Temp"), Email: ptr("marker.newtemp@example.org")})
+	keep(err)
+	_, err = e.m.Disable(ctx, By(admin.ID), temp.ID)
+	keep(err)
+	_, err = e.m.Enable(ctx, By(admin.ID), temp.ID)
+	keep(err)
+	tokenH, err := e.m.Reset(ctx, By(admin.ID), temp.ID)
+	keep(err)
+	token("the reset of temp", tokenH)
+	keep(e.m.Delete(ctx, By(admin.ID), temp.ID))
 
 	// Two accounts log in, one of them twice, with its first session replaced by the second. The requests and the logout
 	// are of the sessions that end up there, and of one that ended.
@@ -258,7 +284,7 @@ func TestSecretsNotStored(t *testing.T) {
 
 	// The records of the login history and the activity log show none of it either: not a password, not a token, not a hash
 	// of one. The key of a session is the SHA-256 of its token, and is how a record names the session.
-	forbidden := slices.Clone(secrets)
+	forbidden := append(slices.Clone(secrets), personal...)
 	for _, sec := range kept {
 		if sec.name != "the key of a session row" {
 			forbidden = append(forbidden, sec)
@@ -270,6 +296,7 @@ func TestSecretsNotStored(t *testing.T) {
 	for name, tok := range map[string]string{
 		"the invitation of yamada": tokenA, "the invitation of taro": tokenB, "the reset of taro": tokenC,
 		"the invitation of cafe": tokenD, "the invitation of pending": tokenE, "the reset of cafe": tokenF,
+		"the invitation of temp": tokenG, "the reset of temp": tokenH,
 	} {
 		forbidden = append(forbidden, mgrSecret{"the hash of " + name, sumToken(tok)},
 			mgrSecret{"the digits of the hash of " + name, strings.TrimPrefix(sumToken(tok), "sha256:")})
@@ -294,7 +321,11 @@ func TestSecretsNotStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAudit() = %v", err)
 	}
-	for _, action := range []audit.Action{audit.Login, audit.LoginFailure, audit.Logout, audit.SessionStart, audit.SessionEnd, audit.TokenFailure} {
+	for _, action := range []audit.Action{
+		audit.Login, audit.LoginFailure, audit.Logout, audit.SessionStart, audit.SessionEnd, audit.TokenFailure,
+		audit.AccountCreateFirst, audit.AccountInvite, audit.AccountSetPassword, audit.AccountReset, audit.AccountChangePassword,
+		audit.AccountUpdate, audit.AccountDisable, audit.AccountEnable, audit.AccountDelete,
+	} {
 		if !actions[action] {
 			t.Errorf("no record is %s: the test does not reach the records that it checks", action)
 		}

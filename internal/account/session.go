@@ -549,15 +549,17 @@ func (m *Manager) ChangeOwnPassword(ctx context.Context, c Client, token, curren
 		if err != nil {
 			return err
 		}
-		changed, err := rewritePassword(tx, rows, r.ID, stored, next, hash, now)
+		before, changed, err := rewritePassword(tx, rows, r.ID, stored, next, hash, now)
 		if err != nil {
 			return err
 		}
 		if err := removeSessions(h, r.ID, endedPassword); err != nil {
 			return err
 		}
-		out, err = startSession(h, changed, key, "", now, audit.SessionStart, c)
-		return err
+		if out, err = startSession(h, changed, key, "", now, audit.SessionStart, c); err != nil {
+			return err
+		}
+		return recordAccount(tx, audit.AccountChangePassword, r.ID, r.ID, changeDetail(before, changed))
 	})
 	if err != nil {
 		return Principal{}, "", err

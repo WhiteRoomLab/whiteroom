@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -65,7 +66,7 @@ func (m *Manager) setPassword(ctx context.Context, token, password string) (Acco
 			return err
 		}
 		now := m.now()
-		_, next, err := redeemToken(rows, token, now)
+		i, next, err := redeemToken(rows, token, now)
 		if err != nil {
 			return err
 		}
@@ -76,8 +77,14 @@ func (m *Manager) setPassword(ctx context.Context, token, password string) (Acco
 		if err := put(tx, rows, next, noAdminLost); err != nil {
 			return err
 		}
+		if err := removeSessions(h, next.ID, endedPassword); err != nil {
+			return err
+		}
+		if err := recordAccount(tx, audit.AccountSetPassword, next.ID, next.ID, changeDetail(rows[i], next)); err != nil {
+			return err
+		}
 		out = next.account()
-		return removeSessions(h, next.ID, endedPassword)
+		return nil
 	})
 	if err != nil {
 		return Account{}, err
@@ -128,8 +135,16 @@ func (m *Manager) Reset(ctx context.Context, by Actor, id string) (string, error
 		if err != nil {
 			return err
 		}
+		if err := removeSessions(h, id, endedPassword); err != nil {
+			return err
+		}
+		detail := changeDetail(rows[i], next)
+		addToken(detail, next.Token)
+		if err := recordAccount(tx, audit.AccountReset, by.recorded(), id, detail); err != nil {
+			return err
+		}
 		token = tok
-		return removeSessions(h, id, endedPassword)
+		return nil
 	})
 	if err != nil {
 		return "", err
@@ -159,10 +174,14 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 		if err != nil {
 			return err
 		}
-		if _, err := rewritePassword(tx, rows, id, stored, next, hash, m.now()); err != nil {
+		before, after, err := rewritePassword(tx, rows, id, stored, next, hash, m.now())
+		if err != nil {
 			return err
 		}
-		return removeSessions(h, id, endedPassword)
+		if err := removeSessions(h, id, endedPassword); err != nil {
+			return err
+		}
+		return recordAccount(tx, audit.AccountChangePassword, id, id, changeDetail(before, after))
 	})
 }
 
@@ -209,28 +228,29 @@ func (m *Manager) hashNewPassword(ctx context.Context, stored row, current, next
 
 // rewritePassword is the part of the Update of ChangePassword and ChangeOwnPassword that needs the rows: it looks at the
 // account id again, as stored was found before the hash was made, and writes the hash with now as the time of the
-// change, without a token, and returns the row it wrote. The password must be the one that was checked, and the account
-// still active.
-func rewritePassword(tx *store.Tx, rows []row, id string, stored row, next, hash string, now time.Time) (row, error) {
+// change, without a token, and returns the row as it was and the row it wrote. The password must be the one that was
+// checked, and the account still active.
+func rewritePassword(tx *store.Tx, rows []row, id string, stored row, next, hash string, now time.Time) (row, row, error) {
 	i := indexOfID(rows, id)
 	if i < 0 {
-		return row{}, notFound(id)
+		return row{}, row{}, notFound(id)
 	}
-	changed := rows[i]
+	before := rows[i]
 	switch {
-	case changed.Password != stored.Password:
-		return row{}, fmt.Errorf("the password of %s %w", id, ErrConflict)
-	case changed.status() != StatusActive:
-		return row{}, ErrBadCredentials
+	case before.Password != stored.Password:
+		return row{}, row{}, fmt.Errorf("the password of %s %w", id, ErrConflict)
+	case before.status() != StatusActive:
+		return row{}, row{}, ErrBadCredentials
 	}
-	if err := passwordErrors(next, changed); err != nil {
-		return row{}, err
+	if err := passwordErrors(next, before); err != nil {
+		return row{}, row{}, err
 	}
-	changed.Password, changed.CredentialsChangedAt, changed.Token = hash, now, tokenRow{}
-	if err := put(tx, rows, changed, noAdminLost); err != nil {
-		return row{}, err
+	after := before
+	after.Password, after.CredentialsChangedAt, after.Token = hash, now, tokenRow{}
+	if err := put(tx, rows, after, noAdminLost); err != nil {
+		return row{}, row{}, err
 	}
-	return changed, nil
+	return before, after, nil
 }
 
 // VerifyPasswordFactor checks the password of the account with the login name, which it normalizes: one factor of a

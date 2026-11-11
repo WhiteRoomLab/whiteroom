@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -178,6 +179,8 @@ func TestUpdateNothing(t *testing.T) {
 		{}, {Name: ptr(a.Name)}, {Login: ptr("WRITER")}, {Login: ptr(" writer ")}, {Email: ptr(a.Email)}, {Role: ptr(RoleAuthor)},
 		{Author: ptr("")}, {Login: ptr(a.Login), Name: ptr(a.Name), Email: ptr(a.Email), Role: ptr(a.Role), Author: ptr(a.Author)},
 	}
+	var names []string
+	var want []audit.Record
 	for i, c := range same {
 		for _, by := range []Actor{By(a.ID), By(admin.ID), System} {
 			if c.Login != nil || c.Role != nil || c.Author != nil {
@@ -189,9 +192,13 @@ func TestUpdateNothing(t *testing.T) {
 			if err != nil || got != a {
 				t.Errorf("Update() with the change %d = %+v, %v, want the account as it is", i, got, err)
 			}
+			names = append(names, "account.update")
+			want = append(want, activityRecord(by.recorded(), audit.AccountUpdate, a.ID, false, nil))
 		}
 	}
-	e.unchanged(t, before)
+	// No row is written, and each change says in its record that it changed nothing.
+	e.recorded(t, before, names...)
+	histWant(t, e.activityRecords(t, before), want...)
 }
 
 func TestUpdateProblems(t *testing.T) {
@@ -546,7 +553,9 @@ func TestDisableAndEnableAlreadyDone(t *testing.T) {
 	if got, err := e.m.Enable(t.Context(), System, a.ID); err != nil || got != a {
 		t.Errorf("Enable() of an enabled account = %+v, %v, want %+v", got, err, a)
 	}
-	e.unchanged(t, before)
+	// Nothing is written but the record, which says that nothing changed.
+	e.recorded(t, before, "account.enable")
+	histWant(t, e.activityRecords(t, before), activityRecord(audit.System, audit.AccountEnable, a.ID, false, nil))
 	if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +565,8 @@ func TestDisableAndEnableAlreadyDone(t *testing.T) {
 	if got, err := e.m.Disable(t.Context(), System, a.ID); err != nil || got != want {
 		t.Errorf("Disable() of a disabled account = %+v, %v, want %+v", got, err, want)
 	}
-	e.unchanged(t, before)
+	e.recorded(t, before, "account.disable")
+	histWant(t, e.activityRecords(t, before), activityRecord(audit.System, audit.AccountDisable, a.ID, false, nil))
 }
 
 func TestDisableLastAdmin(t *testing.T) {

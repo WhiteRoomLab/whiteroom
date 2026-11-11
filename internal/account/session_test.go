@@ -2810,6 +2810,20 @@ func TestOperationsEndSessions(t *testing.T) {
 		"Reset by System":                                endedPassword,
 		"SetPassword":                                    endedPassword,
 	}
+	// actions are the actions of the records that each operation makes in the activity log.
+	actions := map[string]audit.Action{
+		"Disable by an administrator":                    audit.AccountDisable,
+		"Disable by System":                              audit.AccountDisable,
+		"Delete by an administrator":                     audit.AccountDelete,
+		"Delete by System":                               audit.AccountDelete,
+		"Delete of a row that cannot be read, by System": audit.AccountDelete,
+		"a change of the role by System":                 audit.AccountUpdate,
+		"ChangePassword":                                 audit.AccountChangePassword,
+		"ChangePassword to the same password":            audit.AccountChangePassword,
+		"Reset by an administrator":                      audit.AccountReset,
+		"Reset by System":                                audit.AccountReset,
+		"SetPassword":                                    audit.AccountSetPassword,
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reason, ok := reasons[tt.name]
@@ -2831,7 +2845,7 @@ func TestOperationsEndSessions(t *testing.T) {
 					want[key] = true
 				}
 			}
-			for _, r := range f.e.records(t, marked) {
+			for _, r := range f.e.loginRecords(t, marked) {
 				if r.Action != audit.SessionEnd || r.Result != reason || r.Account != f.yamada.ID || r.Client != (audit.Client{}) || !want[r.Session] {
 					t.Errorf("the operation made the record %q of the session %v, want session.end/%s of a row of yamada, without a client", recordName(r), want[r.Session], reason)
 				}
@@ -2839,6 +2853,10 @@ func TestOperationsEndSessions(t *testing.T) {
 			}
 			if len(want) != 0 {
 				t.Errorf("%d rows that went have no record", len(want))
+			}
+			// The operation itself has one record in the activity log, whatever sessions it ended.
+			if got := f.e.activityRecords(t, marked); len(got) != 1 || got[0].Action != actions[tt.name] || got[0].Target.ID != f.yamada.ID {
+				t.Errorf("the operation made the records %+v in the activity log, want one %s about yamada", got, actions[tt.name])
 			}
 		})
 	}
@@ -2981,8 +2999,12 @@ func TestOperationsEndNothingWhenRefused(t *testing.T) {
 			return func() error { _, err := f.e.m.SetPassword(t.Context(), mgrClient, tokSample, endPassword); return err }
 		}, is(ErrInvalidToken)},
 	}
-	// refusalRecords are the records that a refusal makes by the name of its test; the others make none.
-	refusalRecords := map[string][]string{"SetPassword with a token that is none": {"token.failure/unknown"}}
+	// refusalRecords are the records that a call makes by the name of its test; the others make none. The Disable that finds
+	// the account disabled does not refuse: it changes nothing, and its record says so.
+	refusalRecords := map[string][]string{
+		"SetPassword with a token that is none":  {"token.failure/unknown"},
+		"Disable of an account that is disabled": {"account.disable"},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newEndFixture(t)
@@ -3080,7 +3102,7 @@ func TestDisableEnableRevivesNone(t *testing.T) {
 		if _, err := e.m.Disable(ctx, System, f.yamada.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "account.disable")
 		if _, err := e.m.Enable(ctx, System, f.yamada.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -3091,7 +3113,7 @@ func TestDisableEnableRevivesNone(t *testing.T) {
 		if _, err := e.m.Enable(ctx, System, f.yamada.ID); err != nil {
 			t.Fatal(err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "account.enable")
 	})
 }
 

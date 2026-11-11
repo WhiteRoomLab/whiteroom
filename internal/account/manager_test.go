@@ -290,6 +290,29 @@ func (e *mgrEnv) gained(t *testing.T, before mgrMark, want ...string) {
 	}
 }
 
+// loginRecords returns the records of the login history that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) loginRecords(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	return e.recordsOf(t, before, audit.LoginLog)
+}
+
+// activityRecords returns the records of the activity log that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) activityRecords(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	return e.recordsOf(t, before, audit.ActivityLog)
+}
+
+func (e *mgrEnv) recordsOf(t *testing.T, before mgrMark, log audit.Log) []audit.Record {
+	t.Helper()
+	var got []audit.Record
+	for _, r := range e.records(t, before) {
+		if r.Log == log {
+			got = append(got, r)
+		}
+	}
+	return got
+}
+
 // recordName names r by its action, and its result after a slash if it has one.
 func recordName(r audit.Record) string {
 	if r.Result == "" {

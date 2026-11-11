@@ -558,7 +558,8 @@ func TestChangeOwnPasswordRecords(t *testing.T) {
 	}
 	slices.SortFunc(ends, func(a, b audit.Record) int { return strings.Compare(a.Session, b.Session) })
 	// The sessions that the password ends come first, then what the sweep for the new session removes, then the new session.
-	histWant(t, e.records(t, before), append(ends,
+	// The change has a record in the activity log too (TestAccountRecords).
+	histWant(t, e.loginRecords(t, before), append(ends,
 		audit.Record{Log: audit.LoginLog, Action: audit.SessionEnd, Result: endedIdle, Account: admin.ID, Session: sessKey("old session of admin"),
 			Detail: histAt(oldAdmin.LastSeenAt.Add(SessionIdleTimeout))},
 		audit.Record{Log: audit.LoginLog, Action: audit.SessionStart, Account: yamada.ID, Session: sessKey(fresh), Client: other.record()},
@@ -643,7 +644,7 @@ func TestSetPasswordRecords(t *testing.T) {
 			t.Fatalf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 		// The call in the hook set the password, and this one found the token gone, in its Update.
-		e.gained(t, before, "token.failure/unknown")
+		e.gained(t, before, "account.setPassword", "token.failure/unknown")
 	})
 
 	t.Run("the sessions of the account end, without a client", func(t *testing.T) {
@@ -661,7 +662,7 @@ func TestSetPasswordRecords(t *testing.T) {
 		if _, err := e.m.SetPassword(t.Context(), other, token, "yamada has another long password"); err != nil {
 			t.Fatal(err)
 		}
-		histWant(t, e.records(t, before), audit.Record{
+		histWant(t, e.loginRecords(t, before), audit.Record{
 			Log: audit.LoginLog, Action: audit.SessionEnd, Result: endedPassword, Account: a.ID, Session: sessKey("left behind"),
 		})
 	})
