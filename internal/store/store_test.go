@@ -35,10 +35,29 @@ const (
 // testTime is the time that s.now gives in the stores of newStore.
 var testTime = time.Date(2026, 11, 3, 17, 0, 0, 120_000_000, time.FixedZone("JST", 9*60*60))
 
-// update runs f in an Update of s, and stops the test if it fails.
+// recorded ends the Update of tx for a test that writes: if it has written and has added no record, it adds the record
+// store.write that an Update needs (ErrUnrecorded), so that the tests need not tell what they write.
+func recorded(tx *Tx) error {
+	if tx.records > 0 || !tx.Changed() {
+		return nil
+	}
+	return tx.Record(eventRecord(""))
+}
+
+// withRecord returns f followed by recorded, for an Update of a test that writes.
+func withRecord(f func(*Tx) error) func(*Tx) error {
+	return func(tx *Tx) error {
+		if err := f(tx); err != nil {
+			return err
+		}
+		return recorded(tx)
+	}
+}
+
+// update runs f in an Update of s, with the record store.write if f writes without one, and stops the test if it fails.
 func update(t *testing.T, s *Store, f func(*Tx) error) {
 	t.Helper()
-	if err := s.Update(t.Context(), f); err != nil {
+	if err := s.Update(t.Context(), withRecord(f)); err != nil {
 		t.Fatalf("Update() = %v", err)
 	}
 }

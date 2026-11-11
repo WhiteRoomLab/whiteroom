@@ -12,6 +12,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -40,7 +41,7 @@ func TestSetPassword(t *testing.T) {
 	adminRow := e.raw(t)[admin.ID]
 	e.clock.add(2 * time.Hour)
 	now := mgrTime.Add(2 * time.Hour)
-	a, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada"))
+	a, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada"))
 	if err != nil {
 		t.Fatalf("SetPassword() = %v", err)
 	}
@@ -69,13 +70,13 @@ func TestSetPasswordOnce(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)
 	a, token := e.invite(t, "yamada", RoleEditor)
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 		t.Fatal(err)
 	}
 	before := e.mark(t)
-	_, err := e.m.SetPassword(t.Context(), token, "a second long password")
+	_, err := e.m.SetPassword(t.Context(), mgrClient, token, "a second long password")
 	mgrError(t, err, ErrInvalidToken, "invalid or expired token")
-	e.unchanged(t, before)
+	e.recorded(t, before, "token.failure/unknown") // the token is used up: no account has it
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("yamada")); err != nil {
 		t.Errorf("VerifyPasswordFactor() with the first password = %v, want nil", err)
 	}
@@ -94,20 +95,22 @@ func TestSetPasswordWrongTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := tokenHash(token)
-	tests := []struct{ name, token string }{
-		{"a token that nobody has", fresh},
-		{"empty", ""},
-		{"a letter", "x"},
-		{"one character short", token[:len(token)-1]},
-		{"one character more", token + "A"},
-		{"twice the token", token + token},
-		{"a megabyte of letters", strings.Repeat("A", 1<<20)},
-		{"a line feed at the end", token + "\n"},
-		{"a space at the start", " " + token},
-		{"the hash of the token", hash},
-		{"the token as an ID", "usr_" + token},
-		{"padded", token[:42] + "=="},
-		{"the standard alphabet", strings.NewReplacer("-", "+", "_", "/").Replace(token) + "+"},
+	// result is what the login history records of the token: the text of a token that nobody has is another than one
+	// that is none.
+	tests := []struct{ name, token, result string }{
+		{"a token that nobody has", fresh, "unknown"},
+		{"empty", "", "malformed"},
+		{"a letter", "x", "malformed"},
+		{"one character short", token[:len(token)-1], "malformed"},
+		{"one character more", token + "A", "malformed"},
+		{"twice the token", token + token, "malformed"},
+		{"a megabyte of letters", strings.Repeat("A", 1<<20), "malformed"},
+		{"a line feed at the end", token + "\n", "malformed"},
+		{"a space at the start", " " + token, "malformed"},
+		{"the hash of the token", hash, "malformed"},
+		{"the token as an ID", "usr_" + token, "malformed"},
+		{"padded", token[:42] + "==", "malformed"},
+		{"the standard alphabet", strings.NewReplacer("-", "+", "_", "/").Replace(token) + "+", "malformed"},
 	}
 	before := e.mark(t)
 	hashed := 0
@@ -116,20 +119,24 @@ func TestSetPasswordWrongTokens(t *testing.T) {
 			hashed++
 		}
 	}
+	var want []string
 	for _, tt := range tests {
-		a, err := e.m.SetPassword(t.Context(), tt.token, mgrPassword("yamada"))
+		// Each in a minute of its own: only the first refusalsPerMinute of a minute are recorded one by one.
+		e.clock.add(time.Minute)
+		a, err := e.m.SetPassword(t.Context(), mgrClient, tt.token, mgrPassword("yamada"))
 		if !errors.Is(err, ErrInvalidToken) || a != (Account{}) {
 			t.Errorf("SetPassword() with %s = %+v, %v, want ErrInvalidToken", tt.name, a, err)
 		}
+		want = append(want, "token.failure/"+tt.result)
 	}
-	e.unchanged(t, before)
+	e.recorded(t, before, want...)
 	if hashed != 0 {
 		t.Errorf("%d passwords were hashed for the tokens that do not work, want none", hashed)
 	}
 	e.m.hook = nil
 	// Neither token was used up by the others.
 	for login, tok := range map[string]string{"yamada": token, "taro": another} {
-		if _, err := e.m.SetPassword(t.Context(), tok, mgrPassword(login)); err != nil {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, tok, mgrPassword(login)); err != nil {
 			t.Errorf("SetPassword() of %s after the wrong tokens = %v, want nil", login, err)
 		}
 	}
@@ -139,13 +146,13 @@ func TestSetPasswordExpiry(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)
 	a, token := e.invite(t, "yamada", RoleEditor)
-	_, late := e.invite(t, "taro", RoleEditor)
+	taro, late := e.invite(t, "taro", RoleEditor)
 	expires := a.Token.ExpiresAt
 	if !expires.Equal(mgrTime.Add(7 * 24 * time.Hour)) {
 		t.Fatalf("the invitation expires at %v, want 7 days after %v", expires, mgrTime)
 	}
 	e.clock.set(expires.Add(-time.Nanosecond))
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 		t.Errorf("SetPassword() a nanosecond before the expiry = %v, want nil", err)
 	}
 	e.clock.set(expires)
@@ -156,14 +163,19 @@ func TestSetPasswordExpiry(t *testing.T) {
 			hashed++
 		}
 	}
-	if _, err := e.m.SetPassword(t.Context(), late, mgrPassword("taro")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, late, mgrPassword("taro")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() at the expiry = %v, want ErrInvalidToken", err)
 	}
 	e.clock.set(expires.Add(24 * time.Hour))
-	if _, err := e.m.SetPassword(t.Context(), late, mgrPassword("taro")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, late, mgrPassword("taro")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() a day after the expiry = %v, want ErrInvalidToken", err)
 	}
-	e.unchanged(t, before)
+	e.recorded(t, before, "token.failure/expired", "token.failure/expired")
+	for _, r := range e.records(t, before) {
+		if r.Account != taro.ID || r.Client != mgrClient.record() || r.Log != audit.LoginLog {
+			t.Errorf("the record of an expired token is %+v, want the account taro and the client of the request", r)
+		}
+	}
 	if hashed != 0 {
 		t.Errorf("%d passwords were hashed for the tokens that ended, want none", hashed)
 	}
@@ -176,21 +188,21 @@ func TestSetPasswordDisabled(t *testing.T) {
 	if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() of a disabled account = %v, want ErrInvalidToken", err)
 	}
 	// Enabling does not give the token back: a reset gives a new one.
 	if _, err := e.m.Enable(t.Context(), System, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() after Enable = %v, want ErrInvalidToken", err)
 	}
 	next, err := e.m.Reset(t.Context(), System, a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := e.m.SetPassword(t.Context(), next, mgrPassword("yamada")); err != nil || got.Status != StatusActive {
+	if got, err := e.m.SetPassword(t.Context(), mgrClient, next, mgrPassword("yamada")); err != nil || got.Status != StatusActive {
 		t.Errorf("SetPassword() with the new token = %+v, %v, want an active account", got, err)
 	}
 }
@@ -224,7 +236,7 @@ func TestSetPasswordProblems(t *testing.T) {
 		}
 	}
 	for _, tt := range tests {
-		a, err := e.m.SetPassword(t.Context(), token, tt.password)
+		a, err := e.m.SetPassword(t.Context(), mgrClient, token, tt.password)
 		mgrProblems(t, err, problem{"/password", tt.msg})
 		if a != (Account{}) {
 			t.Errorf("SetPassword() with %s returned the account %+v", tt.name, a)
@@ -235,7 +247,7 @@ func TestSetPasswordProblems(t *testing.T) {
 	if hashed != 0 {
 		t.Errorf("%d passwords were hashed for the passwords that break a rule, want none", hashed)
 	}
-	if a, err := e.m.SetPassword(t.Context(), token, "a good long password"); err != nil || a.Status != StatusActive || hashed != 1 {
+	if a, err := e.m.SetPassword(t.Context(), mgrClient, token, "a good long password"); err != nil || a.Status != StatusActive || hashed != 1 {
 		t.Errorf("SetPassword() after the problems = %+v, %v after %d hashes, want an active account after 1", a, err, hashed)
 	}
 }
@@ -251,7 +263,7 @@ func TestSetPasswordAfterReset(t *testing.T) {
 	}
 	e.clock.add(time.Hour)
 	now := e.clock.now()
-	got, err := e.m.SetPassword(t.Context(), token, "the new long password")
+	got, err := e.m.SetPassword(t.Context(), mgrClient, token, "the new long password")
 	if err != nil {
 		t.Fatalf("SetPassword() = %v", err)
 	}
@@ -276,7 +288,7 @@ func TestSetPasswordOfAnActiveAccount(t *testing.T) {
 	r.Password, r.CredentialsChangedAt = mgrHashed(t, mgrPassword("old")), mgrTime
 	e.set(t, r)
 	e.clock.add(time.Hour)
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 		t.Fatalf("SetPassword() = %v", err)
 	}
 	if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", mgrPassword("old")); !errors.Is(err, ErrBadCredentials) {
@@ -301,7 +313,7 @@ func TestSetPasswordNormalization(t *testing.T) {
 			e := newMgr(t)
 			e.first(t)
 			_, token := e.invite(t, "yamada", RoleEditor)
-			if _, err := e.m.SetPassword(t.Context(), token, tt.set); err != nil {
+			if _, err := e.m.SetPassword(t.Context(), mgrClient, token, tt.set); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := e.m.VerifyPasswordFactor(t.Context(), "yamada", tt.verify); err != nil {
@@ -318,18 +330,18 @@ func TestSetPasswordFailures(t *testing.T) {
 	boom := errors.New("no random bits")
 	e.m.rand = iotest.ErrReader(boom)
 	before := e.mark(t)
-	_, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada"))
+	_, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada"))
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "cannot read a salt") {
 		t.Errorf("SetPassword() = %v, want the error of the reader as a salt", err)
 	}
 	e.unchanged(t, before)
 	e.m.rand = rand.Reader
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 		t.Errorf("SetPassword() after the failure = %v, want the token to work", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := e.m.SetPassword(ctx, token, mgrPassword("yamada")); !errors.Is(err, context.Canceled) {
+	if _, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("yamada")); !errors.Is(err, context.Canceled) {
 		t.Errorf("SetPassword() with a canceled context = %v, want context.Canceled", err)
 	}
 }
@@ -347,12 +359,12 @@ func TestSetPasswordCannotWriteTheRow(t *testing.T) {
 	before := e.mark(t)
 	// The token is valid in the year -1, which the row cannot hold as the time of the credentials.
 	e.clock.set(time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC))
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err == nil || errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err == nil || errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() = %v, want an error that the row cannot be written", err)
 	}
 	e.unchanged(t, before)
 	e.clock.set(mgrTime)
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 		t.Errorf("SetPassword() after the failure = %v, want the token to work", err)
 	}
 }
@@ -365,7 +377,7 @@ func TestPasswordOperationsCorruptRowWhileHashing(t *testing.T) {
 				return
 			}
 			e.m.hook = nil
-			err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(bad, []byte("not json")) })
+			err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutAccount(bad, []byte("not json")) }))
 			if err != nil {
 				t.Error(err)
 			}
@@ -376,7 +388,7 @@ func TestPasswordOperationsCorruptRowWhileHashing(t *testing.T) {
 		e.first(t)
 		_, token := e.invite(t, "yamada", RoleEditor)
 		corrupt(t, e)
-		if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err == nil || err.Error() != invalidValue(bad) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err == nil || err.Error() != invalidValue(bad) {
 			t.Errorf("SetPassword() = %v, want %q", err, invalidValue(bad))
 		}
 	})
@@ -418,13 +430,13 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		if _, err := e.m.SetPassword(t.Context(), token, password); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, password); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 		if got := e.row(t, a.ID); got.Password != "" {
 			t.Error("the account has a password")
 		}
-		if _, err := e.m.SetPassword(t.Context(), next, password); err != nil {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, next, password); err != nil {
 			t.Errorf("SetPassword() with the new token = %v, want nil", err)
 		}
 	})
@@ -435,7 +447,7 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		if _, err := e.m.SetPassword(t.Context(), token, password); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, password); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 		if got := e.row(t, a.ID); got.Password != "" {
@@ -449,7 +461,7 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		if _, err := e.m.SetPassword(t.Context(), token, password); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, password); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 		if _, err := e.m.Get(t.Context(), a.ID); !errors.Is(err, fs.ErrNotExist) {
@@ -459,11 +471,11 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 	t.Run("the same token", func(t *testing.T) {
 		e, a, token := setup(t)
 		between(e, func() {
-			if _, err := e.m.SetPassword(t.Context(), token, "the inner long password"); err != nil {
+			if _, err := e.m.SetPassword(t.Context(), mgrClient, token, "the inner long password"); err != nil {
 				t.Error(err)
 			}
 		})
-		if _, err := e.m.SetPassword(t.Context(), token, password); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, password); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 		if _, err := e.m.VerifyPasswordFactor(t.Context(), a.Login, "the inner long password"); err != nil {
@@ -476,7 +488,7 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 	t.Run("the end of the token", func(t *testing.T) {
 		e, a, token := setup(t)
 		between(e, func() { e.clock.set(a.Token.ExpiresAt) })
-		if _, err := e.m.SetPassword(t.Context(), token, password); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, password); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() = %v, want ErrInvalidToken", err)
 		}
 	})
@@ -488,7 +500,7 @@ func TestSetPasswordChangesWhileHashing(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		_, err := e.m.SetPassword(t.Context(), token, same)
+		_, err := e.m.SetPassword(t.Context(), mgrClient, token, same)
 		mgrProblems(t, err, problem{"/password", pwSame})
 		if got := e.row(t, a.ID); got.Password != "" || got.Token.IsZero() {
 			t.Error("the password was set or the token used up")
@@ -590,7 +602,7 @@ func TestReset(t *testing.T) {
 		t.Error("the row of another account changed")
 	}
 	e.clock.add(time.Hour)
-	got, err := e.m.SetPassword(t.Context(), token, "the new long password")
+	got, err := e.m.SetPassword(t.Context(), mgrClient, token, "the new long password")
 	if err != nil || got.Status != StatusActive || !got.CredentialsChangedAt.Equal(now.Add(time.Hour)) {
 		t.Errorf("SetPassword() = %+v, %v, want an active account with the credentials time %v", got, err, now.Add(time.Hour))
 	}
@@ -614,10 +626,10 @@ func TestResetInvited(t *testing.T) {
 	if got, err := e.m.Get(t.Context(), a.ID); err != nil || got != want {
 		t.Errorf("Get() = %+v, %v, want %+v: a new invitation, and the credentials time still zero", got, err, want)
 	}
-	if _, err := e.m.SetPassword(t.Context(), old, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, old, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() with the old token = %v, want ErrInvalidToken", err)
 	}
-	if got, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil || got.Status != StatusActive {
+	if got, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil || got.Status != StatusActive {
 		t.Errorf("SetPassword() with the new token = %+v, %v, want an active account", got, err)
 	}
 }
@@ -649,10 +661,10 @@ func TestResetTwice(t *testing.T) {
 	if first == second {
 		t.Error("the two tokens are the same")
 	}
-	if _, err := e.m.SetPassword(t.Context(), first, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, first, mgrPassword("yamada")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() with the first token = %v, want ErrInvalidToken", err)
 	}
-	if _, err := e.m.SetPassword(t.Context(), second, mgrPassword("yamada")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, second, mgrPassword("yamada")); err != nil {
 		t.Errorf("SetPassword() with the second token = %v, want nil", err)
 	}
 }
@@ -742,7 +754,7 @@ func TestResetLastAdmin(t *testing.T) {
 		if got, err := e.m.Get(t.Context(), admin.ID); err != nil || got.Status != StatusPending || got.Token.Purpose != PurposeReset {
 			t.Errorf("Get() = %+v, %v, want a pending account with a reset token", got, err)
 		}
-		got, err := e.m.SetPassword(t.Context(), token, "the recovered long password")
+		got, err := e.m.SetPassword(t.Context(), mgrClient, token, "the recovered long password")
 		if err != nil || got.Status != StatusActive || got.Role != RoleAdmin {
 			t.Errorf("SetPassword() = %+v, %v, want an active administrator", got, err)
 		}
@@ -952,7 +964,7 @@ func TestChangePasswordProblems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := e.m.SetPassword(t.Context(), token, "the first long password")
+	a, err := e.m.SetPassword(t.Context(), mgrClient, token, "the first long password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,7 +1007,7 @@ func TestChangePasswordNormalization(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)
 	_, token := e.invite(t, "yamada", RoleEditor)
-	a, err := e.m.SetPassword(t.Context(), token, composed)
+	a, err := e.m.SetPassword(t.Context(), mgrClient, token, composed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1376,7 +1388,7 @@ func TestVerifyPasswordFactorChecksAgain(t *testing.T) {
 		{"the password is reset and set again", func(t *testing.T, e *mgrEnv, _, a Account) {
 			token, err := e.m.Reset(t.Context(), System, a.ID)
 			check(t, err)
-			_, err = e.m.SetPassword(t.Context(), token, second)
+			_, err = e.m.SetPassword(t.Context(), mgrClient, token, second)
 			check(t, err)
 		}},
 		{"the account is disabled by an administrator", func(t *testing.T, e *mgrEnv, admin, a Account) {
@@ -1521,12 +1533,12 @@ func TestTypedPasswordBound(t *testing.T) {
 		e.first(t)
 		_, token := e.invite(t, "yamada", RoleEditor)
 		before := e.mark(t)
-		_, err := e.m.SetPassword(t.Context(), token, over)
+		_, err := e.m.SetPassword(t.Context(), mgrClient, token, over)
 		mgrProblems(t, err, tooLong)
-		_, err = e.m.SetPassword(t.Context(), token, at)
+		_, err = e.m.SetPassword(t.Context(), mgrClient, token, at)
 		mgrProblems(t, err, problem{"/password", pwLong(len(at))})
 		e.unchanged(t, before)
-		if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil {
+		if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil {
 			t.Errorf("SetPassword() after the refusals = %v, want the token to work", err)
 		}
 	})

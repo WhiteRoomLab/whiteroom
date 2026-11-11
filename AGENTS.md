@@ -55,11 +55,12 @@ WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「
 - 文中装飾とブロックの HTML と、見た目の CSS は `internal/render`（6.5・6.8）、`html`・`legacy` ブロックのサニタイズは `internal/sanitize`（6.5.4）、公開する画像と派生ファイルは `internal/imaging`（6.6.2）。
 - 静的ビルドとリリースは `internal/build`（4.3・4.4）、サイトのディレクトリは `internal/sitedir`（4.3）、公開用の内蔵サーバーは `internal/serve`（9.5）、ビルドと保存の操作が同じコードで確かめる、エンティティをまたぐ検証とパスの計画は `internal/siteplan`（6.7・6.6.8）。
 - 保存の操作と公開の操作は `internal/edit`（6.7）、保存先からのビルドは `internal/publish`（4.4）、保存先（Content Store）は `internal/store`（3.4）、そのエンジンは `internal/logdb`（3.5）。
+- ログイン履歴とアクティビティログの記録の型・操作の一覧・鎖の頭の行と書き出しは `internal/audit`（7.4）、記録を足す・読む・確かめる口は保存先（`internal/store`）。保存先に書く本番のコードは、書き込みごとに記録を足す（足さない書き込みは、保存先が断る。7.4）。
 - ログインアカウントと権限は `internal/account`（7.3）、管理用のサーバーは `internal/admin`（9.6）。パスワードとトークンの平文は、保存先にも、エラーの文にも、応答と記録にも出さず、URL のパスとクエリにも入れない（7.3 の「保存」・9.6 の「記録」）。
 - WordPress からの取り込みは `internal/wpimport`（6.10.5。段階を呼ぶ順と回数は、6.10.5 の「流れ」）。
 - パッケージの依存の向き（どのパッケージを import してよいか）は、`.golangci.yml` の depguard の規則が正で、`golangci-lint run` が確かめる。向きは規則を直して変え、理由は、規則の `desc` に書く（違反の報告に出る）。
 - 作るファイルか、原本を調べた結果が変わる変更をしたら、`internal/imaging/imaging.go` の `processingVersion` を上げる（キャッシュのキーとページの `?v=` に入るので、上げないと、キャッシュの古いファイルが使われる）。
-- エンジンのファイルの形を変えるときは `internal/logdb/format.go` の `formatVersion` を、自作の層の表を変えるとき（索引の行が依る `content.SchemaVersion` と要約の項目、アカウントとセッションの行の JSON を変えるときも）は `internal/store/logbackend.go` の `logSchemaVersion` を上げる。`main` ブランチに入った版の形と表は書き換えない（その版で書いたファイルを、後の版でも読むため。更新の仕方は、構想書の 3.4 の「表の版」・3.5 の「移行・バックアップ・リストアの条件」・7.3 の「保存」）。
+- エンジンのファイルの形を変えるときは `internal/logdb/format.go` の `formatVersion` を、自作の層の表を変えるとき（索引の行が依る `content.SchemaVersion` と要約の項目、アカウントとセッションの行の JSON、監査の記録の JSON（`internal/audit`。7.4）を変えるときも）は `internal/store/logbackend.go` の `logSchemaVersion` を上げる。`main` ブランチに入った版の形と表は書き換えない（その版で書いたファイルを、後の版でも読むため。更新の仕方は、構想書の 3.4 の「表の版」・3.5 の「移行・バックアップ・リストアの条件」・7.3 の「保存」）。
 - 取り込みの ID の作り方を変えるときは `internal/wpimport/id.go` の `idVersion`（文字列の最後の数）を上げる（取り込み直した ID が、本文のブロックの ID も、変わるので、構想書の 6.10.5 の ID の規則も合わせる）。
 
 ## 生成するファイル

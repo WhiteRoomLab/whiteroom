@@ -257,7 +257,7 @@ func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, allo
 			batch = append(batch, newBenchPost(i, last+i))
 		}
 		d, a := benchMeasure(func() {
-			err = s.Update(t.Context(), func(tx *store.Tx) error {
+			err = s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 				for _, p := range batch {
 					if _, err := tx.Put(content.RefEntry, p.entry, p.entryData, userID); err != nil {
 						return err
@@ -267,7 +267,7 @@ func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, allo
 					}
 				}
 				return nil
-			})
+			}))
 		})
 		if err != nil {
 			t.Fatalf("adding the posts %d to %d: %v", from, to, err)

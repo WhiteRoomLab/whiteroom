@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"maps"
 	mathrand "math/rand/v2"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -31,6 +33,8 @@ var (
 	mgrSeed = [32]byte{'m', 'a', 'n', 'a', 'g', 'e', 'r'}
 	// mgrMissingID is the ID of an account that no test makes.
 	mgrMissingID = content.FormatID(content.RefUser, [16]byte{0: 0x01, 15: 0xff})
+	// mgrClient is where the requests of the tests come from.
+	mgrClient = Client{Addr: netip.MustParseAddr("203.0.113.7"), UserAgent: "whiteroom-test/1.0"}
 )
 
 // mgrClock is a clock that a test sets.
@@ -124,7 +128,7 @@ func (e *mgrEnv) invite(t *testing.T, login string, role Role) (Account, string)
 func (e *mgrEnv) add(t *testing.T, login string, role Role) Account {
 	t.Helper()
 	_, token := e.invite(t, login, role)
-	a, err := e.m.SetPassword(t.Context(), token, mgrPassword(login))
+	a, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword(login))
 	if err != nil {
 		t.Fatalf("SetPassword(%q) = %v", login, err)
 	}
@@ -190,11 +194,13 @@ func (e *mgrEnv) rawSessions(t *testing.T) map[string]string {
 	return got
 }
 
-// mgrMark is what the store keeps of the accounts and the sessions at a time: the bytes of every row, and the size of the
-// data directory, which grows with every commit, also one that writes the bytes that were there.
+// mgrMark is what the store keeps of the accounts, the sessions and the audit log at a time: the bytes of every row, the
+// number of the last record of each log, and the size of the data directory, which grows with every commit, also one that
+// writes the bytes that were there.
 type mgrMark struct {
 	rows     map[string]string
 	sessions map[string]string
+	last     map[audit.Log]uint64
 	size     int64
 }
 
@@ -215,14 +221,21 @@ func (e *mgrEnv) mark(t *testing.T) mgrMark {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mgrMark{rows: e.raw(t), sessions: e.rawSessions(t), size: size}
+	heads, err := e.s.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatalf("AuditHeads() = %v", err)
+	}
+	last := make(map[audit.Log]uint64)
+	for _, h := range heads {
+		last[h.Log] = h.N
+	}
+	return mgrMark{rows: e.raw(t), sessions: e.rawSessions(t), last: last, size: size}
 }
 
-// unchanged checks that the store is as it was at before, which mark returned: the same rows of the accounts and of the
-// sessions, and no commit since. It names a session row by its place in the order of the keys, never by its key.
-func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
+// sameRows checks that the rows of the accounts and of the sessions are as they were at before. It names a session row by
+// its place in the order of the keys, never by its key.
+func (e *mgrEnv) sameRows(t *testing.T, before, after mgrMark) {
 	t.Helper()
-	after := e.mark(t)
 	for id, data := range before.rows {
 		if got, ok := after.rows[id]; !ok {
 			t.Errorf("the row of %s is gone", id)
@@ -245,15 +258,115 @@ func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
 	if n := len(after.sessions) - len(before.sessions); n > 0 {
 		t.Errorf("%d session rows are new", n)
 	}
+}
+
+// unchanged checks that the store is as it was at before, which mark returned: the same rows of the accounts and of the
+// sessions, no record, and no commit since.
+func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
+	t.Helper()
+	after := e.mark(t)
+	e.sameRows(t, before, after)
+	if names := e.added(t, before); len(names) > 0 {
+		t.Errorf("the audit log has the records %q, want none", names)
+	}
 	if after.size != before.size {
 		t.Errorf("the data directory changed from %d to %d bytes: something was committed", before.size, after.size)
+	}
+}
+
+// recorded checks that the rows of the accounts and of the sessions are as they were at before, and that the audit log has
+// gained the records that want names, in this order.
+func (e *mgrEnv) recorded(t *testing.T, before mgrMark, want ...string) {
+	t.Helper()
+	e.sameRows(t, before, e.mark(t))
+	e.gained(t, before, want...)
+}
+
+// gained checks that the audit log has gained the records that want names since before, in this order.
+func (e *mgrEnv) gained(t *testing.T, before mgrMark, want ...string) {
+	t.Helper()
+	if got := e.added(t, before); !slices.Equal(got, want) {
+		t.Errorf("the audit log has gained the records %q, want %q", got, want)
+	}
+}
+
+// loginRecords returns the records of the login history that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) loginRecords(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	return e.recordsOf(t, before, audit.LoginLog)
+}
+
+// activityRecords returns the records of the activity log that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) activityRecords(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	return e.recordsOf(t, before, audit.ActivityLog)
+}
+
+func (e *mgrEnv) recordsOf(t *testing.T, before mgrMark, log audit.Log) []audit.Record {
+	t.Helper()
+	var got []audit.Record
+	for _, r := range e.records(t, before) {
+		if r.Log == log {
+			got = append(got, r)
+		}
+	}
+	return got
+}
+
+// recordName names r by its action, and its result after a slash if it has one.
+func recordName(r audit.Record) string {
+	if r.Result == "" {
+		return string(r.Action)
+	}
+	return string(r.Action) + "/" + r.Result
+}
+
+// added returns the names of the records that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) added(t *testing.T, before mgrMark) []string {
+	t.Helper()
+	var names []string
+	for _, r := range e.records(t, before) {
+		names = append(names, recordName(r))
+	}
+	return names
+}
+
+// records returns the records that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) records(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	var got []audit.Record
+	err := e.s.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		if r.N > before.last[r.Log] {
+			got = append(got, r)
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ReadAudit() = %v", err)
+	}
+	return got
+}
+
+// hist returns a history that adds records to tx, for the tests of the helpers that take one.
+func (e *mgrEnv) hist(tx *store.Tx) *history {
+	return &history{m: e.m, tx: tx}
+}
+
+// storeWrite returns f followed by the record store.write, which an Update that writes with the store's own API needs
+// (store.ErrUnrecorded): the tests that make states with it are not about who wrote.
+func storeWrite(f func(*store.Tx) error) func(*store.Tx) error {
+	return func(tx *store.Tx) error {
+		if err := f(tx); err != nil {
+			return err
+		}
+		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
 	}
 }
 
 // set writes the rows with the store's own API, which makes states that the operations cannot.
 func (e *mgrEnv) set(t *testing.T, rows ...row) {
 	t.Helper()
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		for _, r := range rows {
 			data, err := encodeRow(r)
 			if err != nil {
@@ -264,7 +377,7 @@ func (e *mgrEnv) set(t *testing.T, rows ...row) {
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("PutAccount() = %v", err)
 	}
@@ -281,10 +394,10 @@ func mgrRow(n int, login string, role Role) row {
 func (e *mgrEnv) putAuthor(t *testing.T, id string) {
 	t.Helper()
 	data := `{"schemaVersion": 1, "id": "` + id + `", "slug": "` + strings.ToLower(id[len(id)-4:]) + `"}`
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Put(content.RefAuthor, id, []byte(data), testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Put(%s) = %v", id, err)
 	}
@@ -844,10 +957,10 @@ func TestInviteProblems(t *testing.T) {
 	e.putAuthor(t, mgrAuthorID)
 	deleted := "aut_01JB8Y6T2RG7M4XK9P2D5W8NQ5"
 	e.putAuthor(t, deleted)
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Delete(content.RefAuthor, deleted, testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1310,7 @@ func (e *mgrEnv) writes(t *testing.T, by Actor, admin, pending Account, token, t
 			return err
 		}},
 		{"SetPassword", func() error {
-			_, err := e.m.SetPassword(ctx, token, mgrPassword("yamada"))
+			_, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("yamada"))
 			return err
 		}},
 		{"Reset", func() error { _, err := e.m.Reset(ctx, by, pending.ID); return err }},
@@ -1217,7 +1330,7 @@ func (e *mgrEnv) writes(t *testing.T, by Actor, admin, pending Account, token, t
 // putRaw puts data as the row of the account id as it is, with the store's own API, which does not look at it.
 func (e *mgrEnv) putRaw(t *testing.T, id, data string) {
 	t.Helper()
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(id, []byte(data)) })
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutAccount(id, []byte(data)) }))
 	if err != nil {
 		t.Fatalf("PutAccount() = %v", err)
 	}
@@ -1471,11 +1584,11 @@ func TestRemoveUnreadable(t *testing.T) {
 			e.putRaw(t, other, "not json")
 			want := e.raw(t)
 			var removed bool
-			err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+			err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 				var err error
 				removed, err = removeUnreadable(tx, tt.id)
 				return err
-			})
+			}))
 			if err != nil || removed != tt.removed {
 				t.Errorf("removeUnreadable() = %v, %v, want %v, nil", removed, err, tt.removed)
 			}
@@ -1654,7 +1767,7 @@ func TestRowFromOlderUnicode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reset() = %v", err)
 	}
-	if a, err := e.m.SetPassword(ctx, token, mgrPassword("yamada the third")); err != nil || a.Name != name || a.Status != StatusActive {
+	if a, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("yamada the third")); err != nil || a.Name != name || a.Status != StatusActive {
 		t.Errorf("SetPassword() = %+v, %v, want the account, active, with the name as it was stored", a, err)
 	}
 	if got := storedName(); got != name {
@@ -1778,14 +1891,14 @@ func TestUnassignedCodePoints(t *testing.T) {
 		_, token := e.invite(t, "yamada", RoleEditor)
 		hashed := count(e)
 		before := e.mark(t)
-		a, err := e.m.SetPassword(t.Context(), token, password)
+		a, err := e.m.SetPassword(t.Context(), mgrClient, token, password)
 		mgrProblems(t, err, badPassword)
 		if a != (Account{}) || *hashed != 0 {
 			t.Errorf("SetPassword() returned %+v and hashed %d passwords with an error, want none", a, *hashed)
 		}
 		// The token is as it was.
 		e.unchanged(t, before)
-		if a, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil || a.Status != StatusActive {
+		if a, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil || a.Status != StatusActive {
 			t.Errorf("SetPassword() with a password that passes = %+v, %v, want an active account", a, err)
 		}
 	})
@@ -1880,14 +1993,14 @@ func TestRowsOfAnotherBuild(t *testing.T) {
 			t.Errorf("Get() = %+v, %v, want a disabled account that has an invitation", got, err)
 		}
 		before := e.mark(t)
-		if _, err := e.m.SetPassword(ctx, token, mgrPassword("sleeper")); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("sleeper")); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() with the token of a disabled account = %v, want ErrInvalidToken", err)
 		}
 		_, err = e.m.Reset(ctx, System, sleeper.ID)
 		if want := sleeper.ID + " is disabled: enable it first"; err == nil || err.Error() != want {
 			t.Errorf("Reset() = %v, want %q", err, want)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "token.failure/disabled")
 		// Enabling removes the token, as it does for any account.
 		if a, err := e.m.Enable(ctx, System, sleeper.ID); err != nil || a.Status != StatusPending || a.Token != (TokenInfo{}) {
 			t.Errorf("Enable() = %+v, %v, want a pending account without a token", a, err)
@@ -1975,7 +2088,7 @@ func TestPersistence(t *testing.T) {
 		t.Errorf("VerifyPasswordFactor() of a disabled account after Open = %v, want ErrBadCredentials", err)
 	}
 	// The token of an invitation works in another process, within its time.
-	a, err := e2.m.SetPassword(t.Context(), token, mgrPassword("pending"))
+	a, err := e2.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("pending"))
 	if err != nil || a.ID != pending.ID || a.Status != StatusActive {
 		t.Errorf("SetPassword() after Open = %+v, %v, want the account %s, active", a, err, pending.ID)
 	}
@@ -2184,7 +2297,7 @@ func TestPutAndRemoveKeepAnAdministrator(t *testing.T) {
 	e := newMgr(t)
 	a, b := mgrRow(1, "a", RoleAdmin), mgrRow(2, "b", RoleAdmin)
 	e.set(t, a, b)
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -2213,7 +2326,7 @@ func TestPutAndRemoveKeepAnAdministrator(t *testing.T) {
 		}
 		// putRow does not apply the rule.
 		return putRow(tx, lost)
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

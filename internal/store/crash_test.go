@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
@@ -25,7 +26,7 @@ import (
 // The matrices of the store (this file, kill_test.go and faultlog_test.go) run a scenario of originals and Updates on
 // the log backend in each placement on simfs, and crash it, kill it or make one of its operations fail after each of
 // its counted operations. What a store must then have is what the model (model_test.go) has after the same steps
-// (matrixRefs), with the audit events of the Updates that it has, and every original that a PutOriginal that has
+// (matrixRefs), with the audit records of the Updates that it has, and every original that a PutOriginal that has
 // returned nil, or a media document, names.
 
 // matrixSize returns n, the size of a matrix, or fewer with -race, which makes every case several times slower, or
@@ -167,13 +168,14 @@ type mstep struct {
 	kind     mstepKind
 	original []byte             // of mOriginal
 	update   func(tx *Tx) error // of mUpdate
-	event    string             // mUpdate: the data of the audit event that it appends on the log backend; "" for none
+	event    string             // mUpdate: the detail of its audit record; "" for none, in an Update that writes nothing
 	clock    int                // mUpdate: its versions are saved at testTime and clock milliseconds
 }
 
 // matrixScenario is the scenario of the matrices: setup makes a store and closes it, the steps open it, put originals
 // and make Updates, close it, open it again and close it, and the probe puts an original and a media document that
-// names it in a store that has been opened after a crash. Every Update with an event changes a document.
+// names it in a store that has been opened after a crash. Every Update with an event changes a document, and adds a
+// record store.write that has the event in its detail.
 type matrixScenario struct {
 	setup, steps, probe []mstep
 	originals           [][]byte // of the setup, the steps and the probe, in their order
@@ -324,7 +326,8 @@ var theScenario = sync.OnceValue(func() *matrixScenario {
 	return sc
 })
 
-// eventsAt returns the audit events of the store after the setup and the first j steps.
+// eventsAt returns the events of the audit records of the store after the setup and the first j steps, which are those
+// of the records but store.create.
 func (sc *matrixScenario) eventsAt(j int) []string {
 	var events []string
 	for _, st := range slices.Concat(sc.setup, sc.steps[:j]) {
@@ -551,7 +554,6 @@ func textVersion(b []byte, v Version) []byte {
 // mrun runs steps of the scenario on a store.
 type mrun struct {
 	open func() (*Store, error) // of mOpen
-	log  bool                   // the store is of the log backend: its Updates append their events
 	hook func(point string) error
 	s    *Store // nil while closed
 }
@@ -580,8 +582,9 @@ func (r *mrun) do(ctx context.Context, st *mstep) error {
 			if err := st.update(tx); err != nil {
 				return err
 			}
-			if r.log && st.event != "" {
-				return tx.appendEvent([]byte(st.event))
+			if st.event != "" {
+				return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite,
+					Detail: map[string]string{"event": st.event}})
 			}
 			return nil
 		})
@@ -633,7 +636,7 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 	t.Helper()
 	sc := theScenario()
 	fsys := simfs.New("data")
-	r := &mrun{log: true, open: func() (*Store, error) { return create("data", options{log: &o, fs: fsys}) }}
+	r := &mrun{open: func() (*Store, error) { return create("data", options{log: &o, fs: fsys}) }}
 	defer r.close()
 	if res := r.run(sc.setup, nil); res.done != len(sc.setup) {
 		t.Fatalf("the setup: %v", res)
@@ -643,15 +646,15 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 
 // writer returns a run of steps of the log backend with o in the data directory fsys.
 func writer(fsys vfs.FS, o logdb.Options) *mrun {
-	return &mrun{log: true, open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
+	return &mrun{open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
 }
 
 func openReader(fsys vfs.FS, o logdb.Options) (*Store, error) {
 	return openLogReader("data", options{log: &o, fs: fsys})
 }
 
-// matrixState is what a store of the scenario has: the lines of the reads of the scenario, its audit events, and which
-// originals of the scenario it has, whole.
+// matrixState is what a store of the scenario has: the lines of the reads of the scenario, the events of its audit
+// records, and which originals of the scenario it has, whole.
 type matrixState struct {
 	reads     string
 	events    []string
@@ -670,15 +673,20 @@ func observe(t *testing.T, s *Store) (matrixState, error) {
 	}
 	st.reads = reads
 	var number uint64
-	if err := s.events(t.Context(), func(n uint64, data []byte) bool {
-		if number++; n != number {
-			st.events = append(st.events, fmt.Sprintf("(the event %d after %d)", n, number-1))
+	if err := s.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		switch number++; {
+		case r.N != number:
+			st.events = append(st.events, fmt.Sprintf("(the record %d after %d)", r.N, number-1))
 			return false
+		case (number == 1) != (r.Action == audit.StoreCreate):
+			st.events = append(st.events, fmt.Sprintf("(the action %s at the record %d)", r.Action, number))
+			return false
+		case number > 1:
+			st.events = append(st.events, r.Detail["event"])
 		}
-		st.events = append(st.events, string(data))
 		return true
 	}); err != nil {
-		return st, fmt.Errorf("events: %w", err)
+		return st, fmt.Errorf("audit records: %w", err)
 	}
 	for _, data := range sc.originals {
 		ok, err := hasOriginal(s, data)
@@ -716,7 +724,8 @@ func hasOriginal(s *Store, data []byte) (bool, error) {
 	return true, nil
 }
 
-// wanted is a state that a store must have: the reads of refs, the events of the scenario, and the originals of acked.
+// wanted is a state that a store must have: the reads of refs, the events of the scenario in its records, and the
+// originals of acked.
 type wanted struct {
 	reads    string
 	events   []string
@@ -778,7 +787,8 @@ func describeWanted(st matrixState, want []wanted) string {
 		}
 		b.WriteString(w.at)
 	}
-	fmt.Fprintf(&b, "\nthe store has the events %q and the originals %v of the scenario", st.events, st.originals)
+	fmt.Fprintf(&b, "\nthe store has the events %q in its records and the originals %v of the scenario", st.events,
+		st.originals)
 	for _, w := range want {
 		fmt.Fprintf(&b, "\nagainst %s:", w.at)
 		if !slices.Equal(st.events, w.events) {
@@ -802,7 +812,8 @@ func describeWanted(st matrixState, want []wanted) string {
 
 // checkStore checks what the tests look past the API at in s, a store of the log backend: its checkpoint was not
 // damaged, Verify of the engine passes (the state is that of the log, and every object has the data of its hash), the
-// current version of every document is its latest one, and the index is the one that the documents give.
+// audit log is whole (VerifyAudit), the current version of every document is its latest one, and the index is the one
+// that the documents give.
 func checkStore(t *testing.T, s *Store) error {
 	t.Helper()
 	d := logDB(t, s)
@@ -811,6 +822,9 @@ func checkStore(t *testing.T, s *Store) error {
 	}
 	if err := d.Verify(t.Context()); err != nil {
 		return fmt.Errorf("Verify: %w", err)
+	}
+	if err := s.VerifyAudit(t.Context(), nil); err != nil {
+		return fmt.Errorf("VerifyAudit: %w", err)
 	}
 	switch n, err := inconsistentLog(t, s); {
 	case err != nil:
@@ -937,7 +951,7 @@ func (c tally) String() string {
 func checkProbe(t *testing.T, s *Store, fsys *simfs.FS, o logdb.Options, refs *matrixRefs, w wanted, done int) error {
 	t.Helper()
 	sc := theScenario()
-	r := &mrun{log: true, s: s}
+	r := &mrun{s: s}
 	if res := r.run(sc.probe, nil); res.done != len(sc.probe) {
 		return fmt.Errorf("the probe after the crash: %v", res)
 	}

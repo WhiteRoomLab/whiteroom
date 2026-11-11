@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -67,6 +68,19 @@ var docKinds = map[content.RefKind]func() document{
 	content.RefMenu:     newDocument(func(m *content.Menu) *string { return &m.ID }),
 	content.RefForm:     newDocument(func(f *content.Form) *string { return &f.ID }),
 	content.RefRedirect: newDocument(func(r *content.Redirect) *string { return &r.ID }),
+}
+
+// kindActions are the actions of the activity log for the operations on the documents of a kind, "" for one that it has not.
+type kindActions struct{ create, save, remove audit.Action }
+
+var actionsOf = map[content.RefKind]kindActions{
+	content.RefEntry:    {remove: audit.EntryDelete},
+	content.RefTerm:     {audit.TermCreate, audit.TermSave, audit.TermDelete},
+	content.RefMedia:    {save: audit.MediaSave, remove: audit.MediaDelete},
+	content.RefAuthor:   {audit.AuthorCreate, audit.AuthorSave, audit.AuthorDelete},
+	content.RefMenu:     {audit.MenuCreate, audit.MenuSave, audit.MenuDelete},
+	content.RefForm:     {audit.FormCreate, audit.FormSave, audit.FormDelete},
+	content.RefRedirect: {audit.RedirectCreate, audit.RedirectSave, audit.RedirectDelete},
 }
 
 // handledKinds are the kinds that the operations that documentKind serves handle, for its error.
@@ -179,7 +193,7 @@ func (e *Editor) Create(ctx context.Context, op Op, kind content.RefKind, data [
 	if err != nil {
 		return Result{}, err
 	}
-	q := request{name: "create", params: []string{string(kind)}, data: data}
+	q := request{name: "create", params: []string{string(kind)}, data: data, action: actionsOf[kind].create}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		id, err := e.newID(kind)
 		if err != nil {
@@ -250,7 +264,10 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 	if err := content.CheckID(kind, id); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "save", params: []string{string(kind), id, strconv.FormatInt(base, 10)}, data: data}
+	q := request{
+		name: "save", params: []string{string(kind), id, strconv.FormatInt(base, 10)}, data: data,
+		action: actionsOf[kind].save, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		cur, err := r.current(kind, id, base)
 		if err != nil {
@@ -312,6 +329,15 @@ func (e *Editor) Save(ctx context.Context, op Op, kind content.RefKind, id strin
 // maxListed is the most files that the error of a deletion names.
 const maxListed = 10
 
+// listed returns names for an error or a record: the first maxListed of them, and how many more there are.
+func listed(names []string) string {
+	list := strings.Join(names[:min(len(names), maxListed)], ", ")
+	if len(names) > maxListed {
+		list += fmt.Sprintf(" and %d more", len(names)-maxListed)
+	}
+	return list
+}
+
 // uses finds what refers to the document of kind with id. If a document, the published revision of an entry or the
 // scheduled revision of a scheduled entry does, the error is that it cannot be deleted, which names their files. Otherwise
 // the warnings are those for the entries whose last revision, which is neither published nor scheduled, refers to it.
@@ -351,11 +377,7 @@ func (r *run) uses(kind content.RefKind, id string) (content.Errors, error) {
 	}
 	slices.Sort(files)
 	files = slices.Compact(files)
-	list := strings.Join(files[:min(len(files), maxListed)], ", ")
-	if len(files) > maxListed {
-		list += fmt.Sprintf(" and %d more", len(files)-maxListed)
-	}
-	return nil, content.Errors{{File: name, Msg: "cannot delete: used by " + list}}
+	return nil, content.Errors{{File: name, Msg: "cannot delete: used by " + listed(files)}}
 }
 
 // Delete deletes the document of kind with id, which must be at the version base (as in Save). It refuses a document
@@ -379,7 +401,9 @@ func (e *Editor) Delete(ctx context.Context, op Op, kind content.RefKind, id str
 	if err := content.CheckID(kind, id); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "delete", params: []string{string(kind), id, strconv.FormatInt(base, 10)}}
+	q := request{
+		name: "delete", params: []string{string(kind), id, strconv.FormatInt(base, 10)}, action: actionsOf[kind].remove, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		cur, err := r.current(kind, id, base)
 		if err != nil {
@@ -429,7 +453,9 @@ func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byt
 	if err := checkOp(op); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "saveSettings", params: []string{strconv.FormatInt(base, 10)}, data: data}
+	q := request{
+		name: "saveSettings", params: []string{strconv.FormatInt(base, 10)}, data: data, action: audit.SettingsSave, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		var cur int64
 		var curData []byte

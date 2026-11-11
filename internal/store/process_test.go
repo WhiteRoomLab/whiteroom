@@ -93,7 +93,7 @@ func TestHelperProcess(t *testing.T) {
 	case "commit":
 		// Large data, which the engine writes only after f has returned.
 		big := strings.Repeat("x", 4<<20)
-		err = s.Update(t.Context(), func(tx *Tx) error {
+		err = s.Update(t.Context(), withRecord(func(tx *Tx) error {
 			data := []byte(`{"schemaVersion": 1, "id": "` + entryID + `", "type": "` + big + `"}`)
 			if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
 				return err
@@ -103,10 +103,10 @@ func TestHelperProcess(t *testing.T) {
 			}
 			_, err := tx.AddRevision(entryID, revisionID, revJSON(big), userID)
 			return err
-		})
+		}))
 	case "loop":
 		for n := 1; err == nil; n++ {
-			err = s.Update(t.Context(), func(tx *Tx) error { return putPair(tx, n) })
+			err = s.Update(t.Context(), withRecord(func(tx *Tx) error { return putPair(tx, n) }))
 			if n == 20 && err == nil {
 				fmt.Println(marker + "progress")
 			}
@@ -117,7 +117,7 @@ func TestHelperProcess(t *testing.T) {
 			n, err = readPair(tx)
 			return err
 		})
-		err = s.Update(t.Context(), func(tx *Tx) error { return putPair(tx, n[0]+1) })
+		err = s.Update(t.Context(), withRecord(func(tx *Tx) error { return putPair(tx, n[0]+1) }))
 	case "original:synced", "original:renamed":
 		_, err = s.PutOriginal(t.Context(), bytes.NewReader(crashOriginal))
 	case "hold":

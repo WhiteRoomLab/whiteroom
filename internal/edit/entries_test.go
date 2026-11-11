@@ -114,10 +114,10 @@ func maxNumber(t *testing.T, s *store.Store) int {
 // addStoredRevision adds the revision id to the entry with the store's own API, which validates nothing against the site.
 func addStoredRevision(t *testing.T, s *store.Store, entry, id, data string) {
 	t.Helper()
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.AddRevision(entry, id, []byte(data), userID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatalf("AddRevision(%q, %q) = %v", entry, id, err)
 	}

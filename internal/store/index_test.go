@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json/v2"
 	"errors"
@@ -16,7 +17,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
@@ -1017,13 +1020,13 @@ func TestIndexRollback(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		if err := s.Update(ctx, func(tx *Tx) error {
+		if err := s.Update(ctx, withRecord(func(tx *Tx) error {
 			if err := writes(tx); err != nil {
 				return err
 			}
 			cancel()
 			return nil
-		}); !errors.Is(err, context.Canceled) {
+		})); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Update() that is canceled = %v, want context.Canceled", err)
 		}
 		checkIndexState(t, s, before, ops...)
@@ -1737,12 +1740,14 @@ func TestIndexUndecodable(t *testing.T) {
 }
 
 // TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
-// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 5 when its writer
-// opens it, once; that a store of the schema 2, which has the index without the scheduled items, of the schema 3, which
-// has no accounts, or of the schema 4, which has no sessions, gets the schema 5 in one commit that writes nothing else
-// and reads no document; and that a failure of any of them leaves the store as it was. A damaged object stops the
-// upgrade of the schema 1, which makes the index from the documents, and not that of the schema 2, 3 or 4, which leaves
-// the object to the reads that use it.
+// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 6 with the record
+// store.upgrade when its writer opens it, once; that a store of the schema 2, which has the index without the scheduled
+// items, of the schema 3, which has no accounts, of the schema 4, which has no sessions, or of the schema 5, which has
+// no audit log, gets the schema 6, the record and its head in one commit that writes nothing else and reads no
+// document; and that a failure of any of them leaves the store as it was. A damaged object stops the upgrade of the
+// schema 1, which makes the index from the documents, and not that of the schema 2 to 5, which leaves the object to the
+// reads that use it. The stores of the schemas before 6 are made of a store of the schema 6 as the programs of those
+// schemas left them: without the audit events and the heads.
 func TestIndexUpgrade(t *testing.T) {
 	ops := []string{"op_A", "op_B"}
 	// clearTables deletes every row of the tables.
@@ -1773,9 +1778,10 @@ func TestIndexUpgrade(t *testing.T) {
 				tx.Put(tableMeta, []byte(metaSchema), []byte{1}))
 		})
 	}
-	// toSchemaWithIndex returns the function that makes the schema 2, 3 or 4: none of them has sessions, and the schemas 2
-	// and 3 have no accounts, while the schema 4 has one. The rows of the index stay: in a store without entries that have
-	// scheduled items, which no program of the schema 2 could save, they are those of the schemas 3, 4 and 5.
+	// toSchemaWithIndex returns the function that makes the schema 2, 3, 4 or 5: the schemas 2, 3 and 4 have no sessions,
+	// the schemas 2 and 3 have no accounts, while the schemas 4 and 5 have one, and the schema 5 has a session. The rows
+	// of the index stay: in a store without entries that have scheduled items, which no program of the schema 2 could
+	// save, they are those of the schemas 3, 4, 5 and 6.
 	toSchemaWithIndex := func(schema byte) func(t *testing.T, s *Store) {
 		return func(t *testing.T, s *Store) {
 			t.Helper()
@@ -1788,12 +1794,23 @@ func TestIndexUpgrade(t *testing.T) {
 						return err
 					}
 				}
+				if schema >= 5 {
+					if err := tx.Put(tableSessions, []byte(sessionKeyOf("a")), []byte("session")); err != nil {
+						return err
+					}
+				}
 				return tx.Put(tableMeta, []byte(metaSchema), []byte{schema})
 			})
 		}
 	}
 	toOlder := map[uint64]func(t *testing.T, s *Store){2: toSchemaWithIndex(2), 3: toSchemaWithIndex(3),
-		4: toSchemaWithIndex(4)}
+		4: toSchemaWithIndex(4), 5: toSchemaWithIndex(5)}
+	// upgradeRecord is the record store.upgrade that the writer of a store of the schema from adds when it opens it, at
+	// testTime.
+	upgradeRecord := func(from uint64) string {
+		return fmt.Sprintf(`{"log":"activity","n":1,"at":"2026-11-03T08:00:00.12Z","actor":"system",`+
+			`"action":"store.upgrade","detail":{"from":"%d","to":"%d"}}`, from, logSchemaVersion)
+	}
 	schemaOf := func(t *testing.T, s *Store) uint64 {
 		t.Helper()
 		var version uint64
@@ -1825,9 +1842,10 @@ func TestIndexUpgrade(t *testing.T) {
 		}
 		return tables
 	}
-	// upgradedTablesOf returns the rows of the tables of s, a store of the schema 2, 3 or 4, as its upgrade must leave
-	// them: as they are, but for the schema 5. It returns the last commit of s too.
-	upgradedTablesOf := func(t *testing.T, s *Store) (map[uint32][][2]string, uint64) {
+	// upgradedTablesOf returns the rows of the tables of s, a store of the schema from, 2 to 5, as its upgrade must leave
+	// them: as they are, but for the schema 6 and the head of the activity log, which has the record store.upgrade. It
+	// returns the last commit of s too.
+	upgradedTablesOf := func(t *testing.T, s *Store, from uint64) (map[uint32][][2]string, uint64) {
 		t.Helper()
 		tables := tablesOf(t, s)
 		for i, kv := range tables[tableMeta] {
@@ -1835,11 +1853,36 @@ func TestIndexUpgrade(t *testing.T) {
 				tables[tableMeta][i][1] = string(binary.AppendUvarint(nil, logSchemaVersion))
 			}
 		}
+		sum := sha256.Sum256([]byte(upgradeRecord(from)))
+		head := [2]string{metaActivityLog, "\x01" + string(sum[:])}
+		tables[tableMeta] = slices.Insert(tables[tableMeta], 0, head) // "activityLog" comes before the other keys
 		return tables, seqOf(t, s)
 	}
-	// checkOnlySchema checks that s, which has just upgraded a store of the schema 2, 3 or 4 whose last commit was seq,
-	// has the schema 5 in one commit more, and the rows of the tables that upgradedTablesOf has returned.
-	checkOnlySchema := func(t *testing.T, s *Store, want map[uint32][][2]string, seq uint64) {
+	// checkUpgradeRecord checks that s, which has just upgraded a store of the schema from, has the head of the record
+	// store.upgrade, and if readLog is true, that this is the only record in its audit log, and that the log is whole.
+	// A log with a changed byte cannot be read.
+	checkUpgradeRecord := func(t *testing.T, s *Store, from uint64, readLog bool) {
+		t.Helper()
+		sum := sha256.Sum256([]byte(upgradeRecord(from)))
+		heads, err := s.AuditHeads(t.Context())
+		if want := []audit.Head{{Log: audit.ActivityLog, N: 1, Hash: sum}}; err != nil || !slices.Equal(heads, want) {
+			t.Errorf("AuditHeads() after Open() = %v, %v; want %v", heads, err, want)
+		}
+		if !readLog {
+			return
+		}
+		events := rawEvents(t, s)
+		if len(events) != 1 || string(events[0].Data) != upgradeRecord(from) {
+			t.Errorf("the events after Open() = %d; want the one record %s", len(events), upgradeRecord(from))
+		}
+		if err := s.VerifyAudit(t.Context(), heads); err != nil {
+			t.Errorf("VerifyAudit() after Open() = %v", err)
+		}
+	}
+	// checkOnlySchema checks that s, which has just upgraded a store of the schema from, 2 to 5, whose last commit was
+	// seq, has the schema 6 and the record store.upgrade in one commit more, and the rows of the tables that
+	// upgradedTablesOf has returned. It reads the log too if readLog is true, as checkUpgradeRecord does.
+	checkOnlySchema := func(t *testing.T, s *Store, want map[uint32][][2]string, seq, from uint64, readLog bool) {
 		t.Helper()
 		if v := schemaOf(t, s); v != logSchemaVersion {
 			t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
@@ -1850,10 +1893,12 @@ func TestIndexUpgrade(t *testing.T) {
 		if got := tablesOf(t, s); !reflect.DeepEqual(got, want) {
 			for table := tableMeta; table <= tableSessions; table++ {
 				if !reflect.DeepEqual(got[table], want[table]) {
-					t.Errorf("table %d after Open() = %q, want %q: only the schema changes", table, got[table], want[table])
+					t.Errorf("table %d after Open() = %q, want %q: only the schema and the head change", table, got[table],
+						want[table])
 				}
 			}
 		}
+		checkUpgradeRecord(t, s, from, readLog)
 	}
 	// acceptsAccounts checks that s, a store that has been upgraded, takes a row in accounts and reads it.
 	acceptsAccounts := func(t *testing.T, s *Store) {
@@ -1920,6 +1965,7 @@ func TestIndexUpgrade(t *testing.T) {
 			if err := s.Close(); err != nil {
 				t.Fatalf("Close() = %v", err)
 			}
+			dropAudit(t, dir)
 
 			// A reader reads everything but the index.
 			r, err := openLogReader(dir, tb.options())
@@ -1961,15 +2007,19 @@ func TestIndexUpgrade(t *testing.T) {
 				}
 				return nil
 			})
+			if _, err := r.AuditHeads(t.Context()); !errors.Is(err, ErrNoAuditLog) {
+				t.Errorf("AuditHeads() of a store of the schema 1 = %v, want ErrNoAuditLog", err)
+			}
 			if err := r.Close(); err != nil {
 				t.Fatalf("Close() of the reader = %v", err)
 			}
 
-			// Its writer builds the index in one commit, and sets the schema 5.
+			// Its writer builds the index in one commit, and sets the schema 6 and the record.
 			s = reopenLog(t, dir, *tb.log)
 			if v := schemaOf(t, s); v != logSchemaVersion {
 				t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
 			}
+			checkUpgradeRecord(t, s, 1, true)
 			checkConsistent(t, s)
 			checkIntegrity(t, s)
 			got := readIndexState(t, s, ops...)
@@ -1987,9 +2037,9 @@ func TestIndexUpgrade(t *testing.T) {
 	})
 
 	// A store of the schema 2, which has the index without the scheduled items, one of the schema 3, which has no
-	// accounts, and one of the schema 4, which has no sessions, get the schema 5 with the index and the accounts that
-	// they have.
-	for _, schema := range []uint64{2, 3, 4} {
+	// accounts, one of the schema 4, which has no sessions, and one of the schema 5, which has no audit log, get the
+	// schema 6 with the index, the accounts and the sessions that they have.
+	for _, schema := range []uint64{2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 			forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 				s, dir := newStore(t, tb)
@@ -2000,12 +2050,13 @@ func TestIndexUpgrade(t *testing.T) {
 				injectDocument(t, s, content.RefEntry, otherEntry, []byte(`{"schemaVersion": 2}`))
 				want := readIndexState(t, s, ops...)
 				toOlder[schema](t, s)
-				wantTables, seq := upgradedTablesOf(t, s)
 				if err := s.Close(); err != nil {
 					t.Fatalf("Close() = %v", err)
 				}
+				dropAudit(t, dir)
 
-				// A reader reads the index as it is, the operations and the accounts that the schema has, and finds no sessions.
+				// A reader reads the index as it is, the operations, the accounts and the sessions that the schema has, and
+				// finds no audit log.
 				r, err := openLogReader(dir, tb.options())
 				if err != nil {
 					t.Fatalf("openLogReader() of a store of the schema %d = %v", schema, err)
@@ -2023,19 +2074,27 @@ func TestIndexUpgrade(t *testing.T) {
 				if schema >= 4 {
 					wantAccounts = []AccountRow{{userID, []byte("row")}}
 				}
+				var wantSessions []SessionRow
+				if schema >= 5 {
+					wantSessions = []SessionRow{{sessionKeyOf("a"), []byte("session")}}
+				}
 				checkAccounts(t, r, wantAccounts, otherUser)
-				checkSessions(t, r, nil, sessionKeyOf("a"))
+				checkSessions(t, r, wantSessions, sessionKeyOf("b"))
+				if _, err := r.AuditHeads(t.Context()); !errors.Is(err, ErrNoAuditLog) {
+					t.Errorf("AuditHeads() of a store of the schema %d = %v, want ErrNoAuditLog", schema, err)
+				}
+				wantTables, seq := upgradedTablesOf(t, r, schema)
 				if err := r.Close(); err != nil {
 					t.Fatalf("Close() of the reader = %v", err)
 				}
 
-				// Its writer sets the schema 5 in one commit, and writes nothing else.
+				// Its writer sets the schema 6 and the record in one commit, and writes nothing else.
 				s = reopenLog(t, dir, *tb.log)
-				checkOnlySchema(t, s, wantTables, seq)
+				checkOnlySchema(t, s, wantTables, seq, schema, true)
 				checkConsistent(t, s)
 				checkIntegrity(t, s)
 				checkAccounts(t, s, wantAccounts, otherUser)
-				checkSessions(t, s, nil, sessionKeyOf("a"))
+				checkSessions(t, s, wantSessions, sessionKeyOf("b"))
 				got = readIndexState(t, s, ops...)
 				if problem := diffIndex(got.rows, want.rows); problem != "" || got.number != want.number ||
 					!maps.Equal(got.ops, want.ops) {
@@ -2060,8 +2119,9 @@ func TestIndexUpgrade(t *testing.T) {
 			if err := s.Close(); err != nil {
 				t.Fatalf("Close() = %v", err)
 			}
+			dropAudit(t, dir)
 			// The error says where the upgrade failed, and wraps the cause.
-			upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 5, so the store is unchanged: "
+			upgrade := filepath.Join(dir, "logdb") + ": cannot upgrade the table schema to 6, so the store is unchanged: "
 			var first string
 			for i := range 2 {
 				c, err := open(dir, logOpts(o))
@@ -2102,28 +2162,42 @@ func TestIndexUpgrade(t *testing.T) {
 
 		// A write to the log that fails in the Update of the upgrade fails Open, and leaves the store as it was.
 		t.Run("write fault", func(t *testing.T) {
-			for _, schema := range []uint64{2, 3, 4} {
+			for _, schema := range []uint64{2, 3, 4, 5} {
 				t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 					o := logdb.Options{Placement: logdb.Files, WriterWait: writerWait}
 					fsys := simfs.New("data")
-					s, err := create("data", options{log: &o, fs: fsys})
+					opts := options{log: &o, fs: fsys, now: func() time.Time { return testTime }}
+					s, err := create("data", opts)
 					if err != nil {
 						t.Fatalf("create() = %v", err)
 					}
 					t.Cleanup(func() { _ = s.Close() })
 					fillIndexStore(t, s)
 					toOlder[schema](t, s)
-					wantTables, seq := upgradedTablesOf(t, s)
 					want := readIndexState(t, s, ops...)
 					if err := s.Close(); err != nil {
 						t.Fatalf("Close() = %v", err)
+					}
+					logFS, err := fsys.Sub("logdb")
+					if err != nil {
+						t.Fatal(err)
+					}
+					rewriteEngineIn(t, logFS, dropAuditRewrite())
+					_ = logFS.Close()
+					reader, err := openLogReader("data", opts)
+					if err != nil {
+						t.Fatalf("openLogReader() of a store of the schema %d = %v", schema, err)
+					}
+					wantTables, seq := upgradedTablesOf(t, reader, schema)
+					if err := reader.Close(); err != nil {
+						t.Fatalf("Close() of the reader = %v", err)
 					}
 
 					// Open of the engine writes nothing to the log, so the first write is that of the Update of the upgrade.
 					fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
 						return op.Kind == simfs.OpWrite && strings.HasPrefix(op.Path, "logdb/log/")
 					}, Err: syscall.EIO, Times: 1})
-					c, err := open("data", options{log: &o, fs: fsys})
+					c, err := open("data", opts)
 					if err == nil {
 						_ = c.Close()
 					}
@@ -2131,13 +2205,13 @@ func TestIndexUpgrade(t *testing.T) {
 					if u := errors.Unwrap(err); u != nil {
 						cause = u.Error()
 					}
-					upgrade := "data/logdb: cannot upgrade the table schema to 5, so the store is unchanged: "
+					upgrade := "data/logdb: cannot upgrade the table schema to 6, so the store is unchanged: "
 					if err == nil || !errors.Is(err, syscall.EIO) || err.Error() != upgrade+cause {
 						t.Fatalf("open() with a write that fails = %v, want the error of its upgrade, which wraps EIO", err)
 					}
 
 					// A reader sees the store as it was.
-					r, err := openLogReader("data", options{log: &o, fs: fsys})
+					r, err := openLogReader("data", opts)
 					if err != nil {
 						t.Fatalf("openLogReader() after the failure = %v", err)
 					}
@@ -2153,12 +2227,12 @@ func TestIndexUpgrade(t *testing.T) {
 					}
 
 					// An Open without the fault upgrades it.
-					again, err := open("data", options{log: &o, fs: fsys})
+					again, err := open("data", opts)
 					if err != nil {
 						t.Fatalf("open() after the failure = %v", err)
 					}
 					t.Cleanup(func() { _ = again.Close() })
-					checkOnlySchema(t, again, wantTables, seq)
+					checkOnlySchema(t, again, wantTables, seq, schema, true)
 					checkConsistent(t, again)
 					checkIntegrity(t, again)
 					checkIndexState(t, again, want, ops...)
@@ -2169,10 +2243,10 @@ func TestIndexUpgrade(t *testing.T) {
 		})
 	})
 
-	// A damaged object does not stop the upgrade of the schema 2, 3 or 4, which reads no document: the reads that use
-	// the object fail as before.
+	// A damaged object does not stop the upgrade of the schema 2 to 5, which reads no document: the reads that use the
+	// object fail as before.
 	t.Run("damaged object", func(t *testing.T) {
-		for _, schema := range []uint64{2, 3, 4} {
+		for _, schema := range []uint64{2, 3, 4, 5} {
 			t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
 				forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 					s, dir := newStore(t, tb)
@@ -2183,16 +2257,24 @@ func TestIndexUpgrade(t *testing.T) {
 						doc, err = tx.Document(content.RefEntry, entryID)
 						return err
 					})
-					wantTables, seq := upgradedTablesOf(t, s)
 					want := readIndexState(t, s, ops...)
-					corrupt := corruptObjects(t, s)
 					if err := s.Close(); err != nil {
 						t.Fatalf("Close() = %v", err)
 					}
+					dropAudit(t, dir)
+					r, err := openLogReader(dir, tb.options())
+					if err != nil {
+						t.Fatalf("openLogReader() of a store of the schema %d = %v", schema, err)
+					}
+					wantTables, seq := upgradedTablesOf(t, r, schema)
+					corrupt := corruptObjects(t, r)
+					if err := r.Close(); err != nil {
+						t.Fatalf("Close() of the reader = %v", err)
+					}
 
-					// Its writer sets the schema 5 in one commit, and writes nothing else.
+					// Its writer sets the schema 6 and the record in one commit, and writes nothing else.
 					s = reopenLog(t, dir, *tb.log)
-					checkOnlySchema(t, s, wantTables, seq)
+					checkOnlySchema(t, s, wantTables, seq, schema, false)
 					checkIndexState(t, s, want, ops...)
 					view(t, s, func(tx *Tx) error {
 						wantErr := "object " + doc.Hash + ": the data has the hash " + sum(corrupt(doc.Data))

@@ -1129,10 +1129,10 @@ func TestNotify(t *testing.T) {
 		// A write from here would wait for itself if the Update were still running.
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
-		err := s.Update(ctx, func(tx *store.Tx) error {
+		err := s.Update(ctx, storeWrite(func(tx *store.Tx) error {
 			_, err := tx.Put(content.RefRedirect, testID(content.RefRedirect, 1), []byte(redirectJSON("/notified/", "/")), userID)
 			return err
-		})
+		}))
 		if err != nil {
 			t.Errorf("the Update in the function of Notify = %v", err)
 		}

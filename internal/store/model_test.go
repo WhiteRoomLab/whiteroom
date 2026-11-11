@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
@@ -46,6 +47,7 @@ type modelState struct {
 	revisions []modelRevision
 	revByID   map[string]int64 // the seq of each revision
 	events    [][]byte
+	heads     map[audit.Log]audit.Head          // of the audit logs that have records
 	index     [numIndexTables]map[string][]byte // the rows of the index tables
 	number    int64                             // the last number
 }
@@ -55,7 +57,7 @@ func (s *modelState) clone() *modelState {
 	c := &modelState{
 		objects: maps.Clone(s.objects), versions: slices.Clone(s.versions), current: maps.Clone(s.current),
 		revisions: slices.Clone(s.revisions), revByID: maps.Clone(s.revByID), events: slices.Clone(s.events),
-		number: s.number,
+		heads: maps.Clone(s.heads), number: s.number,
 	}
 	for i, rows := range s.index {
 		c.index[i] = maps.Clone(rows)
@@ -64,7 +66,8 @@ func (s *modelState) clone() *modelState {
 }
 
 func newModelBackend() *modelBackend {
-	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{}}
+	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{},
+		heads: map[audit.Log]audit.Head{}}
 	for i := range st.index {
 		st.index[i] = map[string][]byte{}
 	}
@@ -111,25 +114,14 @@ func (b *modelBackend) update(ctx context.Context, f func(backendTx) error) erro
 	return nil
 }
 
-func (b *modelBackend) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	for i, data := range b.committed().events {
-		if !fn(uint64(i)+1, data) {
-			break
-		}
-	}
-	return nil
-}
-
 // close keeps the state, so that a new Store on the same model is the store opened again.
 func (b *modelBackend) close() error {
 	return nil
 }
 
 type modelTx struct {
-	st *modelState
+	st    *modelState
+	wrote bool // a write other than those of the audit log has been made
 }
 
 // version returns the version seq, which the model has.
@@ -174,6 +166,7 @@ func (t *modelTx) current(kind content.RefKind, id string) (Version, bool, error
 }
 
 func (t *modelTx) addObject(hash string, data []byte) error {
+	t.wrote = true
 	if _, ok := t.st.objects[hash]; !ok {
 		t.st.objects[hash] = bytes.Clone(data)
 	}
@@ -181,11 +174,13 @@ func (t *modelTx) addObject(hash string, data []byte) error {
 }
 
 func (t *modelTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (int64, error) {
+	t.wrote = true
 	t.st.versions = append(t.st.versions, modelVersion{key: modelKey{kind, id}, hash: hash, savedAt: savedAt, by: by})
 	return int64(len(t.st.versions)), nil
 }
 
 func (t *modelTx) setCurrent(kind content.RefKind, id string, seq int64) error {
+	t.wrote = true
 	key := modelKey{kind, id}
 	if seq < 1 || seq > int64(len(t.st.versions)) || t.st.versions[seq-1].key != key {
 		return fmt.Errorf("%s %q: the version %d is missing", kind, id, seq)
@@ -195,6 +190,7 @@ func (t *modelTx) setCurrent(kind content.RefKind, id string, seq int64) error {
 }
 
 func (t *modelTx) deleteCurrent(kind content.RefKind, id string) error {
+	t.wrote = true
 	delete(t.st.current, modelKey{kind, id})
 	return nil
 }
@@ -256,6 +252,7 @@ func (t *modelTx) revisionExists(id string) (bool, error) {
 }
 
 func (t *modelTx) addRevision(id, entry, hash, savedAt, by string) (int64, error) {
+	t.wrote = true
 	t.st.revisions = append(t.st.revisions, modelRevision{id: id, entry: entry, hash: hash, savedAt: savedAt, by: by})
 	seq := int64(len(t.st.revisions))
 	t.st.revByID[id] = seq
@@ -297,17 +294,49 @@ func (t *modelTx) addEvent(data []byte) error {
 	return nil
 }
 
+func (t *modelTx) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for i, data := range t.st.events {
+		if !fn(uint64(i)+1, data) {
+			break
+		}
+	}
+	return nil
+}
+
+func (t *modelTx) auditHead(log audit.Log) (audit.Head, bool, error) {
+	h, ok := t.st.heads[log]
+	return h, ok, nil
+}
+
+func (t *modelTx) setAuditHead(h audit.Head) error {
+	t.st.heads[h.Log] = h
+	return nil
+}
+
+func (t *modelTx) auditReady() (bool, error) {
+	return true, nil
+}
+
+func (t *modelTx) changed() bool {
+	return t.wrote
+}
+
 func (t *modelTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
 	v, ok := t.st.index[table][string(key)]
 	return v, ok, nil
 }
 
 func (t *modelTx) indexPut(table indexTable, key, value []byte) error {
+	t.wrote = true
 	t.st.index[table][string(key)] = bytes.Clone(value)
 	return nil
 }
 
 func (t *modelTx) indexDelete(table indexTable, key []byte) error {
+	t.wrote = true
 	delete(t.st.index[table], string(key))
 	return nil
 }
@@ -341,6 +370,7 @@ func (t *modelTx) lastNumber() (int64, error) {
 }
 
 func (t *modelTx) setLastNumber(n int64) error {
+	t.wrote = true
 	t.st.number = n
 	return nil
 }

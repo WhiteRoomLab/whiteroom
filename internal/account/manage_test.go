@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -178,6 +179,8 @@ func TestUpdateNothing(t *testing.T) {
 		{}, {Name: ptr(a.Name)}, {Login: ptr("WRITER")}, {Login: ptr(" writer ")}, {Email: ptr(a.Email)}, {Role: ptr(RoleAuthor)},
 		{Author: ptr("")}, {Login: ptr(a.Login), Name: ptr(a.Name), Email: ptr(a.Email), Role: ptr(a.Role), Author: ptr(a.Author)},
 	}
+	var names []string
+	var want []audit.Record
 	for i, c := range same {
 		for _, by := range []Actor{By(a.ID), By(admin.ID), System} {
 			if c.Login != nil || c.Role != nil || c.Author != nil {
@@ -189,9 +192,13 @@ func TestUpdateNothing(t *testing.T) {
 			if err != nil || got != a {
 				t.Errorf("Update() with the change %d = %+v, %v, want the account as it is", i, got, err)
 			}
+			names = append(names, "account.update")
+			want = append(want, activityRecord(by.recorded(), audit.AccountUpdate, a.ID, false, nil))
 		}
 	}
-	e.unchanged(t, before)
+	// No row is written, and each change says in its record that it changed nothing.
+	e.recorded(t, before, names...)
+	histWant(t, e.activityRecords(t, before), want...)
 }
 
 func TestUpdateProblems(t *testing.T) {
@@ -308,10 +315,10 @@ func TestUpdateAuthorProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The profile is deleted later: the link stays, and an update of another field does not look at it.
-	err = e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err = e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Delete(content.RefAuthor, mgrAuthorID, testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +516,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("Disable() of an invited account = %+v, %v, want %+v", got, err, want)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() of a disabled account = %v, want ErrInvalidToken", err)
 	}
 	got, err = e.m.Enable(t.Context(), System, invited.ID)
@@ -517,7 +524,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("Enable() of an account without a credential = %+v, %v, want %+v", got, err, want)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() after Enable = %v, want ErrInvalidToken", err)
 	}
 	wantRow = beforeInvited
@@ -529,7 +536,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.SetPassword(t.Context(), next, mgrPassword("invited")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, next, mgrPassword("invited")); err != nil {
 		t.Errorf("SetPassword() with the token of the reset = %v, want nil", err)
 	}
 	if e.raw(t)[admin.ID] != other {
@@ -546,7 +553,9 @@ func TestDisableAndEnableAlreadyDone(t *testing.T) {
 	if got, err := e.m.Enable(t.Context(), System, a.ID); err != nil || got != a {
 		t.Errorf("Enable() of an enabled account = %+v, %v, want %+v", got, err, a)
 	}
-	e.unchanged(t, before)
+	// Nothing is written but the record, which says that nothing changed.
+	e.recorded(t, before, "account.enable")
+	histWant(t, e.activityRecords(t, before), activityRecord(audit.System, audit.AccountEnable, a.ID, false, nil))
 	if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +565,8 @@ func TestDisableAndEnableAlreadyDone(t *testing.T) {
 	if got, err := e.m.Disable(t.Context(), System, a.ID); err != nil || got != want {
 		t.Errorf("Disable() of a disabled account = %+v, %v, want %+v", got, err, want)
 	}
-	e.unchanged(t, before)
+	e.recorded(t, before, "account.disable")
+	histWant(t, e.activityRecords(t, before), activityRecord(audit.System, audit.AccountDisable, a.ID, false, nil))
 }
 
 func TestDisableLastAdmin(t *testing.T) {
@@ -719,14 +729,14 @@ func TestDeleteChangesNoDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err = e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		for kind, d := range documents {
 			if _, err := tx.Put(kind, d.id, []byte(d.data), a.ID); err != nil {
 				return err
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

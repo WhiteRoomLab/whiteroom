@@ -34,8 +34,9 @@ var (
 
 // Manager does the account operations of 7.3 on the table accounts of a store, and the logins and sessions on the table
 // sessions. Every operation that writes is one Update of the store, which reads every account first, so that the rules
-// that look at all of them hold whatever else runs. It computes only a few password hashes at once, whatever number of
-// calls need one (see gated). It is safe for concurrent use.
+// that look at all of them hold whatever else runs. An account operation that succeeds, also one that changes nothing,
+// adds one record to the activity log in that Update (7.4); a refused one adds none. It computes only a few password
+// hashes at once, whatever number of calls need one (see gated). It is safe for concurrent use.
 type Manager struct {
 	st         *store.Store
 	now        func() time.Time
@@ -46,6 +47,10 @@ type Manager struct {
 	unknownHash string
 	// hashes has a place for each password hash that may be computed at the same time.
 	hashes chan struct{}
+	// limit counts the failures of people who are not logged in, so that a flood does not fill the login history.
+	limit failureLimit
+	// recordError is nil unless OnRecordError sets it.
+	recordError func(operation string, err error)
 	// hook is nil outside the tests, which run another operation at a point of one.
 	hook func(point string)
 }
@@ -250,6 +255,17 @@ func authorize(rows []row, by Actor, act Action, target string) error {
 	return Check(Principal{Account: rows[i].account()}, act, Target{Account: target})
 }
 
+// invalidToken is the error for a token that cannot be used: it is ErrInvalidToken, with what the login history records
+// of it, which a caller of the Manager does not see.
+type invalidToken struct {
+	result  string
+	account string // of the token, if some account has it
+}
+
+func (invalidToken) Error() string { return ErrInvalidToken.Error() }
+
+func (invalidToken) Unwrap() error { return ErrInvalidToken }
+
 // redeemToken finds the account that token was given to, and returns the index of its row in rows and that row without
 // the token, which is thereby used up. It is how every token is used, whatever credential it sets up: a password now,
 // and later a passkey, by the same rules (7.3). The token must not be expired at now and its account must not be
@@ -257,7 +273,7 @@ func authorize(rows []row, by Actor, act Action, target string) error {
 func redeemToken(rows []row, token string, now time.Time) (int, row, error) {
 	hash, ok := tokenHash(token)
 	if !ok {
-		return 0, row{}, ErrInvalidToken
+		return 0, row{}, invalidToken{result: tokenMalformed}
 	}
 	// Every row is compared, so that the time does not tell which one has the token.
 	found := -1
@@ -266,8 +282,13 @@ func redeemToken(rows []row, token string, now time.Time) (int, row, error) {
 			found = i
 		}
 	}
-	if found < 0 || rows[found].Disabled || !now.Before(rows[found].Token.ExpiresAt) {
-		return 0, row{}, ErrInvalidToken
+	switch {
+	case found < 0:
+		return 0, row{}, invalidToken{result: tokenUnknown}
+	case rows[found].Disabled:
+		return 0, row{}, invalidToken{result: tokenDisabled, account: rows[found].ID}
+	case !now.Before(rows[found].Token.ExpiresAt):
+		return 0, row{}, invalidToken{result: tokenExpired, account: rows[found].ID}
 	}
 	used := rows[found]
 	used.Token = tokenRow{}

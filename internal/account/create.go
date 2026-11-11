@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -56,6 +57,9 @@ func (m *Manager) CreateFirst(ctx context.Context, in Input, password string) (A
 		if err := put(tx, rows, r, noAdminLost); err != nil {
 			return err
 		}
+		if err := recordAccount(tx, audit.AccountCreateFirst, audit.System, r.ID, createdDetail(r)); err != nil {
+			return err
+		}
 		out = r.account()
 		return nil
 	})
@@ -98,6 +102,11 @@ func (m *Manager) Invite(ctx context.Context, by Actor, in Input) (Account, stri
 		r.CreatedBy = by.id
 		r.Token = tokenRow{Purpose: PurposeInvitation, Hash: hash, ExpiresAt: now.Add(invitationTTL)}
 		if err := put(tx, rows, r, noAdminLost); err != nil {
+			return err
+		}
+		detail := createdDetail(r)
+		addToken(detail, r.Token)
+		if err := recordAccount(tx, audit.AccountInvite, by.recorded(), r.ID, detail); err != nil {
 			return err
 		}
 		out, token = r.account(), tok

@@ -386,11 +386,11 @@ func TestOperationIDResult(t *testing.T) {
 	op := Op{By: userID, ID: testOpID(3)}
 	tag := must(t)(ed.Create(t.Context(), Op{By: userID}, content.RefTerm, []byte(termJSON("tag", "ja", "", "お祭り", "festival")))).ID
 	const draftEntry = "ent_01JC0000000000000000000003"
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.AddRevision(draftEntry, testID(content.RefRevision, 1),
 			[]byte(`{"schemaVersion": 1, "title": "Draft", "slug": "draft", "terms": {"tag": ["`+tag+`"]}}`), userID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

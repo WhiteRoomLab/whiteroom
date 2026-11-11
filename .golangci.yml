@@ -84,6 +84,7 @@ linters:
             - "!**/cmd/whiteroom/*.go"
             - "!**/internal/account/*.go"
             - "!**/internal/admin/*.go"
+            - "!**/internal/audit/*.go"
             - "!**/internal/build/*.go"
             - "!**/internal/build/gen/*.go"
             - "!**/internal/content/*.go"
@@ -111,6 +112,13 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        audit:
+          list-mode: strict
+          files:
+            - "**/internal/audit/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
         mediafile-test:
           list-mode: strict
           files:
@@ -232,6 +240,7 @@ linters:
             - "!$test"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
             - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
@@ -243,6 +252,7 @@ linters:
             - "**/internal/edit/*_test.go"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
@@ -257,6 +267,7 @@ linters:
             - "!$test"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
@@ -268,6 +279,7 @@ linters:
             - "**/internal/publish/*_test.go"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
@@ -281,6 +293,7 @@ linters:
             - "!$test"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
@@ -290,6 +303,7 @@ linters:
             - "**/internal/store/*_test.go"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
@@ -326,6 +340,7 @@ linters:
             - "**/internal/account/*.go"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
@@ -347,6 +362,7 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
         wpimport:

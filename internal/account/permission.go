@@ -49,7 +49,7 @@ const (
 	ManageAccounts Action = "accounts.manage"
 	// EditSelf covers the name, the email address and the credentials of one's own account.
 	EditSelf Action = "account.self"
-	// ViewLogs covers the login history and the activity log (#47).
+	// ViewLogs covers the login history and the activity log (7.4).
 	ViewLogs Action = "logs.view"
 )
 

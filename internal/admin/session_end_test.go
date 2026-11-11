@@ -108,7 +108,7 @@ var endings = []ending{
 	{name: "ChangeOwnPassword", reach: reachAccount, end: func(t *testing.T, ts *testServer, _, a account.Account, token string) string {
 		next := "another long password for " + a.Login
 		ts.seen.password(next)
-		_, fresh, err := ts.accounts.ChangeOwnPassword(t.Context(), token, testPassword(a.Login), next)
+		_, fresh, err := ts.accounts.ChangeOwnPassword(t.Context(), account.Client{}, token, testPassword(a.Login), next)
 		mustNoErr(t, err)
 		return fresh
 	}},

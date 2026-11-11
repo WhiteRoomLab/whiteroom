@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
@@ -30,7 +31,7 @@ import (
 )
 
 func logOpts(o logdb.Options) options {
-	return options{log: &o}
+	return options{log: &o, now: func() time.Time { return testTime }}
 }
 
 // newLogStore creates a store of the log backend with o in a new directory, and returns it with the directory. The end
@@ -544,7 +545,7 @@ func roundTrip(t *testing.T, s *Store) []string {
 	var out []string
 	rec := recorder(&out)
 	run := func(f func(tx *Tx) error) {
-		out = append(out, fmt.Sprintf("Update: %v", s.Update(t.Context(), f)))
+		out = append(out, fmt.Sprintf("Update: %v", s.Update(t.Context(), withRecord(f))))
 	}
 	first, second := docJSON(content.RefEntry, entryID), append(docJSON(content.RefEntry, entryID), '\n')
 	term, otherTerm := docJSON(content.RefTerm, termID), append(docJSON(content.RefTerm, termID), ' ')
@@ -725,6 +726,14 @@ func TestLogTables(t *testing.T) {
 		}
 		return tx.PutSession(session, []byte("session"))
 	})
+	// The head of the activity log: the records store.create and the store.write of each Update that has no record.
+	activityHead := func() string {
+		h, ok := headOf(t, s, audit.ActivityLog)
+		if !ok {
+			t.Fatal("the activity log has no head")
+		}
+		return string(headValue(h))
+	}
 	// Fields of fewer than 128 bytes: their lengths are a byte.
 	field := func(b string) string { return string([]byte{byte(len(b))}) + b }
 	hash := func(b []byte) string {
@@ -742,7 +751,8 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x05"}, {"versions", "\x02"}},
+		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x06"},
+			{"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
 			{"term\x00" + termID, termVersion},
@@ -781,7 +791,7 @@ func TestLogTables(t *testing.T) {
 		_, err := tx.Delete(content.RefEntry, entryID, userID)
 		return err
 	})
-	want[tableMeta][3][1] = "\x03"
+	want[tableMeta][0][1], want[tableMeta][4][1] = activityHead(), "\x03"
 	want[tableDocuments] = want[tableDocuments][1:]
 	deletion := [2]string{"entry\x00" + entryID + "\x00" + seq(3), "\x03\x00" + tail}
 	want[tableHistory] = append([][2]string{want[tableHistory][0], deletion}, want[tableHistory][1:]...)
@@ -1162,16 +1172,20 @@ func snapshot(t *testing.T, dir string) map[string]string {
 }
 
 // TestLogSchemaVersion checks that open and openLogReader refuse a store without the schema of the log backend, or of
-// another one, and change no file.
+// another one, and change no file. The schema is 6, whose rows of meta TestLogTables checks, and whose upgrade of the
+// older ones TestIndexUpgrade checks.
 func TestLogSchemaVersion(t *testing.T) {
+	if logSchemaVersion != 6 {
+		t.Fatalf("logSchemaVersion = %d, want 6: change the tests of the schema with it", logSchemaVersion)
+	}
 	for _, tt := range []struct {
 		name  string
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{6}, "the store schema is of version 6, newer than this program knows (5)"},
+		{"newer", []byte{7}, "the store schema is of version 7, newer than this program knows (6)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (5)"},
+			"the store schema is of version 300, newer than this program knows (6)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},
@@ -1244,22 +1258,36 @@ func checkNoDocument(t *testing.T, s *Store, kind content.RefKind, id string) {
 	})
 }
 
-// event is an audit event as Store.events gives it.
-type event struct {
-	number uint64
-	data   string
+// eventRecord returns a record of the activity log that tells event in its detail, as a Record of the tests that need
+// a record and none in particular.
+func eventRecord(event string) audit.Record {
+	r := audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite}
+	if event != "" {
+		r.Detail = map[string]string{"event": event}
+	}
+	return r
 }
 
-func allEvents(t *testing.T, s *Store) []event {
+// allRecords returns every record of s.
+func allRecords(t *testing.T, s *Store) []audit.Record {
 	t.Helper()
-	var got []event
-	if err := s.events(t.Context(), func(number uint64, data []byte) bool {
-		got = append(got, event{number, string(data)})
+	var got []audit.Record
+	if err := s.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		got = append(got, r)
 		return true
 	}); err != nil {
-		t.Fatalf("events() = %v", err)
+		t.Fatalf("ReadAudit() = %v", err)
 	}
 	return got
+}
+
+// recordLines returns a line for each of rs: its log, its number, its action and its event.
+func recordLines(rs []audit.Record) []string {
+	var lines []string
+	for _, r := range rs {
+		lines = append(lines, fmt.Sprintf("%s %d %s %s", r.Log, r.N, r.Action, r.Detail["event"]))
+	}
+	return lines
 }
 
 func TestLogEvents(t *testing.T) {
@@ -1268,17 +1296,17 @@ func TestLogEvents(t *testing.T) {
 		if _, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID); err != nil {
 			return err
 		}
-		return tx.appendEvent([]byte("put"))
+		return tx.Record(eventRecord("put"))
 	})
-	want := []event{{1, "put"}}
-	if got := allEvents(t, s); !slices.Equal(got, want) {
-		t.Errorf("events() = %v, want %v", got, want)
+	want := []string{"activity 1 store.create ", "activity 2 store.write put"}
+	if got := recordLines(allRecords(t, s)); !slices.Equal(got, want) {
+		t.Errorf("the records = %q, want %q", got, want)
 	}
 
-	// An Update that fails leaves neither the event nor the document, and the next event has the next number.
+	// An Update that fails leaves neither the record nor the document, and the next record has the next number.
 	errTest := errors.New("test")
 	putPage := func(tx *Tx) error {
-		if err := tx.appendEvent([]byte("lost")); err != nil {
+		if err := tx.Record(eventRecord("lost")); err != nil {
 			return err
 		}
 		_, err := tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID)
@@ -1298,39 +1326,41 @@ func TestLogEvents(t *testing.T) {
 	var kept *Tx
 	update(t, s, func(tx *Tx) error {
 		kept = tx
-		return errors.Join(tx.appendEvent([]byte("a")), tx.appendEvent(nil))
+		return errors.Join(tx.Record(eventRecord("a")), tx.Record(eventRecord("")))
 	})
-	want = append(want, event{2, "a"}, event{3, ""})
-	if got := allEvents(t, s); !slices.Equal(got, want) {
-		t.Errorf("events() = %v, want %v", got, want)
+	want = append(want, "activity 3 store.write a", "activity 4 store.write ")
+	if got := recordLines(allRecords(t, s)); !slices.Equal(got, want) {
+		t.Errorf("the records = %q, want %q", got, want)
 	}
-	if err := kept.appendEvent([]byte("late")); err == nil || err.Error() != "the transaction has ended" {
-		t.Errorf("appendEvent() after the Update = %v, want an error", err)
+	if err := kept.Record(eventRecord("late")); err == nil || err.Error() != "the transaction has ended" {
+		t.Errorf("Record() after the Update = %v, want an error", err)
 	}
 	view(t, s, func(tx *Tx) error {
-		if err := tx.appendEvent([]byte("view")); err == nil || err.Error() != "read-only transaction" {
-			t.Errorf("appendEvent() in View() = %v, want an error", err)
+		if err := tx.Record(eventRecord("view")); err == nil || err.Error() != "read-only transaction" {
+			t.Errorf("Record() in View() = %v, want an error", err)
 		}
 		return nil
 	})
 
 	n := 0
-	if err := s.events(t.Context(), func(uint64, []byte) bool { n++; return false }); err != nil || n != 1 {
-		t.Errorf("events() that stops = %v after %d events, want nil after 1", err, n)
+	stopAtFirst := func(audit.Record) bool { n++; return false }
+	if err := s.ReadAudit(t.Context(), audit.Filter{}, stopAtFirst); err != nil || n != 1 {
+		t.Errorf("ReadAudit() that stops = %v after %d records, want nil after 1", err, n)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := s.events(canceled, func(uint64, []byte) bool { return true }); !errors.Is(err, context.Canceled) {
-		t.Errorf("events() with a canceled context = %v, want context.Canceled", err)
+	all := func(audit.Record) bool { return true }
+	if err := s.ReadAudit(canceled, audit.Filter{}, all); !errors.Is(err, context.Canceled) {
+		t.Errorf("ReadAudit() with a canceled context = %v, want context.Canceled", err)
 	}
 
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
 	s = reopenLog(t, dir, logdb.Options{})
-	update(t, s, func(tx *Tx) error { return tx.appendEvent([]byte("b")) })
-	if got, want := allEvents(t, s), append(want, event{4, "b"}); !slices.Equal(got, want) {
-		t.Errorf("events() after open() = %v, want %v", got, want)
+	update(t, s, func(tx *Tx) error { return tx.Record(eventRecord("b")) })
+	if got, want := recordLines(allRecords(t, s)), append(want, "activity 5 store.write b"); !slices.Equal(got, want) {
+		t.Errorf("the records after open() = %q, want %q", got, want)
 	}
 }
 
@@ -1345,10 +1375,10 @@ func TestLogHooks(t *testing.T) {
 			s, _ := newLogStore(t, logdb.Options{Placement: logdb.Files})
 			errHook := errors.New("hook")
 			called := failAt(s, point, errHook)
-			err := s.Update(t.Context(), func(tx *Tx) error {
+			err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 				_, err := tx.Put(content.RefEntry, entryID, data, userID)
 				return err
-			})
+			}))
 			fails := i <= 2 // before the commit point, the Sync of the record
 			want := all
 			if fails {
@@ -1431,7 +1461,7 @@ func TestLogReader(t *testing.T) {
 	putWithRevision(t, w)
 	original := []byte("GIF89a")
 	putOriginal(t, w, original)
-	update(t, w, func(tx *Tx) error { return tx.appendEvent([]byte("put")) })
+	update(t, w, func(tx *Tx) error { return tx.Record(eventRecord("put")) })
 	r, err := openLogReader(dir, options{})
 	if err != nil {
 		t.Fatalf("openLogReader() = %v", err)
@@ -1454,8 +1484,9 @@ func TestLogReader(t *testing.T) {
 		return out
 	}
 	compareLines(t, "the reads of the reader", readAs(r), readAs(w))
-	if got, want := allEvents(t, r), []event{{1, "put"}}; !slices.Equal(got, want) {
-		t.Errorf("events() of the reader = %v, want %v", got, want)
+	wantRecords := []string{"activity 1 store.create ", "activity 2 store.write ", "activity 3 store.write put"}
+	if got := recordLines(allRecords(t, r)); !slices.Equal(got, wantRecords) {
+		t.Errorf("the records of the reader = %q, want %q", got, wantRecords)
 	}
 	if got, err := readOriginal(t, r, sum(original)); err != nil || !bytes.Equal(got, original) {
 		t.Errorf("OpenOriginal() of the reader reads %q, %v; want %q", got, err, original)
@@ -1474,10 +1505,10 @@ func TestLogReader(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Update(context.Background(), func(tx *Tx) error {
+		done <- w.Update(context.Background(), withRecord(func(tx *Tx) error {
 			_, err := tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID)
 			return err
-		})
+		}))
 	}()
 	select {
 	case <-reached:
@@ -1522,7 +1553,7 @@ func TestLogReader(t *testing.T) {
 }
 
 // TestBackupLog checks that backupLog copies a store of the log backend, while its writer runs or not, to a data
-// directory that open opens with the same documents, revisions, events and originals.
+// directory that open opens with the same documents, revisions, audit records and originals.
 func TestBackupLog(t *testing.T) {
 	o := logdb.Options{Placement: logdb.Hybrid, Threshold: 50}
 	s, dir := newLogStore(t, o)
@@ -1535,7 +1566,7 @@ func TestBackupLog(t *testing.T) {
 		if _, err := tx.Put(content.RefTerm, termID, docJSON(content.RefTerm, termID), userID); err != nil {
 			return err
 		}
-		return tx.appendEvent([]byte("term"))
+		return tx.Record(eventRecord("term"))
 	})
 	// A temporary file of PutOriginal that a crash has left.
 	if err := os.WriteFile(filepath.Join(dir, "files", ".tmp-0123456789abcdef"), []byte("GIF"), 0o600); err != nil {
@@ -1544,8 +1575,12 @@ func TestBackupLog(t *testing.T) {
 	read := func(s *Store) []string {
 		t.Helper()
 		lines := readAll(t, s)
-		for _, e := range allEvents(t, s) {
-			lines = append(lines, fmt.Sprintf("event %d %q", e.number, e.data))
+		for _, r := range allRecords(t, s) {
+			data, err := audit.Encode(r)
+			if err != nil {
+				t.Fatalf("Encode() = %v", err)
+			}
+			lines = append(lines, "record "+string(data))
 		}
 		return lines
 	}

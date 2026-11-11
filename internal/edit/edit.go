@@ -6,6 +6,7 @@
 // whose URL it changes. Schedule sets the time at which an entry that is not published is published, with the checks of a
 // publish, and PublishScheduled publishes it then. A Result says whether an operation has changed what a build of the site
 // publishes. Import imports a whole site that a Source reads, such as a site directory, into a store that has no documents.
+// Each operation that succeeds adds one record to the activity log of the store (7.4) in the Update that does it.
 package edit
 
 import (
@@ -17,8 +18,10 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
@@ -78,11 +81,16 @@ type Result struct {
 	Status    content.Status // of the entry after an operation that sets it (Publish, Unpublish, Archive, Schedule and PublishScheduled); "" for the others
 }
 
-// request is what a caller asked an operation to do, of which the record of an operation ID keeps the hash.
+// request is what a caller asked an operation to do, of which the record of an operation ID keeps the hash. The fields
+// after data tell the record of the operation in the activity log, and are not part of the hash.
 type request struct {
 	name   string   // of the operation
 	params []string // its arguments, other than the data
 	data   []byte
+
+	action    audit.Action
+	base      int64 // the Seq of the version that the caller has read, which the record has as before; 0 if there is none
+	noVersion bool  // the operation saves no version of its document, only a revision of it
 }
 
 // hash returns the SHA-256 of the request of the user by, with the length of each part before it so that no two
@@ -114,8 +122,8 @@ func checkOp(op Op) error {
 	return nil
 }
 
-// run does an operation, whose op has passed checkOp, in one Update, with the record of its operation ID: f makes its
-// changes in the Update and returns its result, and if it returns an error, nothing stays.
+// run does an operation, whose op has passed checkOp, in one Update, with its record in the activity log and the record of
+// its operation ID: f makes its changes in the Update and returns its result, and if it returns an error, nothing stays.
 func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result, error)) (Result, error) {
 	hash := ""
 	if op.ID != "" {
@@ -143,7 +151,12 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 			}
 		}
 		var err error
-		if res, err = f(newRun(e, ctx, tx, op.By)); err != nil {
+		r := newRun(e, ctx, tx, op.By)
+		if res, err = f(r); err != nil {
+			return err
+		}
+		// Changed is read before the record of the operation ID, which is a write too.
+		if err := r.recordActivity(op, q, res, tx.Changed()); err != nil {
 			return err
 		}
 		if op.ID == "" {
@@ -162,6 +175,41 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 		e.notify(res)
 	}
 	return res, nil
+}
+
+// recordActivity adds the record of the operation q, whose result is res, to the activity log (7.4): it points at the
+// documents and copies none. changed is whether the Update has saved anything. An operation of no user is the system's.
+func (r *run) recordActivity(op Op, q request, res Result, changed bool) error {
+	rec := audit.Record{
+		Log: audit.ActivityLog, Actor: op.By, Action: q.action, Operation: op.ID, Changed: changed,
+		Before: audit.Version{Seq: q.base}, Revision: res.Revision, Status: string(res.Status),
+	}
+	if res.Kind != "" {
+		rec.Target = audit.Target{Kind: string(res.Kind), ID: res.ID}
+	}
+	if changed && !q.noVersion && res.Version.Seq != 0 {
+		rec.After = audit.Version{Seq: res.Version.Seq, Hash: res.Version.Hash}
+	}
+	if rec.Actor == "" {
+		rec.Actor = audit.System
+		if r.by != "" {
+			r.note("scheduledBy", r.by)
+		}
+	}
+	if n := len(res.Warnings); n > 0 {
+		r.note("warnings", strconv.Itoa(n))
+	}
+	if res.Publishes {
+		r.note("publishes", "true")
+	}
+	if res.Redirect != "" {
+		r.note("redirect", res.Redirect)
+	}
+	if res.Number > 0 {
+		r.note("number", strconv.Itoa(res.Number))
+	}
+	rec.Detail = r.detail
+	return r.tx.Record(rec)
 }
 
 // record is the value of an operation in the table of operations of the store: the hash of the request, and the result.

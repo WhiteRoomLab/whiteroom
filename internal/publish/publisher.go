@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
@@ -37,6 +38,10 @@ type Options struct {
 	Now           func() time.Time // the clock of the Publisher and of its Editor, for several goroutines; nil is time.Now
 	// Retry is the wait before a scheduled publish that has failed is tried again; 0 is one minute.
 	Retry time.Duration
+	// OnRecordError is called, from any goroutine, with the action and the error of a record that stands alone and cannot be
+	// written: that of a build, and the second of a Rollback that has failed. The build or the Rollback is as it would be
+	// with the record. Nil drops them.
+	OnRecordError func(audit.Action, error)
 }
 
 // Request asks for a build.
@@ -82,6 +87,10 @@ type Status struct {
 // which stays as the last successful build left it (4.2). The failure is in Status. The running build and the last one are
 // kept in memory only: Status is empty in every new Publisher, whose start builds the store again.
 //
+// Each build is recorded in the activity log (7.4) as the system's when it ends, with its result or its failure: if the
+// record cannot be written, the build is as it was and Options.OnRecordError is told. Rebuild, Rollback and Resume are
+// recorded as the user's who asks, before they do anything: if their record cannot be written, they do nothing.
+//
 // Run also publishes the entries that are scheduled when their times come (Editor.PublishScheduled), as the users who
 // scheduled them, in steps that it takes between the builds: when it starts, before the first build, so that this covers
 // the schedules that are overdue; at the earliest time of a schedule, by one timer; and after each operation of the Editor
@@ -107,17 +116,21 @@ type Publisher struct {
 
 	// mu guards the state below. Each change of it closes changed and replaces it, which is how Run, Wait and Rollback
 	// learn of the change.
-	mu       sync.Mutex
-	changed  chan struct{}
-	started  bool              // Run has been called
-	wanted   []Request         // the requests that no build has taken
-	running  *Build            // the build that runs, if any
-	last     *Build            // the build that ended last
-	paused   bool              // a Rollback has paused the builds, until Resume
-	rolling  bool              // a Rollback runs, so that no build may start
-	reread   bool              // a step of the scheduler is due: the schedules are to be read again
-	stepping bool              // a step of the scheduler runs
-	failures []ScheduleFailure // the scheduled publishes that failed at the last step that read the schedules
+	mu        sync.Mutex
+	changed   chan struct{}
+	started   bool              // Run has been called
+	wanted    []Request         // the requests that no build has taken
+	running   *Build            // the build that runs, if any
+	last      *Build            // the build that ended last
+	paused    bool              // a Rollback has paused the builds, until Resume
+	rolling   bool              // a Rollback runs, so that no build may start
+	reread    bool              // a step of the scheduler is due: the schedules are to be read again
+	stepping  bool              // a step of the scheduler runs
+	recording bool              // Run is writing the record of the build that has ended
+	failures  []ScheduleFailure // the scheduled publishes that failed at the last step that read the schedules
+
+	// resumeGate has room for one Resume at a time, so that the record of each tells whether the builds were paused for it.
+	resumeGate chan struct{}
 }
 
 // New returns a Publisher of o.Store that has not started: it wants a build and a step of the scheduler, which Run makes.
@@ -144,7 +157,9 @@ func New(o Options) (*Publisher, error) {
 	if err != nil {
 		return nil, themeErrors(err)
 	}
-	p := &Publisher{o: o, now: o.Now, retry: o.Retry, afterFunc: startTimer, changed: make(chan struct{})}
+	p := &Publisher{
+		o: o, now: o.Now, retry: o.Retry, afterFunc: startTimer, changed: make(chan struct{}), resumeGate: make(chan struct{}, 1),
+	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -224,7 +239,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 			p.step(ctx)
 		case b != nil:
 			res, err := p.build(ctx)
-			p.end(b, res, err)
+			p.finish(ctx, b, res, err)
 		default:
 			select {
 			case <-changed:
@@ -288,10 +303,35 @@ func (p *Publisher) end(b *Build, res *build.Result, err error) {
 	p.changeLocked()
 }
 
+// finish ends b, and then writes its record in the activity log without mu, so that Status does not wait for the store.
+// Wait returns only when the record is written, or has failed.
+func (p *Publisher) finish(ctx context.Context, b *Build, res *build.Result, err error) {
+	p.mu.Lock()
+	p.recording = true
+	p.mu.Unlock()
+	p.end(b, res, err)
+	p.recordEnded(ctx, buildRecord(b.Requests, res, err))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recording = false
+	p.changeLocked()
+}
+
 // Rebuild asks for a build of the store as it is, and for a step of the scheduler that reads the schedules again, also if
 // no operation of the Editor has asked for them: after a change that it does not see, such as an import or a save with
-// the store's own API.
-func (p *Publisher) Rebuild() { p.request(reasonRebuild, edit.Result{}, true) }
+// the store's own API. by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx:
+// if that fails Rebuild asks for nothing, and returns the error.
+func (p *Publisher) Rebuild(ctx context.Context, by string) error {
+	if err := content.CheckID(content.RefUser, by); err != nil {
+		return err
+	}
+	rec := audit.Record{Log: audit.ActivityLog, Actor: by, Action: audit.BuildRebuild}
+	if err := p.recordRequest(ctx, rec); err != nil {
+		return err
+	}
+	p.request(reasonRebuild, edit.Result{}, true)
+	return nil
+}
 
 // Status returns the state of the builds. It is a copy.
 func (p *Publisher) Status() Status {
@@ -324,11 +364,14 @@ func (b *Build) clone() *Build {
 	return &c
 }
 
-// Wait returns when no build runs and none is due (none is wanted, or the builds are paused), and no step of the scheduler
-// is due or runs, which may ask for a build. It returns the error of ctx if that ends first. Before Run starts and after it
-// has returned, Wait waits for a build or a step that is due until ctx ends.
+// Wait returns when no build runs and none is due (none is wanted, or the builds are paused), the record of the build that
+// ended last is written, and no step of the scheduler is due or runs, which may ask for a build. It returns the error of
+// ctx if that ends first. Before Run starts and after it has returned, Wait waits for a build or a step that is due until
+// ctx ends.
 func (p *Publisher) Wait(ctx context.Context) error {
-	return p.wait(ctx, func() bool { return p.running == nil && !p.due() && !p.reread && !p.stepping })
+	return p.wait(ctx, func() bool {
+		return p.running == nil && !p.recording && !p.due() && !p.reread && !p.stepping
+	})
 }
 
 // wait returns when cond, which is called with mu held, is true, or with the error of ctx if that ends first.
@@ -359,10 +402,29 @@ func (p *Publisher) Releases() (build.Releases, error) { return build.ListReleas
 //
 // If Rollback fails, as build.Rollback does for a release that does not exist, or ctx ends while it waits, the published
 // release and the pause are as they were. Only one Rollback can run at a time.
-func (p *Publisher) Rollback(ctx context.Context, release string) error {
-	if err := ctx.Err(); err != nil {
+//
+// by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx, with the release that
+// is published then, which a build that Rollback waits for may change: if that fails Rollback does nothing, and returns the
+// error. A Rollback that fails after that is recorded once more as failed, whatever ctx.
+func (p *Publisher) Rollback(ctx context.Context, by, release string) error {
+	if err := content.CheckID(content.RefUser, by); err != nil {
 		return err
 	}
+	if err := p.recordRequest(ctx, rollbackRecord(by, release, p.published())); err != nil {
+		return err
+	}
+	err := p.rollback(ctx, release)
+	if err != nil {
+		failed := rollbackRecord(by, release, "")
+		failed.Result = resultFailed
+		failed.Detail["error"] = audit.Truncate(err.Error(), audit.MaxDetailValue)
+		p.recordEnded(ctx, failed)
+	}
+	return err
+}
+
+// rollback is Rollback after its request is recorded.
+func (p *Publisher) rollback(ctx context.Context, release string) error {
 	p.mu.Lock()
 	if p.rolling {
 		p.mu.Unlock()
@@ -389,14 +451,36 @@ func (p *Publisher) Rollback(ctx context.Context, release string) error {
 
 // Resume ends the pause of a Rollback and asks for a build of the store as it is. It does nothing if the builds are not
 // paused.
-func (p *Publisher) Resume() {
+//
+// by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx, as changed if the
+// builds are paused: if that fails Resume does nothing, and returns the error. Resumes go one at a time, so that of two
+// that come together only one finds the builds paused.
+func (p *Publisher) Resume(ctx context.Context, by string) error {
+	if err := content.CheckID(content.RefUser, by); err != nil {
+		return err
+	}
+	select {
+	case p.resumeGate <- struct{}{}:
+		defer func() { <-p.resumeGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// Only a Resume ends a pause, and this one is alone, so that the builds stay paused until it ends it.
+	p.mu.Lock()
+	paused := p.paused
+	p.mu.Unlock()
+	rec := audit.Record{Log: audit.ActivityLog, Actor: by, Action: audit.BuildResume, Changed: paused}
+	if err := p.recordRequest(ctx, rec); err != nil {
+		return err
+	}
+	if !paused {
+		return nil
+	}
 	r := Request{At: p.now(), Reason: reasonResume}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.paused {
-		return
-	}
 	p.paused = false
 	p.wanted = append(p.wanted, r)
 	p.changeLocked()
+	return nil
 }

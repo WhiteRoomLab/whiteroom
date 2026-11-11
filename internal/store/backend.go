@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
@@ -14,7 +15,6 @@ type backend interface {
 	// view and update run f in a transaction as View and Update do; update commits it if f returns nil.
 	view(ctx context.Context, f func(backendTx) error) error
 	update(ctx context.Context, f func(backendTx) error) error
-	events(ctx context.Context, fn func(number uint64, data []byte) bool) error // as Store.events
 	close() error
 }
 
@@ -51,7 +51,17 @@ type backendTx interface {
 	addRevision(id, entry, hash, savedAt, by string) (int64, error)
 	revision(id string) (Revision, bool, error) // with Data
 	revisions(entry string) ([]Revision, error) // in the order of saving, without Data
-	addEvent(data []byte) error                 // an audit event (events.go)
+
+	// The audit events, which are the records of the audit log (audit.go). addEvent adds one in the Update. events calls
+	// fn with the number and the data of each audit event of the commits that the transaction sees, in order, until fn
+	// returns false. auditHead returns the head of the chain of log, which a record sets with setAuditHead, and false if
+	// the log has none; auditReady returns false only for a store of a table schema before 6, which has no audit log.
+	addEvent(data []byte) error
+	events(ctx context.Context, fn func(number uint64, data []byte) bool) error
+	auditHead(log audit.Log) (audit.Head, bool, error)
+	setAuditHead(h audit.Head) error
+	auditReady() (bool, error)
+	changed() bool // whether the transaction has written anything but audit events and heads
 
 	// The rows of the index tables, by key. indexScan calls fn with the keys that start with prefix, and their values,
 	// in ascending order of the keys, until fn returns false; it scans the table as it is when it begins, also if fn

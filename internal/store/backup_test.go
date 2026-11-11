@@ -55,7 +55,7 @@ func TestBackupWhileWriting(t *testing.T) {
 						return
 					}
 				}
-				if err := s.Update(t.Context(), func(tx *Tx) error {
+				if err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 					if original != nil {
 						id := backupMedia(n)
 						if _, err := tx.Put(content.RefMedia, id, mediaJSON(id, original), userID); err != nil {
@@ -63,7 +63,7 @@ func TestBackupWhileWriting(t *testing.T) {
 						}
 					}
 					return putPair(tx, n)
-				}); err != nil {
+				})); err != nil {
 					ended <- fmt.Errorf("Update() of the pair %d = %w", n, err)
 					return
 				}

@@ -51,7 +51,7 @@ func backendByName(name string) (testBackend, bool) {
 }
 
 func (tb testBackend) options() options {
-	return options{log: tb.log}
+	return options{log: tb.log, now: func() time.Time { return testTime }}
 }
 
 // create makes a data directory with a store of tb at dir, as Create does with the options of tb.

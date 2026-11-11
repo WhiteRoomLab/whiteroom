@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/siteplan"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -200,7 +201,9 @@ func (e *Editor) Publish(ctx context.Context, op Op, entry string, base int64, r
 	if err := content.CheckID(content.RefRevision, revision); err != nil {
 		return Result{}, err
 	}
-	q := request{name: "publish", params: []string{entry, strconv.FormatInt(base, 10), revision}}
+	q := request{
+		name: "publish", params: []string{entry, strconv.FormatInt(base, 10), revision}, action: audit.EntryPublish, base: base,
+	}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		before := sync.OnceValues(r.before)
 		cur, ent, err := r.currentEntry(entry, base)
@@ -301,6 +304,7 @@ func (r *run) updateRedirects(res *Result, ent content.Entry, rf content.SiteFil
 	from := content.CanonicalFrom(now)
 	key := siteplan.FromKey(from)
 	slices.Sort(toEntry)
+	var deleted []string
 	for _, id := range toEntry {
 		if siteplan.FromKey(after.Redirects[id].V.From) != key {
 			continue
@@ -309,10 +313,14 @@ func (r *run) updateRedirects(res *Result, ent content.Entry, rf content.SiteFil
 			return err
 		}
 		delete(after.Redirects, id)
+		deleted = append(deleted, id)
 		res.Warnings = append(res.Warnings, &content.Error{
 			File: docName(content.RefRedirect, id),
 			Msg:  fmt.Sprintf("deleted: its from is the new path %q of %s", from, docName(content.RefEntry, ent.ID)),
 		})
+	}
+	if len(deleted) > 0 {
+		r.note("redirectsDeleted", listed(deleted))
 	}
 	if old == "" || siteplan.FromKey(old) == key {
 		return nil
@@ -375,7 +383,7 @@ func (r *run) registerRedirect(res *Result, entry, old string, rf content.SiteFi
 // not published`), and the parent of a published page (`/parent: entry "..." is not published`). A redirect to the entry
 // is left out of the build, which the warning in the result says. Result.Status is draft.
 func (e *Editor) Unpublish(ctx context.Context, op Op, entry string, base int64) (Result, error) {
-	return e.retire(ctx, op, "unpublish", content.StatusDraft, entry, base)
+	return e.retire(ctx, op, "unpublish", audit.EntryUnpublish, content.StatusDraft, entry, base)
 }
 
 // Archive makes the entry entry, which is a draft, published or scheduled, archived: it takes away its published
@@ -385,19 +393,19 @@ func (e *Editor) Unpublish(ctx context.Context, op Op, entry string, base int64)
 // The checks across the site are those of Unpublish, which an archived entry needs as much as a draft. Result.Status is
 // archived.
 func (e *Editor) Archive(ctx context.Context, op Op, entry string, base int64) (Result, error) {
-	return e.retire(ctx, op, "archive", content.StatusArchived, entry, base)
+	return e.retire(ctx, op, "archive", audit.EntryArchive, content.StatusArchived, entry, base)
 }
 
 // retire does Unpublish and Archive: it makes the entry a draft or archived, as to says. The build validates no entry
 // that is not published, so the new state is not validated, and neither is a revision.
-func (e *Editor) retire(ctx context.Context, op Op, name string, to content.Status, entry string, base int64) (Result, error) {
+func (e *Editor) retire(ctx context.Context, op Op, name string, action audit.Action, to content.Status, entry string, base int64) (Result, error) {
 	if err := checkOp(op); err != nil {
 		return Result{}, err
 	}
 	if err := content.CheckID(content.RefEntry, entry); err != nil {
 		return Result{}, err
 	}
-	q := request{name: name, params: []string{entry, strconv.FormatInt(base, 10)}}
+	q := request{name: name, params: []string{entry, strconv.FormatInt(base, 10)}, action: action, base: base}
 	return e.run(ctx, op, q, func(r *run) (Result, error) {
 		cur, ent, err := r.currentEntry(entry, base)
 		if err != nil {

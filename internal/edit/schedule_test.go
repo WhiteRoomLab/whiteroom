@@ -1507,7 +1507,7 @@ func TestSchedulesTies(t *testing.T) {
 	number := maxNumber(t, s)
 	early, late := "2026-11-10T09:00:00+09:00", "2026-11-11T09:00:00+09:00"
 	var want []Scheduled
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		for n := 10; n < 90; n++ {
 			at := early
 			if n%2 == 1 {
@@ -1519,7 +1519,7 @@ func TestSchedulesTies(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
