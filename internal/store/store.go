@@ -255,14 +255,23 @@ func (s *Store) View(ctx context.Context, f func(*Tx) error) error {
 	})
 }
 
+// ErrUnrecorded is the error of an Update whose function has written something besides audit records and has added no
+// record (7.4): the Update commits nothing. A change is made together with the record that tells of it.
+var ErrUnrecorded = errors.New("the transaction writes but adds no audit record")
+
 // Update runs f in a transaction that writes, and commits it if f returns nil; otherwise, nothing that f has written
 // stays. The versions that f saves get the time when the transaction began. Updates run one at a time: Update waits
-// for the others of s until ctx ends. f must not call Update of s, which would wait for itself.
+// for the others of s until ctx ends. f must not call Update of s, which would wait for itself. If f returns nil after
+// it has written anything but records (Changed) and has added no record, Update fails with ErrUnrecorded and commits
+// nothing; an Update that only adds records, and one that writes nothing, are as they were.
 func (s *Store) Update(ctx context.Context, f func(*Tx) error) error {
 	return s.b.update(ctx, func(b backendTx) error {
 		t := &Tx{b: b, savedAt: s.now().UTC().Format(savedAtLayout)}
 		if err := t.run(f); err != nil {
 			return err
+		}
+		if t.records == 0 && t.Changed() {
+			return ErrUnrecorded
 		}
 		return s.call("commit")
 	})

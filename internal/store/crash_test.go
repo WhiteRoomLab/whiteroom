@@ -168,7 +168,7 @@ type mstep struct {
 	kind     mstepKind
 	original []byte             // of mOriginal
 	update   func(tx *Tx) error // of mUpdate
-	event    string             // mUpdate: the detail of its audit record on the log backend; "" for no record
+	event    string             // mUpdate: the detail of its audit record; "" for none, in an Update that writes nothing
 	clock    int                // mUpdate: its versions are saved at testTime and clock milliseconds
 }
 
@@ -554,7 +554,6 @@ func textVersion(b []byte, v Version) []byte {
 // mrun runs steps of the scenario on a store.
 type mrun struct {
 	open func() (*Store, error) // of mOpen
-	log  bool                   // the store is of the log backend: its Updates add their records
 	hook func(point string) error
 	s    *Store // nil while closed
 }
@@ -583,7 +582,7 @@ func (r *mrun) do(ctx context.Context, st *mstep) error {
 			if err := st.update(tx); err != nil {
 				return err
 			}
-			if r.log && st.event != "" {
+			if st.event != "" {
 				return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite,
 					Detail: map[string]string{"event": st.event}})
 			}
@@ -637,7 +636,7 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 	t.Helper()
 	sc := theScenario()
 	fsys := simfs.New("data")
-	r := &mrun{log: true, open: func() (*Store, error) { return create("data", options{log: &o, fs: fsys}) }}
+	r := &mrun{open: func() (*Store, error) { return create("data", options{log: &o, fs: fsys}) }}
 	defer r.close()
 	if res := r.run(sc.setup, nil); res.done != len(sc.setup) {
 		t.Fatalf("the setup: %v", res)
@@ -647,7 +646,7 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 
 // writer returns a run of steps of the log backend with o in the data directory fsys.
 func writer(fsys vfs.FS, o logdb.Options) *mrun {
-	return &mrun{log: true, open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
+	return &mrun{open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
 }
 
 func openReader(fsys vfs.FS, o logdb.Options) (*Store, error) {
@@ -952,7 +951,7 @@ func (c tally) String() string {
 func checkProbe(t *testing.T, s *Store, fsys *simfs.FS, o logdb.Options, refs *matrixRefs, w wanted, done int) error {
 	t.Helper()
 	sc := theScenario()
-	r := &mrun{log: true, s: s}
+	r := &mrun{s: s}
 	if res := r.run(sc.probe, nil); res.done != len(sc.probe) {
 		return fmt.Errorf("the probe after the crash: %v", res)
 	}

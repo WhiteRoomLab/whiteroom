@@ -315,10 +315,10 @@ func TestUpdateAuthorProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The profile is deleted later: the link stays, and an update of another field does not look at it.
-	err = e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err = e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Delete(content.RefAuthor, mgrAuthorID, testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,14 +729,14 @@ func TestDeleteChangesNoDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err = e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		for kind, d := range documents {
 			if _, err := tx.Put(kind, d.id, []byte(d.data), a.ID); err != nil {
 				return err
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

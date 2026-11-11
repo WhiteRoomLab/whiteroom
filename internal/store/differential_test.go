@@ -260,7 +260,7 @@ func (d *diffStore) removeCheckpoint(t *testing.T) {
 
 func (d *diffStore) update(t *testing.T, u diffUpdate) diffLines {
 	l := d.lines()
-	err := d.s.Update(t.Context(), func(tx *Tx) error {
+	err := d.s.Update(t.Context(), withRecord(func(tx *Tx) error {
 		for _, op := range u.ops {
 			v, err := op.run(tx)
 			l.add(op.desc, v, err)
@@ -275,7 +275,7 @@ func (d *diffStore) update(t *testing.T, u diffUpdate) diffLines {
 			return errAbort
 		}
 		return nil
-	})
+	}))
 	l.add("Update()", nil, err)
 	l.update = err
 	return l

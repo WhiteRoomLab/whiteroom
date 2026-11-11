@@ -70,7 +70,7 @@ func (e *mgrEnv) setSession(t *testing.T, key string, s sessionRow) {
 // setRawSession writes data as the row of the session with the key as it is.
 func (e *mgrEnv) setRawSession(t *testing.T, key, data string) {
 	t.Helper()
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutSession(key, []byte(data)) })
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutSession(key, []byte(data)) }))
 	if err != nil {
 		t.Fatalf("PutSession() = %v", err)
 	}
@@ -107,7 +107,7 @@ func (e *mgrEnv) edit(t *testing.T, id string, f func(r *row)) {
 // deleteRow removes the row of the account id with the store's own API.
 func (e *mgrEnv) deleteRow(t *testing.T, id string) {
 	t.Helper()
-	if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.DeleteAccount(id) }); err != nil {
+	if err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.DeleteAccount(id) })); err != nil {
 		t.Fatalf("DeleteAccount() = %v", err)
 	}
 }
@@ -1945,7 +1945,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 		if err == nil || err.Error() != readOnly {
 			t.Errorf("sweepSessions() of a row that cannot work in a View = %v, want %q", err, readOnly)
 		}
-		if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.DeleteSession(sessKey("garbage")) }); err != nil {
+		if err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.DeleteSession(sessKey("garbage")) })); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -1959,7 +1959,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 		if err == nil || err.Error() != readOnly {
 			t.Errorf("startSession() with a session to remove in a View = %v, want %q", err, readOnly)
 		}
-		if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.DeleteSession(sessKey(token)) }); err != nil {
+		if err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.DeleteSession(sessKey(token)) })); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -1974,14 +1974,14 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 		if err == nil || err.Error() != readOnly {
 			t.Errorf("startSession() with a session to remove for the limit in a View = %v, want %q", err, readOnly)
 		}
-		err = e.s.Update(t.Context(), func(tx *store.Tx) error {
+		err = e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 			for i := range SessionsPerAccount {
 				if err := tx.DeleteSession(sessKey("over " + strconv.Itoa(i))); err != nil {
 					return err
 				}
 			}
 			return nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3691,7 +3691,7 @@ func TestChangeOwnPassword(t *testing.T) {
 // deleteRowOfSession removes the session row under the key that sessKey makes of name, with the store's own API.
 func (e *mgrEnv) deleteRowOfSession(t *testing.T, name string) {
 	t.Helper()
-	if err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.DeleteSession(sessKey(name)) }); err != nil {
+	if err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.DeleteSession(sessKey(name)) })); err != nil {
 		t.Fatalf("DeleteSession() = %v", err)
 	}
 }

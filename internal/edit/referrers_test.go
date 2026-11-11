@@ -883,7 +883,7 @@ func TestRefChangeUnits(t *testing.T) {
 func changeRef(t *testing.T, ed *Editor, s *store.Store, kind content.RefKind, id string, change func(data []byte) string) (content.Errors, error) {
 	t.Helper()
 	var warnings content.Errors
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		r := newRun(ed, t.Context(), tx, userID)
 		site, _, err := r.site()
 		if err != nil {
@@ -902,7 +902,7 @@ func changeRef(t *testing.T, ed *Editor, s *store.Store, kind content.RefKind, i
 		}
 		warnings, err = r.checkRefChange(site, kind, id, old)
 		return err
-	})
+	}))
 	return warnings, err
 }
 

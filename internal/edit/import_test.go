@@ -1012,10 +1012,10 @@ func TestImportNotEmpty(t *testing.T) {
 		s := newStore(t)
 		id := testID(content.RefTerm, 1)
 		put(t, s, content.RefTerm, id, termJSON("tag", "ja", testID(content.RefTranslationGroup, 1), "お祭り", "festival"))
-		err := s.Update(t.Context(), func(tx *store.Tx) error {
+		err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 			_, err := tx.Delete(content.RefTerm, id, userID)
 			return err
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}

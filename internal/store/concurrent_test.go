@@ -77,9 +77,9 @@ func TestConcurrent(t *testing.T) {
 		for w := range 2 {
 			writers.Go(func() {
 				for i := range writes {
-					if err := s.Update(t.Context(), func(tx *Tx) error {
+					if err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 						return putPair(tx, 1+w*writes+i)
-					}); err != nil {
+					})); err != nil {
 						t.Errorf("Update() of the pair = %v", err)
 						return
 					}
@@ -88,10 +88,10 @@ func TestConcurrent(t *testing.T) {
 		}
 		writers.Go(func() {
 			for _, id := range revisions {
-				if err := s.Update(t.Context(), func(tx *Tx) error {
+				if err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 					_, err := tx.AddRevision(entryID, id, revJSON(id), userID)
 					return err
-				}); err != nil {
+				})); err != nil {
 					t.Errorf("Update() of a revision = %v", err)
 					return
 				}

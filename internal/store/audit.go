@@ -12,7 +12,8 @@ import (
 // The store keeps the login history and the activity log (7.4) as the audit events of the engine: each record is one
 // event, to which the store gives its number in its log, the hash of the record before it, and the time of the Update.
 // The head of each log, the number and the hash of its last record, is in meta. A record is added in the Update of the
-// change that it tells of, and the store has no way to change or remove one.
+// change that it tells of (an Update that changes anything and adds none fails with ErrUnrecorded), and the store has no
+// way to change or remove one.
 
 // ErrNoAuditLog is the error of the reads of the audit log in a store of the table schema before 6, which has none:
 // opening it as its writer once gives it one.

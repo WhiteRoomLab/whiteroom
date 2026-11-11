@@ -375,7 +375,7 @@ func TestPasswordOperationsCorruptRowWhileHashing(t *testing.T) {
 				return
 			}
 			e.m.hook = nil
-			err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(bad, []byte("not json")) })
+			err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutAccount(bad, []byte("not json")) }))
 			if err != nil {
 				t.Error(err)
 			}

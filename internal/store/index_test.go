@@ -1020,13 +1020,13 @@ func TestIndexRollback(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		if err := s.Update(ctx, func(tx *Tx) error {
+		if err := s.Update(ctx, withRecord(func(tx *Tx) error {
 			if err := writes(tx); err != nil {
 				return err
 			}
 			cancel()
 			return nil
-		}); !errors.Is(err, context.Canceled) {
+		})); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Update() that is canceled = %v, want context.Canceled", err)
 		}
 		checkIndexState(t, s, before, ops...)

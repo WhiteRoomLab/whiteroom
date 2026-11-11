@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
@@ -45,13 +46,24 @@ func testID(kind content.RefKind, n int) string {
 	return content.FormatID(kind, [16]byte{0: 0x01, 1: 0xa0, 15: byte(n)})
 }
 
+// storeWrite returns f followed by the record store.write, which an Update that writes with the store's own API needs
+// (store.ErrUnrecorded): the tests that make states with it are not about who wrote.
+func storeWrite(f func(*store.Tx) error) func(*store.Tx) error {
+	return func(tx *store.Tx) error {
+		if err := f(tx); err != nil {
+			return err
+		}
+		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite})
+	}
+}
+
 // put puts the document of kind with id into s with the store's own API, which checks nothing against the site.
 func put(t *testing.T, s *store.Store, kind content.RefKind, id, data string) {
 	t.Helper()
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Put(kind, id, []byte(data), userID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Put(%q, %q) = %v", kind, id, err)
 	}
@@ -109,7 +121,7 @@ func putSite(t *testing.T, s *store.Store, dir string) {
 		t.Fatal(err)
 	}
 	publisher := make(map[string]string) // the entries by the revisions that they publish
-	err = s.Update(t.Context(), func(tx *store.Tx) error {
+	err = s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		if _, err := tx.Put(store.SettingsKind, "", settings.Data, userID); err != nil {
 			return err
 		}
@@ -144,7 +156,7 @@ func putSite(t *testing.T, s *store.Store, dir string) {
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

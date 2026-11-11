@@ -1055,15 +1055,12 @@ func TestRecordsHoldNoSecrets(t *testing.T) {
 		session = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
 	)
 	r := newRig(t)
-	err := r.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := r.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		if err := tx.PutAccount(userID, []byte(`{"login":"admin","password":"`+hash+`","token":"`+token+`"}`)); err != nil {
 			return err
 		}
-		if err := tx.PutSession(session, []byte(`{"account":"`+userID+`","token":"`+token+`"}`)); err != nil {
-			return err
-		}
-		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
-	})
+		return tx.PutSession(session, []byte(`{"account":"`+userID+`","token":"`+token+`"}`))
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

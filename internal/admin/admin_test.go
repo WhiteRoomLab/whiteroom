@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -104,6 +105,17 @@ func testAccounts(tb testing.TB) (*account.Manager, *store.Store) {
 		tb.Fatal(err)
 	}
 	return m, s
+}
+
+// storeWrite returns f followed by the record store.write, which an Update that writes with the store's own API needs
+// (store.ErrUnrecorded): the tests that make states with it are not about who wrote.
+func storeWrite(f func(*store.Tx) error) func(*store.Tx) error {
+	return func(tx *store.Tx) error {
+		if err := f(tx); err != nil {
+			return err
+		}
+		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+	}
 }
 
 func testConfig(m *account.Manager, origin string, proxies ...netip.Prefix) Config {

@@ -352,10 +352,21 @@ func (e *mgrEnv) hist(tx *store.Tx) *history {
 	return &history{m: e.m, tx: tx}
 }
 
+// storeWrite returns f followed by the record store.write, which an Update that writes with the store's own API needs
+// (store.ErrUnrecorded): the tests that make states with it are not about who wrote.
+func storeWrite(f func(*store.Tx) error) func(*store.Tx) error {
+	return func(tx *store.Tx) error {
+		if err := f(tx); err != nil {
+			return err
+		}
+		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+	}
+}
+
 // set writes the rows with the store's own API, which makes states that the operations cannot.
 func (e *mgrEnv) set(t *testing.T, rows ...row) {
 	t.Helper()
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		for _, r := range rows {
 			data, err := encodeRow(r)
 			if err != nil {
@@ -366,7 +377,7 @@ func (e *mgrEnv) set(t *testing.T, rows ...row) {
 			}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("PutAccount() = %v", err)
 	}
@@ -383,10 +394,10 @@ func mgrRow(n int, login string, role Role) row {
 func (e *mgrEnv) putAuthor(t *testing.T, id string) {
 	t.Helper()
 	data := `{"schemaVersion": 1, "id": "` + id + `", "slug": "` + strings.ToLower(id[len(id)-4:]) + `"}`
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Put(content.RefAuthor, id, []byte(data), testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Put(%s) = %v", id, err)
 	}
@@ -946,10 +957,10 @@ func TestInviteProblems(t *testing.T) {
 	e.putAuthor(t, mgrAuthorID)
 	deleted := "aut_01JB8Y6T2RG7M4XK9P2D5W8NQ5"
 	e.putAuthor(t, deleted)
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		_, err := tx.Delete(content.RefAuthor, deleted, testCreatorID)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1319,7 +1330,7 @@ func (e *mgrEnv) writes(t *testing.T, by Actor, admin, pending Account, token, t
 // putRaw puts data as the row of the account id as it is, with the store's own API, which does not look at it.
 func (e *mgrEnv) putRaw(t *testing.T, id, data string) {
 	t.Helper()
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error { return tx.PutAccount(id, []byte(data)) })
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutAccount(id, []byte(data)) }))
 	if err != nil {
 		t.Fatalf("PutAccount() = %v", err)
 	}
@@ -1573,11 +1584,11 @@ func TestRemoveUnreadable(t *testing.T) {
 			e.putRaw(t, other, "not json")
 			want := e.raw(t)
 			var removed bool
-			err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+			err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 				var err error
 				removed, err = removeUnreadable(tx, tt.id)
 				return err
-			})
+			}))
 			if err != nil || removed != tt.removed {
 				t.Errorf("removeUnreadable() = %v, %v, want %v, nil", removed, err, tt.removed)
 			}
@@ -2286,7 +2297,7 @@ func TestPutAndRemoveKeepAnAdministrator(t *testing.T) {
 	e := newMgr(t)
 	a, b := mgrRow(1, "a", RoleAdmin), mgrRow(2, "b", RoleAdmin)
 	e.set(t, a, b)
-	err := e.s.Update(t.Context(), func(tx *store.Tx) error {
+	err := e.s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -2315,7 +2326,7 @@ func TestPutAndRemoveKeepAnAdministrator(t *testing.T) {
 		}
 		// putRow does not apply the rule.
 		return putRow(tx, lost)
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

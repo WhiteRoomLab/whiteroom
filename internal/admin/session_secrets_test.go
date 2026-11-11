@@ -195,11 +195,11 @@ func TestAnswerFor(t *testing.T) {
 func TestLoginAuthor(t *testing.T) {
 	const authorID = "aut_01JB8Y6T2RG7M4XK9P2D5W8NQ3"
 	ts := newTestServer(t, httpsOrigin)
-	err := ts.db.Update(t.Context(), func(tx *store.Tx) error {
+	err := ts.db.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		data := `{"schemaVersion": 1, "id": "` + authorID + `", "slug": "writer"}`
 		_, err := tx.Put(content.RefAuthor, authorID, []byte(data), "usr_01JB8T7H4MA2C5E8G1J4K7N3P7")
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

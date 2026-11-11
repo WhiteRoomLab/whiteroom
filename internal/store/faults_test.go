@@ -34,7 +34,7 @@ func TestCommitFault(t *testing.T) {
 		s, _ := newStore(t, tb)
 		errHook := errors.New("hook")
 		called := failAt(s, "commit", errHook)
-		err := s.Update(t.Context(), func(tx *Tx) error {
+		err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 			for _, id := range []string{entryID, pageID} {
 				if _, err := tx.Put(content.RefEntry, id, docJSON(content.RefEntry, id), userID); err != nil {
 					return err
@@ -45,7 +45,7 @@ func TestCommitFault(t *testing.T) {
 			}
 			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
 			return err
-		})
+		}))
 		if !errors.Is(err, errHook) || err.Error() != errHook.Error() {
 			t.Errorf("Update() = %v, want the error of the hook", err)
 		}
@@ -139,14 +139,14 @@ func TestUpdateCanceled(t *testing.T) {
 		t.Run("canceled", func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			err := s.Update(ctx, func(tx *Tx) error {
+			err := s.Update(ctx, withRecord(func(tx *Tx) error {
 				data := docJSON(content.RefEntry, entryID)
 				if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
 					return err
 				}
 				cancel()
 				return nil
-			})
+			}))
 			if !errors.Is(err, context.Canceled) {
 				t.Errorf("Update() = %v, want context.Canceled", err)
 			}
@@ -198,10 +198,10 @@ func hold(t *testing.T, run func(context.Context, func(*Tx) error) error, f func
 func TestUpdateWaiting(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 		s, _ := newStore(t, tb)
-		release := hold(t, s.Update, func(tx *Tx) error {
+		release := hold(t, s.Update, withRecord(func(tx *Tx) error {
 			_, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)
 			return err
-		})
+		}))
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 		called := false

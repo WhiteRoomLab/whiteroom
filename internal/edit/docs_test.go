@@ -605,10 +605,10 @@ func TestDeleteDrafts(t *testing.T) {
 	}
 	addRevision := func(entry, rev string, data []byte) {
 		t.Helper()
-		err := s.Update(t.Context(), func(tx *store.Tx) error {
+		err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 			_, err := tx.AddRevision(entry, rev, data, userID)
 			return err
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -946,7 +946,7 @@ func TestDanglingReferences(t *testing.T) {
 		entry  = testID(content.RefEntry, 1)
 		rev    = testID(content.RefRevision, 1)
 	)
-	err := s.Update(t.Context(), func(tx *store.Tx) error {
+	err := s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 		// The term news, which published revisions, a menu, a redirect and a term name.
 		if _, err := tx.Delete(content.RefTerm, newsID, user); err != nil {
 			return err
@@ -978,7 +978,7 @@ func TestDanglingReferences(t *testing.T) {
 			testID(content.RefEntry, 99)+`", "author": "`+testID(content.RefAuthor, 99)+`", "sticky": true, `+
 			`"terms": {"nope": ["`+testID(content.RefTerm, 97)+`"], "category": ["`+newsID+`", "`+orphan+`"]}}`), user)
 		return err
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

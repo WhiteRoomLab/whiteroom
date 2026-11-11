@@ -545,7 +545,7 @@ func roundTrip(t *testing.T, s *Store) []string {
 	var out []string
 	rec := recorder(&out)
 	run := func(f func(tx *Tx) error) {
-		out = append(out, fmt.Sprintf("Update: %v", s.Update(t.Context(), f)))
+		out = append(out, fmt.Sprintf("Update: %v", s.Update(t.Context(), withRecord(f))))
 	}
 	first, second := docJSON(content.RefEntry, entryID), append(docJSON(content.RefEntry, entryID), '\n')
 	term, otherTerm := docJSON(content.RefTerm, termID), append(docJSON(content.RefTerm, termID), ' ')
@@ -708,8 +708,6 @@ func TestLogTables(t *testing.T) {
 	parent := "trm_01JE0000000000000000000000"
 	term := []byte(`{"schemaVersion": 1, "id": "` + termID + `", "parent": "` + parent + `"}`)
 	session := sessionKeyOf("a")
-	// The head of the activity log, which has the record store.create, made at the time of the store.
-	createHead := "\x01" + string(createRecordSum())
 	update(t, s, func(tx *Tx) error {
 		if _, err := tx.Put(content.RefEntry, entryID, data, userID); err != nil {
 			return err
@@ -728,6 +726,14 @@ func TestLogTables(t *testing.T) {
 		}
 		return tx.PutSession(session, []byte("session"))
 	})
+	// The head of the activity log: the records store.create and the store.write of each Update that has no record.
+	activityHead := func() string {
+		h, ok := headOf(t, s, audit.ActivityLog)
+		if !ok {
+			t.Fatal("the activity log has no head")
+		}
+		return string(headValue(h))
+	}
 	// Fields of fewer than 128 bytes: their lengths are a byte.
 	field := func(b string) string { return string([]byte{byte(len(b))}) + b }
 	hash := func(b []byte) string {
@@ -745,7 +751,7 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"activityLog", createHead}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x06"},
+		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x06"},
 			{"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
@@ -785,7 +791,7 @@ func TestLogTables(t *testing.T) {
 		_, err := tx.Delete(content.RefEntry, entryID, userID)
 		return err
 	})
-	want[tableMeta][4][1] = "\x03"
+	want[tableMeta][0][1], want[tableMeta][4][1] = activityHead(), "\x03"
 	want[tableDocuments] = want[tableDocuments][1:]
 	deletion := [2]string{"entry\x00" + entryID + "\x00" + seq(3), "\x03\x00" + tail}
 	want[tableHistory] = append([][2]string{want[tableHistory][0], deletion}, want[tableHistory][1:]...)
@@ -1369,10 +1375,10 @@ func TestLogHooks(t *testing.T) {
 			s, _ := newLogStore(t, logdb.Options{Placement: logdb.Files})
 			errHook := errors.New("hook")
 			called := failAt(s, point, errHook)
-			err := s.Update(t.Context(), func(tx *Tx) error {
+			err := s.Update(t.Context(), withRecord(func(tx *Tx) error {
 				_, err := tx.Put(content.RefEntry, entryID, data, userID)
 				return err
-			})
+			}))
 			fails := i <= 2 // before the commit point, the Sync of the record
 			want := all
 			if fails {
@@ -1478,7 +1484,7 @@ func TestLogReader(t *testing.T) {
 		return out
 	}
 	compareLines(t, "the reads of the reader", readAs(r), readAs(w))
-	wantRecords := []string{"activity 1 store.create ", "activity 2 store.write put"}
+	wantRecords := []string{"activity 1 store.create ", "activity 2 store.write ", "activity 3 store.write put"}
 	if got := recordLines(allRecords(t, r)); !slices.Equal(got, wantRecords) {
 		t.Errorf("the records of the reader = %q, want %q", got, wantRecords)
 	}
@@ -1499,10 +1505,10 @@ func TestLogReader(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Update(context.Background(), func(tx *Tx) error {
+		done <- w.Update(context.Background(), withRecord(func(tx *Tx) error {
 			_, err := tx.Put(content.RefEntry, pageID, docJSON(content.RefEntry, pageID), userID)
 			return err
-		})
+		}))
 	}()
 	select {
 	case <-reached:
