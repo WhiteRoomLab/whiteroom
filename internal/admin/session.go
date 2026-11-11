@@ -114,7 +114,7 @@ func (s *Server) withSession(h func(http.ResponseWriter, *http.Request, account.
 			return
 		}
 		token, sent := s.sessionCookie(r)
-		p, err := s.accounts.Authenticate(r.Context(), token)
+		p, err := s.accounts.Authenticate(r.Context(), s.client(r), token)
 		switch {
 		case err == nil:
 			h(w, r, p)
@@ -142,15 +142,20 @@ type loginRequest struct {
 // errTooManyLogins is the error of startLogin when every place is taken.
 var errTooManyLogins = errors.New("too many logins at once")
 
+// client returns where r came from, as the accounts record it in the login history.
+func (s *Server) client(r *http.Request) account.Client {
+	return account.Client{Addr: s.clientAddr(r), UserAgent: r.UserAgent()}
+}
+
 // startLogin is Login of the accounts, if there is a place for it among the logins that run (maxLogins).
-func (s *Server) startLogin(ctx context.Context, login, password, previous string) (account.Principal, string, error) {
+func (s *Server) startLogin(ctx context.Context, c account.Client, login, password, previous string) (account.Principal, string, error) {
 	select {
 	case s.logins <- struct{}{}:
 		defer func() { <-s.logins }()
 	default:
 		return account.Principal{}, "", errTooManyLogins
 	}
-	return s.accounts.Login(ctx, login, password, previous)
+	return s.accounts.Login(ctx, c, login, password, previous)
 }
 
 // login is POST /api/session. The order is fixed: the body, then the length of the password, then attempts.begin, then a
@@ -159,7 +164,9 @@ func (s *Server) startLogin(ctx context.Context, login, password, previous strin
 // the hash of the password and counts the login whether or not an account has the name. Once the password has been
 // compared, the attempt stays counted whatever becomes of the login: after a wrong password, and after a right one that
 // could not be answered, as when the client hangs up, so that no refund tells the two apart. Only when it was not compared
-// does aborted give the attempt back: the places were taken, or Login failed before the comparison.
+// does aborted give the attempt back: the places were taken, or Login failed before the comparison. The accounts record
+// every login that fails; the logins that are refused here, before Login, are told to them (LoginRefused), and the answer
+// does not depend on whether that worked.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in loginRequest
 	if !readJSON(w, r, loginBodyLimit, &in) {
@@ -169,17 +176,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, codeBadRequest, detailBadRequest)
 		return
 	}
+	c := s.client(r)
 	if account.PasswordTooLong(*in.Password) {
+		s.accounts.LoginRefused(r.Context(), c, *in.Login, account.RefusedTooLong)
 		writeProblem(w, http.StatusUnauthorized, codeBadCredentials, detailBadCredentials)
 		return
 	}
-	name, client := nameKey(account.NormalizeLogin(*in.Login)), clientPrefix(s.clientAddr(r))
+	name, client := nameKey(account.NormalizeLogin(*in.Login)), clientPrefix(c.Addr)
 	if retry, ok := s.attempts.begin(name, client); !ok {
+		s.accounts.LoginRefused(r.Context(), c, *in.Login, account.RefusedRateLimited)
 		writeTooManyAttempts(w, retry)
 		return
 	}
 	previous, _ := s.sessionCookie(r)
-	p, token, err := s.startLogin(r.Context(), *in.Login, *in.Password, previous)
+	p, token, err := s.startLogin(r.Context(), c, *in.Login, *in.Password, previous)
 	switch {
 	case err == nil:
 		s.attempts.succeeded(name, client)
@@ -189,6 +199,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnauthorized, codeBadCredentials, detailBadCredentials)
 	case errors.Is(err, errTooManyLogins):
 		s.attempts.aborted(name, client)
+		s.accounts.LoginRefused(r.Context(), c, *in.Login, account.RefusedBusy)
 		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
 	default:
 		if !account.PasswordCompared(err) {
@@ -202,7 +213,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 // clears the cookie. The browser is logged out either way.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	token, _ := s.sessionCookie(r)
-	if err := s.accounts.Logout(r.Context(), token); err != nil {
+	if err := s.accounts.Logout(r.Context(), s.client(r), token); err != nil {
 		s.fail(w, r, err)
 		return
 	}

@@ -16,7 +16,7 @@ import (
 func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Account, error) {
 	c.normalize()
 	var out Account
-	err := m.st.Update(ctx, func(tx *store.Tx) error {
+	err := m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -74,7 +74,7 @@ func (m *Manager) Update(ctx context.Context, by Actor, id string, c Change) (Ac
 			return err
 		}
 		if next.Role != cur.Role {
-			return removeSessions(tx, id)
+			return removeSessions(h, id, endedRole)
 		}
 		return nil
 	})
@@ -102,7 +102,7 @@ func (m *Manager) Enable(ctx context.Context, by Actor, id string) (Account, err
 // account's sessions after the checks, in the same Update.
 func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled bool) (Account, error) {
 	var out Account
-	err := m.st.Update(ctx, func(tx *store.Tx) error {
+	err := m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -129,7 +129,7 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 		}
 		out = next.account()
 		if disabled {
-			return removeSessions(tx, id)
+			return removeSessions(h, id, endedDisabled)
 		}
 		return nil
 	})
@@ -146,11 +146,11 @@ func (m *Manager) setDisabled(ctx context.Context, by Actor, id string, disabled
 // how the repair of #49 clears them; the rule of the last active administrator cannot count such a row, and the
 // sessions that name it go too. Any other removal needs every row to be readable, as every operation that writes does.
 func (m *Manager) Delete(ctx context.Context, by Actor, id string) error {
-	return m.st.Update(ctx, func(tx *store.Tx) error {
+	return m.logged(ctx, func(tx *store.Tx, h *history) error {
 		if by.system {
 			removed, err := removeUnreadable(tx, id)
 			if removed {
-				err = removeSessions(tx, id)
+				err = removeSessions(h, id, endedDeleted)
 			}
 			if removed || err != nil {
 				return err
@@ -169,6 +169,6 @@ func (m *Manager) Delete(ctx context.Context, by Actor, id string) error {
 		if err := remove(tx, rows, id, "it cannot be deleted"); err != nil {
 			return err
 		}
-		return removeSessions(tx, id)
+		return removeSessions(h, id, endedDeleted)
 	})
 }

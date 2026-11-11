@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -20,8 +21,19 @@ func passwordErrors(p string, r row) error {
 
 // SetPassword uses the token of an invitation or a reset to set the password of the account that it was given to, and
 // returns the account, which is then active. The token cannot be used again, and the account's sessions end in the same
-// Update. The problems of the password are content.Errors at /password, and leave the token as it was.
-func (m *Manager) SetPassword(ctx context.Context, token, password string) (Account, error) {
+// Update. The problems of the password are content.Errors at /password, and leave the token as it was. A token that
+// cannot be used is ErrInvalidToken, and the login history records it with c, in an Update of its own (see
+// LoginRefused).
+func (m *Manager) SetPassword(ctx context.Context, c Client, token, password string) (Account, error) {
+	out, err := m.setPassword(ctx, token, password)
+	var bad invalidToken
+	if errors.As(err, &bad) {
+		m.tokenFailed(ctx, c, bad)
+	}
+	return out, err
+}
+
+func (m *Manager) setPassword(ctx context.Context, token, password string) (Account, error) {
 	var target row
 	err := m.st.View(ctx, func(tx *store.Tx) error {
 		rows, err := loadRows(tx)
@@ -47,7 +59,7 @@ func (m *Manager) SetPassword(ctx context.Context, token, password string) (Acco
 	}
 	m.at("hashed")
 	var out Account
-	err = m.st.Update(ctx, func(tx *store.Tx) error {
+	err = m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -65,7 +77,7 @@ func (m *Manager) SetPassword(ctx context.Context, token, password string) (Acco
 			return err
 		}
 		out = next.account()
-		return removeSessions(tx, next.ID)
+		return removeSessions(h, next.ID, endedPassword)
 	})
 	if err != nil {
 		return Account{}, err
@@ -79,7 +91,7 @@ func (m *Manager) SetPassword(ctx context.Context, token, password string) (Acco
 // an administrator, or System, may; the last active administrator can be reset by System only.
 func (m *Manager) Reset(ctx context.Context, by Actor, id string) (string, error) {
 	var token string
-	err := m.st.Update(ctx, func(tx *store.Tx) error {
+	err := m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -117,7 +129,7 @@ func (m *Manager) Reset(ctx context.Context, by Actor, id string) (string, error
 			return err
 		}
 		token = tok
-		return removeSessions(tx, id)
+		return removeSessions(h, id, endedPassword)
 	})
 	if err != nil {
 		return "", err
@@ -142,7 +154,7 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 	if err != nil {
 		return err
 	}
-	return m.st.Update(ctx, func(tx *store.Tx) error {
+	return m.logged(ctx, func(tx *store.Tx, h *history) error {
 		rows, err := loadRows(tx)
 		if err != nil {
 			return err
@@ -150,7 +162,7 @@ func (m *Manager) ChangePassword(ctx context.Context, id, current, next string) 
 		if _, err := rewritePassword(tx, rows, id, stored, next, hash, m.now()); err != nil {
 			return err
 		}
-		return removeSessions(tx, id)
+		return removeSessions(h, id, endedPassword)
 	})
 }
 
@@ -231,7 +243,7 @@ func rewritePassword(tx *store.Tx, rows []row, id string, stored row, next, hash
 // apart. Only a password of more than maxTypedPasswordBytes bytes costs none, for every login alike. A row that cannot be
 // read is no account, and does not stop the others from logging in. It does not limit attempts and does not hash again.
 func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password string) (Account, error) {
-	found, ok, _, err := m.verify(ctx, login, password)
+	found, ok, _, _, err := m.verify(ctx, login, password)
 	if err != nil {
 		return Account{}, err
 	}
@@ -260,8 +272,9 @@ func (m *Manager) VerifyPasswordFactor(ctx context.Context, login, password stri
 // which it normalizes, and checks the password against its hash, or against the hash for nobody if no active account
 // with a password has the login name. ok is true only for an active account with a password that matches; found is then
 // its row as the look found it, and rehash says that its hash has fewer iterations than the Manager's. The reasons to
-// fail are not told apart: only an error of the store, or the end of ctx, is an error.
-func (m *Manager) verify(ctx context.Context, login, password string) (found row, ok, rehash bool, err error) {
+// fail are not told apart to the caller of the Manager: only an error of the store, or the end of ctx, is an error. why
+// is what the login history records of a failure.
+func (m *Manager) verify(ctx context.Context, login, password string) (found row, ok, rehash bool, why loginFailure, err error) {
 	login = NormalizeLogin(login)
 	var usable bool
 	err = m.st.View(ctx, func(tx *store.Tx) error {
@@ -276,7 +289,7 @@ func (m *Manager) verify(ctx context.Context, login, password string) (found row
 		return nil
 	})
 	if err != nil {
-		return row{}, false, false, err
+		return row{}, false, false, loginFailure{}, err
 	}
 	stored := m.unknownHash
 	if usable {
@@ -285,12 +298,34 @@ func (m *Manager) verify(ctx context.Context, login, password string) (found row
 	matched, rehash, err := m.match(ctx, stored, password)
 	m.at("verified")
 	if err != nil {
-		return row{}, false, false, err
+		return row{}, false, false, loginFailure{}, err
 	}
 	if !usable || !matched {
-		return row{}, false, false, nil
+		return row{}, false, false, whyNotLoggedIn(found, password), nil
 	}
-	return found, true, rehash, nil
+	return found, true, rehash, loginFailure{}, nil
+}
+
+// loginFailure is why a login failed, and the account if some account has the login name.
+type loginFailure struct{ result, account string }
+
+// whyNotLoggedIn tells why a password that does not log in as the account found, which is the zero row if none has the
+// login name, does not. A password that is too long is refused whatever the account is.
+func whyNotLoggedIn(found row, password string) loginFailure {
+	why := loginFailure{account: found.ID}
+	switch {
+	case PasswordTooLong(password):
+		why.result = failTooLong
+	case found.ID == "":
+		why.result = failUnknownLogin
+	case found.status() == StatusDisabled:
+		why.result = failDisabled
+	case found.status() == StatusPending:
+		why.result = failPending
+	default:
+		why.result = failWrongPassword
+	}
+	return why
 }
 
 // stillMatches reads the row of the account that verify found again, and returns it if it is still active and has the

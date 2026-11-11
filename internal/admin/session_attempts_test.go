@@ -304,20 +304,30 @@ func TestLoginPlaces(t *testing.T) {
 	}
 
 	// One login more is answered with 503, as a context that ends is, and its attempt is given back once: the login name
-	// keeps the attempts of the logins that wait.
+	// keeps the attempts of the logins that wait. The sixth attempt of a client is answered with 429 meanwhile. The
+	// refusals are recorded, but the test holds the writer of the store, so each record waits for it as long as a record
+	// that stands alone may, and then is not written: the answers are the same, and come when that time is over.
 	if _, name, _ := ts.levels("admin", "203.0.113.1"); name != places {
 		t.Errorf("the logins that wait have %d attempts counted for the login name, want %d", name, places)
 	}
-	extra := make(chan *http.Response, 1)
+	extra, limited := make(chan *http.Response, 1), make(chan *http.Response, 1)
 	go func() { extra <- ts.postLogin("admin", testPassword("admin"), from("203.0.113.1:5000")...) }()
-	var res *http.Response
-	select {
-	case res = <-extra:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the login after the places are taken is not answered: it waits for a place")
+	go func() { limited <- ts.postLogin("other", wrongPassword, from("203.0.113.2:5000")...) }()
+	var res, refused *http.Response
+	for res == nil || refused == nil {
+		select {
+		case res = <-extra:
+		case refused = <-limited:
+		case <-time.After(20 * time.Second):
+			t.Fatal("a login that is refused while the places are taken is not answered: it waits for a place")
+		}
 	}
 	checkProblem(t, "the login after the places are taken", res, "busy")
 	checkNoCookie(t, "the login after the places are taken", res)
+	if got := retryAfter(t, "the sixth attempt of a client while the places are taken", refused); got != "30" {
+		t.Errorf("the sixth attempt of a client while the places are taken has the Retry-After %q, want 30", got)
+	}
+	checkNoCookie(t, "the sixth attempt of a client while the places are taken", refused)
 	if p, n, c := ts.counted(); p != pairs || n != names || c != clients {
 		t.Errorf("after the login that found no place the attempts keep count of %d pairs, %d login names and %d clients, want %d, %d and %d",
 			p, n, c, pairs, names, clients)
@@ -326,10 +336,10 @@ func TestLoginPlaces(t *testing.T) {
 		t.Errorf("after the login that found no place the attempts count %d for its pair, %d for the login name and %d for its client, want 0, %d and 0",
 			pair, name, client, places)
 	}
-	if got := ts.logs.String(); got != "" {
-		t.Errorf("the login that found no place has logged %q", redact(got))
+	const lost = "cannot record login.failure: context deadline exceeded\n"
+	if got := ts.logs.String(); got != lost+lost {
+		t.Errorf("the logins that were refused have logged %q, want two lines for the records that could not be written", redact(got))
 	}
-	ts.wantRetry(t, "the sixth attempt of a client while the places are taken", "other", wrongPassword, "30", from("203.0.113.2:5000")...)
 
 	releaseOnce()
 	wg.Wait()

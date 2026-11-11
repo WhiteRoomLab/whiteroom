@@ -156,7 +156,7 @@ func (ts *testServer) addAccount(t *testing.T, login string, role account.Role) 
 		t.Fatalf("Invite(%q) = %v", login, err)
 	}
 	ts.seen.password(testPassword(login))
-	a, err := ts.accounts.SetPassword(t.Context(), token, testPassword(login))
+	a, err := ts.accounts.SetPassword(t.Context(), account.Client{}, token, testPassword(login))
 	if err != nil {
 		t.Fatalf("SetPassword(%q) = %v", login, err)
 	}

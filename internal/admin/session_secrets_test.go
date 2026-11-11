@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -80,6 +81,28 @@ func TestSecretsNotShown(t *testing.T) {
 	ts.getSession(ts.cookie(fresh)...)
 	ts.deleteSession(ts.cookie(fresh)...)
 	ts.deadline = defaultDeadline
+
+	// The audit log shows none of the secrets either: it names a session by the key of its row.
+	var history strings.Builder
+	err := ts.db.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		data, err := audit.Encode(r)
+		if err != nil {
+			t.Errorf("a record of %s cannot be encoded: %v", r.Action, err)
+		}
+		history.Write(data)
+		history.WriteByte('\n')
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ReadAudit() = %v", err)
+	}
+	if got := strings.Count(history.String(), `"action":"login.failure"`); got < 10 {
+		t.Errorf("the audit log has %d records of failed logins, want at least 10: the flows did not reach it", got)
+	}
+	for _, p := range ts.seen.problems(history.String()) {
+		t.Errorf("the audit log: %s", p)
+	}
+
 	if err := ts.db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +209,7 @@ func TestLoginAuthor(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts.seen.password(testPassword("writer"))
-	writer, err := ts.accounts.SetPassword(t.Context(), invitation, testPassword("writer"))
+	writer, err := ts.accounts.SetPassword(t.Context(), account.Client{}, invitation, testPassword("writer"))
 	if err != nil {
 		t.Fatal(err)
 	}

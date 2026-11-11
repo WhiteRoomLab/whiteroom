@@ -182,7 +182,7 @@ func TestConcurrentSetPassword(t *testing.T) {
 	calls := make([]func() error, n)
 	for i := range calls {
 		passwords[i] = "the long password number " + strconv.Itoa(i)
-		calls[i] = func() error { _, err := e.m.SetPassword(t.Context(), token, passwords[i]); return err }
+		calls[i] = func() error { _, err := e.m.SetPassword(t.Context(), mgrClient, token, passwords[i]); return err }
 	}
 	winner, succeeded := -1, 0
 	for i, err := range mgrRunTogether(calls...) {
@@ -325,7 +325,7 @@ func TestConcurrentStress(t *testing.T) {
 					}
 				case 8:
 					if token != "" {
-						_, err = e.m.SetPassword(ctx, token, "the long password of "+login)
+						_, err = e.m.SetPassword(ctx, mgrClient, token, "the long password of "+login)
 					}
 				}
 				if err != nil && !mgrStressExpected(err) {
@@ -421,7 +421,7 @@ func TestConcurrentLoginAndDisable(t *testing.T) {
 			t.Errorf("%s: the account has %d session rows after Enable, want none", what, len(rows))
 		}
 		for _, token := range tokens {
-			if _, err := e.m.Authenticate(t.Context(), token); !errors.Is(err, ErrNoSession) {
+			if _, err := e.m.Authenticate(t.Context(), mgrClient, token); !errors.Is(err, ErrNoSession) {
 				t.Errorf("%s: Authenticate() of a session made before the Disable = %v, want ErrNoSession", what, err)
 			}
 		}
@@ -440,7 +440,7 @@ func TestConcurrentLoginAndDisable(t *testing.T) {
 					}
 				}
 			}
-			p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+			p, token, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 			if !ran || !errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("Login() disabled at %q = %+v, %v, want ErrBadCredentials and no token (the Disable ran = %v)", point, p, err, ran)
 			}
@@ -458,7 +458,7 @@ func TestConcurrentLoginAndDisable(t *testing.T) {
 			for i := range logins {
 				calls = append(calls, func() error {
 					var err error
-					_, tokens[i], err = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+					_, tokens[i], err = e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 					return err
 				})
 			}
@@ -495,7 +495,7 @@ func TestConcurrentLoginAndRoleChange(t *testing.T) {
 		for i := range logins {
 			calls = append(calls, func() error {
 				var err error
-				results[i], tokens[i], err = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+				results[i], tokens[i], err = e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 				return err
 			})
 		}
@@ -510,7 +510,7 @@ func TestConcurrentLoginAndRoleChange(t *testing.T) {
 			default:
 				// A login that read the account before the change is the old role, and its session must be gone.
 				want := results[i-1].Account.Role == to
-				_, authErr := e.m.Authenticate(t.Context(), tokens[i-1])
+				_, authErr := e.m.Authenticate(t.Context(), mgrClient, tokens[i-1])
 				if has := e.hasSession(t, tokens[i-1]); has != want || (authErr == nil) != want {
 					t.Errorf("round %d: a login of the role %s after a change to %s has a row = %v and works = %v, want both %v",
 						round, results[i-1].Account.Role, to, has, authErr == nil, want)
@@ -554,7 +554,7 @@ func TestConcurrentLoginAndChangePassword(t *testing.T) {
 			}
 			calls = append(calls, func() error {
 				var err error
-				_, results[i].token, err = e.m.Login(t.Context(), "yamada", results[i].password, "")
+				_, results[i].token, err = e.m.Login(t.Context(), mgrClient, "yamada", results[i].password, "")
 				return err
 			})
 		}
@@ -571,7 +571,7 @@ func TestConcurrentLoginAndChangePassword(t *testing.T) {
 				// The new password matches only after the change commits, so its session works; a session made with the old
 				// password was written before the change, and the change ended it.
 				want := r.password == next
-				_, authErr := e.m.Authenticate(t.Context(), r.token)
+				_, authErr := e.m.Authenticate(t.Context(), mgrClient, r.token)
 				if has := e.hasSession(t, r.token); has != want || (authErr == nil) != want {
 					t.Errorf("round %d: a login with the password of the %s has a row = %v and works = %v, want both %v",
 						round, map[bool]string{true: "new", false: "old"}[want], has, authErr == nil, want)
@@ -610,7 +610,7 @@ func TestConcurrentLoginAndChangeOwnPassword(t *testing.T) {
 		for w := range nexts {
 			calls = append(calls, func() error {
 				var err error
-				_, fresh[w], err = e.m.ChangeOwnPassword(t.Context(), token, current, nexts[w])
+				_, fresh[w], err = e.m.ChangeOwnPassword(t.Context(), mgrClient, token, current, nexts[w])
 				return err
 			})
 		}
@@ -618,7 +618,7 @@ func TestConcurrentLoginAndChangeOwnPassword(t *testing.T) {
 			results[i].password = []string{current, nexts[0], nexts[1]}[i/logins]
 			calls = append(calls, func() error {
 				var err error
-				_, results[i].token, err = e.m.Login(t.Context(), "yamada", results[i].password, "")
+				_, results[i].token, err = e.m.Login(t.Context(), mgrClient, "yamada", results[i].password, "")
 				return err
 			})
 		}
@@ -686,7 +686,8 @@ func sessionInvariants(s *store.Store) string {
 			case !ok:
 				msg = "a session row names an account that is missing or cannot be read"
 				return nil
-			case !sess.worksFor(r):
+			}
+			if _, ended := sess.accountEnd(r, true); ended {
 				msg = "a session row names an account that is not active or has other credentials than the session was made with"
 				return nil
 			}
@@ -808,16 +809,16 @@ func TestConcurrentSessionRules(t *testing.T) {
 				case 0, 1:
 					previous, _ := pick(r)
 					var token string
-					_, token, err = e.m.Login(ctx, login, current(accounts[login]), previous)
+					_, token, err = e.m.Login(ctx, mgrClient, login, current(accounts[login]), previous)
 					if err == nil {
 						remember(token, login)
 					}
 				case 2:
 					token, _ := pick(r)
-					_, err = e.m.Authenticate(ctx, token)
+					_, err = e.m.Authenticate(ctx, mgrClient, token)
 				case 3:
 					token, _ := pick(r)
-					err = e.m.Logout(ctx, token)
+					err = e.m.Logout(ctx, mgrClient, token)
 				case 4:
 					_, err = e.m.Disable(ctx, System, st.id)
 				case 5:
@@ -837,14 +838,14 @@ func TestConcurrentSessionRules(t *testing.T) {
 					token := pickOf(r, target)
 					st.op.Lock()
 					if r.IntN(2) == 0 {
-						if _, token, err = e.m.Login(ctx, target, current(st), ""); err == nil {
+						if _, token, err = e.m.Login(ctx, mgrClient, target, current(st), ""); err == nil {
 							remember(token, target)
 						}
 					}
 					if err == nil {
 						next := fmt.Sprintf("%s changes itself to number %d", target, changes.Add(1))
 						var fresh string
-						if _, fresh, err = e.m.ChangeOwnPassword(ctx, token, current(st), next); err == nil {
+						if _, fresh, err = e.m.ChangeOwnPassword(ctx, mgrClient, token, current(st), next); err == nil {
 							set(st, next)
 							remember(fresh, target)
 						}
@@ -856,7 +857,7 @@ func TestConcurrentSessionRules(t *testing.T) {
 					if token, err = e.m.Reset(ctx, System, st.id); err == nil {
 						set(st, "") // the account has none until the token is used
 						next := fmt.Sprintf("%s starts again with number %d", target, changes.Add(1))
-						if _, err = e.m.SetPassword(ctx, token, next); err == nil {
+						if _, err = e.m.SetPassword(ctx, mgrClient, token, next); err == nil {
 							set(st, next)
 						}
 					}
@@ -870,16 +871,16 @@ func TestConcurrentSessionRules(t *testing.T) {
 					if a, token, err = e.m.Invite(ctx, System, in); err != nil {
 						break
 					}
-					if _, err = e.m.SetPassword(ctx, token, fmt.Sprintf("the password of temp number %d", n)); err != nil {
+					if _, err = e.m.SetPassword(ctx, mgrClient, token, fmt.Sprintf("the password of temp number %d", n)); err != nil {
 						break
 					}
-					if _, token, err = e.m.Login(ctx, in.Login, fmt.Sprintf("the password of temp number %d", n), ""); err != nil {
+					if _, token, err = e.m.Login(ctx, mgrClient, in.Login, fmt.Sprintf("the password of temp number %d", n), ""); err != nil {
 						break
 					}
 					if err = e.m.Delete(ctx, System, a.ID); err != nil {
 						break
 					}
-					if _, err = e.m.Authenticate(ctx, token); !errors.Is(err, ErrNoSession) {
+					if _, err = e.m.Authenticate(ctx, mgrClient, token); !errors.Is(err, ErrNoSession) {
 						t.Errorf("Authenticate() of a session of an account that was deleted = %v, want ErrNoSession", err)
 					}
 					err = nil
@@ -915,7 +916,7 @@ func TestConcurrentSessionRules(t *testing.T) {
 	// A token works if its row is there, and only then.
 	for _, token := range tokens {
 		has := e.hasSession(t, token)
-		if _, err := e.m.Authenticate(ctx, token); (err == nil) != has {
+		if _, err := e.m.Authenticate(ctx, mgrClient, token); (err == nil) != has {
 			t.Errorf("a token of %s works = %v, though its row is there = %v", owner[token], err == nil, has)
 		}
 	}

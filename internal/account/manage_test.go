@@ -509,7 +509,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("Disable() of an invited account = %+v, %v, want %+v", got, err, want)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() of a disabled account = %v, want ErrInvalidToken", err)
 	}
 	got, err = e.m.Enable(t.Context(), System, invited.ID)
@@ -517,7 +517,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("Enable() of an account without a credential = %+v, %v, want %+v", got, err, want)
 	}
-	if _, err := e.m.SetPassword(t.Context(), token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("invited")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("SetPassword() after Enable = %v, want ErrInvalidToken", err)
 	}
 	wantRow = beforeInvited
@@ -529,7 +529,7 @@ func TestDisableAndEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.m.SetPassword(t.Context(), next, mgrPassword("invited")); err != nil {
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, next, mgrPassword("invited")); err != nil {
 		t.Errorf("SetPassword() with the token of the reset = %v, want nil", err)
 	}
 	if e.raw(t)[admin.ID] != other {

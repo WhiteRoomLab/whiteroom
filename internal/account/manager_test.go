@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"maps"
 	mathrand "math/rand/v2"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -31,6 +33,8 @@ var (
 	mgrSeed = [32]byte{'m', 'a', 'n', 'a', 'g', 'e', 'r'}
 	// mgrMissingID is the ID of an account that no test makes.
 	mgrMissingID = content.FormatID(content.RefUser, [16]byte{0: 0x01, 15: 0xff})
+	// mgrClient is where the requests of the tests come from.
+	mgrClient = Client{Addr: netip.MustParseAddr("203.0.113.7"), UserAgent: "whiteroom-test/1.0"}
 )
 
 // mgrClock is a clock that a test sets.
@@ -124,7 +128,7 @@ func (e *mgrEnv) invite(t *testing.T, login string, role Role) (Account, string)
 func (e *mgrEnv) add(t *testing.T, login string, role Role) Account {
 	t.Helper()
 	_, token := e.invite(t, login, role)
-	a, err := e.m.SetPassword(t.Context(), token, mgrPassword(login))
+	a, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword(login))
 	if err != nil {
 		t.Fatalf("SetPassword(%q) = %v", login, err)
 	}
@@ -190,11 +194,13 @@ func (e *mgrEnv) rawSessions(t *testing.T) map[string]string {
 	return got
 }
 
-// mgrMark is what the store keeps of the accounts and the sessions at a time: the bytes of every row, and the size of the
-// data directory, which grows with every commit, also one that writes the bytes that were there.
+// mgrMark is what the store keeps of the accounts, the sessions and the audit log at a time: the bytes of every row, the
+// number of the last record of each log, and the size of the data directory, which grows with every commit, also one that
+// writes the bytes that were there.
 type mgrMark struct {
 	rows     map[string]string
 	sessions map[string]string
+	last     map[audit.Log]uint64
 	size     int64
 }
 
@@ -215,14 +221,21 @@ func (e *mgrEnv) mark(t *testing.T) mgrMark {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mgrMark{rows: e.raw(t), sessions: e.rawSessions(t), size: size}
+	heads, err := e.s.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatalf("AuditHeads() = %v", err)
+	}
+	last := make(map[audit.Log]uint64)
+	for _, h := range heads {
+		last[h.Log] = h.N
+	}
+	return mgrMark{rows: e.raw(t), sessions: e.rawSessions(t), last: last, size: size}
 }
 
-// unchanged checks that the store is as it was at before, which mark returned: the same rows of the accounts and of the
-// sessions, and no commit since. It names a session row by its place in the order of the keys, never by its key.
-func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
+// sameRows checks that the rows of the accounts and of the sessions are as they were at before. It names a session row by
+// its place in the order of the keys, never by its key.
+func (e *mgrEnv) sameRows(t *testing.T, before, after mgrMark) {
 	t.Helper()
-	after := e.mark(t)
 	for id, data := range before.rows {
 		if got, ok := after.rows[id]; !ok {
 			t.Errorf("the row of %s is gone", id)
@@ -245,9 +258,75 @@ func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
 	if n := len(after.sessions) - len(before.sessions); n > 0 {
 		t.Errorf("%d session rows are new", n)
 	}
+}
+
+// unchanged checks that the store is as it was at before, which mark returned: the same rows of the accounts and of the
+// sessions, no record, and no commit since.
+func (e *mgrEnv) unchanged(t *testing.T, before mgrMark) {
+	t.Helper()
+	after := e.mark(t)
+	e.sameRows(t, before, after)
+	if names := e.added(t, before); len(names) > 0 {
+		t.Errorf("the audit log has the records %q, want none", names)
+	}
 	if after.size != before.size {
 		t.Errorf("the data directory changed from %d to %d bytes: something was committed", before.size, after.size)
 	}
+}
+
+// recorded checks that the rows of the accounts and of the sessions are as they were at before, and that the audit log has
+// gained the records that want names, in this order.
+func (e *mgrEnv) recorded(t *testing.T, before mgrMark, want ...string) {
+	t.Helper()
+	e.sameRows(t, before, e.mark(t))
+	e.gained(t, before, want...)
+}
+
+// gained checks that the audit log has gained the records that want names since before, in this order.
+func (e *mgrEnv) gained(t *testing.T, before mgrMark, want ...string) {
+	t.Helper()
+	if got := e.added(t, before); !slices.Equal(got, want) {
+		t.Errorf("the audit log has gained the records %q, want %q", got, want)
+	}
+}
+
+// recordName names r by its action, and its result after a slash if it has one.
+func recordName(r audit.Record) string {
+	if r.Result == "" {
+		return string(r.Action)
+	}
+	return string(r.Action) + "/" + r.Result
+}
+
+// added returns the names of the records that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) added(t *testing.T, before mgrMark) []string {
+	t.Helper()
+	var names []string
+	for _, r := range e.records(t, before) {
+		names = append(names, recordName(r))
+	}
+	return names
+}
+
+// records returns the records that the audit log has gained since before, from the oldest.
+func (e *mgrEnv) records(t *testing.T, before mgrMark) []audit.Record {
+	t.Helper()
+	var got []audit.Record
+	err := e.s.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		if r.N > before.last[r.Log] {
+			got = append(got, r)
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ReadAudit() = %v", err)
+	}
+	return got
+}
+
+// hist returns a history that adds records to tx, for the tests of the helpers that take one.
+func (e *mgrEnv) hist(tx *store.Tx) *history {
+	return &history{m: e.m, tx: tx}
 }
 
 // set writes the rows with the store's own API, which makes states that the operations cannot.
@@ -1197,7 +1276,7 @@ func (e *mgrEnv) writes(t *testing.T, by Actor, admin, pending Account, token, t
 			return err
 		}},
 		{"SetPassword", func() error {
-			_, err := e.m.SetPassword(ctx, token, mgrPassword("yamada"))
+			_, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("yamada"))
 			return err
 		}},
 		{"Reset", func() error { _, err := e.m.Reset(ctx, by, pending.ID); return err }},
@@ -1654,7 +1733,7 @@ func TestRowFromOlderUnicode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reset() = %v", err)
 	}
-	if a, err := e.m.SetPassword(ctx, token, mgrPassword("yamada the third")); err != nil || a.Name != name || a.Status != StatusActive {
+	if a, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("yamada the third")); err != nil || a.Name != name || a.Status != StatusActive {
 		t.Errorf("SetPassword() = %+v, %v, want the account, active, with the name as it was stored", a, err)
 	}
 	if got := storedName(); got != name {
@@ -1778,14 +1857,14 @@ func TestUnassignedCodePoints(t *testing.T) {
 		_, token := e.invite(t, "yamada", RoleEditor)
 		hashed := count(e)
 		before := e.mark(t)
-		a, err := e.m.SetPassword(t.Context(), token, password)
+		a, err := e.m.SetPassword(t.Context(), mgrClient, token, password)
 		mgrProblems(t, err, badPassword)
 		if a != (Account{}) || *hashed != 0 {
 			t.Errorf("SetPassword() returned %+v and hashed %d passwords with an error, want none", a, *hashed)
 		}
 		// The token is as it was.
 		e.unchanged(t, before)
-		if a, err := e.m.SetPassword(t.Context(), token, mgrPassword("yamada")); err != nil || a.Status != StatusActive {
+		if a, err := e.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("yamada")); err != nil || a.Status != StatusActive {
 			t.Errorf("SetPassword() with a password that passes = %+v, %v, want an active account", a, err)
 		}
 	})
@@ -1880,14 +1959,14 @@ func TestRowsOfAnotherBuild(t *testing.T) {
 			t.Errorf("Get() = %+v, %v, want a disabled account that has an invitation", got, err)
 		}
 		before := e.mark(t)
-		if _, err := e.m.SetPassword(ctx, token, mgrPassword("sleeper")); !errors.Is(err, ErrInvalidToken) {
+		if _, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("sleeper")); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("SetPassword() with the token of a disabled account = %v, want ErrInvalidToken", err)
 		}
 		_, err = e.m.Reset(ctx, System, sleeper.ID)
 		if want := sleeper.ID + " is disabled: enable it first"; err == nil || err.Error() != want {
 			t.Errorf("Reset() = %v, want %q", err, want)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "token.failure/disabled")
 		// Enabling removes the token, as it does for any account.
 		if a, err := e.m.Enable(ctx, System, sleeper.ID); err != nil || a.Status != StatusPending || a.Token != (TokenInfo{}) {
 			t.Errorf("Enable() = %+v, %v, want a pending account without a token", a, err)
@@ -1975,7 +2054,7 @@ func TestPersistence(t *testing.T) {
 		t.Errorf("VerifyPasswordFactor() of a disabled account after Open = %v, want ErrBadCredentials", err)
 	}
 	// The token of an invitation works in another process, within its time.
-	a, err := e2.m.SetPassword(t.Context(), token, mgrPassword("pending"))
+	a, err := e2.m.SetPassword(t.Context(), mgrClient, token, mgrPassword("pending"))
 	if err != nil || a.ID != pending.ID || a.Status != StatusActive {
 		t.Errorf("SetPassword() after Open = %+v, %v, want the account %s, active", a, err, pending.ID)
 	}

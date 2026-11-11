@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -107,16 +107,35 @@ func (s sessionRow) check() bool {
 	return inYears(s.CreatedAt) && inYears(s.AuthenticatedAt) && inYears(s.LastSeenAt) && inYears(s.CredentialsChangedAt)
 }
 
-// expired reports whether the session cannot be used at now: SessionLifetime after the login, or SessionIdleTimeout
-// after the last request.
-func (s sessionRow) expired(now time.Time) bool {
-	return !now.Before(s.AuthenticatedAt.Add(SessionLifetime)) || !now.Before(s.LastSeenAt.Add(SessionIdleTimeout))
+// runOut reports whether the session cannot be used at now: SessionLifetime after the login, or SessionIdleTimeout
+// after the last request. If both have passed, it tells the one that passed first.
+func (s sessionRow) runOut(now time.Time) (sessionEnd, bool) {
+	idle, lifetime := s.LastSeenAt.Add(SessionIdleTimeout), s.AuthenticatedAt.Add(SessionLifetime)
+	idlePassed, lifetimePassed := !now.Before(idle), !now.Before(lifetime)
+	switch {
+	case !idlePassed && !lifetimePassed:
+		return sessionEnd{}, false
+	case lifetimePassed && (!idlePassed || !idle.Before(lifetime)):
+		return sessionEnd{reason: endedLifetime, account: s.Account, expired: lifetime}, true
+	}
+	return sessionEnd{reason: endedIdle, account: s.Account, expired: idle}, true
 }
 
-// worksFor reports whether the session is still good for the account r, if it has not expired: the account is active,
-// and its credentials are those that the session was made with (7.3).
-func (s sessionRow) worksFor(r row) bool {
-	return r.status() == StatusActive && r.CredentialsChangedAt.Equal(s.CredentialsChangedAt)
+// accountEnd reports whether the session is no longer good for its account r, which is missing if ok is false: the
+// account is active, and its credentials are those that the session was made with (7.3).
+func (s sessionRow) accountEnd(r row, ok bool) (sessionEnd, bool) {
+	end := sessionEnd{account: s.Account}
+	switch {
+	case !ok:
+		end.reason = endedMissing
+	case r.status() != StatusActive:
+		end.reason = endedInactive
+	case !r.CredentialsChangedAt.Equal(s.CredentialsChangedAt):
+		end.reason = endedCredentials
+	default:
+		return sessionEnd{}, false
+	}
+	return end, true
 }
 
 // principal is who a request with this session is, for the account r that it belongs to.
@@ -169,11 +188,11 @@ func olderFirst(a, b storedSession) int {
 	return cmp.Or(a.LastSeenAt.Compare(b.LastSeenAt), a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.key, b.key))
 }
 
-// sweepSessions removes the rows of the table sessions that cannot work at now, of any account, and returns the others:
-// a row that does not decode, one that has expired, one whose account is missing, cannot be read or is not active, and
-// one whose account has other credentials than it was made with. It reads each account once.
-func sweepSessions(tx *store.Tx, now time.Time) ([]storedSession, error) {
-	stored, err := tx.Sessions()
+// sweepSessions removes the rows of the table sessions that cannot work at now, of any account, with a record of why,
+// and returns the others: a row that does not decode, one that has expired, one whose account is missing, cannot be read
+// or is not active, and one whose account has other credentials than it was made with. It reads each account once.
+func sweepSessions(h *history, now time.Time) ([]storedSession, error) {
+	stored, err := h.tx.Sessions()
 	if err != nil {
 		return nil, err
 	}
@@ -185,21 +204,24 @@ func sweepSessions(tx *store.Tx, now time.Time) ([]storedSession, error) {
 	var live []storedSession
 	for _, st := range stored {
 		s, err := decodeSession(st.Key, st.Data)
-		works := err == nil && !s.expired(now)
-		if works {
+		var end sessionEnd
+		var ended bool
+		if err != nil {
+			end, ended = sessionEnd{reason: endedUnreadable}, true
+		} else if end, ended = s.runOut(now); !ended {
 			a, seen := accounts[s.Account]
 			if !seen {
-				r, ok, err := readAccount(tx, s.Account)
+				r, ok, err := readAccount(h.tx, s.Account)
 				if err != nil {
 					return nil, err
 				}
 				a = look{r, ok}
 				accounts[s.Account] = a
 			}
-			works = a.ok && s.worksFor(a.r)
+			end, ended = s.accountEnd(a.r, a.ok)
 		}
-		if !works {
-			if err := tx.DeleteSession(st.Key); err != nil {
+		if ended {
+			if err := h.endSession(st.Key, end, Client{}); err != nil {
 				return nil, err
 			}
 			continue
@@ -209,18 +231,18 @@ func sweepSessions(tx *store.Tx, now time.Time) ([]storedSession, error) {
 	return live, nil
 }
 
-// removeSessions removes every row of the table sessions that decodes and names the account id. An operation that
-// changes what the sessions of an account rely on calls it in the Update that writes the change, after every check of
-// the operation has passed, so that no session outlives the state it was made for, and a refused operation writes
-// nothing. A row that does not decode names nobody, and stays for the next sweep.
-func removeSessions(tx *store.Tx, id string) error {
-	stored, err := tx.Sessions()
+// removeSessions removes every row of the table sessions that decodes and names the account id, with a record of the
+// reason. An operation that changes what the sessions of an account rely on calls it in the Update that writes the
+// change, after every check of the operation has passed, so that no session outlives the state it was made for, and a
+// refused operation writes nothing. A row that does not decode names nobody, and stays for the next sweep.
+func removeSessions(h *history, id, reason string) error {
+	stored, err := h.tx.Sessions()
 	if err != nil {
 		return err
 	}
 	for _, st := range stored {
 		if s, err := decodeSession(st.Key, st.Data); err == nil && s.Account == id {
-			if err := tx.DeleteSession(st.Key); err != nil {
+			if err := h.endSession(st.Key, sessionEnd{reason: reason, account: id}, Client{}); err != nil {
 				return err
 			}
 		}
@@ -233,36 +255,54 @@ func removeSessions(tx *store.Tx, id string) error {
 // the only secret of the session, since the store keeps its SHA-256. If previous is a token, its session is removed,
 // whichever account it belongs to, so that a client that logs in again does not keep the old one. Of the account's
 // sessions, the one used least recently goes when there would be more than SessionsPerAccount, and every session that
-// cannot work any more goes, of any account. Every reason for a login to fail is ErrBadCredentials, and then nothing is
-// written; only an error of the store, or the end of ctx, is another. The account is read again when the session is
-// written, so that a password change or a disabling that committed after the hash was checked fails the login. An error
-// that comes after the password was compared with the hash, such as the end of ctx while the session is written, is
-// marked for PasswordCompared and keeps its text and its chain.
+// cannot work any more goes, of any account. Every reason for a login to fail is ErrBadCredentials, and then only the
+// login history is written, with the reason, in an Update of its own that the end of ctx does not stop (7.4); only an
+// error of the store, or the end of ctx, is another. The account is read again when the session is written, so that a
+// password change or a disabling that committed after the hash was checked fails the login. An error that comes after
+// the password was compared with the hash, such as the end of ctx while the session is written, is marked for
+// PasswordCompared and keeps its text and its chain.
 //
 // A password hash with fewer iterations than the Manager's is made again, with the password that matched, and written in
 // the Update that writes the session: CredentialsChangedAt and the account's other sessions stay as they are. A login
 // or a VerifyPasswordFactor that matched the old hash and reads the account after that fails, once.
-func (m *Manager) Login(ctx context.Context, login, password, previous string) (Principal, string, error) {
-	found, ok, rehash, err := m.verify(ctx, login, password)
-	if err != nil {
+func (m *Manager) Login(ctx context.Context, c Client, login, password, previous string) (Principal, string, error) {
+	found, ok, rehash, why, err := m.verify(ctx, login, password)
+	switch {
+	case err != nil:
 		return Principal{}, "", err
-	}
-	if !ok {
+	case !ok:
+		m.loginFailed(ctx, c, login, why.account, why.result)
 		return Principal{}, "", ErrBadCredentials
 	}
+	out, token, err := m.openSession(ctx, c, found, rehash, password, previous)
+	if err != nil {
+		result := failError
+		if errors.Is(err, ErrBadCredentials) {
+			result = failChanged
+		}
+		m.loginFailed(ctx, c, login, found.ID, result)
+		return Principal{}, "", compared(err)
+	}
+	return out, token, nil
+}
+
+// openSession is the part of Login after the password matched the row found: it makes the hash again if rehash, and
+// writes the session.
+func (m *Manager) openSession(ctx context.Context, c Client, found row, rehash bool, password, previous string) (Principal, string, error) {
 	var upgraded string
 	if rehash {
+		var err error
 		if upgraded, err = m.newHash(ctx, password); err != nil {
-			return Principal{}, "", compared(err)
+			return Principal{}, "", err
 		}
 	}
 	token, key, err := newSession(m.rand)
 	if err != nil {
-		return Principal{}, "", compared(err)
+		return Principal{}, "", err
 	}
 	m.at("session")
 	var out Principal
-	err = m.st.Update(ctx, func(tx *store.Tx) error {
+	err = m.logged(ctx, func(tx *store.Tx, h *history) error {
 		r, ok, err := stillMatches(tx, found)
 		switch {
 		case err != nil:
@@ -276,11 +316,11 @@ func (m *Manager) Login(ctx context.Context, login, password, previous string) (
 				return err
 			}
 		}
-		out, err = startSession(tx, r, key, previous, m.now())
+		out, err = startSession(h, r, key, previous, m.now(), audit.Login, c)
 		return err
 	})
 	if err != nil {
-		return Principal{}, "", compared(err)
+		return Principal{}, "", err
 	}
 	return out, token, nil
 }
@@ -312,9 +352,11 @@ func PasswordCompared(err error) bool {
 	return errors.Is(err, ErrBadCredentials) || errors.As(err, &c)
 }
 
-// startSession writes the session with the key for the account r in tx, after the removals that Login describes.
-func startSession(tx *store.Tx, r row, key, previous string, now time.Time) (Principal, error) {
-	live, err := sweepSessions(tx, now)
+// startSession writes the session with the key for the account r in h, after the removals that Login describes, and
+// records them and the start of the session: started is audit.Login for a login and audit.SessionStart for a session
+// that takes the place of another.
+func startSession(h *history, r row, key, previous string, now time.Time, started audit.Action, c Client) (Principal, error) {
+	live, err := sweepSessions(h, now)
 	if err != nil {
 		return Principal{}, err
 	}
@@ -323,7 +365,7 @@ func startSession(tx *store.Tx, r row, key, previous string, now time.Time) (Pri
 	for _, s := range live {
 		switch {
 		case hasPrevious && s.key == previousKey:
-			if err := tx.DeleteSession(s.key); err != nil {
+			if err := h.endSession(s.key, sessionEnd{reason: endedReplaced, account: s.Account}, Client{}); err != nil {
 				return Principal{}, err
 			}
 		case s.key == key:
@@ -334,7 +376,7 @@ func startSession(tx *store.Tx, r row, key, previous string, now time.Time) (Pri
 	}
 	slices.SortFunc(mine, olderFirst)
 	for _, s := range mine[:max(0, len(mine)-(SessionsPerAccount-1))] {
-		if err := tx.DeleteSession(s.key); err != nil {
+		if err := h.endSession(s.key, sessionEnd{reason: endedEvicted, account: s.Account}, Client{}); err != nil {
 			return Principal{}, err
 		}
 	}
@@ -342,7 +384,10 @@ func startSession(tx *store.Tx, r row, key, previous string, now time.Time) (Pri
 		Account: r.ID, CreatedAt: now, AuthenticatedAt: now, LastSeenAt: now,
 		CredentialsChangedAt: r.CredentialsChangedAt, Factors: []Factor{FactorPassword},
 	}
-	if err := putSession(tx, key, s); err != nil {
+	if err := putSession(h.tx, key, s); err != nil {
+		return Principal{}, err
+	}
+	if err := h.add(sessionRecord(started, key, r.ID, c)); err != nil {
 		return Principal{}, err
 	}
 	return s.principal(r), nil
@@ -357,104 +402,126 @@ const (
 	sessionLive
 )
 
-// readSession reads the session with the key and its account in tx, and says whether the session works at now. The
-// session and the account are those of a live session only.
-func readSession(tx *store.Tx, key string, now time.Time) (sessionRow, row, sessionState, error) {
+// sessionLook is what readSession found: the row of the session if it decodes, and the row of its account and the
+// state if it is live, or else why it ended.
+type sessionLook struct {
+	state   sessionState
+	session sessionRow
+	account row
+	end     sessionEnd
+}
+
+// readSession reads the session with the key and its account in tx, and says whether the session works at now.
+func readSession(tx *store.Tx, key string, now time.Time) (sessionLook, error) {
 	data, ok, err := tx.Session(key)
 	if err != nil || !ok {
-		return sessionRow{}, row{}, sessionGone, err
+		return sessionLook{}, err
 	}
 	s, err := decodeSession(key, data)
-	if err != nil || s.expired(now) {
-		return sessionRow{}, row{}, sessionDead, nil
+	if err != nil {
+		return sessionLook{state: sessionDead, end: sessionEnd{reason: endedUnreadable}}, nil
+	}
+	if end, ended := s.runOut(now); ended {
+		return sessionLook{state: sessionDead, session: s, end: end}, nil
 	}
 	r, ok, err := readAccount(tx, s.Account)
-	switch {
-	case err != nil:
-		return sessionRow{}, row{}, sessionGone, err
-	case !ok || !s.worksFor(r):
-		return sessionRow{}, row{}, sessionDead, nil
+	if err != nil {
+		return sessionLook{}, err
 	}
-	return s, r, sessionLive, nil
+	if end, ended := s.accountEnd(r, ok); ended {
+		return sessionLook{state: sessionDead, session: s, end: end}, nil
+	}
+	return sessionLook{state: sessionLive, session: s, account: r}, nil
 }
 
 // Authenticate returns the Principal of the session with this token, with the account as it is now, or ErrNoSession if
 // there is none: the text is no token, no session has it, it has expired (SessionLifetime after the login, or
 // SessionIdleTimeout after the last request), or its account is missing, cannot be read, is not active or has other
-// credentials than the session was made with. A session that cannot work is removed. A request writes the time of the
-// last request, only if the stored one is sessionTouch old or more, so that most requests only read; the store must be
-// one that can write. Only an error of the store, or the end of ctx, is another error.
-func (m *Manager) Authenticate(ctx context.Context, token string) (Principal, error) {
+// credentials than the session was made with. A session that cannot work is removed, and its end is recorded with c. A
+// request writes the time of the last request, and records it with c, only if the stored one is sessionTouch old or
+// more, so that most requests only read; the store must be one that can write. Only an error of the store, or the end of
+// ctx, is another error.
+func (m *Manager) Authenticate(ctx context.Context, c Client, token string) (Principal, error) {
 	key, ok := sessionKey(token)
 	if !ok {
 		return Principal{}, ErrNoSession
 	}
-	var s sessionRow
-	var r row
-	var state sessionState
+	var look sessionLook
 	now := m.now()
 	err := m.st.View(ctx, func(tx *store.Tx) (err error) {
-		s, r, state, err = readSession(tx, key, now)
+		look, err = readSession(tx, key, now)
 		return err
 	})
 	if err != nil {
 		return Principal{}, err
 	}
 	m.at("authenticated")
-	if state == sessionGone {
+	if look.state == sessionGone {
 		return Principal{}, ErrNoSession
 	}
-	if state == sessionLive && now.Sub(s.LastSeenAt) < sessionTouch {
-		return s.principal(r), nil
+	if look.state == sessionLive && now.Sub(look.session.LastSeenAt) < sessionTouch {
+		return look.session.principal(look.account), nil
 	}
 	// The session is read again where it is written, so that what is written and what is returned are of one state.
-	err = m.st.Update(ctx, func(tx *store.Tx) (err error) {
+	err = m.logged(ctx, func(tx *store.Tx, h *history) (err error) {
 		now = m.now()
-		s, r, state, err = readSession(tx, key, now)
+		look, err = readSession(tx, key, now)
 		switch {
 		case err != nil:
 			return err
-		case state == sessionDead:
-			return tx.DeleteSession(key)
-		case state == sessionLive && now.Sub(s.LastSeenAt) >= sessionTouch:
-			s.LastSeenAt = now
-			return putSession(tx, key, s)
+		case look.state == sessionDead:
+			return h.endSession(key, look.end, c)
+		case look.state == sessionLive && now.Sub(look.session.LastSeenAt) >= sessionTouch:
+			look.session.LastSeenAt = now
+			if err := putSession(tx, key, look.session); err != nil {
+				return err
+			}
+			return h.add(sessionRecord(audit.SessionSeen, key, look.session.Account, c))
 		}
 		return nil
 	})
 	if err != nil {
 		return Principal{}, err
 	}
-	if state != sessionLive {
+	if look.state != sessionLive {
 		return Principal{}, ErrNoSession
 	}
-	return s.principal(r), nil
+	return look.session.principal(look.account), nil
 }
 
-// Logout removes the session with this token. A text that is not a token, and a token without a session, are not
-// errors, and write nothing: the client is logged out either way.
-func (m *Manager) Logout(ctx context.Context, token string) error {
+// Logout removes the session with this token, and records it with c. A text that is not a token, and a token without a
+// session, are not errors, and write nothing: the client is logged out either way.
+func (m *Manager) Logout(ctx context.Context, c Client, token string) error {
 	key, ok := sessionKey(token)
 	if !ok {
 		return nil
 	}
-	return m.st.Update(ctx, func(tx *store.Tx) error {
-		if err := tx.DeleteSession(key); !errors.Is(err, fs.ErrNotExist) {
+	return m.logged(ctx, func(tx *store.Tx, h *history) error {
+		data, ok, err := tx.Session(key)
+		if err != nil || !ok {
 			return err
 		}
-		return nil
+		if err := tx.DeleteSession(key); err != nil {
+			return err
+		}
+		var account string
+		if s, err := decodeSession(key, data); err == nil {
+			account = s.Account
+		}
+		return h.add(sessionRecord(audit.Logout, key, account, c))
 	})
 }
 
 // ChangeOwnPassword changes the password of the account that the session with this token belongs to, to next, if current
 // is its password, as ChangePassword does, and returns the Principal and the token of a new session that goes on in
 // place of the old one: it is authenticated now, and every session of the account ends in the same Update, the one that
-// asked too, so that a Cookie that was stolen does not outlive the change. A text that is no token, and a session that
-// does not work (see Authenticate), at the first look or in the Update, are ErrNoSession, which comes before every other
-// reason to refuse, since the session and the account are read together; an account that Check does not allow to edit
-// itself is refused with an error that wraps ErrForbidden. The hashes are made outside the Update, and wait for their
-// places as in ChangePassword. A call that is refused writes nothing, and leaves every session as it was.
-func (m *Manager) ChangeOwnPassword(ctx context.Context, token, current, next string) (Principal, string, error) {
+// asked too, so that a Cookie that was stolen does not outlive the change. The new session is recorded with c. A text
+// that is no token, and a session that does not work (see Authenticate), at the first look or in the Update, are
+// ErrNoSession, which comes before every other reason to refuse, since the session and the account are read together; an
+// account that Check does not allow to edit itself is refused with an error that wraps ErrForbidden. The hashes are made
+// outside the Update, and wait for their places as in ChangePassword. A call that is refused writes nothing, and leaves
+// every session as it was.
+func (m *Manager) ChangeOwnPassword(ctx context.Context, c Client, token, current, next string) (Principal, string, error) {
 	oldKey, ok := sessionKey(token)
 	if !ok {
 		return Principal{}, "", ErrNoSession
@@ -476,7 +543,7 @@ func (m *Manager) ChangeOwnPassword(ctx context.Context, token, current, next st
 		return Principal{}, "", err
 	}
 	var out Principal
-	err = m.st.Update(ctx, func(tx *store.Tx) error {
+	err = m.logged(ctx, func(tx *store.Tx, h *history) error {
 		now := m.now()
 		_, r, rows, err := lookAtOwnAccount(tx, oldKey, now)
 		if err != nil {
@@ -486,10 +553,10 @@ func (m *Manager) ChangeOwnPassword(ctx context.Context, token, current, next st
 		if err != nil {
 			return err
 		}
-		if err := removeSessions(tx, r.ID); err != nil {
+		if err := removeSessions(h, r.ID, endedPassword); err != nil {
 			return err
 		}
-		out, err = startSession(tx, changed, key, "", now)
+		out, err = startSession(h, changed, key, "", now, audit.SessionStart, c)
 		return err
 	})
 	if err != nil {
@@ -503,13 +570,14 @@ func (m *Manager) ChangeOwnPassword(ctx context.Context, token, current, next st
 // operation that writes reads them. It is ErrNoSession if the session does not work, and else an error that wraps
 // ErrForbidden if Check does not allow the account to edit itself.
 func lookAtOwnAccount(tx *store.Tx, key string, now time.Time) (sessionRow, row, []row, error) {
-	s, r, state, err := readSession(tx, key, now)
+	look, err := readSession(tx, key, now)
 	switch {
 	case err != nil:
 		return sessionRow{}, row{}, nil, err
-	case state != sessionLive:
+	case look.state != sessionLive:
 		return sessionRow{}, row{}, nil, ErrNoSession
 	}
+	s, r := look.session, look.account
 	rows, err := loadRows(tx)
 	if err != nil {
 		return sessionRow{}, row{}, nil, err

@@ -24,6 +24,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -48,7 +49,7 @@ func (sessSame) Read(p []byte) (int, error) {
 // login logs in as the account with the password mgrPassword gives it, and returns the Principal and the token.
 func (e *mgrEnv) login(t *testing.T, login string) (Principal, string) {
 	t.Helper()
-	p, token, err := e.m.Login(t.Context(), login, mgrPassword(login), "")
+	p, token, err := e.m.Login(t.Context(), mgrClient, login, mgrPassword(login), "")
 	if err != nil {
 		t.Fatalf("Login(%q) = %v", login, err)
 	}
@@ -139,7 +140,7 @@ func TestLogin(t *testing.T) {
 	e.m.rand = bytes.NewReader(tokBytes(tokenBytes)) // the token is tokSample
 	accounts := e.raw(t)
 
-	p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+	p, token, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 	if err != nil {
 		t.Fatalf("Login() = %v", err)
 	}
@@ -198,7 +199,7 @@ func TestLogin(t *testing.T) {
 		e.first(t)
 		e.add(t, "yamada.taro", RoleEditor)
 		for _, login := range []string{"yamada.taro", "YAMADA.Taro", " \tyamada.taro\n"} {
-			p, token, err := e.m.Login(t.Context(), login, mgrPassword("yamada.taro"), "")
+			p, token, err := e.m.Login(t.Context(), mgrClient, login, mgrPassword("yamada.taro"), "")
 			if err != nil || p.Account.Login != "yamada.taro" || !e.hasSession(t, token) {
 				t.Errorf("Login(%q) = %+v, %v, want a session of yamada.taro", login, p, err)
 			}
@@ -220,13 +221,14 @@ func TestLoginFailures(t *testing.T) {
 	type fixture struct {
 		e                *mgrEnv
 		active           Account
-		token, pendingTk string // the token of a session of active, and the token of the invitation of pending
+		token, pendingTk string            // the token of a session of active, and the token of the invitation of pending
+		ids              map[string]string // the ID of each account that the login history can name, by its login name
 	}
 	setup := func(t *testing.T) fixture {
 		e := newMgr(t)
 		e.first(t)
 		active := e.add(t, "active", RoleEditor)
-		_, pendingTk := e.invite(t, "pending", RoleEditor)
+		pending, pendingTk := e.invite(t, "pending", RoleEditor)
 		reset := e.add(t, "reset", RoleEditor)
 		if _, err := e.m.Reset(t.Context(), System, reset.ID); err != nil {
 			t.Fatal(err)
@@ -238,7 +240,8 @@ func TestLoginFailures(t *testing.T) {
 		broken := e.add(t, "broken", RoleEditor)
 		e.putRaw(t, broken.ID, "not json")
 		_, token := e.login(t, "active")
-		return fixture{e, active, token, pendingTk}
+		ids := map[string]string{"active": active.ID, "pending": pending.ID, "reset": reset.ID, "off": off.ID}
+		return fixture{e, active, token, pendingTk, ids}
 	}
 
 	t.Run("every reason", func(t *testing.T) {
@@ -251,30 +254,53 @@ func TestLoginFailures(t *testing.T) {
 		e.setSession(t, sessKey("expired"), expired)
 		e.setRawSession(t, sessKey("garbage"), "not json")
 		before := e.mark(t)
-		tests := []struct{ name, login, password string }{
-			{"no such login name", "nobody", mgrPassword("nobody")},
-			{"the email address", "active@example.com", mgrPassword("active")},
-			{"an empty login name", "", mgrPassword("active")},
-			{"a wrong password", "active", mgrPassword("other")},
-			{"an empty password", "active", ""},
-			{"the password of another account", "active", mgrPassword("admin")},
-			{"the password in upper case", "active", strings.ToUpper(mgrPassword("active"))},
-			{"a pending account with the password it will have", "pending", mgrPassword("pending")},
-			{"a pending account with its token", "pending", f.pendingTk},
-			{"a pending account and an empty password", "pending", ""},
-			{"an account that is reset, with the old password", "reset", mgrPassword("reset")},
-			{"a disabled account with its password", "off", mgrPassword("off")},
-			{"a row that cannot be read", "broken", mgrPassword("broken")},
-			{"a password of more than 8 KiB", "active", strings.Repeat("a", maxTypedPasswordBytes+1)},
-			{"a password of more than 8 KiB that starts with the password", "active", mgrPassword("active") + strings.Repeat("a", maxTypedPasswordBytes)},
+		// who is the login name of the account that the login history names, if it names one, and result is the reason that it
+		// records.
+		tests := []struct{ name, login, password, who, result string }{
+			{"no such login name", "nobody", mgrPassword("nobody"), "", "unknown-login"},
+			{"the email address", "active@example.com", mgrPassword("active"), "", "unknown-login"},
+			{"an empty login name", "", mgrPassword("active"), "", "unknown-login"},
+			{"a wrong password", "active", mgrPassword("other"), "active", "wrong-password"},
+			{"an empty password", "active", "", "active", "wrong-password"},
+			{"the password of another account", "active", mgrPassword("admin"), "active", "wrong-password"},
+			{"the password in upper case", "active", strings.ToUpper(mgrPassword("active")), "active", "wrong-password"},
+			{"a pending account with the password it will have", "pending", mgrPassword("pending"), "pending", "pending"},
+			{"a pending account with its token", "pending", f.pendingTk, "pending", "pending"},
+			{"a pending account and an empty password", "pending", "", "pending", "pending"},
+			{"an account that is reset, with the old password", "reset", mgrPassword("reset"), "reset", "pending"},
+			{"a disabled account with its password", "off", mgrPassword("off"), "off", "disabled"},
+			{"a row that cannot be read", "broken", mgrPassword("broken"), "", "unknown-login"},
+			{"a password of more than 8 KiB", "active", strings.Repeat("a", maxTypedPasswordBytes+1), "active", "too-long"},
+			{"a password of more than 8 KiB that starts with the password", "active",
+				mgrPassword("active") + strings.Repeat("a", maxTypedPasswordBytes), "active", "too-long"},
+			{"a password of more than 8 KiB for no account", "nobody", strings.Repeat("a", maxTypedPasswordBytes+1), "", "too-long"},
 		}
 		for _, tt := range tests {
-			p, got, err := e.m.Login(t.Context(), tt.login, tt.password, f.token)
+			p, got, err := e.m.Login(t.Context(), mgrClient, tt.login, tt.password, f.token)
 			if !errors.Is(err, ErrBadCredentials) || err.Error() != sessWrong || !reflect.DeepEqual(p, Principal{}) || got != "" {
 				t.Errorf("Login() with %s = %+v, %v, want ErrBadCredentials and no token", tt.name, p, err)
 			}
 		}
-		e.unchanged(t, before)
+		// Each failure is one record of the login history, of the reason, with the login name as typed and normalized, the account
+		// if some account has the name, and the client.
+		records := e.records(t, before)
+		if len(records) != len(tests) {
+			t.Fatalf("%d failed logins have made %d records, want one each", len(tests), len(records))
+		}
+		var want []string
+		for i, tt := range tests {
+			want = append(want, "login.failure/"+tt.result)
+			r := records[i]
+			wantAccount := f.ids[tt.who]
+			wantRecord := audit.Record{
+				Log: audit.LoginLog, N: r.N, Prev: r.Prev, At: r.At, Action: audit.LoginFailure, Result: tt.result, Account: wantAccount,
+				Client: mgrClient.record(), Login: NormalizeLogin(tt.login),
+			}
+			if !reflect.DeepEqual(r, wantRecord) {
+				t.Errorf("the record of %s is %+v, want %+v", tt.name, r, wantRecord)
+			}
+		}
+		e.recorded(t, before, want...)
 		if !e.hasSession(t, f.token) {
 			t.Error("a login that failed removed the session of the token that it was given")
 		}
@@ -285,7 +311,7 @@ func TestLoginFailures(t *testing.T) {
 		if err := e.s.Close(); err != nil {
 			t.Fatal(err)
 		}
-		p, token, err := e.m.Login(t.Context(), "active", mgrPassword("active"), "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, "active", mgrPassword("active"), "")
 		if err == nil || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() on a closed store = %+v, %v, want the error of the store and no token", p, err)
 		}
@@ -296,7 +322,7 @@ func TestLoginFailures(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		before := e.mark(t)
-		p, token, err := e.m.Login(ctx, "active", mgrPassword("active"), "")
+		p, token, err := e.m.Login(ctx, mgrClient, "active", mgrPassword("active"), "")
 		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() with a canceled context = %+v, %v, want context.Canceled", p, err)
 		}
@@ -314,11 +340,12 @@ func TestLoginFailures(t *testing.T) {
 				}
 			}
 			before := e.mark(t)
-			p, token, err := e.m.Login(ctx, "active", mgrPassword("active"), "")
+			p, token, err := e.m.Login(ctx, mgrClient, "active", mgrPassword("active"), "")
 			if !errors.Is(err, context.Canceled) || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("Login() with a context that ends at %q = %+v, %v, want context.Canceled", point, p, err)
 			}
-			e.unchanged(t, before)
+			// The password was compared, so the failure is recorded, though the context of the request has ended.
+			e.recorded(t, before, "login.failure/error")
 		}
 	})
 
@@ -328,32 +355,32 @@ func TestLoginFailures(t *testing.T) {
 		e.m.rand = iotest.ErrReader(boom)
 		before := e.mark(t)
 		// Only a login that matched needs a token: a login that fails reads nothing.
-		if _, _, err := e.m.Login(t.Context(), "active", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "active", mgrPassword("other"), ""); !errors.Is(err, ErrBadCredentials) {
 			t.Errorf("Login() with a wrong password = %v, want ErrBadCredentials", err)
 		}
-		p, token, err := e.m.Login(t.Context(), "active", mgrPassword("active"), "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, "active", mgrPassword("active"), "")
 		if !errors.Is(err, boom) || errors.Is(err, ErrBadCredentials) || !strings.Contains(err.Error(), "cannot read a token") ||
 			!reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() without random bits = %+v, %v, want the error of the reader as a token", p, err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/wrong-password", "login.failure/error")
 	})
 
 	t.Run("the token is already in use", func(t *testing.T) {
 		f := setup(t)
 		e := f.e
 		e.m.rand = sessSame{}
-		_, first, err := e.m.Login(t.Context(), "active", mgrPassword("active"), "")
+		_, first, err := e.m.Login(t.Context(), mgrClient, "active", mgrPassword("active"), "")
 		if err != nil {
 			t.Fatalf("Login() = %v", err)
 		}
 		before := e.mark(t)
 		// A source of random bits that repeats must not give a second account the session of the first.
-		p, token, err := e.m.Login(t.Context(), "admin", mgrPassword("admin"), "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, "admin", mgrPassword("admin"), "")
 		if err == nil || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() with a token that is in use = %+v, %v, want an error and no token", p, err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/error")
 		if s, ok := e.sessionOf(t, first); !ok || s.Account != f.active.ID {
 			t.Error("the first session is gone or is not that of active")
 		}
@@ -367,11 +394,11 @@ func TestLoginFailures(t *testing.T) {
 			e := setup(t).e
 			e.clock.set(at)
 			before := e.mark(t)
-			p, token, err := e.m.Login(t.Context(), "active", mgrPassword("active"), "")
+			p, token, err := e.m.Login(t.Context(), mgrClient, "active", mgrPassword("active"), "")
 			if err == nil || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("Login() with the clock at %s = %+v, %v, want an error and no token", name, p, err)
 			}
-			e.unchanged(t, before)
+			e.recorded(t, before, "login.failure/error")
 		}
 	})
 }
@@ -433,7 +460,7 @@ func TestLoginPasswordCompared(t *testing.T) {
 		return ctx
 	}
 	login := func(ctx context.Context, f fixture, login, password string) error {
-		_, _, err := f.e.m.Login(ctx, login, password, "")
+		_, _, err := f.e.m.Login(ctx, mgrClient, login, password, "")
 		return err
 	}
 	// stale makes the hash of yamada one that a login makes again.
@@ -575,7 +602,7 @@ func TestLoginChecksAgain(t *testing.T) {
 				after = e.mark(t)
 			}
 		}
-		p, token, err = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		p, token, err = e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 		if !ran {
 			t.Fatal("the password was not checked")
 		}
@@ -610,7 +637,7 @@ func TestLoginChecksAgain(t *testing.T) {
 		{"the password is reset and set again", func(t *testing.T, e *mgrEnv, _, a Account) {
 			token, err := e.m.Reset(t.Context(), System, a.ID)
 			check(t, err)
-			_, err = e.m.SetPassword(t.Context(), token, second)
+			_, err = e.m.SetPassword(t.Context(), mgrClient, token, second)
 			check(t, err)
 		}},
 		{"the account is disabled by an administrator", func(t *testing.T, e *mgrEnv, admin, a Account) {
@@ -638,7 +665,10 @@ func TestLoginChecksAgain(t *testing.T) {
 			if !errors.Is(err, ErrBadCredentials) || err.Error() != sessWrong || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("Login() = %+v, %v, want ErrBadCredentials and no token", p, err)
 			}
-			e.unchanged(t, after)
+			e.recorded(t, after, "login.failure/changed")
+			if r := e.records(t, after); len(r) == 1 && r[0].Account != a.ID {
+				t.Errorf("the record of the login that found the account changed names the account %q, want %q", r[0].Account, a.ID)
+			}
 		})
 	}
 
@@ -736,7 +766,7 @@ func TestLoginHashes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		hashing, verified = 0, 0
-		_, _, err := e.m.Login(t.Context(), tt.login, tt.password, "")
+		_, _, err := e.m.Login(t.Context(), mgrClient, tt.login, tt.password, "")
 		if (err == nil) != tt.works || err != nil && !errors.Is(err, ErrBadCredentials) {
 			t.Errorf("Login() with %s = %v, want nil = %v, and else ErrBadCredentials", tt.name, err, tt.works)
 		}
@@ -766,7 +796,7 @@ func TestLoginHashes(t *testing.T) {
 			return e.m.ChangePassword(t.Context(), active.ID, mgrPassword("active"), "a new long password")
 		}, 2},
 		{"SetPassword", func() error {
-			_, err := e.m.SetPassword(t.Context(), pendingToken, mgrPassword("pending"))
+			_, err := e.m.SetPassword(t.Context(), mgrClient, pendingToken, mgrPassword("pending"))
 			return err
 		}, 1},
 		{"Invite", func() error {
@@ -811,12 +841,12 @@ func TestLoginUsesNothingUnusable(t *testing.T) {
 	e.m.unknownHash = mgrHashed(t, guess)
 	before := e.mark(t)
 	for _, login := range []string{"nobody", "pending", "off", ""} {
-		p, token, err := e.m.Login(t.Context(), login, guess, "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, login, guess, "")
 		if !errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() of %q = %+v, %v, want ErrBadCredentials and no token", login, p, err)
 		}
 	}
-	e.unchanged(t, before)
+	e.recorded(t, before, "login.failure/unknown-login", "login.failure/pending", "login.failure/disabled", "login.failure/unknown-login")
 }
 
 // TestLoginPrevious checks which sessions a login removes besides its own.
@@ -829,7 +859,7 @@ func TestLoginPrevious(t *testing.T) {
 	}
 	loginWith := func(t *testing.T, e *mgrEnv, login, previous string) string {
 		t.Helper()
-		_, token, err := e.m.Login(t.Context(), login, mgrPassword(login), previous)
+		_, token, err := e.m.Login(t.Context(), mgrClient, login, mgrPassword(login), previous)
 		if err != nil {
 			t.Fatalf("Login(%q) = %v", login, err)
 		}
@@ -953,7 +983,7 @@ func TestLoginSweep(t *testing.T) {
 	e.deleteRow(t, accounts["deleted"].ID)
 	e.putRaw(t, accounts["broken"].ID, "not json")
 	// A row that cannot be read does not stop the account that logs in, which is read as usual.
-	_, token, err := e.m.Login(t.Context(), "login", mgrPassword("login"), "")
+	_, token, err := e.m.Login(t.Context(), mgrClient, "login", mgrPassword("login"), "")
 	if err != nil {
 		t.Fatalf("Login() = %v", err)
 	}
@@ -1038,7 +1068,7 @@ func TestSessionsPerAccount(t *testing.T) {
 
 		// A request of the second session, which is old enough to be written, makes it newer than the third.
 		e.clock.add(sessionTouch)
-		if _, err := e.m.Authenticate(t.Context(), tokens[1]); err != nil {
+		if _, err := e.m.Authenticate(t.Context(), mgrClient, tokens[1]); err != nil {
 			t.Fatal(err)
 		}
 		_, twelfth := e.login(t, "yamada")
@@ -1167,7 +1197,7 @@ func TestAuthenticate(t *testing.T) {
 	// ended checks that the session has ended: Authenticate says so, and the store has no row for it.
 	ended := func(t *testing.T, e *mgrEnv, token, what string) {
 		t.Helper()
-		got, err := e.m.Authenticate(t.Context(), token)
+		got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 		if !errors.Is(err, ErrNoSession) || err.Error() != "no valid session" || !reflect.DeepEqual(got, Principal{}) {
 			t.Errorf("Authenticate() %s = %+v, %v, want ErrNoSession", what, got, err)
 		}
@@ -1177,7 +1207,7 @@ func TestAuthenticate(t *testing.T) {
 	}
 	works := func(t *testing.T, e *mgrEnv, token string, want Principal, what string) {
 		t.Helper()
-		got, err := e.m.Authenticate(t.Context(), token)
+		got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Errorf("Authenticate() %s = %+v, %v, want %+v", what, got, err, want)
 		}
@@ -1201,7 +1231,7 @@ func TestAuthenticate(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.edit(t, a.ID, func(r *row) { r.Role = RoleViewer })
-		got, err := e.m.Authenticate(t.Context(), token)
+		got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 		want := e.row(t, a.ID).account()
 		if err != nil || !reflect.DeepEqual(got.Account, want) || !reflect.DeepEqual(got.Session, p.Session) ||
 			got.Account.Name != "New Name" || got.Account.Role != RoleViewer || got.Account.Email != "new@example.com" {
@@ -1286,7 +1316,7 @@ func TestAuthenticate(t *testing.T) {
 		calls := make([]func() error, n)
 		for i := range calls {
 			calls[i] = func() (err error) {
-				results[i], err = e.m.Authenticate(t.Context(), token)
+				results[i], err = e.m.Authenticate(t.Context(), mgrClient, token)
 				return err
 			}
 		}
@@ -1342,7 +1372,7 @@ func TestAuthenticate(t *testing.T) {
 		s := sessionFor(e.row(t, a.ID), mgrTime)
 		s.Factors = []Factor{"totp", FactorPassword}
 		e.setSession(t, sessKey(tokSample), s)
-		got, err := e.m.Authenticate(t.Context(), tokSample)
+		got, err := e.m.Authenticate(t.Context(), mgrClient, tokSample)
 		if err != nil || !slices.Equal(got.Session.Factors, []Factor{"totp", FactorPassword}) {
 			t.Errorf("Authenticate() = %q, %v, want the factors of the row", got.Session.Factors, err)
 		}
@@ -1358,12 +1388,12 @@ func TestAuthenticate(t *testing.T) {
 		s.AuthenticatedAt = now.Add(-SessionLifetime + time.Hour)
 		s.LastSeenAt = now.Add(-time.Minute)
 		e.setSession(t, sessKey(tokSample), s)
-		got, err := e.m.Authenticate(t.Context(), tokSample)
+		got, err := e.m.Authenticate(t.Context(), mgrClient, tokSample)
 		if err != nil || !got.Session.AuthenticatedAt.Equal(s.AuthenticatedAt) || !got.Session.ExpiresAt.Equal(now.Add(time.Hour)) {
 			t.Errorf("Authenticate() = %+v, %v, want the session of a login 11 hours ago, which ends in an hour", got.Session, err)
 		}
 		e.clock.add(30 * time.Minute)
-		if _, err := e.m.Authenticate(t.Context(), tokSample); err != nil {
+		if _, err := e.m.Authenticate(t.Context(), mgrClient, tokSample); err != nil {
 			t.Errorf("Authenticate() half an hour later = %v, want nil", err)
 		}
 		e.clock.add(30 * time.Minute)
@@ -1423,7 +1453,7 @@ func TestAuthenticate(t *testing.T) {
 		e, _, _, token := setup(t)
 		before := e.mark(t)
 		for _, text := range []string{tokSample, strings.Repeat("A", 43)} {
-			got, err := e.m.Authenticate(t.Context(), text)
+			got, err := e.m.Authenticate(t.Context(), mgrClient, text)
 			if !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 				t.Errorf("Authenticate() of a token without a session = %+v, %v, want ErrNoSession", got, err)
 			}
@@ -1442,12 +1472,12 @@ func TestAuthenticate(t *testing.T) {
 		}
 		notTokens := []string{"", "x", tokSample[:42], tokSample + "A", strings.Repeat("!", 43), tokSample[:42] + "9", " " + tokSample[1:]}
 		for _, text := range notTokens {
-			if got, err := e.m.Authenticate(t.Context(), text); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+			if got, err := e.m.Authenticate(t.Context(), mgrClient, text); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 				t.Errorf("Authenticate() of a text that is no token (%d bytes) = %+v, %v, want ErrNoSession", len(text), got, err)
 			}
 		}
 		for _, text := range []string{token, tokSample} {
-			if got, err := e.m.Authenticate(t.Context(), text); err == nil || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+			if got, err := e.m.Authenticate(t.Context(), mgrClient, text); err == nil || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 				t.Errorf("Authenticate() of a token on a closed store = %+v, %v, want the error of the store", got, err)
 			}
 		}
@@ -1458,7 +1488,7 @@ func TestAuthenticate(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		before := e.mark(t)
-		if got, err := e.m.Authenticate(ctx, token); !errors.Is(err, context.Canceled) || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+		if got, err := e.m.Authenticate(ctx, mgrClient, token); !errors.Is(err, context.Canceled) || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 			t.Errorf("Authenticate() with a canceled context = %+v, %v, want context.Canceled", got, err)
 		}
 		e.unchanged(t, before)
@@ -1494,12 +1524,12 @@ func TestAuthenticate(t *testing.T) {
 			e, _, _, token := old(t)
 			var after mgrMark
 			gap(e, func() {
-				if err := e.m.Logout(t.Context(), token); err != nil {
+				if err := e.m.Logout(t.Context(), mgrClient, token); err != nil {
 					t.Error(err)
 				}
 				after = e.mark(t)
 			})
-			got, err := e.m.Authenticate(t.Context(), token)
+			got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 			if !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 				t.Errorf("Authenticate() = %+v, %v, want ErrNoSession", got, err)
 			}
@@ -1535,7 +1565,7 @@ func TestAuthenticate(t *testing.T) {
 				cancel()
 				after = e.mark(t)
 			})
-			got, err := e.m.Authenticate(ctx, token)
+			got, err := e.m.Authenticate(ctx, mgrClient, token)
 			if !errors.Is(err, context.Canceled) || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 				t.Errorf("Authenticate() with a context that ends in the gap = %+v, %v, want context.Canceled", got, err)
 			}
@@ -1558,29 +1588,29 @@ func TestLogout(t *testing.T) {
 
 	t.Run("the session ends", func(t *testing.T) {
 		e, tokens := setup(t)
-		if err := e.m.Logout(t.Context(), tokens[0]); err != nil {
+		if err := e.m.Logout(t.Context(), mgrClient, tokens[0]); err != nil {
 			t.Fatalf("Logout() = %v", err)
 		}
 		if e.hasSession(t, tokens[0]) || !e.hasSession(t, tokens[1]) || !e.hasSession(t, tokens[2]) || len(e.rawSessions(t)) != 2 {
 			t.Errorf("after the logout of the first session, it has a row = %v, the others %v and %v, and there are %d rows, want false, true, true, 2",
 				e.hasSession(t, tokens[0]), e.hasSession(t, tokens[1]), e.hasSession(t, tokens[2]), len(e.rawSessions(t)))
 		}
-		if got, err := e.m.Authenticate(t.Context(), tokens[0]); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+		if got, err := e.m.Authenticate(t.Context(), mgrClient, tokens[0]); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 			t.Errorf("Authenticate() after the logout = %+v, %v, want ErrNoSession", got, err)
 		}
-		if _, err := e.m.Authenticate(t.Context(), tokens[1]); err != nil {
+		if _, err := e.m.Authenticate(t.Context(), mgrClient, tokens[1]); err != nil {
 			t.Errorf("Authenticate() of another session = %v, want nil", err)
 		}
 	})
 
 	t.Run("nothing to remove", func(t *testing.T) {
 		e, tokens := setup(t)
-		if err := e.m.Logout(t.Context(), tokens[0]); err != nil {
+		if err := e.m.Logout(t.Context(), mgrClient, tokens[0]); err != nil {
 			t.Fatal(err)
 		}
 		before := e.mark(t)
 		for _, text := range []string{tokens[0], tokSample, strings.Repeat("A", 43), "", "junk", tokSample[:42], tokSample + "A"} {
-			if err := e.m.Logout(t.Context(), text); err != nil {
+			if err := e.m.Logout(t.Context(), mgrClient, text); err != nil {
 				t.Errorf("Logout() of a text with no session (%d bytes) = %v, want nil", len(text), err)
 			}
 		}
@@ -1590,7 +1620,7 @@ func TestLogout(t *testing.T) {
 	t.Run("a session that has expired", func(t *testing.T) {
 		e, tokens := setup(t)
 		e.clock.add(SessionLifetime)
-		if err := e.m.Logout(t.Context(), tokens[0]); err != nil {
+		if err := e.m.Logout(t.Context(), mgrClient, tokens[0]); err != nil {
 			t.Fatal(err)
 		}
 		if e.hasSession(t, tokens[0]) {
@@ -1601,7 +1631,7 @@ func TestLogout(t *testing.T) {
 	t.Run("a row that does not decode", func(t *testing.T) {
 		e, tokens := setup(t)
 		e.setRawSession(t, sessKey(tokens[0]), "not json")
-		if err := e.m.Logout(t.Context(), tokens[0]); err != nil || e.hasSession(t, tokens[0]) {
+		if err := e.m.Logout(t.Context(), mgrClient, tokens[0]); err != nil || e.hasSession(t, tokens[0]) {
 			t.Errorf("Logout() of a row that does not decode = %v, row there = %v, want nil and no row", err, e.hasSession(t, tokens[0]))
 		}
 	})
@@ -1611,11 +1641,11 @@ func TestLogout(t *testing.T) {
 		if err := e.s.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := e.m.Logout(t.Context(), tokens[0]); err == nil {
+		if err := e.m.Logout(t.Context(), mgrClient, tokens[0]); err == nil {
 			t.Error("Logout() of a token on a closed store = nil, want the error of the store")
 		}
 		// Nothing is written for a text that is no token, so there is no error.
-		if err := e.m.Logout(t.Context(), "junk"); err != nil {
+		if err := e.m.Logout(t.Context(), mgrClient, "junk"); err != nil {
 			t.Errorf("Logout() of a text that is no token on a closed store = %v, want nil", err)
 		}
 	})
@@ -1625,7 +1655,7 @@ func TestLogout(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		before := e.mark(t)
-		if err := e.m.Logout(ctx, tokens[0]); !errors.Is(err, context.Canceled) {
+		if err := e.m.Logout(ctx, mgrClient, tokens[0]); !errors.Is(err, context.Canceled) {
 			t.Errorf("Logout() with a canceled context = %v, want context.Canceled", err)
 		}
 		e.unchanged(t, before)
@@ -1887,13 +1917,13 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 	}
 	key := sessKey("row")
 	const gone = "the transaction has ended"
-	if rows, err := sweepSessions(ended, now); err == nil || err.Error() != gone || rows != nil {
+	if rows, err := sweepSessions(e.hist(ended), now); err == nil || err.Error() != gone || rows != nil {
 		t.Errorf("sweepSessions() = %v, %v, want an error that the transaction has ended", rows, err)
 	}
-	if _, _, state, err := readSession(ended, key, now); err == nil || err.Error() != gone || state == sessionLive {
-		t.Errorf("readSession() = %v, %v, want an error that the transaction has ended", state, err)
+	if look, err := readSession(ended, key, now); err == nil || err.Error() != gone || look.state == sessionLive {
+		t.Errorf("readSession() = %v, %v, want an error that the transaction has ended", look.state, err)
 	}
-	if p, err := startSession(ended, yamada, key, "", now); err == nil || err.Error() != gone || !reflect.DeepEqual(p, Principal{}) {
+	if p, err := startSession(e.hist(ended), yamada, key, "", now, audit.Login, mgrClient); err == nil || err.Error() != gone || !reflect.DeepEqual(p, Principal{}) {
 		t.Errorf("startSession() = %+v, %v, want an error that the transaction has ended", p, err)
 	}
 	if err := putSession(ended, key, live); err == nil || err.Error() != gone {
@@ -1909,7 +1939,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 	t.Run("a row to remove", func(t *testing.T) {
 		e.setRawSession(t, sessKey("garbage"), "not json")
 		err := view(t, func(tx *store.Tx) error {
-			_, err := sweepSessions(tx, now)
+			_, err := sweepSessions(e.hist(tx), now)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -1923,7 +1953,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 		token := tokSample
 		e.setSession(t, sessKey(token), live)
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(tx, yamada, sessKey("new"), token, now)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), token, now, audit.Login, mgrClient)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -1938,7 +1968,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 			e.setSession(t, sessKey("over "+strconv.Itoa(i)), live)
 		}
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(tx, yamada, sessKey("new"), "", now)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -1958,7 +1988,7 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 	})
 	t.Run("the new session", func(t *testing.T) {
 		err := view(t, func(tx *store.Tx) error {
-			_, err := startSession(tx, yamada, sessKey("new"), "", now)
+			_, err := startSession(e.hist(tx), yamada, sessKey("new"), "", now, audit.Login, mgrClient)
 			return err
 		})
 		if err == nil || err.Error() != readOnly {
@@ -2168,22 +2198,22 @@ func TestHashGate(t *testing.T) {
 				return err
 			}},
 			{"Login", func(ctx context.Context) error {
-				_, _, err := e.m.Login(ctx, "active", mgrPassword("active"), "")
+				_, _, err := e.m.Login(ctx, mgrClient, "active", mgrPassword("active"), "")
 				return err
 			}},
 			{"Login of no account", func(ctx context.Context) error {
-				_, _, err := e.m.Login(ctx, "nobody", mgrPassword("active"), "")
+				_, _, err := e.m.Login(ctx, mgrClient, "nobody", mgrPassword("active"), "")
 				return err
 			}},
 			{"ChangePassword", func(ctx context.Context) error {
 				return e.m.ChangePassword(ctx, active.ID, mgrPassword("active"), "a new long password")
 			}},
 			{"ChangeOwnPassword", func(ctx context.Context) error {
-				_, _, err := e.m.ChangeOwnPassword(ctx, session, mgrPassword("active"), "a new long password")
+				_, _, err := e.m.ChangeOwnPassword(ctx, mgrClient, session, mgrPassword("active"), "a new long password")
 				return err
 			}},
 			{"SetPassword", func(ctx context.Context) error {
-				_, err := e.m.SetPassword(ctx, token, mgrPassword("pending"))
+				_, err := e.m.SetPassword(ctx, mgrClient, token, mgrPassword("pending"))
 				return err
 			}},
 		}
@@ -2227,7 +2257,7 @@ func TestHashGate(t *testing.T) {
 		probe := newGateProbe(t.Context(), false)
 		second := make(chan error, 1)
 		go func() {
-			_, _, err := e.m.Login(probe, "active", mgrPassword("active"), "")
+			_, _, err := e.m.Login(probe, mgrClient, "active", mgrPassword("active"), "")
 			second <- err
 		}()
 		sessWait(t, probe.reached, "the second hash to wait")
@@ -2254,7 +2284,7 @@ func TestHashGate(t *testing.T) {
 		e.m.hashes <- struct{}{}
 		long := strings.Repeat("a", maxTypedPasswordBytes+1)
 		probe := newGateProbe(t.Context(), true)
-		if _, _, err := e.m.Login(probe, "active", long, ""); !errors.Is(err, ErrBadCredentials) || probe.waited() {
+		if _, _, err := e.m.Login(probe, mgrClient, "active", long, ""); !errors.Is(err, ErrBadCredentials) || probe.waited() {
 			t.Errorf("Login() with a password of more than 8 KiB = %v, waited = %v, want ErrBadCredentials without a wait", err, probe.waited())
 		}
 		probe = newGateProbe(t.Context(), true)
@@ -2262,7 +2292,7 @@ func TestHashGate(t *testing.T) {
 			t.Errorf("ChangePassword() with a current password of more than 8 KiB = %v, waited = %v, want ErrBadCredentials without a wait", err, probe.waited())
 		}
 		probe = newGateProbe(t.Context(), true)
-		if _, _, err := e.m.ChangeOwnPassword(probe, session, long, "a new long password"); !errors.Is(err, ErrBadCredentials) || probe.waited() {
+		if _, _, err := e.m.ChangeOwnPassword(probe, mgrClient, session, long, "a new long password"); !errors.Is(err, ErrBadCredentials) || probe.waited() {
 			t.Errorf("ChangeOwnPassword() with a current password of more than 8 KiB = %v, waited = %v, want ErrBadCredentials without a wait", err, probe.waited())
 		}
 	})
@@ -2300,11 +2330,11 @@ func TestNewWithIterations(t *testing.T) {
 	if _, err := m.CreateFirst(t.Context(), mgrInput("admin", RoleAdmin), mgrPassword("admin")); err != nil {
 		t.Fatalf("CreateFirst() = %v", err)
 	}
-	p, token, err := m.Login(t.Context(), "admin", mgrPassword("admin"), "")
+	p, token, err := m.Login(t.Context(), mgrClient, "admin", mgrPassword("admin"), "")
 	if err != nil {
 		t.Fatalf("Login() = %v", err)
 	}
-	if got, err := m.Authenticate(t.Context(), token); err != nil || !reflect.DeepEqual(got, p) {
+	if got, err := m.Authenticate(t.Context(), mgrClient, token); err != nil || !reflect.DeepEqual(got, p) {
 		t.Errorf("Authenticate() = %+v, %v, want the Principal of the login", got, err)
 	}
 	err = s.View(t.Context(), func(tx *store.Tx) error {
@@ -2335,11 +2365,11 @@ func TestSessionsPersist(t *testing.T) {
 	e.add(t, "yamada", RoleEditor)
 	p, token := e.login(t, "yamada")
 	_, gone := e.login(t, "yamada")
-	if err := e.m.Logout(t.Context(), gone); err != nil {
+	if err := e.m.Logout(t.Context(), mgrClient, gone); err != nil {
 		t.Fatal(err)
 	}
 	e.clock.add(sessionTouch)
-	if _, err := e.m.Authenticate(t.Context(), token); err != nil {
+	if _, err := e.m.Authenticate(t.Context(), mgrClient, token); err != nil {
 		t.Fatal(err)
 	}
 	rows := e.rawSessions(t)
@@ -2357,10 +2387,10 @@ func TestSessionsPersist(t *testing.T) {
 	if got := e2.rawSessions(t); !maps.Equal(got, rows) || len(got) != 1 {
 		t.Errorf("the session rows are %d, not the one that was closed", len(got))
 	}
-	if got, err := e2.m.Authenticate(t.Context(), token); err != nil || !reflect.DeepEqual(got, p) {
+	if got, err := e2.m.Authenticate(t.Context(), mgrClient, token); err != nil || !reflect.DeepEqual(got, p) {
 		t.Errorf("Authenticate() after Open = %+v, %v, want the Principal of the login", got, err)
 	}
-	if got, err := e2.m.Authenticate(t.Context(), gone); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+	if got, err := e2.m.Authenticate(t.Context(), mgrClient, gone); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 		t.Errorf("Authenticate() of the session that was ended = %+v, %v, want ErrNoSession", got, err)
 	}
 	if s, _ := e2.sessionOf(t, token); !s.LastSeenAt.Equal(mgrTime.Add(sessionTouch)) {
@@ -2433,7 +2463,7 @@ func TestConcurrentSessions(t *testing.T) {
 						if (w+j)%2 == 0 {
 							previous = last
 						}
-						p, token, err := e.m.Login(t.Context(), login, mgrPassword(login), previous)
+						p, token, err := e.m.Login(t.Context(), mgrClient, login, mgrPassword(login), previous)
 						if err != nil || p.Account.ID != ids[login] {
 							failures <- fmt.Sprintf("Login(%q) = %+v, %v", login, p, err)
 							return
@@ -2445,7 +2475,7 @@ func TestConcurrentSessions(t *testing.T) {
 						if !ok {
 							continue
 						}
-						got, err := e.m.Authenticate(t.Context(), token)
+						got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 						if err == nil && got.Account.ID != ids[owner] {
 							failures <- fmt.Sprintf("Authenticate() of a session of %s returned the account of %s", owner, got.Account.Login)
 						} else if err != nil && !errors.Is(err, ErrNoSession) {
@@ -2456,7 +2486,7 @@ func TestConcurrentSessions(t *testing.T) {
 						if !ok {
 							continue
 						}
-						if err := e.m.Logout(t.Context(), token); err != nil {
+						if err := e.m.Logout(t.Context(), mgrClient, token); err != nil {
 							failures <- fmt.Sprintf("Logout() = %v", err)
 						}
 						end(token)
@@ -2498,7 +2528,7 @@ func TestConcurrentSessions(t *testing.T) {
 		}
 		// A token works if its row is there, and only then.
 		for token, login := range issued {
-			got, err := e.m.Authenticate(t.Context(), token)
+			got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 			has := e.hasSession(t, token)
 			switch {
 			case err == nil && (!has || ended[token] || got.Account.ID != ids[login]):
@@ -2522,7 +2552,7 @@ func TestConcurrentSessions(t *testing.T) {
 		for w := range calls {
 			calls[w] = func() error {
 				for _, login := range logins {
-					_, token, err := e.m.Login(t.Context(), login, mgrPassword(login), "")
+					_, token, err := e.m.Login(t.Context(), mgrClient, login, mgrPassword(login), "")
 					if err != nil {
 						return err
 					}
@@ -2541,11 +2571,11 @@ func TestConcurrentSessions(t *testing.T) {
 		for w := range tokens {
 			for i, token := range tokens[w] {
 				if (w+i)%2 == 0 {
-					checks = append(checks, func() error { return e.m.Logout(t.Context(), token) })
+					checks = append(checks, func() error { return e.m.Logout(t.Context(), mgrClient, token) })
 					continue
 				}
 				checks = append(checks, func() error {
-					got, err := e.m.Authenticate(t.Context(), token)
+					got, err := e.m.Authenticate(t.Context(), mgrClient, token)
 					if err == nil && got.Account.ID != ids[logins[i]] {
 						return errors.New("the session is of another account")
 					}
@@ -2587,7 +2617,7 @@ func sessGone(t *testing.T, e *mgrEnv, token, what string) {
 	if e.hasSession(t, token) {
 		t.Errorf("the row of the session %s stayed", what)
 	}
-	if got, err := e.m.Authenticate(t.Context(), token); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
+	if got, err := e.m.Authenticate(t.Context(), mgrClient, token); !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(got, Principal{}) {
 		t.Errorf("Authenticate() of the session %s = %+v, %v, want ErrNoSession", what, got, err)
 	}
 }
@@ -2598,7 +2628,7 @@ func sessLives(t *testing.T, e *mgrEnv, token, what string) {
 	if !e.hasSession(t, token) {
 		t.Errorf("the row of the session %s is gone", what)
 	}
-	if _, err := e.m.Authenticate(t.Context(), token); err != nil {
+	if _, err := e.m.Authenticate(t.Context(), mgrClient, token); err != nil {
 		t.Errorf("Authenticate() of the session %s = %v, want nil", what, err)
 	}
 }
@@ -2763,18 +2793,53 @@ func TestOperationsEndSessions(t *testing.T) {
 		}},
 		{"SetPassword", func(t *testing.T, f *endFixture) action {
 			token := f.pend(t)
-			return func() error { _, err := f.e.m.SetPassword(t.Context(), token, endPassword); return err }
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), mgrClient, token, endPassword); return err }
 		}},
+	}
+	// reasons are the reasons that the login history gives for the sessions that each operation ends.
+	reasons := map[string]string{
+		"Disable by an administrator":                    endedDisabled,
+		"Disable by System":                              endedDisabled,
+		"Delete by an administrator":                     endedDeleted,
+		"Delete by System":                               endedDeleted,
+		"Delete of a row that cannot be read, by System": endedDeleted,
+		"a change of the role by System":                 endedRole,
+		"ChangePassword":                                 endedPassword,
+		"ChangePassword to the same password":            endedPassword,
+		"Reset by an administrator":                      endedPassword,
+		"Reset by System":                                endedPassword,
+		"SetPassword":                                    endedPassword,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reason, ok := reasons[tt.name]
+			if !ok {
+				t.Fatal("the test has no reason for the sessions that the operation ends")
+			}
 			f := newEndFixture(t)
 			act := tt.prepare(t, f)
 			before := f.e.rawSessions(t)
+			marked := f.e.mark(t)
 			if err := act(); err != nil {
 				t.Fatalf("the operation = %v", err)
 			}
 			f.ended(t, f.yamada.ID, before)
+			// Each row that went has a record of the reason, which names the account and no client.
+			want := make(map[string]bool)
+			for key, data := range before {
+				if s, err := decodeSession(key, []byte(data)); err == nil && s.Account == f.yamada.ID {
+					want[key] = true
+				}
+			}
+			for _, r := range f.e.records(t, marked) {
+				if r.Action != audit.SessionEnd || r.Result != reason || r.Account != f.yamada.ID || r.Client != (audit.Client{}) || !want[r.Session] {
+					t.Errorf("the operation made the record %q of the session %v, want session.end/%s of a row of yamada, without a client", recordName(r), want[r.Session], reason)
+				}
+				delete(want, r.Session)
+			}
+			if len(want) != 0 {
+				t.Errorf("%d rows that went have no record", len(want))
+			}
 		})
 	}
 }
@@ -2908,14 +2973,16 @@ func TestOperationsEndNothingWhenRefused(t *testing.T) {
 		{"SetPassword with a password that is too short", func(t *testing.T, f *endFixture) action {
 			token := f.pend(t)
 			delete(f.tokens, "yamada") // the rows are of a pending account: they cannot work, and the test compares the rows
-			return func() error { _, err := f.e.m.SetPassword(t.Context(), token, "short"); return err }
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), mgrClient, token, "short"); return err }
 		}, problems},
 		{"SetPassword with a token that is none", func(t *testing.T, f *endFixture) action {
 			f.pend(t)
 			delete(f.tokens, "yamada")
-			return func() error { _, err := f.e.m.SetPassword(t.Context(), tokSample, endPassword); return err }
+			return func() error { _, err := f.e.m.SetPassword(t.Context(), mgrClient, tokSample, endPassword); return err }
 		}, is(ErrInvalidToken)},
 	}
+	// refusalRecords are the records that a refusal makes by the name of its test; the others make none.
+	refusalRecords := map[string][]string{"SetPassword with a token that is none": {"token.failure/unknown"}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newEndFixture(t)
@@ -2925,7 +2992,11 @@ func TestOperationsEndNothingWhenRefused(t *testing.T) {
 			if !tt.want(err) {
 				t.Errorf("the operation = %v, which is not the refusal that the test expects", err)
 			}
-			f.e.unchanged(t, before)
+			if records := refusalRecords[tt.name]; len(records) == 0 {
+				f.e.unchanged(t, before)
+			} else {
+				f.e.recorded(t, before, records...)
+			}
 			for login, tokens := range f.tokens {
 				for i, token := range tokens {
 					sessLives(t, f.e, token, fmt.Sprintf("%d of %s", i+1, login))
@@ -2974,7 +3045,7 @@ func TestDisableEnableRevivesNone(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.ended(t, f.yamada.ID, before)
-			if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
+			if _, _, err := e.m.Login(ctx, mgrClient, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
 				t.Errorf("Login() of a disabled account = %v, want ErrBadCredentials", err)
 			}
 			if _, err := e.m.Enable(ctx, actor, f.yamada.ID); err != nil {
@@ -2986,7 +3057,7 @@ func TestDisableEnableRevivesNone(t *testing.T) {
 			if rows := e.sessionsOf(t, f.yamada.ID); len(rows) != 0 {
 				t.Errorf("the account has %d session rows after Enable, want none", len(rows))
 			}
-			p, token, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), "")
+			p, token, err := e.m.Login(ctx, mgrClient, "yamada", mgrPassword("yamada"), "")
 			if err != nil || p.Account.ID != f.yamada.ID {
 				t.Fatalf("Login() after Enable = %+v, %v, want a session of yamada", p, err)
 			}
@@ -3060,11 +3131,11 @@ func TestRoleChangeEndsSessions(t *testing.T) {
 				t.Fatalf("Update() = %+v, %v, want the account with the role %s", a, err, tt.to)
 			}
 			f.ended(t, id, before)
-			p, token, err := e.m.Login(ctx, a.Login, mgrPassword(tt.login), "")
+			p, token, err := e.m.Login(ctx, mgrClient, a.Login, mgrPassword(tt.login), "")
 			if err != nil || p.Account.Role != tt.to {
 				t.Fatalf("Login() after the change = %+v, %v, want a session with the role %s", p, err, tt.to)
 			}
-			if got, err := e.m.Authenticate(ctx, token); err != nil || got.Account.Role != tt.to {
+			if got, err := e.m.Authenticate(ctx, mgrClient, token); err != nil || got.Account.Role != tt.to {
 				t.Errorf("Authenticate() = %+v, %v, want the role %s", got, err, tt.to)
 			}
 		})
@@ -3075,14 +3146,14 @@ func TestRoleChangeEndsSessions(t *testing.T) {
 		f := newEndFixture(t)
 		e, ctx := f.e, t.Context()
 		_, token := f.e.login(t, "yamada")
-		p, err := e.m.Authenticate(ctx, token)
+		p, err := e.m.Authenticate(ctx, mgrClient, token)
 		if err != nil || Allowed(p, EditSettings, Target{}) {
 			t.Fatalf("an editor before the change: Authenticate() = %v, allowed to edit the settings = %v", err, Allowed(p, EditSettings, Target{}))
 		}
 		if _, err := e.m.Update(ctx, By(f.admin.ID), f.yamada.ID, Change{Role: ptr(RoleAdmin)}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.m.Authenticate(ctx, token); !errors.Is(err, ErrNoSession) {
+		if _, err := e.m.Authenticate(ctx, mgrClient, token); !errors.Is(err, ErrNoSession) {
 			t.Errorf("Authenticate() of the session before the change = %v, want ErrNoSession", err)
 		}
 		p, _ = e.login(t, "yamada")
@@ -3138,7 +3209,7 @@ func TestOtherChangesKeepSessions(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			_, err = f.e.m.SetPassword(t.Context(), token, endPassword)
+			_, err = f.e.m.SetPassword(t.Context(), mgrClient, token, endPassword)
 			return err
 		}},
 		{"VerifyPasswordFactor", "", func(t *testing.T, f *endFixture) error {
@@ -3240,7 +3311,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		before := e.rawSessions(t)
 		hashes := hashCounter(e)
 
-		p, token, err := e.m.ChangeOwnPassword(ctx, oldTokens[2], mgrPassword("yamada"), ownNext)
+		p, token, err := e.m.ChangeOwnPassword(ctx, mgrClient, oldTokens[2], mgrPassword("yamada"), ownNext)
 		if err != nil {
 			t.Fatalf("ChangeOwnPassword() = %v", err)
 		}
@@ -3304,7 +3375,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		for i, tok := range oldTokens {
 			sessGone(t, e, tok, fmt.Sprintf("%d of yamada before the change", i+1))
 		}
-		if got, err := e.m.Authenticate(ctx, token); err != nil || !reflect.DeepEqual(got, p) {
+		if got, err := e.m.Authenticate(ctx, mgrClient, token); err != nil || !reflect.DeepEqual(got, p) {
 			t.Errorf("Authenticate() of the new token = %+v, %v, want the Principal that ChangeOwnPassword returned", got, err)
 		}
 		for login, tokens := range f.tokens {
@@ -3316,10 +3387,10 @@ func TestChangeOwnPassword(t *testing.T) {
 		}
 
 		// The new password logs in, the old one does not.
-		if _, _, err := e.m.Login(ctx, "yamada", ownNext, ""); err != nil {
+		if _, _, err := e.m.Login(ctx, mgrClient, "yamada", ownNext, ""); err != nil {
 			t.Errorf("Login() with the new password = %v", err)
 		}
-		if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
+		if _, _, err := e.m.Login(ctx, mgrClient, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, ErrBadCredentials) {
 			t.Errorf("Login() with the old password = %v, want ErrBadCredentials", err)
 		}
 	})
@@ -3330,7 +3401,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		e := f.e
 		var ticks atomic.Int64
 		e.m.SetClock(func() time.Time { return mgrTime.Add(time.Duration(ticks.Add(1)) * time.Second) })
-		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 		if err != nil {
 			t.Fatalf("ChangeOwnPassword() = %v", err)
 		}
@@ -3349,7 +3420,7 @@ func TestChangeOwnPassword(t *testing.T) {
 			login := "r-" + string(role)
 			e.add(t, login, role)
 			p, token := e.login(t, login)
-			got, fresh, err := e.m.ChangeOwnPassword(t.Context(), token, mgrPassword(login), ownNext)
+			got, fresh, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, token, mgrPassword(login), ownNext)
 			if err != nil || got.Account.ID != p.Account.ID || got.Account.Role != role {
 				t.Errorf("ChangeOwnPassword() of %s = %+v, %v, want a session of the same account", role, got, err)
 			}
@@ -3363,7 +3434,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		hashes := hashCounter(e)
 		before := e.mark(t)
 		for _, text := range []string{"", "junk", tokSample[:42], tokSample + "A", strings.Repeat("!", tokenChars), tokSample, strings.Repeat("A", tokenChars)} {
-			p, token, err := e.m.ChangeOwnPassword(t.Context(), text, mgrPassword("yamada"), ownNext)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, text, mgrPassword("yamada"), ownNext)
 			if !errors.Is(err, ErrNoSession) || err.Error() != "no valid session" || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("ChangeOwnPassword() of a text with no session (%d bytes) = %+v, %v, want ErrNoSession and no token", len(text), p, err)
 			}
@@ -3380,7 +3451,7 @@ func TestChangeOwnPassword(t *testing.T) {
 			end  func(t *testing.T, f *endFixture)
 		}{
 			{"a logout", func(t *testing.T, f *endFixture) {
-				if err := f.e.m.Logout(t.Context(), f.tokens["yamada"][0]); err != nil {
+				if err := f.e.m.Logout(t.Context(), mgrClient, f.tokens["yamada"][0]); err != nil {
 					t.Fatal(err)
 				}
 			}},
@@ -3402,7 +3473,7 @@ func TestChangeOwnPassword(t *testing.T) {
 				hashes := hashCounter(e)
 				tt.end(t, f)
 				accounts := e.raw(t)
-				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 				if !errors.Is(err, ErrNoSession) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 					t.Errorf("ChangeOwnPassword() = %+v, %v, want ErrNoSession and no token", p, err)
 				}
@@ -3433,7 +3504,7 @@ func TestChangeOwnPassword(t *testing.T) {
 				e := f.e
 				hashes := hashCounter(e)
 				before := e.mark(t)
-				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], tt.current, ownNext)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], tt.current, ownNext)
 				if !errors.Is(err, ErrBadCredentials) || err.Error() != sessWrong || !reflect.DeepEqual(p, Principal{}) || token != "" {
 					t.Errorf("ChangeOwnPassword() = %+v, %v, want ErrBadCredentials and no token", p, err)
 				}
@@ -3462,7 +3533,7 @@ func TestChangeOwnPassword(t *testing.T) {
 				e := f.e
 				hashes := hashCounter(e)
 				before := e.mark(t)
-				p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), tt.next)
+				p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), tt.next)
 				mgrProblems(t, err, problem{"/password", tt.msg})
 				if !reflect.DeepEqual(p, Principal{}) || token != "" {
 					t.Errorf("ChangeOwnPassword() returned %+v and a token that is not empty, want neither", p)
@@ -3482,7 +3553,7 @@ func TestChangeOwnPassword(t *testing.T) {
 			e.putRaw(t, f.taro.ID, "not json")
 			hashes := hashCounter(e)
 			before := e.mark(t)
-			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 			if want := `accounts "` + f.taro.ID + `": invalid value`; err == nil || err.Error() != want || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("ChangeOwnPassword() = %+v, %v, want the error %q and no token", p, err, want)
 			}
@@ -3499,7 +3570,7 @@ func TestChangeOwnPassword(t *testing.T) {
 			f.e.edit(t, f.yamada.ID, func(r *row) { r.Role = "owner" })
 			hashes := hashCounter(e)
 			before := e.mark(t)
-			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 			mgrError(t, err, ErrForbidden, mgrNotAllowed(e.row(t, f.yamada.ID).account(), "edit its own account"))
 			if !reflect.DeepEqual(p, Principal{}) || token != "" || *hashes != 0 {
 				t.Errorf("ChangeOwnPassword() = %+v after %d hashes, want no Principal, no token and no hash", p, *hashes)
@@ -3515,7 +3586,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		e := f.e
 		e.clock.set(time.Time{})
 		before := e.mark(t)
-		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoSession) || !strings.Contains(err.Error(), "cannot write a session of "+f.yamada.ID) ||
 			!reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("ChangeOwnPassword() = %+v, %v, want the error of the session and no token", p, err)
@@ -3539,7 +3610,7 @@ func TestChangeOwnPassword(t *testing.T) {
 			e := f.e
 			e.m.rand = tt.r
 			before := e.mark(t)
-			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 			if !errors.Is(err, boom) || !strings.Contains(err.Error(), tt.text) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 				t.Errorf("ChangeOwnPassword() without random bits %s = %+v, %v, want an error that wraps the reader's and says %q", name, p, err, tt.text)
 			}
@@ -3553,7 +3624,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		e.m.rand = sessSame{}
 		e.setSession(t, sessKey(tokSample), sessionFor(e.row(t, f.taro.ID), mgrTime))
 		before := e.mark(t)
-		p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+		p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 		if err == nil || errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrNoSession) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("ChangeOwnPassword() with a token that is in use = %+v, %v, want an error and no token", p, err)
 		}
@@ -3566,7 +3637,7 @@ func TestChangeOwnPassword(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		before := e.mark(t)
-		if _, _, err := e.m.ChangeOwnPassword(ctx, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
+		if _, _, err := e.m.ChangeOwnPassword(ctx, mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
 			t.Errorf("ChangeOwnPassword() with a canceled context = %v, want context.Canceled", err)
 		}
 		e.unchanged(t, before)
@@ -3578,7 +3649,7 @@ func TestChangeOwnPassword(t *testing.T) {
 				cancel()
 			}
 		}
-		if _, _, err := e.m.ChangeOwnPassword(ctx, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
+		if _, _, err := e.m.ChangeOwnPassword(ctx, mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); !errors.Is(err, context.Canceled) {
 			t.Errorf("ChangeOwnPassword() with a context that ends after the hashes = %v, want context.Canceled", err)
 		}
 		e.unchanged(t, before)
@@ -3586,10 +3657,10 @@ func TestChangeOwnPassword(t *testing.T) {
 		if err := e.s.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := e.m.ChangeOwnPassword(t.Context(), "junk", mgrPassword("yamada"), ownNext); !errors.Is(err, ErrNoSession) {
+		if _, _, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, "junk", mgrPassword("yamada"), ownNext); !errors.Is(err, ErrNoSession) {
 			t.Errorf("ChangeOwnPassword() of a text that is no token on a closed store = %v, want ErrNoSession", err)
 		}
-		if _, _, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); err == nil || errors.Is(err, ErrNoSession) {
+		if _, _, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext); err == nil || errors.Is(err, ErrNoSession) {
 			t.Errorf("ChangeOwnPassword() on a closed store = %v, want the error of the store", err)
 		}
 	})
@@ -3639,7 +3710,7 @@ func TestChangeOwnPasswordGaps(t *testing.T) {
 			check(t, err)
 		}, is: ErrNoSession},
 		{name: "a logout of the session", gap: func(t *testing.T, f *endFixture) {
-			check(t, f.e.m.Logout(t.Context(), f.tokens["yamada"][0]))
+			check(t, f.e.m.Logout(t.Context(), mgrClient, f.tokens["yamada"][0]))
 		}, is: ErrNoSession},
 		{name: "the row of the session removed", gap: func(t *testing.T, f *endFixture) {
 			f.e.deleteRowOfSession(t, f.tokens["yamada"][0])
@@ -3652,7 +3723,7 @@ func TestChangeOwnPasswordGaps(t *testing.T) {
 			f.e.edit(t, f.yamada.ID, func(r *row) { r.CredentialsChangedAt = r.CredentialsChangedAt.Add(time.Second) })
 		}, is: ErrNoSession},
 		{name: "ChangeOwnPassword from another session", gap: func(t *testing.T, f *endFixture) {
-			_, _, err := f.e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][1], mgrPassword("yamada"), "a password that won the race")
+			_, _, err := f.e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][1], mgrPassword("yamada"), "a password that won the race")
 			check(t, err)
 		}, is: ErrNoSession},
 		{name: "another password, with the sessions left", gap: func(t *testing.T, f *endFixture) {
@@ -3688,7 +3759,7 @@ func TestChangeOwnPasswordGaps(t *testing.T) {
 					after = e.mark(t)
 				}
 			}
-			p, token, err := e.m.ChangeOwnPassword(t.Context(), f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
+			p, token, err := e.m.ChangeOwnPassword(t.Context(), mgrClient, f.tokens["yamada"][0], mgrPassword("yamada"), ownNext)
 			if tt.works {
 				if err != nil || p.Account.ID != f.yamada.ID {
 					t.Fatalf("ChangeOwnPassword() = %+v, %v, want a session of yamada", p, err)
@@ -3752,7 +3823,7 @@ func TestLoginRehash(t *testing.T) {
 		e, a, session := setup(t, pwLow-1)
 		old := e.row(t, a.ID)
 		hashes := hashCounter(e)
-		p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 		if err != nil {
 			t.Fatalf("Login() = %v", err)
 		}
@@ -3788,7 +3859,7 @@ func TestLoginRehash(t *testing.T) {
 		// A hash with the Manager's count is not made again.
 		*hashes = 0
 		before := e.raw(t)
-		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), ""); err != nil {
 			t.Fatal(err)
 		}
 		if *hashes != 1 || !maps.Equal(e.raw(t), before) {
@@ -3799,7 +3870,7 @@ func TestLoginRehash(t *testing.T) {
 	t.Run("the count of the Manager", func(t *testing.T) {
 		e, a, _ := setup(t, pwLow)
 		e.m.iterations = pwLow + 3
-		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), ""); err != nil {
 			t.Fatal(err)
 		}
 		if got := e.iterationsOf(t, a.ID); got != pwLow+3 {
@@ -3812,7 +3883,7 @@ func TestLoginRehash(t *testing.T) {
 			e, _, _ := setup(t, iterations)
 			hashes := hashCounter(e)
 			before := e.raw(t)
-			if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err != nil {
+			if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), ""); err != nil {
 				t.Fatal(err)
 			}
 			if !maps.Equal(e.raw(t), before) || *hashes != 1 {
@@ -3828,7 +3899,7 @@ func TestLoginRehash(t *testing.T) {
 		e.first(t)
 		a := e.add(t, "yamada", RoleEditor)
 		e.useHash(t, a.ID, "short", 1)
-		if _, _, err := e.m.Login(t.Context(), "yamada", "short", ""); err != nil {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", "short", ""); err != nil {
 			t.Fatalf("Login() = %v", err)
 		}
 		if ok, _, err := matchHash(e.row(t, a.ID).Password, "short", pwLow); !ok || err != nil || e.iterationsOf(t, a.ID) != pwLow {
@@ -3842,7 +3913,7 @@ func TestLoginRehash(t *testing.T) {
 		a := e.add(t, "yamada", RoleEditor)
 		composed, decomposed := "Caf"+eAcute+" marker nine password", "Cafe"+acute+" marker nine password"
 		e.useHash(t, a.ID, composed, 1)
-		if _, _, err := e.m.Login(t.Context(), "yamada", decomposed, ""); err != nil {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", decomposed, ""); err != nil {
 			t.Fatalf("Login() = %v", err)
 		}
 		for _, typed := range []string{composed, decomposed} {
@@ -3863,11 +3934,11 @@ func TestLoginRehash(t *testing.T) {
 			{"a disabled account", "off", mgrPassword("off")},
 		}
 		for _, tt := range fails {
-			if _, _, err := e.m.Login(t.Context(), tt.login, tt.password, ""); !errors.Is(err, ErrBadCredentials) {
+			if _, _, err := e.m.Login(t.Context(), mgrClient, tt.login, tt.password, ""); !errors.Is(err, ErrBadCredentials) {
 				t.Errorf("Login() with %s = %v, want ErrBadCredentials", tt.name, err)
 			}
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/wrong-password", "login.failure/disabled")
 	})
 
 	t.Run("VerifyPasswordFactor does not make it again", func(t *testing.T) {
@@ -3893,10 +3964,10 @@ func TestLoginRehash(t *testing.T) {
 			}
 		}
 		before := e.mark(t)
-		if _, _, err := e.m.Login(ctx, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, context.Canceled) {
+		if _, _, err := e.m.Login(ctx, mgrClient, "yamada", mgrPassword("yamada"), ""); !errors.Is(err, context.Canceled) {
 			t.Errorf("Login() = %v, want context.Canceled", err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/error")
 	})
 
 	t.Run("no random bits for the new hash", func(t *testing.T) {
@@ -3904,11 +3975,11 @@ func TestLoginRehash(t *testing.T) {
 		boom := errors.New("no random bits")
 		e.m.rand = iotest.ErrReader(boom)
 		before := e.mark(t)
-		p, token, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		p, token, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 		if !errors.Is(err, boom) || errors.Is(err, ErrBadCredentials) || !reflect.DeepEqual(p, Principal{}) || token != "" {
 			t.Errorf("Login() = %+v, %v, want the error of the reader and no token", p, err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/error")
 	})
 
 	// A session cannot be written, so the hash is not written either.
@@ -3918,10 +3989,10 @@ func TestLoginRehash(t *testing.T) {
 		taro := e.add(t, "taro", RoleEditor)
 		e.setSession(t, sessKey(tokSample), sessionFor(e.row(t, taro.ID), e.clock.now()))
 		before := e.mark(t)
-		if _, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), ""); err == nil || errors.Is(err, ErrBadCredentials) {
+		if _, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), ""); err == nil || errors.Is(err, ErrBadCredentials) {
 			t.Errorf("Login() with a token that is in use = %v, want the error of the session", err)
 		}
-		e.unchanged(t, before)
+		e.recorded(t, before, "login.failure/error")
 	})
 
 	t.Run("the account is read again for the new hash", func(t *testing.T) {
@@ -3935,7 +4006,7 @@ func TestLoginRehash(t *testing.T) {
 				}
 			}
 		}
-		p, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+		p, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 		if err != nil || p.Account.Name != "New Name" {
 			t.Fatalf("Login() = %+v, %v, want the account with the new name", p.Account, err)
 		}
@@ -3955,7 +4026,7 @@ func TestLoginRehash(t *testing.T) {
 				return err
 			}},
 			{"Login", func(e *mgrEnv) error {
-				_, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+				_, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 				return err
 			}},
 		}
@@ -3971,7 +4042,7 @@ func TestLoginRehash(t *testing.T) {
 					e.m.hook = func(p string) {
 						if p == point && !ran {
 							ran = true
-							_, _, inner = e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+							_, _, inner = e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 						}
 					}
 					rows := len(e.rawSessions(t))
@@ -4007,7 +4078,7 @@ func TestLoginRehash(t *testing.T) {
 			calls := make([]func() error, n)
 			for i := range calls {
 				calls[i] = func() error {
-					_, _, err := e.m.Login(t.Context(), "yamada", mgrPassword("yamada"), "")
+					_, _, err := e.m.Login(t.Context(), mgrClient, "yamada", mgrPassword("yamada"), "")
 					return err
 				}
 			}
@@ -4065,15 +4136,31 @@ func TestRemoveSessions(t *testing.T) {
 		}
 	}
 	removeFor := func(id string) error {
-		return e.s.Update(t.Context(), func(tx *store.Tx) error { return removeSessions(tx, id) })
+		return e.s.Update(t.Context(), func(tx *store.Tx) error { return removeSessions(e.hist(tx), id, endedPassword) })
 	}
+	marked := e.mark(t)
 	if err := removeFor(yamada.ID); err != nil {
 		t.Fatalf("removeSessions() = %v", err)
 	}
 	got := e.rawSessions(t)
+	removed := 0
 	for _, r := range rows {
 		if _, there := got[sessKey(r.name)]; there == r.removed {
 			t.Errorf("%s: has a row = %v, want %v", r.name, there, !r.removed)
+		}
+		if r.removed {
+			removed++
+		}
+	}
+	// Each row that goes has a record of why, under its key, and of the account that it names.
+	ends := e.records(t, marked)
+	if len(ends) != removed {
+		t.Fatalf("removeSessions() recorded %d ends, want %d", len(ends), removed)
+	}
+	for _, r := range ends {
+		_, there := got[r.Session]
+		if r.Action != audit.SessionEnd || r.Result != endedPassword || r.Account != yamada.ID || r.Client != (audit.Client{}) || there {
+			t.Errorf("removeSessions() recorded %q, want session.end with the reason password for yamada, without a client and for a row that is gone", recordName(r))
 		}
 	}
 
@@ -4092,11 +4179,11 @@ func TestRemoveSessions(t *testing.T) {
 	if err := e.s.View(t.Context(), func(tx *store.Tx) error { ended = tx; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeSessions(ended, yamada.ID); err == nil || err.Error() != "the transaction has ended" {
+	if err := removeSessions(e.hist(ended), yamada.ID, endedPassword); err == nil || err.Error() != "the transaction has ended" {
 		t.Errorf("removeSessions() in a transaction that has ended = %v, want an error that it has ended", err)
 	}
 	view := func(id string) error {
-		return e.s.View(t.Context(), func(tx *store.Tx) error { return removeSessions(tx, id) })
+		return e.s.View(t.Context(), func(tx *store.Tx) error { return removeSessions(e.hist(tx), id, endedPassword) })
 	}
 	if err := view(taro.ID); err == nil || err.Error() != "read-only transaction" {
 		t.Errorf("removeSessions() of a row to remove in a View = %v, want the error of the store", err)

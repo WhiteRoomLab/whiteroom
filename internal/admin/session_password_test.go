@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 )
 
 // sendWithContext is send for a request that has the context ctx, which a test can end as a client that hangs up does.
@@ -102,7 +103,7 @@ func TestLoginPasswordTooLongComesAfterTheBody(t *testing.T) {
 // wrong password does, whether the password was right or not: giving it back would tell the two apart.
 func TestLoginHangUp(t *testing.T) {
 	ts := newTestServer(t, httpsOrigin)
-	ts.addAccount(t, "admin", account.RoleAdmin)
+	admin := ts.addAccount(t, "admin", account.RoleAdmin)
 	// The client hangs up when the accounts first read their clock, which they do to write the session, after the password
 	// has been compared.
 	hangUp := func(password, addr string) *http.Response {
@@ -119,14 +120,25 @@ func TestLoginHangUp(t *testing.T) {
 			join([]string{"Origin", ts.origin, "Content-Type", "application/json"}, from(addr+":4000"))...)
 	}
 
+	n := len(ts.loginRecords(t))
 	right := hangUp(testPassword("admin"), "192.0.2.1")
 	checkProblem(t, "the right password, when the client hangs up", right, "busy")
 	checkNoCookie(t, "the right password, when the client hangs up", right)
 	if n := ts.sessionRows(t); n != 0 {
 		t.Errorf("the login of a client that hung up has made %d sessions, want none", n)
 	}
-	// A wrong password does not get as far as the clock, and so the client does not hang up: the answer is the usual one.
+	// The password was compared, so the login is recorded as a failure, though the request has ended.
+	ts.wantRecords(t, "the right password, when the client hangs up", n, audit.Record{
+		Log: audit.LoginLog, Action: audit.LoginFailure, Result: "error", Account: admin.ID, Login: "admin",
+		Client: clientRecord("192.0.2.1", ""),
+	})
+	// The clock is read to record a wrong password too, and so the client hangs up then: the answer is the usual one.
+	n = len(ts.loginRecords(t))
 	checkProblem(t, "a wrong password", hangUp(wrongPassword, "192.0.2.2"), "bad-credentials")
+	ts.wantRecords(t, "a wrong password, when the client hangs up", n, audit.Record{
+		Log: audit.LoginLog, Action: audit.LoginFailure, Result: "wrong-password", Account: admin.ID, Login: "admin",
+		Client: clientRecord("192.0.2.2", ""),
+	})
 
 	// Both stay counted, the same, for the pair and for the client; the login name has both.
 	rightPair, rightName, rightClient := ts.levels("admin", "192.0.2.1")
@@ -150,9 +162,10 @@ func TestLoginHangUp(t *testing.T) {
 // session cannot be written is answered with 500 and stays counted, as a wrong password does.
 func TestLoginFailsAfterTheComparison(t *testing.T) {
 	ts := newTestServer(t, httpsOrigin)
-	ts.addAccount(t, "admin", account.RoleAdmin)
+	admin := ts.addAccount(t, "admin", account.RoleAdmin)
 	// A row cannot hold the year 10000, so the session is not written.
 	ts.accounts.SetClock(func() time.Time { return time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) })
+	n := len(ts.loginRecords(t))
 	right := ts.postLogin("admin", testPassword("admin"), from("192.0.2.1:4000")...)
 	checkProblem(t, "the right password when the session cannot be written", right, "internal")
 	checkNoCookie(t, "the right password when the session cannot be written", right)
@@ -162,6 +175,9 @@ func TestLoginFailsAfterTheComparison(t *testing.T) {
 	if got := ts.logs.String(); !strings.HasPrefix(got, `POST "/api/session": `) || strings.Count(got, "\n") != 1 {
 		t.Errorf("the login that failed has logged %q, want one line of POST \"/api/session\": and the error", redact(got))
 	}
+	ts.wantRecords(t, "the right password when the session cannot be written", n, audit.Record{
+		Log: audit.LoginLog, Action: audit.LoginFailure, Result: "error", Account: admin.ID, Login: "admin", Client: clientRecord("192.0.2.1", ""),
+	})
 	ts.wantFailure(t, "a wrong password", "admin", wrongPassword, from("192.0.2.2:4000")...)
 	for _, addr := range []string{"192.0.2.1", "192.0.2.2"} {
 		if pair, name, client := ts.levels("admin", addr); pair != 1 || name != 2 || client != 1 {

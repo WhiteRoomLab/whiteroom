@@ -34,10 +34,11 @@ type Config struct {
 	// refused, since any client could then name itself.
 	TrustedProxies []netip.Prefix
 	// Accounts does the logins and the sessions. It must be a Manager of a store that can write: a request that
-	// authenticates may write the time of its session. Its clock decides the times of the sessions.
+	// authenticates may write the time of its session. Its clock decides the times of the sessions. New sets its
+	// OnRecordError, so that a record of the login history that cannot be written is logged to ErrorLog.
 	Accounts *account.Manager
-	// ErrorLog gets the errors that requests run into, and the warnings about full tables of attempts and about an
-	// X-Forwarded-For header that is not read; nil discards them.
+	// ErrorLog gets the errors that requests run into, the records of the login history that could not be written, and
+	// the warnings about full tables of attempts and about an X-Forwarded-For header that is not read; nil discards them.
 	ErrorLog *log.Logger
 	// Now is the clock of the limits of login attempts, and of the log lines that are limited to one a minute; nil is time.Now.
 	// It should be monotonic: a clock that goes back makes the waits longer.
@@ -98,6 +99,7 @@ func New(c Config) (*Server, error) {
 		s.log = log.New(io.Discard, "", 0)
 	}
 	s.attempts = newAttempts(now, attemptsCapacity, warnEveryMinute(s.log, now))
+	c.Accounts.OnRecordError(func(operation string, err error) { s.log.Printf("cannot record %s: %v", operation, err) })
 	s.handle("POST /api/session", http.HandlerFunc(s.login))
 	s.handle("GET /api/session", s.withSession(s.showSession))
 	s.handle("DELETE /api/session", http.HandlerFunc(s.logout))
