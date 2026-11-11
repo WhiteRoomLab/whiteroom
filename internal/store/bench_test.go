@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -278,7 +279,9 @@ func benchUpdate(t *testing.T, s *Store, saves ...benchSave) time.Duration {
 				}
 			}
 			for _, e := range sv.events {
-				if err := tx.appendEvent(e); err != nil {
+				r := audit.Record{Log: audit.ActivityLog, Actor: sv.by, Action: audit.StoreWrite,
+					Detail: map[string]string{"event": string(e)}}
+				if err := tx.Record(r); err != nil {
 					return err
 				}
 			}
@@ -322,7 +325,7 @@ func benchLoad(t *testing.T, bs benchSet, tb testBackend, res *benchResult) {
 	res.Durations["load"] = int64(load)
 	counts, st := benchCount(t, s)
 	want := map[string]int64{"documents": int64(bs.documents()), "versions": int64(bs.saves()),
-		"revisions": int64(bs.revisions()), "events": int64(bs.saves() * bs.events),
+		"revisions": int64(bs.revisions()), "events": int64(bs.saves()*bs.events + 1), // and the record store.create
 		"objects": int64(bs.saves() + bs.revisions())}
 	for name, n := range want {
 		if counts[name] != n {

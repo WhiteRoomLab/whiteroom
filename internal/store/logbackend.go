@@ -11,8 +11,11 @@ import (
 	"math"
 	"os"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -23,6 +26,9 @@ import (
 //
 //	meta (1)            "schema", "versions", "revisions", "numbers" -> uvarint: the schema; the last seq of a
 //	                    version, of a revision; the largest number that an entry has had (none: 0)
+//	                    "loginLog", "activityLog" -> the head of the chain of that log (audit.go): the number of its last
+//	                    record in a uvarint, then the SHA-256 of the record as the store keeps it (32 bytes); none while
+//	                    the log has no record
 //	documents (2)       kind 0x00 id -> the current version, as in history
 //	history (3)         kind 0x00 id 0x00 seq (8 bytes, big-endian) -> version
 //	revisions (4)       revision ID -> revision
@@ -38,16 +44,21 @@ import (
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 5 (upgradeLog). The
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 6 (upgradeLog). The
 // schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
 // summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
 // the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a store of an older
-// schema has no rows of: Open sets the schema 5 in a store of the schema 2, 3 or 4 with no other write, and without
-// reading a document, and builds the index of one of the schema 1 as before.
-const logSchemaVersion = 5
+// schema has no rows of. The schema 6 adds the audit log: the heads in meta, and the audit events that hold its
+// records. Open sets the schema 6 in a store of the schema 1 to 5 together with the record store.upgrade, which is the
+// first of its activity log, and the head; one of the schema 2 to 5 gets nothing else and has no document read, and
+// the index of one of the schema 1 is built as before.
+const logSchemaVersion = 6
 
-// indexSchema is the first schema that has the index tables.
-const indexSchema = 2
+// indexSchema is the first schema that has the index tables, and auditSchema the first that has the audit log.
+const (
+	indexSchema = 2
+	auditSchema = 6
+)
 
 const (
 	tableMeta uint32 = iota + 1
@@ -80,6 +91,9 @@ const (
 	metaVersions  = "versions"
 	metaRevisions = "revisions"
 	metaNumbers   = "numbers"
+
+	metaLoginLog    = "loginLog"
+	metaActivityLog = "activityLog"
 )
 
 // logBackend is the backend of the engine in logdb/.
@@ -88,8 +102,9 @@ type logBackend struct {
 	fsys vfs.FS // logdb/, which db does not close
 }
 
-// createLog makes the engine with o in logdb/ of root, which is empty, and puts the schema in meta.
-func createLog(root vfs.FS, o logdb.Options) (*logBackend, error) {
+// createLog makes the engine with o in logdb/ of root, which is empty, and puts the schema in meta, with the first
+// record of the activity log, store.create, at the time of now, in one commit.
+func createLog(root vfs.FS, o logdb.Options, now func() time.Time) (*logBackend, error) {
 	fsys, err := root.Sub("logdb")
 	if err != nil {
 		return nil, err
@@ -97,7 +112,10 @@ func createLog(root vfs.FS, o logdb.Options) (*logBackend, error) {
 	d, err := logdb.Create(fsys, o)
 	if err == nil {
 		if err = d.Update(context.Background(), func(tx *logdb.Tx) error {
-			return tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion))
+			if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
+				return err
+			}
+			return recordIn(d, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreCreate})
 		}); err != nil {
 			_ = d.Close()
 		}
@@ -107,6 +125,13 @@ func createLog(root vfs.FS, o logdb.Options) (*logBackend, error) {
 		return nil, err
 	}
 	return &logBackend{db: d, fsys: fsys}, nil
+}
+
+// recordIn adds r to the audit log in tx, a transaction of the engine db, as Tx.Record does in an Update that begins at
+// the time of now.
+func recordIn(db *logdb.DB, tx *logdb.Tx, now func() time.Time, r audit.Record) error {
+	t := &Tx{b: &logTx{tx: tx, db: db}, savedAt: now().UTC().Format(savedAtLayout)}
+	return t.run(func(t *Tx) error { return t.Record(r) })
 }
 
 // openLog opens the engine in logdb/ of root with o: as its writer, or as a reader in another process if reader is
@@ -148,10 +173,11 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
-// that a failure leaves the store as it was. A store of the schema 1 gets its index and the schema 5. One of the schema
-// 2 to 4 has the index of the schema 5 already: it gets only the schema 5, and no document, revision or object is read,
-// so a damaged one does not stop Open, and only the reads that use it fail. name is that of its logdb/ in errors.
-func upgradeLog(b *logBackend, name string) error {
+// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 6 and the record
+// store.upgrade. One of the schema 2 to 5 has the index of the schema 6 already: it gets only the schema 6 and the
+// record, and no document, revision or object is read, so a damaged one does not stop Open, and only the reads that use
+// it fail. name is that of its logdb/ in errors, and the record has the time of now.
+func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 	var version uint64
 	upgrade := false
 	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
@@ -168,11 +194,14 @@ func upgradeLog(b *logBackend, name string) error {
 		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
-		// The index of the schema 2 to 4 is that of the schema 5, and making it again would read every document.
-		if version >= indexSchema {
-			return nil
+		// The index of the schema 2 to 5 is that of the schema 6, and making it again would read every document.
+		if version < indexSchema {
+			if err := (&Tx{b: &logTx{tx: tx, db: b.db}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
+				return err
+			}
 		}
-		return (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() })
+		return recordIn(b.db, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
+			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}})
 	}); err != nil {
 		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name,
 			logSchemaVersion, err)
@@ -181,11 +210,11 @@ func upgradeLog(b *logBackend, name string) error {
 }
 
 func (b *logBackend) view(ctx context.Context, f func(backendTx) error) error {
-	return b.db.View(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx}) })
+	return b.db.View(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
 }
 
 func (b *logBackend) update(ctx context.Context, f func(backendTx) error) error {
-	return b.db.Update(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx}) })
+	return b.db.Update(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
 }
 
 func (b *logBackend) close() error {
@@ -193,7 +222,9 @@ func (b *logBackend) close() error {
 }
 
 type logTx struct {
-	tx *logdb.Tx
+	tx    *logdb.Tx
+	db    *logdb.DB // of tx
+	wrote bool      // a write other than those of the audit log has been made
 }
 
 func (t *logTx) current(kind content.RefKind, id string) (Version, bool, error) {
@@ -214,6 +245,7 @@ func (t *logTx) addObject(hash string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	t.wrote = true
 	got, err := t.tx.PutObject(data)
 	if err != nil {
 		return err
@@ -233,6 +265,7 @@ func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (
 		}
 		sum = d[:]
 	}
+	t.wrote = true
 	seq, err := t.next(metaVersions)
 	if err != nil {
 		return 0, err
@@ -244,6 +277,7 @@ func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (
 }
 
 func (t *logTx) setCurrent(kind content.RefKind, id string, seq int64) error {
+	t.wrote = true
 	key := historyKey(kind, id, seq)
 	v, ok := t.tx.Get(tableHistory, key)
 	if !ok {
@@ -253,6 +287,7 @@ func (t *logTx) setCurrent(kind content.RefKind, id string, seq int64) error {
 }
 
 func (t *logTx) deleteCurrent(kind content.RefKind, id string) error {
+	t.wrote = true
 	return t.tx.Delete(tableDocuments, docKey(kind, id))
 }
 
@@ -342,6 +377,7 @@ func (t *logTx) addRevision(id, entry, hash, savedAt, by string) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+	t.wrote = true
 	seq, err := t.next(metaRevisions)
 	if err != nil {
 		return 0, err
@@ -404,16 +440,59 @@ func (t *logTx) addEvent(data []byte) error {
 	return t.tx.AppendEvent(data)
 }
 
+// events reads the events of the commits up to that of the snapshot of t, which the engine reads from the log, and not
+// those that a later commit has added, so that the heads that t reads are those of the events.
+func (t *logTx) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
+	seq := t.tx.Seq()
+	return t.db.Events(ctx, func(e logdb.Event) bool { return e.Seq <= seq && fn(e.Number, e.Data) })
+}
+
+var metaHeads = map[audit.Log]string{audit.LoginLog: metaLoginLog, audit.ActivityLog: metaActivityLog}
+
+func (t *logTx) auditHead(log audit.Log) (audit.Head, bool, error) {
+	key := metaHeads[log]
+	v, ok := t.tx.Get(tableMeta, []byte(key))
+	if !ok {
+		return audit.Head{}, false, nil
+	}
+	r := valueReader{b: v}
+	h := audit.Head{Log: log, N: r.uvarint()}
+	copy(h.Hash[:], r.bytes(sha256.Size))
+	if !r.done() || h.N == 0 {
+		return audit.Head{}, false, invalidValue(tableMeta, []byte(key))
+	}
+	return h, true, nil
+}
+
+func (t *logTx) setAuditHead(h audit.Head) error {
+	return t.tx.Put(tableMeta, []byte(metaHeads[h.Log]), append(binary.AppendUvarint(nil, h.N), h.Hash[:]...))
+}
+
+func (t *logTx) auditReady() (bool, error) {
+	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	version, valid := decodeUint(v)
+	if !ok || !valid {
+		return false, invalidValue(tableMeta, []byte(metaSchema))
+	}
+	return version >= auditSchema, nil
+}
+
+func (t *logTx) changed() bool {
+	return t.wrote
+}
+
 func (t *logTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
 	v, ok := t.tx.Get(indexTableIDs[table], key)
 	return v, ok, nil
 }
 
 func (t *logTx) indexPut(table indexTable, key, value []byte) error {
+	t.wrote = true
 	return t.tx.Put(indexTableIDs[table], key, value)
 }
 
 func (t *logTx) indexDelete(table indexTable, key []byte) error {
+	t.wrote = true
 	return t.tx.Delete(indexTableIDs[table], key)
 }
 
@@ -444,6 +523,7 @@ func (t *logTx) lastNumber() (int64, error) {
 }
 
 func (t *logTx) setLastNumber(n int64) error {
+	t.wrote = true
 	return t.tx.Put(tableMeta, []byte(metaNumbers), binary.AppendUvarint(nil, uint64(n)))
 }
 

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog"
@@ -59,8 +60,8 @@ func workloadMedia(n int) string {
 	return fmt.Sprintf("med_01JD%022d", n)
 }
 
-// workloadUpdate makes the Update n of the workload in s: the pair n and the audit event "pair <n>", and for a multiple
-// of 10, the media document of workloadOriginal(n), which it puts before.
+// workloadUpdate makes the Update n of the workload in s: the pair n and the record store.write of the pair n, and for
+// a multiple of 10, the media document of workloadOriginal(n), which it puts before.
 func workloadUpdate(ctx context.Context, s *Store, n int) error {
 	var original []byte
 	if n%10 == 0 {
@@ -83,11 +84,17 @@ func workloadUpdate(ctx context.Context, s *Store, n int) error {
 				return err
 			}
 		}
-		return tx.appendEvent(fmt.Appendf(nil, "pair %d", n))
+		return tx.Record(workloadRecord(n))
 	}); err != nil {
 		return fmt.Errorf("Update() %d: %w", n, err)
 	}
 	return nil
+}
+
+// workloadRecord is the record of the Update n of the workload.
+func workloadRecord(n int) audit.Record {
+	return audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite,
+		Detail: map[string]string{"pair": strconv.Itoa(n)}}
 }
 
 // runWorkload makes the Updates from+1 to to of the workload in the store of the data directory dir, which it creates
@@ -508,8 +515,9 @@ func (r *dmlogReport) checkPoint(t *testing.T, work string, dev io.ReaderAt, siz
 }
 
 // checkWorkload returns the n of the pair of s, a store of the workload, after it has checked that n is from lo to hi,
-// that s has the audit events "pair 1" to "pair <n>", the media documents of the Updates up to n and their originals,
-// whole, and passes checkStore; and if closed, that open has used the checkpoint of Close and replayed no record.
+// that s has the records store.create and store.write of the pairs 1 to n, the media documents of the Updates up to n
+// and their originals, whole, and passes checkStore; and if closed, that open has used the checkpoint of Close and
+// replayed no record.
 func checkWorkload(t *testing.T, s *Store, lo, hi int, closed bool) (int, error) {
 	t.Helper()
 	n := 0
@@ -546,19 +554,19 @@ func checkWorkload(t *testing.T, s *Store, lo, hi int, closed bool) (int, error)
 			return n, fmt.Errorf("the original of the Update %d is missing", k)
 		}
 	}
-	var events []string
-	if err := s.events(t.Context(), func(number uint64, data []byte) bool {
-		events = append(events, fmt.Sprintf("%d %s", number, data))
+	var records []string
+	if err := s.ReadAudit(t.Context(), audit.Filter{}, func(r audit.Record) bool {
+		records = append(records, fmt.Sprintf("%d %s %s %s", r.N, r.Log, r.Action, r.Detail["pair"]))
 		return true
 	}); err != nil {
 		return n, err
 	}
-	var want []string
+	want := []string{"1 activity store.create "}
 	for k := 1; k <= n; k++ {
-		want = append(want, fmt.Sprintf("%d pair %d", k, k))
+		want = append(want, fmt.Sprintf("%d activity store.write %d", k+1, k))
 	}
-	if !slices.Equal(events, want) {
-		return n, fmt.Errorf("the audit events %q, want %q", events, want)
+	if !slices.Equal(records, want) {
+		return n, fmt.Errorf("the audit records %q, want %q", records, want)
 	}
 	if err := checkStore(t, s); err != nil {
 		return n, err
@@ -702,7 +710,7 @@ func mke2fs(t *testing.T, name, dir string) []byte {
 // problem in a recording of a log made from the images, with writes of the blocks that change (the last of the store
 // of 10 with FUA), discards of those that become zeros, flushes and the marks of the workload, and finds the problem
 // in recordings of other logs: the mark ack-10 before the Update 10; the store with two Updates after the last ack,
-// with one before an ack, with one after the mark closed, lost after an ack, or with another audit event; a damaged
+// with one before an ack, with one after the mark closed, lost after an ack, or with another audit record; a damaged
 // file system; another data.img; and acks out of order.
 func TestExt4Extraction(t *testing.T) {
 	if missing := missingCommands("mke2fs", "e2fsck", "debugfs"); missing != nil {
@@ -724,7 +732,7 @@ func TestExt4Extraction(t *testing.T) {
 		trees[n] = snapshot(t, dir)
 		from = n
 	}
-	// A store of 10 whose last Update has another event.
+	// A store of 10 whose last Update has another record.
 	other := filepath.Join(work, "other", "store")
 	if err := runWorkload(t.Context(), other, 0, 9, none); err != nil {
 		t.Fatal(err)
@@ -741,12 +749,17 @@ func TestExt4Extraction(t *testing.T) {
 		if err := putPair(tx, 10); err != nil {
 			return err
 		}
-		return tx.appendEvent([]byte("pair 100"))
+		return tx.Record(workloadRecord(100))
 	})
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	otherEvent := mke2fs(t, filepath.Join(work, "other.img"), filepath.Dir(other))
+	otherRecord := mke2fs(t, filepath.Join(work, "other.img"), filepath.Dir(other))
+	otherShown := []string{`"1 activity store.create "`}
+	for k := 1; k <= 9; k++ {
+		otherShown = append(otherShown, fmt.Sprintf(`"%d activity store.write %d"`, k+1, k))
+	}
+	otherShown = append(otherShown, `"11 activity store.write 100"`)
 
 	t.Run("rdump", func(t *testing.T) {
 		t.Parallel()
@@ -853,9 +866,8 @@ func TestExt4Extraction(t *testing.T) {
 			`(flush), after ack-9 and closed: the pair of 10, want one from 9 to 9`},
 		{"damaged file system", []any{"ack-9", damaged, "flush", images[10], "flush", "ack-10", "closed"}, 3, nil,
 			"e2fsck -fy has exited with 8:"},
-		{"other event", []any{"ack-9", otherEvent, "flush", images[10], "flush", "ack-10", "closed"}, 3, nil,
-			`(flush), after ack-9: the audit events ["1 pair 1" "2 pair 2" "3 pair 3" "4 pair 4" "5 pair 5" "6 pair 6" ` +
-				`"7 pair 7" "8 pair 8" "9 pair 9" "10 pair 100"], want`},
+		{"other record", []any{"ack-9", otherRecord, "flush", images[10], "flush", "ack-10", "closed"}, 3, nil,
+			"(flush), after ack-9: the audit records [" + strings.Join(otherShown, " ") + "], want"},
 		{"other device", []any{"ack-9", images[10], "flush", "ack-10", "closed"}, 1, images[9],
 			"the device after the log: it differs from "},
 	} {

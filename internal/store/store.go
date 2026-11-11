@@ -93,7 +93,7 @@ func create(dir string, o options) (*Store, error) {
 	if err := root.SyncDir("."); err != nil {
 		return nil, err
 	}
-	b, err := createLog(root, s.logOptions(o.engine(), nil))
+	b, err := createLog(root, s.logOptions(o.engine(), nil), s.now)
 	if err != nil {
 		return nil, err
 	}
@@ -150,9 +150,9 @@ func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
 
 // Open opens the store of the data directory dir, which Create has made, as its writer. While it is open, Open in
 // another process fails after 2 seconds, and other processes read the store with OpenReader. A store of the table
-// schema 1, 2, 3 or 4 gets the schema 5 in one Update: one of the schema 1 gets its index too (it has none), and one
-// of the schema 2, 3 or 4 gets nothing else and has no document read; if that fails, so does Open, and the store is
-// unchanged.
+// schema 1 to 5 gets the schema 6 in one Update, with the record store.upgrade (7.4): one of the schema 1 gets its
+// index too (it has none), and one of the schema 2 to 5 gets nothing else and has no document read; if that fails, so
+// does Open, and the store is unchanged.
 func Open(dir string) (*Store, error) {
 	return open(dir, options{})
 }
@@ -164,7 +164,9 @@ func open(dir string, o options) (*Store, error) {
 // OpenReader opens the store of the data directory dir to read it, in a process other than its writer, which may run
 // or not. Its Views see the commits that are durable when they begin. It changes no file of the store: Update fails
 // with "read-only transaction", and PutOriginal fails too. A store of the table schema 1 has no index until its writer
-// opens it: a reader reads it, but Summary and the other reads of the index fail with ErrNoIndex.
+// opens it: a reader reads it, but Summary and the other reads of the index fail with ErrNoIndex. A store of the table
+// schema 1 to 5 has no audit log until its writer opens it: ReadAudit, AuditHeads and VerifyAudit fail with
+// ErrNoAuditLog.
 func OpenReader(dir string) (*Store, error) {
 	return openLogReader(dir, options{})
 }
@@ -193,7 +195,7 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 		return nil, err
 	}
 	if !reader {
-		if err := upgradeLog(b, logName); err != nil {
+		if err := upgradeLog(b, logName, s.now); err != nil {
 			_ = b.close()
 			return nil, err
 		}
@@ -238,7 +240,8 @@ func (s *Store) call(point string) error {
 type Tx struct {
 	b              backendTx
 	readOnly, done bool
-	savedAt        string // the time of the versions that the Update saves, as saved_at has it
+	savedAt        string // the time of the versions and the records that the Update saves, as saved_at has it
+	records        int    // the audit records that the Update has added
 }
 
 // savedAtLayout is RFC 3339 with 9 digits of fractional seconds, in UTC, so that the order of the texts of saved_at is
