@@ -196,6 +196,22 @@ func must(t *testing.T) func(res edit.Result, err error) edit.Result {
 
 func (r *rig) op() edit.Op { return edit.Op{By: userID} }
 
+// rebuild asks for a build as the user of the tests, which the test fails if it is refused.
+func (r *rig) rebuild() {
+	r.t.Helper()
+	if err := r.Rebuild(r.t.Context(), userID); err != nil {
+		r.t.Fatalf("Rebuild() error = %v", err)
+	}
+}
+
+// resume ends the pause as the user of the tests, which the test fails if it is refused.
+func (r *rig) resume() {
+	r.t.Helper()
+	if err := r.Resume(r.t.Context(), userID); err != nil {
+		r.t.Fatalf("Resume() error = %v", err)
+	}
+}
+
 // doc returns the current version of a document.
 func (r *rig) doc(kind content.RefKind, id string) store.Document {
 	r.t.Helper()
@@ -472,7 +488,9 @@ func TestTransitions(t *testing.T) {
 		t.Fatalf("next() = %+v, want the build of the start", b1)
 	}
 	// What comes while it runs is for the next build, and only what asks for one.
-	p.Rebuild()
+	if err := p.Rebuild(t.Context(), userID); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
 	p.notify(edit.Result{Kind: content.RefTerm, ID: newsTerm, Publishes: true})
 	p.notify(edit.Result{Kind: content.RefEntry, ID: draftEN})
 	if step, b, _ := p.next(); step || b != nil {
@@ -531,19 +549,25 @@ func TestTransitions(t *testing.T) {
 func TestResume(t *testing.T) {
 	t.Parallel()
 	p := quietPublisher(t)
+	resume := func() {
+		t.Helper()
+		if err := p.Resume(t.Context(), userID); err != nil {
+			t.Fatalf("Resume() error = %v", err)
+		}
+	}
 	p.wanted = nil
-	p.Resume()
+	resume()
 	if st := p.Status(); st.Pending || st.Paused {
 		t.Errorf("Status() after a Resume without a pause = %+v, want nothing wanted", st)
 	}
 
 	p.paused = true
-	p.Resume()
+	resume()
 	st := p.Status()
 	if st.Pending != true || st.Paused || !slices.Equal(reasons(p.wanted), []string{"resume"}) || !p.wanted[0].At.Equal(fixedNow) {
 		t.Errorf("Status() after Resume = %+v with the requests %+v, want the pause ended and a build wanted", st, p.wanted)
 	}
-	p.Resume()
+	resume()
 	if len(p.wanted) != 1 {
 		t.Errorf("a second Resume has asked for %d builds, want one", len(p.wanted))
 	}
@@ -833,7 +857,7 @@ func TestRollback(t *testing.T) {
 	}
 	r.wantReleases(second, first, second)
 
-	if err := r.Rollback(t.Context(), first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 	if st := r.Status(); !st.Paused || st.Running != nil || st.Pending {
@@ -859,7 +883,7 @@ func TestRollback(t *testing.T) {
 		t.Errorf("the site changed during the pause: %s is published", r.current())
 	}
 
-	r.Resume()
+	r.resume()
 	r.idle()
 	st = r.Status()
 	b := wantBuild(t, st, "operation", "resume")
@@ -890,7 +914,7 @@ func TestRollbackWaits(t *testing.T) {
 	h.await(t) // the second build holds
 
 	errc := make(chan error, 1)
-	go func() { errc <- r.Rollback(t.Context(), first) }()
+	go func() { errc <- r.Rollback(t.Context(), userID, first) }()
 	r.until("the rollback runs", func() bool { return r.rolling })
 	r.renameNews("News 2") // takes some time, in which a rollback that did not wait would be done
 	select {
@@ -927,16 +951,16 @@ func TestRollbackErrors(t *testing.T) {
 	first := r.current()
 
 	const invalid = `invalid release name "latest"`
-	if err := r.Rollback(t.Context(), "latest"); err == nil || err.Error() != invalid {
+	if err := r.Rollback(t.Context(), userID, "latest"); err == nil || err.Error() != invalid {
 		t.Errorf(`Rollback("latest") error = %v, want %s`, err, invalid)
 	}
 	unknown := "0123456789abcdef"
-	if err := r.Rollback(t.Context(), unknown); err == nil || !strings.HasSuffix(err.Error(), filepath.Join("releases", unknown)+": no such release") {
+	if err := r.Rollback(t.Context(), userID, unknown); err == nil || !strings.HasSuffix(err.Error(), filepath.Join("releases", unknown)+": no such release") {
 		t.Errorf("Rollback() of an unknown release: error = %v, want no such release", err)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := r.Rollback(canceled, first); !errors.Is(err, context.Canceled) {
+	if err := r.Rollback(canceled, userID, first); !errors.Is(err, context.Canceled) {
 		t.Errorf("Rollback() with a canceled context: error = %v, want %v", err, context.Canceled)
 	}
 	if st := r.Status(); st.Paused {
@@ -948,12 +972,12 @@ func TestRollbackErrors(t *testing.T) {
 	h.await(t)
 	ctx, giveUp := context.WithCancel(t.Context())
 	errc := make(chan error, 1)
-	go func() { errc <- r.Rollback(ctx, first) }()
+	go func() { errc <- r.Rollback(ctx, userID, first) }()
 	r.until("the rollback runs", func() bool { return r.rolling })
 	// A Rollback that is not refused waits for the held build, so that this one gives up after a minute.
 	second, cancelSecond := context.WithTimeout(t.Context(), time.Minute)
 	defer cancelSecond()
-	if err := r.Rollback(second, first); err == nil || err.Error() != "another rollback is running" {
+	if err := r.Rollback(second, userID, first); err == nil || err.Error() != "another rollback is running" {
 		t.Errorf("Rollback() while another one runs: error = %v, want it refused", err)
 	}
 	giveUp()
@@ -979,7 +1003,7 @@ func TestRestart(t *testing.T) {
 	r.renameNews("News 1")
 	r.idle()
 	second := r.current()
-	if err := r.Rollback(t.Context(), first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 	r.renameNews("News 2")
@@ -1238,15 +1262,17 @@ func TestRollbackStress(t *testing.T) {
 				return
 			}
 			// A release that a build has removed since it was listed is no longer there.
-			err = r.Rollback(t.Context(), rel.Names[0])
+			err = r.Rollback(t.Context(), userID, rel.Names[0])
 			if err != nil && !strings.HasSuffix(err.Error(), ": no such release") {
 				t.Errorf("Rollback(%s) error = %v", rel.Names[0], err)
 			}
-			r.Resume()
+			if err := r.Resume(t.Context(), userID); err != nil {
+				t.Errorf("Resume() error = %v", err)
+			}
 		}
 	})
 	writers.Wait()
-	r.Resume()
+	r.resume()
 	r.idle()
 	close(stop)
 	readers.Wait()
@@ -1255,6 +1281,7 @@ func TestRollbackStress(t *testing.T) {
 		t.Errorf("Status() = %+v, want it quiet after a build that published", st)
 	}
 	r.wantStoreBuilt()
+	verifyChains(t, r.s)
 }
 
 // TestSnapshotFailure checks that a build that cannot read the store fails with that, and that the Publisher goes on.
@@ -1280,7 +1307,8 @@ func TestSnapshotFailure(t *testing.T) {
 	r.start()
 	r.idle()
 	failed("start")
-	r.Rebuild()
+	// Rebuild would not ask: it cannot record the request in a store that is closed.
+	r.request(reasonRebuild, edit.Result{}, true)
 	r.idle()
 	failed("rebuild")
 	if h.builds() != 0 {
@@ -1433,7 +1461,10 @@ func TestManyOperations(t *testing.T) {
 	})
 	writers.Go(func() {
 		for range saves {
-			r.Rebuild()
+			if err := r.Rebuild(t.Context(), userID); err != nil {
+				t.Errorf("Rebuild() error = %v", err)
+				return
+			}
 		}
 	})
 	for i, id := range terms {
@@ -1461,4 +1492,5 @@ func TestManyOperations(t *testing.T) {
 		}
 	}
 	r.wantStoreBuilt()
+	verifyChains(t, r.s)
 }

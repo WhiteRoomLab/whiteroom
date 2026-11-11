@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -377,6 +378,26 @@ func TestScheduledPublish(t *testing.T) {
 	r.timers.want(t)
 	r.wantReleases(b.Result.Release, startRelease, b.Result.Release)
 	r.wantStoreBuilt()
+
+	// The publish that the scheduler makes is recorded by the Editor as the system's, with the user who scheduled the entry.
+	var published []audit.Record
+	for _, rec := range activity(t, r.s) {
+		if rec.Action == audit.EntryPublishScheduled {
+			published = append(published, rec)
+		}
+	}
+	want := audit.Record{
+		Log: audit.ActivityLog, Actor: audit.System, Action: audit.EntryPublishScheduled, Changed: true,
+		Target: audit.Target{Kind: string(content.RefEntry), ID: draftEN}, Revision: rev, Status: string(content.StatusPublished),
+	}
+	if len(published) != 1 {
+		t.Fatalf("the activity log has the records %+v of the scheduled publish, want one", published)
+	}
+	got := published[0]
+	if got.Actor != want.Actor || got.Target != want.Target || got.Revision != want.Revision || got.Status != want.Status ||
+		got.Changed != want.Changed || got.Detail["scheduledBy"] != otherUser {
+		t.Errorf("the record of the scheduled publish is %+v, want %+v by the system, scheduled by %s", got, want, otherUser)
+	}
 }
 
 // TestScheduledAtStart checks that a Publisher that starts after the time of a schedule has come, as after a stop of the
@@ -635,7 +656,7 @@ func TestScheduledPaused(t *testing.T) {
 	r.start()
 	r.idle()
 	first := r.current()
-	if err := r.Rollback(t.Context(), first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 
@@ -658,7 +679,7 @@ func TestScheduledPaused(t *testing.T) {
 	}
 	r.timers.want(t)
 
-	r.Resume()
+	r.resume()
 	r.idle()
 	st = r.Status()
 	b := wantBuild(t, st, "operation", "resume")
@@ -874,7 +895,7 @@ func TestScheduleFailures(t *testing.T) {
 
 	// bad is no longer scheduled: its failure is gone, and the timer is for the time of the entry that is left.
 	put(t, r.s, content.RefEntry, bad, entryJSON(t, bad, "ja", number, content.StatusDraft, "", ""))
-	r.Rebuild()
+	r.rebuild()
 	r.runStep()
 	if got := r.Status().Schedules; len(got) != 0 {
 		t.Errorf("Status().Schedules = %+v, want none: %s is not scheduled", got, bad)
@@ -1078,7 +1099,7 @@ func TestScheduleReadFailure(t *testing.T) {
 
 	bad := testID(content.RefEntry, 3)
 	put(t, r.s, content.RefEntry, bad, entryJSON(t, bad, "ja", nextNumber(t, r.s), content.StatusScheduled, testID(content.RefRevision, 3), "tomorrow"))
-	r.Rebuild()
+	r.rebuild()
 	r.idle()
 	if got := r.Status().Schedules; len(got) != 1 || got[0].Entry != bad {
 		t.Fatalf("Status().Schedules = %+v, want the failure of %s", got, bad)
@@ -1098,9 +1119,10 @@ func TestScheduleReadFailure(t *testing.T) {
 	}
 	r.timers.want(t, retry)
 
-	// It is tried again at the next step, here the one that Rebuild asks for, and Run goes on.
+	// It is tried again at the next step, here the one that Rebuild asks for, and Run goes on. Rebuild would not ask: it cannot
+	// record the request in a store that is closed.
 	tried = r.clock.add(time.Second)
-	r.Rebuild()
+	r.request(reasonRebuild, edit.Result{}, true)
 	r.idle()
 	if got := r.Status().Schedules; len(got) != 1 || got[0].Entry != "" || !got[0].Tried.Equal(tried) {
 		t.Errorf("Status().Schedules = %+v, want the failure to read, tried at %v", got, tried)
@@ -1147,7 +1169,7 @@ func TestRebuildReadsSchedules(t *testing.T) {
 	r.idle()
 	r.timers.want(t) // the Publisher knows nothing of it
 
-	r.Rebuild()
+	r.rebuild()
 	r.idle()
 	r.timers.want(t, time.Hour)
 	b := wantBuild(t, r.Status(), "rebuild")
@@ -1483,7 +1505,7 @@ func TestScheduleStress(t *testing.T) {
 
 	// Everything that is still scheduled is due, and the steps read the schedules once more.
 	r.clock.add(24 * time.Hour)
-	r.Rebuild()
+	r.rebuild()
 	r.idle()
 	scheduled, err := r.Editor().Schedules(t.Context())
 	if err != nil || len(scheduled) != 0 {
