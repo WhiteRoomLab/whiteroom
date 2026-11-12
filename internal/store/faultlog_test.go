@@ -58,8 +58,8 @@ func stopsStore(op simfs.Op) bool {
 	return false
 }
 
-// tempNames returns the temporary files of fsys, as reads see them: of PutOriginal, of the objects of the engine and
-// of its checkpoints.
+// tempNames returns the temporary files of fsys, as reads see them: of PutOriginal and CreateTemp, of the objects of the
+// engine and of its checkpoints.
 func tempNames(fsys *simfs.FS) []string {
 	var names []string
 	fsys.Walk(func(p string, _ []byte) {

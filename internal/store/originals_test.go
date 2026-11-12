@@ -12,12 +12,16 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/iotest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
 
@@ -391,6 +395,432 @@ func TestDamagedOriginal(t *testing.T) {
 		putOriginal(t, s, data)
 		if got, err := readOriginal(t, s, hash); err != nil || !bytes.Equal(got, data) {
 			t.Errorf("OpenOriginal() after PutOriginal() reads %q, %v; want %q", got, err, data)
+		}
+	})
+}
+
+// tempName matches the name of a temporary file of the store in files/.
+var tempName = regexp.MustCompile(`^\.tmp-[0-9a-f]{16}$`)
+
+// The methods of a TempFile are those of the interfaces that its callers take it as.
+var (
+	_ io.ReadWriteCloser = (*TempFile)(nil)
+	_ io.Seeker          = (*TempFile)(nil)
+)
+
+// TestCreateTemp checks CreateTemp: a new empty file in files/ with the name of the temporary file of PutOriginal and the
+// mode 0600, to write, to read after a Seek, and to close, which removes it.
+func TestCreateTemp(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		files := filepath.Join(dir, "files")
+		f, err := s.CreateTemp()
+		if err != nil {
+			t.Fatalf("CreateTemp() = %v", err)
+		}
+		got := names(t, files)
+		if len(got) != 1 || !tempName.MatchString(got[0]) {
+			t.Fatalf("files/ has %q, want a temporary file alone", got)
+		}
+		p := filepath.Join(files, got[0])
+		if mode := modeOf(t, p); mode != 0o600 {
+			t.Errorf("mode of %s = %v, want %v", p, mode, fs.FileMode(0o600))
+		}
+		if info, err := os.Stat(p); err != nil || info.Size() != 0 {
+			t.Errorf("the new temporary file has the size %v, %v; want it empty", info, err)
+		}
+
+		want := bytes.Repeat([]byte("temporary "), 100_000)
+		if n, err := f.Write(want); err != nil || n != len(want) {
+			t.Fatalf("Write() = %d, %v; want %d bytes", n, err, len(want))
+		}
+		if off, err := f.Seek(0, io.SeekStart); err != nil || off != 0 {
+			t.Fatalf("Seek() to the start = %d, %v", off, err)
+		}
+		if data, err := io.ReadAll(f); err != nil || !bytes.Equal(data, want) {
+			t.Errorf("the temporary file reads %d bytes, %v; want the %d bytes that were written", len(data), err, len(want))
+		}
+		if off, err := f.Seek(-4, io.SeekEnd); err != nil || off != int64(len(want)-4) {
+			t.Fatalf("Seek() to 4 bytes before the end = %d, %v", off, err)
+		}
+		if data, err := io.ReadAll(f); err != nil || string(data) != "ary " {
+			t.Errorf("the temporary file reads %q, %v from 4 bytes before the end; want %q", data, err, "ary ")
+		}
+		// Written again from the start, it is overwritten, and the file has the size of the longer.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte("TEMPORARY")); err != nil {
+			t.Fatal(err)
+		}
+		if disk, err := os.ReadFile(p); err != nil || !bytes.HasPrefix(disk, []byte("TEMPORARY temporary ")) ||
+			len(disk) != len(want) {
+			t.Errorf("the file on the disk has %d bytes, %v, and starts with %.20q; want %d bytes", len(disk), err, disk,
+				len(want))
+		}
+
+		// Another has a name of its own, and closing one removes it alone.
+		g, err := s.CreateTemp()
+		if err != nil {
+			t.Fatalf("CreateTemp() = %v", err)
+		}
+		if two := names(t, files); len(two) != 2 || two[0] == two[1] {
+			t.Fatalf("files/ has %q, want two temporary files", two)
+		}
+		if err := f.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+		if left := names(t, files); len(left) != 1 || left[0] == got[0] {
+			t.Errorf("files/ has %q after Close(), want the other temporary file alone", left)
+		}
+		if err := f.Close(); err != nil {
+			t.Errorf("the second Close() = %v, want nil", err)
+		}
+		if _, err := f.Write([]byte("x")); err == nil {
+			t.Errorf("Write() after Close() = nil, want an error")
+		}
+		if left := names(t, files); len(left) != 1 {
+			t.Errorf("files/ has %q after the second Close(), want the other temporary file alone", left)
+		}
+		if err := g.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+		if left := names(t, files); left != nil {
+			t.Errorf("files/ has %q after the Close() of both, want nothing", left)
+		}
+	})
+}
+
+// TestCreateTempReader checks that a store that is opened to read only makes no temporary file.
+func TestCreateTempReader(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		_, dir := newStore(t, tb)
+		r, err := openLogReader(dir, tb.options())
+		if err != nil {
+			t.Fatalf("openLogReader() = %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		f, err := r.CreateTemp()
+		if f != nil || err == nil || err.Error() != "read-only transaction" {
+			t.Errorf("CreateTemp() of a reader = %v, %v; want an error %q", f, err, "read-only transaction")
+		}
+		if got := names(t, filepath.Join(dir, "files")); got != nil {
+			t.Errorf("files/ has %q after the CreateTemp() of a reader, want nothing", got)
+		}
+	})
+}
+
+// TestCreateTempNoSync checks that a temporary file is not synced, in the file or in files/, as it is not kept; and
+// that a Close that cannot remove the file says so, and the next Open removes it.
+func TestCreateTempNoSync(t *testing.T) {
+	fsys := simfs.New("data")
+	o := options{log: &logdb.Options{}, fs: fsys}
+	s, err := create("data", o)
+	if err != nil {
+		t.Fatalf("create() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var syncs atomic.Int64
+	fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+		if op.Kind == simfs.OpSync || op.Kind == simfs.OpSyncDir {
+			syncs.Add(1)
+		}
+		return false
+	}, Err: syscall.EIO})
+	f, err := s.CreateTemp()
+	if err != nil {
+		t.Fatalf("CreateTemp() = %v", err)
+	}
+	if _, err := f.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if temps := tempNames(fsys); len(temps) != 1 {
+		t.Errorf("the file system has the temporary files %q, want one", temps)
+	}
+	if err := f.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+	if n := syncs.Load(); n != 0 {
+		t.Errorf("CreateTemp(), Write() and Close() have synced %d times, want never", n)
+	}
+	if temps := tempNames(fsys); temps != nil {
+		t.Errorf("the file system has the temporary files %q after Close(), want none", temps)
+	}
+
+	// A Close that cannot remove the file closes it, returns the error, and leaves the file to the next Open.
+	g, err := s.CreateTemp()
+	if err != nil {
+		t.Fatalf("CreateTemp() = %v", err)
+	}
+	temps := tempNames(fsys)
+	if len(temps) != 1 {
+		t.Fatalf("the file system has the temporary files %q, want one", temps)
+	}
+	fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpRemove && op.Path == temps[0] },
+		Err: syscall.EIO, Times: 1})
+	if err := g.Close(); !errors.Is(err, syscall.EIO) {
+		t.Errorf("Close() that cannot remove the file = %v, want an error that wraps EIO", err)
+	}
+	if err := g.Close(); err != nil {
+		t.Errorf("the second Close() = %v, want nil", err)
+	}
+	if got := tempNames(fsys); !slices.Equal(got, temps) {
+		t.Errorf("the file system has the temporary files %q, want %q: the file stays", got, temps)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() of the store = %v", err)
+	}
+	r, err := open("data", o)
+	if err != nil {
+		t.Fatalf("open() = %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	if got := tempNames(fsys); got != nil {
+		t.Errorf("the file system has the temporary files %q after open(), want none", got)
+	}
+}
+
+// TestOpenRemovesTemps checks that the writer removes, when it opens the store, the regular files of files/ that are
+// named like a temporary file, and nothing else: no file with another name, no directory, no symbolic link, nothing in
+// a directory of files/; and that a reader removes nothing.
+func TestOpenRemovesTemps(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		original := []byte("GIF89a")
+		putOriginal(t, s, original)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		files := filepath.Join(dir, "files")
+		originalDir := filepath.Join(files, strings.TrimPrefix(sum(original), "sha256:")[:2])
+		write := func(path, data string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		temps := []string{".tmp-0123456789abcdef", ".tmp-fedcba9876543210", ".tmp-0000000000000000"}
+		for _, name := range temps {
+			write(filepath.Join(files, name), "half of "+name)
+		}
+		// Not named like a temporary file: the prefix alone, other lengths, upper case, a digit that is not hexadecimal,
+		// no dot, a suffix.
+		kept := []string{
+			".tmp-", ".tmp-x", ".tmp-0123456789abcde", ".tmp-0123456789abcdef0", ".tmp-0123456789ABCDEF",
+			".tmp-0123456789abcdeg", "tmp-0123456789abcdef", ".tmp-0123456789abcdef.old", "notes",
+		}
+		for _, name := range kept {
+			write(filepath.Join(files, name), "keep "+name)
+		}
+		// A directory with the name of a temporary file, and files in it and in the directory of the original with that
+		// name: only the files of files/ itself are temporary files.
+		mkdir(t, filepath.Join(files, ".tmp-aaaaaaaaaaaaaaaa"))
+		write(filepath.Join(files, ".tmp-aaaaaaaaaaaaaaaa", ".tmp-0123456789abcdef"), "in a directory")
+		write(filepath.Join(originalDir, ".tmp-0123456789abcdef"), "beside an original")
+		target := filepath.Join(t.TempDir(), "target")
+		write(target, "the target of a link")
+		symlink(t, target, filepath.Join(files, ".tmp-bbbbbbbbbbbbbbbb"))
+		symlink(t, filepath.Join(t.TempDir(), "missing"), filepath.Join(files, ".tmp-cccccccccccccccc"))
+
+		before := names(t, files)
+		// A reader removes nothing.
+		r, err := openLogReader(dir, tb.options())
+		if err != nil {
+			t.Fatalf("openLogReader() = %v", err)
+		}
+		if got := names(t, files); !slices.Equal(got, before) {
+			t.Errorf("files/ has %q after openLogReader(), want %q", got, before)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		s = reopen(t, tb, dir)
+		want := slices.DeleteFunc(slices.Clone(before), func(name string) bool { return slices.Contains(temps, name) })
+		if got := names(t, files); !slices.Equal(got, want) {
+			t.Errorf("files/ has %q after open(), want %q: the temporary files removed, the rest kept", got, want)
+		}
+		for _, name := range kept {
+			if data, err := os.ReadFile(filepath.Join(files, name)); err != nil || string(data) != "keep "+name {
+				t.Errorf("%s after open() reads %q, %v; want it unchanged", name, data, err)
+			}
+		}
+		for path, want := range map[string]string{
+			filepath.Join(files, ".tmp-aaaaaaaaaaaaaaaa", ".tmp-0123456789abcdef"): "in a directory",
+			filepath.Join(originalDir, ".tmp-0123456789abcdef"):                    "beside an original",
+			target: "the target of a link",
+		} {
+			if data, err := os.ReadFile(path); err != nil || string(data) != want {
+				t.Errorf("%s after open() reads %q, %v; want %q", path, data, err, want)
+			}
+		}
+		for _, name := range []string{".tmp-bbbbbbbbbbbbbbbb", ".tmp-cccccccccccccccc"} {
+			if info, err := os.Lstat(filepath.Join(files, name)); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+				t.Errorf("%s after open() = %v, %v; want the symbolic link", name, info, err)
+			}
+		}
+		if data, err := readOriginal(t, s, sum(original)); err != nil || !bytes.Equal(data, original) {
+			t.Errorf("the original after open() reads %q, %v; want %q", data, err, original)
+		}
+
+		// A store opened again, with nothing to remove, is opened as it is.
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopen(t, tb, dir)
+		if got := names(t, files); !slices.Equal(got, want) {
+			t.Errorf("files/ has %q after the second open(), want %q", got, want)
+		}
+	})
+}
+
+// TestOpenAfterKilledTemp checks that a temporary file that CreateTemp made stays when the store is closed without it,
+// and that the writer removes it when it opens the store.
+func TestOpenAfterKilledTemp(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		f, err := s.CreateTemp()
+		if err != nil {
+			t.Fatalf("CreateTemp() = %v", err)
+		}
+		if _, err := f.Write([]byte("half")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		files := filepath.Join(dir, "files")
+		if got := names(t, files); len(got) != 1 || !tempName.MatchString(got[0]) {
+			t.Fatalf("files/ has %q after the store is closed, want the temporary file alone", got)
+		}
+		reopen(t, tb, dir)
+		if got := names(t, files); got != nil {
+			t.Errorf("files/ has %q after open(), want nothing", got)
+		}
+		// The file that was open is closed late: its Close finds the file removed or the store closed, and leaves nothing.
+		_ = f.Close()
+		if got := names(t, files); got != nil {
+			t.Errorf("files/ has %q after the late Close(), want nothing", got)
+		}
+	})
+}
+
+// TestOpenTempsErrors checks that open fails with an error that names the file when it cannot remove a temporary file,
+// and with one that names files/ when it cannot read it, and that it changes nothing then: the files are as they were,
+// also for a store of an older table schema, which the failed open does not upgrade; and that the next open works.
+func TestOpenTempsErrors(t *testing.T) {
+	const temp = ".tmp-0123456789abcdef"
+	// snapshot returns the files of fsys with their data, but for the head file, which the engine writes at each open.
+	snapshot := func(fsys *simfs.FS) map[string]string {
+		m := map[string]string{}
+		fsys.Walk(func(path string, data []byte) {
+			if path != "logdb/head" {
+				m[path] = string(data)
+			}
+		})
+		return m
+	}
+	removeTemp := func(op simfs.Op) bool { return op.Kind == simfs.OpRemove && op.Path == "files/"+temp }
+	for _, tt := range []struct {
+		name   string
+		schema byte // the table schema that the store has, if not the current one
+		match  func(op simfs.Op) bool
+		want   string
+	}{
+		{"remove", 0, removeTemp, "data/files/" + temp + ": cannot remove: input/output error"},
+		{"remove, schema 5", 5, removeTemp, "data/files/" + temp + ": cannot remove: input/output error"},
+		{"read", 0, func(op simfs.Op) bool { return op.Kind == simfs.OpReadDir && op.Path == "files" },
+			"data/files: cannot read: input/output error"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fsys := simfs.New("data")
+			o := options{log: &logdb.Options{}, fs: fsys}
+			s, err := create("data", o)
+			if err != nil {
+				t.Fatalf("create() = %v", err)
+			}
+			if tt.schema != 0 {
+				rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaSchema), []byte{tt.schema}) })
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+			filesFS, err := fsys.Sub("files")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := filesFS.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Write([]byte("half an original")); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshot(fsys)
+			fsys.Inject(simfs.Fault{Match: tt.match, Err: syscall.EIO, Times: 1})
+
+			s, err = open("data", o)
+			if err == nil || err.Error() != tt.want {
+				if s != nil {
+					_ = s.Close()
+				}
+				t.Fatalf("open() = %v, want an error %q", err, tt.want)
+			}
+			if s != nil {
+				t.Errorf("open() that fails returns a store")
+			}
+			if after := snapshot(fsys); !maps.Equal(after, before) {
+				t.Errorf("the files after the open() that fails are not those from before it:\nbefore %q\nafter  %q", before,
+					after)
+			}
+
+			// The failed open has let the lock go: the next one works, and removes the file.
+			s, err = open("data", o)
+			if err != nil {
+				t.Fatalf("open() after the failure = %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			if got := tempNames(fsys); got != nil {
+				t.Errorf("the file system has the temporary files %q after the open(), want none", got)
+			}
+			view(t, s, func(tx *Tx) error { return nil })
+		})
+	}
+}
+
+// TestOpenTempPermission checks the error of open for a temporary file that the OS refuses to remove, and that the open
+// works once the directory can be written again.
+func TestOpenTempPermission(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes the files of a directory that it cannot write")
+	}
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		dir := newDir(t, tb)
+		files := filepath.Join(dir, "files")
+		temp := filepath.Join(files, ".tmp-0123456789abcdef")
+		if err := os.WriteFile(temp, []byte("half"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(files, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(files, 0o700) })
+		s, err := tb.open(dir)
+		if want := temp + ": cannot remove: permission denied"; err == nil || err.Error() != want {
+			if s != nil {
+				_ = s.Close()
+			}
+			t.Fatalf("open() = %v, want an error %q", err, want)
+		}
+		if err := os.Chmod(files, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		reopen(t, tb, dir)
+		if got := names(t, files); got != nil {
+			t.Errorf("files/ has %q after open(), want nothing", got)
 		}
 	})
 }

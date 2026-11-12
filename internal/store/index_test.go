@@ -993,6 +993,14 @@ func TestIndexRollback(t *testing.T) {
 			if err := tx.PutOperation("op_C", []byte("third")); err != nil {
 				return err
 			}
+			if err := tx.DeleteOperation("op_B"); err != nil {
+				return err
+			}
+			if _, ok, err := tx.Operation("op_B"); err != nil {
+				return err
+			} else if ok {
+				return errors.New("Operation() after DeleteOperation() finds the data, want none")
+			}
 			// What the Update has written is in the index for the reads in it.
 			sum, err := tx.Summary(content.RefEntry, page2)
 			switch {
@@ -1035,7 +1043,8 @@ func TestIndexRollback(t *testing.T) {
 		// The same writes, committed: the state is another one, and it is the one that the documents give.
 		update(t, s, func(tx *Tx) error { return writes(tx) })
 		after := readIndexState(t, s, ops...)
-		if after.number != 40 || after.ops["op_C"] != "third" || reflect.DeepEqual(after.rows, before.rows) {
+		if _, deleted := after.ops["op_B"]; after.number != 40 || after.ops["op_C"] != "third" || deleted ||
+			reflect.DeepEqual(after.rows, before.rows) {
 			t.Errorf("the state after the committed Update is that before it: number %d, operations %q", after.number,
 				after.ops)
 		}
@@ -2422,6 +2431,278 @@ func TestOperations(t *testing.T) {
 		s = reopenLog(t, dir, *tb.log)
 		if got := readIndexState(t, s, "op_A"); got.ops["op_A"] != "first" {
 			t.Errorf("the operations after open() = %q, want first", got.ops)
+		}
+	})
+}
+
+// listOperations returns the rows that Operations passes as "<first 8 bytes of the ID>=<data>", until it has passed
+// stopAfter of them (0: to the end).
+func listOperations(t *testing.T, tx *Tx, stopAfter int) []string {
+	t.Helper()
+	var got []string
+	err := tx.Operations(func(id string, data []byte) bool {
+		if data == nil {
+			t.Errorf("Operations() passes nil data for %.8q, want data that are not nil", id)
+		}
+		got = append(got, fmt.Sprintf("%.8s=%s", id, data))
+		return stopAfter == 0 || len(got) < stopAfter
+	})
+	if err != nil {
+		t.Errorf("Operations() = %v", err)
+	}
+	return got
+}
+
+// TestListOperations checks that Operations passes every row of the operations in the order of the IDs, in a View and in
+// an Update that sees what it has written, stops when fn returns false, passes a copy of the data, and lets fn delete
+// the rows that it is passed.
+func TestListOperations(t *testing.T) {
+	long := "op_" + strings.Repeat("x", 253)
+	eachStore(t, func(t *testing.T, s *Store) {
+		view(t, s, func(tx *Tx) error {
+			if got := listOperations(t, tx, 0); got != nil {
+				t.Errorf("Operations() of a store without operations passes %q, want none", got)
+			}
+			return nil
+		})
+		want := []string{"op_A=first", "op_B=", "op_xxxxx=long"}
+		update(t, s, func(tx *Tx) error {
+			for id, data := range map[string][]byte{long: []byte("long"), "op_B": nil, "op_A": []byte("first")} {
+				if err := tx.PutOperation(id, data); err != nil {
+					return err
+				}
+			}
+			if got := listOperations(t, tx, 0); !slices.Equal(got, want) {
+				t.Errorf("Operations() in the Update passes %q, want %q", got, want)
+			}
+			return nil
+		})
+		view(t, s, func(tx *Tx) error {
+			if got := listOperations(t, tx, 0); !slices.Equal(got, want) {
+				t.Errorf("Operations() passes %q, want %q", got, want)
+			}
+			for n := 1; n <= 2; n++ {
+				if got := listOperations(t, tx, n); !slices.Equal(got, want[:n]) {
+					t.Errorf("Operations() that stops after %d rows passes %q, want %q", n, got, want[:n])
+				}
+			}
+			// The data are a copy: fn may change them.
+			if err := tx.Operations(func(_ string, data []byte) bool {
+				clear(data)
+				return true
+			}); err != nil {
+				t.Errorf("Operations() = %v", err)
+			}
+			if got := listOperations(t, tx, 0); !slices.Equal(got, want) {
+				t.Errorf("Operations() after fn has changed the data passes %q, want %q", got, want)
+			}
+			return nil
+		})
+
+		// fn may delete the rows that it is passed: it still sees all of them, in order.
+		update(t, s, func(tx *Tx) error {
+			var seen []string
+			if err := tx.Operations(func(id string, _ []byte) bool {
+				seen = append(seen, id)
+				if err := tx.DeleteOperation(id); err != nil {
+					t.Errorf("DeleteOperation(%.8q) in Operations() = %v", id, err)
+					return false
+				}
+				return true
+			}); err != nil {
+				t.Errorf("Operations() = %v", err)
+			}
+			if wantIDs := []string{"op_A", "op_B", long}; !slices.Equal(seen, wantIDs) {
+				t.Errorf("Operations() that deletes passes %q, want %q", seen, wantIDs)
+			}
+			if got := listOperations(t, tx, 0); got != nil {
+				t.Errorf("Operations() after the deletions passes %q, want none", got)
+			}
+			return nil
+		})
+		view(t, s, func(tx *Tx) error {
+			if got := listOperations(t, tx, 0); got != nil {
+				t.Errorf("Operations() after the Update passes %q, want none", got)
+			}
+			return nil
+		})
+	})
+
+	// The rows stay when the store is closed and opened again, and a row that is not an ID of an operation fails the read.
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		update(t, s, func(tx *Tx) error {
+			return errors.Join(tx.PutOperation("op_A", []byte("first")), tx.PutOperation("op_B", []byte("second")))
+		})
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		s = reopenLog(t, dir, *tb.log)
+		view(t, s, func(tx *Tx) error {
+			if got, want := listOperations(t, tx, 0), []string{"op_A=first", "op_B=second"}; !slices.Equal(got, want) {
+				t.Errorf("Operations() after open() passes %q, want %q", got, want)
+			}
+			return nil
+		})
+		for _, tt := range []struct {
+			key    string
+			passed []string // the rows that sort before the invalid one
+		}{
+			{"", nil},
+			{"p" + strings.Repeat("k", maxOperationID), []string{"op_A", "op_B"}},
+		} {
+			rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableOperations, []byte(tt.key), []byte("x")) })
+			want := fmt.Sprintf("operations %q: invalid key", tt.key)
+			view(t, s, func(tx *Tx) error {
+				var passed []string
+				err := tx.Operations(func(id string, _ []byte) bool {
+					passed = append(passed, id)
+					return true
+				})
+				if err == nil || err.Error() != want {
+					t.Errorf("Operations() with a row whose key has %d bytes = %v, want %q", len(tt.key), err, want)
+				}
+				if !slices.Equal(passed, tt.passed) {
+					t.Errorf("Operations() with a row whose key has %d bytes passes %q before the error, want %q",
+						len(tt.key), passed, tt.passed)
+				}
+				return nil
+			})
+			rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Delete(tableOperations, []byte(tt.key)) })
+		}
+	})
+}
+
+// TestDeleteOperation checks DeleteOperation: it deletes the data of an operation and nothing else, does nothing for an
+// operation that has none, and fails for an ID that is not valid and in a View.
+func TestDeleteOperation(t *testing.T) {
+	long := "op_" + strings.Repeat("x", 253)
+	eachStore(t, func(t *testing.T, s *Store) {
+		update(t, s, func(tx *Tx) error {
+			for _, id := range []string{"op_A", "op_B", long} {
+				if err := tx.PutOperation(id, []byte(fmt.Sprintf("data %.5s", id))); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		isThere := func(tx *Tx, id string) bool {
+			t.Helper()
+			_, ok, err := tx.Operation(id)
+			if err != nil {
+				t.Errorf("Operation(%.8q) = %v", id, err)
+			}
+			return ok
+		}
+
+		// An operation that has no data is not an error and writes nothing.
+		var changed bool
+		err := s.Update(t.Context(), func(tx *Tx) error {
+			if err := tx.DeleteOperation("op_Z"); err != nil {
+				return err
+			}
+			changed = tx.Changed()
+			return nil
+		})
+		if err != nil || changed {
+			t.Errorf("DeleteOperation() of an operation that has no data: Update() = %v, Changed() = %v; want nil and false", err,
+				changed)
+		}
+
+		// One that has data: they are gone in the Update, and after it; the others stay.
+		update(t, s, func(tx *Tx) error {
+			if err := tx.DeleteOperation("op_B"); err != nil {
+				return err
+			}
+			if !tx.Changed() {
+				t.Errorf("Changed() after a DeleteOperation of an operation that has data = false")
+			}
+			if isThere(tx, "op_B") || !isThere(tx, "op_A") || !isThere(tx, long) {
+				t.Errorf("Operation() in the Update after DeleteOperation(op_B): op_B %v, op_A %v, the long one %v; "+
+					"want false, true, true", isThere(tx, "op_B"), isThere(tx, "op_A"), isThere(tx, long))
+			}
+			// Twice is not an error.
+			return tx.DeleteOperation("op_B")
+		})
+		view(t, s, func(tx *Tx) error {
+			if got, want := listOperations(t, tx, 0), []string{"op_A=data op_A", "op_xxxxx=data op_xx"}; !slices.Equal(got, want) {
+				t.Errorf("the operations after DeleteOperation(op_B) are %q, want %q", got, want)
+			}
+			return nil
+		})
+
+		// The longest ID.
+		update(t, s, func(tx *Tx) error { return tx.DeleteOperation(long) })
+		view(t, s, func(tx *Tx) error {
+			if isThere(tx, long) || !isThere(tx, "op_A") {
+				t.Errorf("Operation() after DeleteOperation of the long ID: the long one %v, op_A %v; want false, true",
+					isThere(tx, long), isThere(tx, "op_A"))
+			}
+			return nil
+		})
+
+		// An Update that deletes and fails leaves the data.
+		errTest := errors.New("test")
+		if err := s.Update(t.Context(), func(tx *Tx) error {
+			return errors.Join(tx.DeleteOperation("op_A"), errTest)
+		}); !errors.Is(err, errTest) {
+			t.Errorf("Update() = %v, want the error of f", err)
+		}
+		view(t, s, func(tx *Tx) error {
+			if !isThere(tx, "op_A") {
+				t.Errorf("Operation(op_A) after an Update that deleted it and failed = false, want true")
+			}
+			return nil
+		})
+
+		for _, tt := range []struct{ id, want string }{
+			{"", "invalid operation ID: it is empty"},
+			{long + "x", "invalid operation ID: it has 257 bytes (max 256)"},
+		} {
+			update(t, s, func(tx *Tx) error {
+				if err := tx.DeleteOperation(tt.id); err == nil || err.Error() != tt.want {
+					t.Errorf("DeleteOperation(%.8q) = %v, want %q", tt.id, err, tt.want)
+				}
+				return nil
+			})
+		}
+		view(t, s, func(tx *Tx) error {
+			if err := tx.DeleteOperation("op_A"); err == nil || err.Error() != "read-only transaction" {
+				t.Errorf("DeleteOperation() in a View = %v, want a read-only transaction", err)
+			}
+			if !isThere(tx, "op_A") {
+				t.Errorf("Operation(op_A) after a DeleteOperation in a View = false, want true")
+			}
+			return nil
+		})
+	})
+
+	// A deletion needs a record, as every write does, and the data stay gone when the store is closed and opened again.
+	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		update(t, s, func(tx *Tx) error {
+			return errors.Join(tx.PutOperation("op_A", []byte("first")), tx.PutOperation("op_B", []byte("second")))
+		})
+		if err := s.Update(t.Context(), func(tx *Tx) error { return tx.DeleteOperation("op_A") }); !errors.Is(err, ErrUnrecorded) {
+			t.Errorf("Update() that deletes an operation and adds no record = %v, want ErrUnrecorded", err)
+		}
+		if got := readIndexState(t, s, "op_A", "op_B"); got.ops["op_A"] != "first" || got.ops["op_B"] != "second" {
+			t.Errorf("the operations after the Update that is refused = %q, want both", got.ops)
+		}
+		if err := s.Update(t.Context(), func(tx *Tx) error {
+			return errors.Join(tx.DeleteOperation("op_A"), tx.Record(eventRecord("delete")))
+		}); err != nil {
+			t.Fatalf("Update() that deletes an operation and adds a record = %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		s = reopenLog(t, dir, *tb.log)
+		if got := readIndexState(t, s, "op_A", "op_B"); len(got.ops) != 1 || got.ops["op_B"] != "second" {
+			t.Errorf("the operations after open() = %q, want op_B alone", got.ops)
+		}
+		if n := count(t, s, "operations"); n != 1 {
+			t.Errorf("rows of operations = %d, want 1", n)
 		}
 	})
 }

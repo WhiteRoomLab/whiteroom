@@ -11,7 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -41,7 +43,7 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 	if s.originalsStopped.Load() {
 		return Original{}, errOriginalsStopped
 	}
-	f, tmp, err := s.createTemp()
+	f, tmp, err := s.createTemp(os.O_WRONLY)
 	if err != nil {
 		return Original{}, err
 	}
@@ -97,19 +99,102 @@ func (s *Store) syncOriginal(sync func() error) error {
 	return nil
 }
 
-// createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, and returns it with its name.
-func (s *Store) createTemp() (vfs.File, string, error) {
+// createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, opened with access, os.O_WRONLY or
+// os.O_RDWR, and returns it with its name.
+func (s *Store) createTemp(access int) (vfs.File, string, error) {
 	var err error
 	for range 10 {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
-		tmp := ".tmp-" + hex.EncodeToString(b[:])
+		tmp := tempPrefix + hex.EncodeToString(b[:])
 		var f vfs.File
-		if f, err = s.files.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
+		if f, err = s.files.OpenFile(tmp, access|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
 			return f, tmp, err
 		}
 	}
 	return nil, "", err
+}
+
+// tempPrefix starts the name of a temporary file in files/, which has 16 lower case hex digits after it.
+const tempPrefix = ".tmp-"
+
+// isTempName reports whether name is that of a temporary file that createTemp makes.
+func isTempName(name string) bool {
+	digits, ok := strings.CutPrefix(name, tempPrefix)
+	if !ok || len(digits) != 16 {
+		return false
+	}
+	for i := range len(digits) {
+		if strings.IndexByte("0123456789abcdef", digits[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TempFile is a temporary file of the writer of the store, in files/ beside the originals: a file that the process uses
+// for what does not fit in memory and does not need to keep. It is not synced. If the process ends without closing it,
+// the file stays until the process that opens the store as its writer next removes it (Open). A TempFile is not for
+// concurrent use.
+type TempFile struct {
+	f      vfs.File
+	files  vfs.FS
+	name   string
+	closed atomic.Bool
+}
+
+// CreateTemp makes a new empty temporary file in files/, to read and write: it is named like the temporary file of
+// PutOriginal, .tmp-<16 random hex digits>, and has the mode 0600. A store that is opened to read only makes none.
+func (s *Store) CreateTemp() (*TempFile, error) {
+	if s.readOnly {
+		return nil, errReadOnly
+	}
+	f, name, err := s.createTemp(os.O_RDWR)
+	if err != nil {
+		return nil, err
+	}
+	return &TempFile{f: f, files: s.files, name: name}, nil
+}
+
+func (t *TempFile) Read(p []byte) (int, error)  { return t.f.Read(p) }
+func (t *TempFile) Write(p []byte) (int, error) { return t.f.Write(p) }
+
+func (t *TempFile) Seek(offset int64, whence int) (int64, error) { return t.f.Seek(offset, whence) }
+
+// Close closes the file and removes it. Only the first call does: the others do nothing.
+func (t *TempFile) Close() error {
+	if t.closed.Swap(true) {
+		return nil
+	}
+	err := t.f.Close()
+	if rerr := t.files.Remove(t.name); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		err = errors.Join(err, rerr)
+	}
+	return err
+}
+
+// removeTemps removes the temporary files in files/ that a process has left by ending without removing them: the
+// regular files named like those of createTemp, and nothing else. It is for the process that opens the store as its
+// writer, which holds the lock: no other temporary file is in use. dir is the data directory, which errors name.
+func (s *Store) removeTemps(dir string) error {
+	entries, err := s.files.ReadDir(".")
+	if err != nil {
+		return readError(filepath.Join(dir, "files"), err)
+	}
+	for _, e := range entries {
+		if !isTempName(e.Name()) || !e.Type().IsRegular() {
+			continue
+		}
+		if err := s.files.Remove(e.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			path := filepath.Join(dir, "files", e.Name())
+			var pe *fs.PathError
+			if errors.As(err, &pe) {
+				err = pe.Err
+			}
+			return fmt.Errorf("%s: cannot remove: %w", path, err)
+		}
+	}
+	return nil
 }
 
 // writeTemp writes what r reads, to its end, to f, a new temporary file, which it syncs and closes. It returns the

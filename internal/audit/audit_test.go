@@ -431,7 +431,8 @@ func TestActions(t *testing.T) {
 		MediaAdd, MediaReplace, MediaSave, MediaDelete, SettingsSave, SiteImport,
 		AccountCreateFirst, AccountInvite, AccountSetPassword, AccountReset, AccountChangePassword, AccountUpdate,
 		AccountDisable, AccountEnable, AccountDelete,
-		Build, BuildRebuild, BuildResume, ReleaseRollback, AccessDenied, StoreCreate, StoreUpgrade, StoreWrite, Backup,
+		Build, BuildRebuild, BuildResume, ReleaseRollback, AccessDenied, OperationsExpire, StoreCreate, StoreUpgrade,
+		StoreWrite, Backup,
 	}
 	names := map[Action]string{
 		Login: "login", LoginFailure: "login.failure", LoginSuppressed: "login.suppressed", Logout: "logout",
@@ -454,7 +455,7 @@ func TestActions(t *testing.T) {
 		AccountDisable: "account.disable", AccountEnable: "account.enable", AccountDelete: "account.delete",
 		Build: "build", BuildRebuild: "build.rebuild", BuildResume: "build.resume", ReleaseRollback: "release.rollback",
 		StoreCreate: "store.create", StoreUpgrade: "store.upgrade", StoreWrite: "store.write", Backup: "backup",
-		AccessDenied: "access.denied",
+		AccessDenied: "access.denied", OperationsExpire: "operations.expire",
 	}
 	if len(logOf) != len(login)+len(activity) || len(names) != len(logOf) {
 		t.Errorf("the table of actions has %d, the lists %d and %d, the names %d", len(logOf), len(login), len(activity),
@@ -537,6 +538,39 @@ func TestAccessDeniedRecord(t *testing.T) {
 		if err := r.Check(); err == nil {
 			t.Errorf("Check() takes %s in a record of access.denied", name)
 		}
+	}
+}
+
+// TestOperationsExpireRecord checks the record of the removal of the records of operation IDs: the system is the actor,
+// there is no target, and the detail has the number of those that it removed.
+func TestOperationsExpireRecord(t *testing.T) {
+	r := Record{
+		Log: ActivityLog, N: 1, At: at, Actor: System, Action: OperationsExpire, Detail: map[string]string{"expired": "12"},
+	}
+	if err := r.Check(); err != nil {
+		t.Fatalf("Check() = %v", err)
+	}
+	data, err := Encode(r)
+	if err != nil {
+		t.Fatalf("Encode() = %v", err)
+	}
+	got, err := Decode(data)
+	if err != nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("Decode(Encode(r)) = %+v, %v; want %+v", got, err, r)
+	}
+	// Like the others of the activity log, it tells nothing of where it came from.
+	for name, r := range map[string]Record{
+		"a client":  {Client: Client{Addr: "192.0.2.1"}},
+		"a login":   {Login: "yamada"},
+		"a session": {Session: session},
+	} {
+		r.Log, r.Action = ActivityLog, OperationsExpire
+		if err := r.Check(); err == nil {
+			t.Errorf("Check() takes %s in a record of operations.expire", name)
+		}
+	}
+	if err := (Record{Log: LoginLog, Action: OperationsExpire}).Check(); err == nil {
+		t.Errorf("Check() takes operations.expire in the login log")
 	}
 }
 

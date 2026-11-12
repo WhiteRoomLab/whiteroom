@@ -753,7 +753,8 @@ func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst v
 }
 
 // copyFiles copies the directory dir of src, with every directory and regular file in it but the temporary files of
-// PutOriginal, to dst, which has dir. It syncs each file, and each directory after what it has copied in it.
+// PutOriginal and CreateTemp, to dst, which has dir. It syncs each file, and each directory after what it has copied in
+// it.
 func copyFiles(ctx context.Context, src, dst vfs.FS, dir string) error {
 	entries, err := src.ReadDir(dir)
 	if err != nil {
