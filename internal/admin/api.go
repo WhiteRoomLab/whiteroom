@@ -110,8 +110,9 @@ func (s *Server) deadlineOf(pattern string) time.Duration {
 }
 
 // at calls the hook of the tests at point: "checked" when a route has checked the request and is about to do what it asks
-// (heavyWork: in the place, before it works; the routes of the builds: before they call the Publisher), and "sending" when a
-// place is given back and the answer is not yet written.
+// (heavyWork: in the place, before it works; the routes of the builds and of the accounts: before they call the Publisher or
+// the Manager; the change of one's own password: after the attempt is counted; the logs: in their place, before they read),
+// and "sending" when a place is given back and the answer is not yet written.
 func (s *Server) at(point string) {
 	if s.hook != nil {
 		s.hook(point)
@@ -288,7 +289,7 @@ func (s *Server) answerError(w http.ResponseWriter, r *http.Request, p account.P
 	var denied *deniedError
 	var invalid content.Errors
 	switch {
-	case errors.Is(err, errSessionChanged):
+	case errors.Is(err, errSessionChanged), errors.Is(err, account.ErrNoSession):
 		s.clearSessionCookie(w)
 		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, detailUnauthenticated)
 	case errors.Is(err, account.ErrForbidden):
@@ -308,6 +309,11 @@ func (s *Server) answerError(w http.ResponseWriter, r *http.Request, p account.P
 		writeProblem(w, http.StatusConflict, codeLastAdmin, detailLastAdmin)
 	case errors.Is(err, account.ErrInvalidToken):
 		writeProblem(w, http.StatusUnauthorized, codeInvalidToken, detailInvalidToken)
+	case errors.Is(err, account.ErrDisabled):
+		writeProblem(w, http.StatusConflict, codeDisabled, detailDisabled)
+	case errors.Is(err, account.ErrBadCredentials):
+		// Only the change of the password of the session checks a password that a request gives: its current one.
+		writeInvalid(w, content.Errors{{Path: "/current", Msg: msgWrongCurrent}})
 	case errors.Is(err, publish.ErrRollbackRunning):
 		writeProblem(w, http.StatusConflict, codeRollbackRunning, detailRollbackRunning)
 	case errors.Is(err, errBadBody):

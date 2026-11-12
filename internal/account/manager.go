@@ -27,6 +27,8 @@ var (
 	ErrLastAdmin      = errors.New("the last active administrator")
 	ErrInvalidToken   = errors.New("invalid or expired token")
 	ErrBadCredentials = errors.New("wrong login name or password")
+	// ErrDisabled is wrapped by the error of Reset for an account that is disabled.
+	ErrDisabled = errors.New("the account is disabled")
 	// ErrConflict is wrapped by the error of an operation that found, when it came to write, that what it had checked
 	// before had changed.
 	ErrConflict = errors.New("changed since it was read")
@@ -170,6 +172,13 @@ func (missingError) Unwrap() error { return fs.ErrNotExist }
 func notFound(id string) error {
 	return missingError(fmt.Sprintf("accounts %q: not found", id))
 }
+
+// disabledError is the error for an operation that an account that is disabled cannot have. It wraps ErrDisabled.
+type disabledError string
+
+func (e disabledError) Error() string { return string(e) }
+
+func (disabledError) Unwrap() error { return ErrDisabled }
 
 // loadRows reads every row of the table accounts, in the order of the IDs, for the operations that write and for List. A
 // row that does not decode fails it, since the rules that look at all the accounts could not hold otherwise.

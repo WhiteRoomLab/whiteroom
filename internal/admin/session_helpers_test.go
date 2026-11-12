@@ -44,9 +44,10 @@ func redacted(lines []string) []string {
 }
 
 // secretWatch collects what a test server answers, and the secrets of the test: every password that a login carried, and
-// every token in a cookie or in a Set-Cookie. At the end of the test it checks that no password is in any answer or in the
-// log, and that no token is in any answer but the Set-Cookie of the login that made it, or in the log. A failure says which
-// answer shows a secret and of what kind, and never the secret.
+// every token in a cookie, in a Set-Cookie, or in the body of the answer to an invitation or a reset. At the end of the test it
+// checks that no password is in any answer or in the log, and that no token is in any answer but the Set-Cookie of the login
+// that made it and the body of the invitation or the reset that made it, or in the log. A failure says which answer shows a
+// secret and of what kind, and never the secret.
 type secretWatch struct {
 	mu        sync.Mutex
 	passwords map[string]bool
@@ -86,8 +87,35 @@ func (w *secretWatch) watchRequest(h http.Header) {
 	}
 }
 
-// record keeps an answer. The tokens in its Set-Cookie are watched for, and left out of what is kept.
+// handsToken reports whether the answer to what with the status is one that gives a token to its reader on purpose: the
+// answers to the invitation of an account and to the reset of its credentials, which are the one place where the admin API
+// shows a token (9.6 and 9.7). The token of an answer that failed is not one.
+func handsToken(what string, status int) bool {
+	if status != http.StatusOK && status != http.StatusCreated {
+		return false
+	}
+	return what == "POST /api/accounts" || strings.HasPrefix(what, "POST /api/accounts/") && strings.HasSuffix(what, "/reset")
+}
+
+// takeToken watches for the token that the body of an answer which hands one over has as its member token, and returns the
+// body without it, as the tokens of a Set-Cookie are left out of what is kept.
+func (w *secretWatch) takeToken(body []byte) []byte {
+	var v struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(body, &v) != nil || len(v.Token) != tokenLength {
+		return body
+	}
+	w.token(v.Token)
+	return bytes.ReplaceAll(body, []byte(v.Token), []byte("<token>"))
+}
+
+// record keeps an answer. The tokens in its Set-Cookie are watched for, and left out of what is kept, and so is the token in
+// the body of an answer that hands one over (handsToken).
 func (w *secretWatch) record(what string, status int, header http.Header, body []byte) {
+	if handsToken(what, status) {
+		body = w.takeToken(body)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d\n", status)
 	for _, name := range slices.Sorted(maps.Keys(header)) {

@@ -64,8 +64,10 @@ func TestAnswerError(t *testing.T) {
 		{"account.ErrForbidden", denied, "forbidden"},
 		{"account.ErrLastAdmin", fmt.Errorf("usr_x is %w: ending", account.ErrLastAdmin), "last-admin"},
 		{"account.ErrInvalidToken", account.ErrInvalidToken, "invalid-token"},
+		{"account.ErrDisabled", fmt.Errorf("usr_x %w", account.ErrDisabled), "disabled"},
 		{"publish.ErrRollbackRunning", publish.ErrRollbackRunning, "rollback-running"},
 		{"errSessionChanged", errSessionChanged, "unauthenticated"},
+		{"account.ErrNoSession", fmt.Errorf("changing: %w", account.ErrNoSession), "unauthenticated"},
 		{"context.Canceled", fmt.Errorf("reading: %w", context.Canceled), "busy"},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, "busy"},
 		{"errBadBody", errBadBody, "bad-request"},
@@ -128,6 +130,30 @@ func TestAnswerError(t *testing.T) {
 	records := ts.records(t, audit.AccessDenied)
 	if last := records[len(records)-1]; last.Target != named || last.Detail["permission"] != "entry.edit" {
 		t.Errorf("the record is %+v, want the target %+v and the permission entry.edit", last, named)
+	}
+}
+
+// TestAnswerErrorWrongPassword shows that the wrong current password of a change of the password is a problem of the field
+// current, whatever the rest of the error says, and shows nothing of the account or of the password.
+func TestAnswerErrorWrongPassword(t *testing.T) {
+	ts := newTestServer(t, httpsOrigin)
+	p := account.Principal{Account: ts.addAccount(t, "editor", account.RoleEditor)}
+	for _, err := range []error{account.ErrBadCredentials, fmt.Errorf("changing: %w", account.ErrBadCredentials)} {
+		rec := httptest.NewRecorder()
+		ts.answerError(rec, ts.request(http.MethodPut, "/api/session/password", ""), p, err, attempt{})
+		res := rec.Result()
+		got := readProblem(t, res)
+		if want := problems["invalid"]; got.Status != want.status || got.Code != "invalid" || got.Detail != want.detail ||
+			len(got.Errors) != 1 || got.Errors[0].Pointer != "/current" || got.Errors[0].Detail != "wrong password" ||
+			got.Errors[0].File != "" || got.Errors[0].Line != 0 || got.OmittedErrors != 0 {
+			t.Errorf("the answer is %+v, want the problem invalid with the one error at /current", got)
+		}
+		if res.Header.Get("Content-Type") != "application/problem+json" || len(res.Header.Values("Set-Cookie")) != 0 {
+			t.Errorf("the answer has the Content-Type %q and the cookies %q", res.Header.Get("Content-Type"), res.Header.Values("Set-Cookie"))
+		}
+	}
+	if got := ts.records(t, audit.AccessDenied); len(got) != 0 || ts.logs.String() != "" {
+		t.Errorf("a wrong password made %d records of access.denied and the log %q, want none", len(got), ts.logs.String())
 	}
 }
 

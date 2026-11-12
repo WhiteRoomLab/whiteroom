@@ -162,6 +162,60 @@ func TestSecretWatch(t *testing.T) {
 	}
 }
 
+// TestSecretWatchHandedToken shows that the token in the body of the answer to an invitation or a reset is the one exception: it
+// is watched for in every other answer and in the log, and left out of the answer that gives it.
+func TestSecretWatchHandedToken(t *testing.T) {
+	token := strings.Repeat("I", 43)
+	body := []byte(`{"account":{"id":"usr_x"},"token":"` + token + `","expiresAt":"2026-11-19T12:00:00Z"}`)
+	for _, tt := range []struct {
+		what   string
+		status int
+		handed bool
+	}{
+		{"POST /api/accounts", http.StatusCreated, true},
+		{"POST /api/accounts/usr_x/reset", http.StatusOK, true},
+		{"POST /api/accounts", http.StatusUnprocessableEntity, false},
+		{"POST /api/accounts/usr_x/reset", http.StatusConflict, false},
+		{"POST /api/accounts/usr_x/disable", http.StatusOK, false},
+		{"GET /api/accounts/usr_x", http.StatusOK, false},
+		{"PATCH /api/accounts/usr_x", http.StatusOK, false},
+		{"POST /api/other", http.StatusOK, false},
+	} {
+		w := newSecretWatch()
+		w.record(tt.what, tt.status, http.Header{}, body)
+		wantTokens := 0
+		if tt.handed {
+			wantTokens = 1
+		}
+		if _, tokens, answers := w.watching(); tokens != wantTokens || answers != 1 {
+			t.Errorf("%s with %d: the watch has %d tokens and %d answers after it, want %d and 1", tt.what, tt.status, tokens, answers, wantTokens)
+		}
+		if got := w.problems("a line"); len(got) != 0 {
+			t.Errorf("%s with %d: problems() = %q, want none: the answer that gives a token does not show it", tt.what, tt.status, got)
+		}
+	}
+
+	w := newSecretWatch()
+	w.record("POST /api/accounts", http.StatusCreated, http.Header{}, body)
+	w.record("GET /api/accounts/usr_x", http.StatusOK, http.Header{}, []byte(`{"token":"`+token+`"}`))
+	w.record("POST /api/accounts/usr_x/disable", http.StatusOK, http.Header{"Location": {"/x?token=" + token}}, []byte(`{}`))
+	w.record("POST /api/accounts/usr_x/reset", http.StatusOK, http.Header{}, []byte(`{"token":"`+token+`"}`))
+	want := []string{
+		"the answer to GET /api/accounts/usr_x has a token of the test",
+		"the answer to POST /api/accounts/usr_x/disable has a token of the test",
+		"the log has a token of the test",
+	}
+	got := w.problems("the log: " + token)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("problems() = %q, want %q: the token of a reset that is given again is no more shown than the first", got, want)
+	}
+	for _, line := range got {
+		if strings.Contains(line, token) {
+			t.Errorf("the problem %q shows the secret", line)
+		}
+	}
+}
+
 func TestAnswerFor(t *testing.T) {
 	at := time.Date(2026, time.November, 9, 12, 0, 0, 500000000, time.UTC)
 	p := account.Principal{

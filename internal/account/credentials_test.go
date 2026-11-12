@@ -673,6 +673,7 @@ func TestResetDisabled(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)
 	a := e.add(t, "yamada", RoleEditor)
+	bystander := e.add(t, "bystander", RoleEditor)
 	if _, err := e.m.Disable(t.Context(), System, a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -682,6 +683,13 @@ func TestResetDisabled(t *testing.T) {
 		if err == nil || err.Error() != a.ID+" is disabled: enable it first" || token != "" {
 			t.Errorf("Reset() = a token of %d characters, %v, want the error that %s is disabled", len(token), err, a.ID)
 		}
+		if !errors.Is(err, ErrDisabled) {
+			t.Errorf("Reset() of an account that is disabled = %v, want an error that wraps ErrDisabled", err)
+		}
+	}
+	// An actor that may not reset is refused before it learns that the account is disabled.
+	if _, err := e.m.Reset(t.Context(), By(bystander.ID), a.ID); !errors.Is(err, ErrForbidden) || errors.Is(err, ErrDisabled) {
+		t.Errorf("Reset() of an account that is disabled by an editor = %v, want a refusal that does not wrap ErrDisabled", err)
 	}
 	e.unchanged(t, before)
 	if _, err := e.m.Enable(t.Context(), System, a.ID); err != nil {

@@ -39,6 +39,7 @@ const (
 	codeRollbackRunning      = "rollback-running"
 	codeBadQuery             = "bad-query"
 	codeBadHeader            = "bad-header"
+	codeDisabled             = "disabled"
 
 	detailMisdirected          = "the Host of the request is not that of this server"
 	detailNotFound             = "there is no such resource"
@@ -62,6 +63,7 @@ const (
 	detailRollbackRunning      = "another rollback is running"
 	detailBadQuery             = "the query is not one that this resource takes"
 	detailBadHeader            = "a header of the request is not one that this resource takes"
+	detailDisabled             = "the account is disabled; enable it first"
 )
 
 // maxProblems is the most problems that an answer lists; the others are counted.

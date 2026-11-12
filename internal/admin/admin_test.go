@@ -315,6 +315,7 @@ var problems = map[string]struct {
 	"rollback-running":       {http.StatusConflict, "another rollback is running"},
 	"bad-query":              {http.StatusBadRequest, "the query is not one that this resource takes"},
 	"bad-header":             {http.StatusBadRequest, "a header of the request is not one that this resource takes"},
+	"disabled":               {http.StatusConflict, "the account is disabled; enable it first"},
 }
 
 func problemJSON(code string) string {
@@ -869,38 +870,38 @@ func TestHandle(t *testing.T) {
 		}()
 	}
 
-	// ServeMux takes both of "GET /api/accounts/me" and "GET /api/accounts/{id}"; a pattern without a method for the
+	// ServeMux takes both of "GET /api/things/me" and "GET /api/things/{id}"; a pattern without a method for the
 	// 405 of each path would conflict with the other one.
 	ts := newTestServer(t, httpsOrigin)
 	value := func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, r.PathValue("id")) }
-	ts.handle("GET /api/accounts/me", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	ts.handle("GET /api/things/me", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, "me")
 	}))
-	ts.handle("GET /api/accounts/{id}", http.HandlerFunc(value))
-	ts.handle("PUT /api/accounts/{id}", http.HandlerFunc(value))
-	ts.handle("POST /api/accounts/{id}/enable", http.HandlerFunc(value))
+	ts.handle("GET /api/things/{id}", http.HandlerFunc(value))
+	ts.handle("PUT /api/things/{id}", http.HandlerFunc(value))
+	ts.handle("POST /api/things/{id}/enable", http.HandlerFunc(value))
 	for _, tt := range []struct {
 		method, path string
 		status       int
 		allow, body  string
 	}{
-		{http.MethodGet, "/api/accounts/me", 200, "", `"me"`},
-		{http.MethodGet, "/api/accounts/42", 200, "", `"42"`},
-		{http.MethodGet, "/api/accounts/a%2Fb", 200, "", `"a/b"`},
-		{http.MethodGet, "/api/accounts/a%2F..%2Fb", 200, "", `"a/../b"`},
-		{http.MethodGet, "/api/accounts/%2e", 404, "", ""},
-		{http.MethodGet, "/api/accounts/%2E%2e", 404, "", ""},
-		{http.MethodGet, "/api/accounts/.", 404, "", ""},
-		{http.MethodGet, "/api/accounts/..", 404, "", ""},
-		{http.MethodGet, "/api/accounts//", 404, "", ""},
-		{http.MethodHead, "/api/accounts/42", 200, "", ``},
-		{http.MethodPut, "/api/accounts/me", 200, "", `"me"`},
-		{http.MethodPost, "/api/accounts/me", 405, "GET, HEAD, PUT", ""},
-		{http.MethodDelete, "/api/accounts/42", 405, "GET, HEAD, PUT", ""},
-		{http.MethodGet, "/api/accounts/42/enable", 405, "POST", ""},
-		{http.MethodPost, "/api/accounts/42/enable", 200, "", `"42"`},
-		{http.MethodGet, "/api/accounts/42/other", 404, "", ""},
-		{http.MethodGet, "/api/accounts", 404, "", ""},
+		{http.MethodGet, "/api/things/me", 200, "", `"me"`},
+		{http.MethodGet, "/api/things/42", 200, "", `"42"`},
+		{http.MethodGet, "/api/things/a%2Fb", 200, "", `"a/b"`},
+		{http.MethodGet, "/api/things/a%2F..%2Fb", 200, "", `"a/../b"`},
+		{http.MethodGet, "/api/things/%2e", 404, "", ""},
+		{http.MethodGet, "/api/things/%2E%2e", 404, "", ""},
+		{http.MethodGet, "/api/things/.", 404, "", ""},
+		{http.MethodGet, "/api/things/..", 404, "", ""},
+		{http.MethodGet, "/api/things//", 404, "", ""},
+		{http.MethodHead, "/api/things/42", 200, "", ``},
+		{http.MethodPut, "/api/things/me", 200, "", `"me"`},
+		{http.MethodPost, "/api/things/me", 405, "GET, HEAD, PUT", ""},
+		{http.MethodDelete, "/api/things/42", 405, "GET, HEAD, PUT", ""},
+		{http.MethodGet, "/api/things/42/enable", 405, "POST", ""},
+		{http.MethodPost, "/api/things/42/enable", 200, "", `"42"`},
+		{http.MethodGet, "/api/things/42/other", 404, "", ""},
+		{http.MethodGet, "/api/things", 404, "", ""},
 	} {
 		what := tt.method + " " + tt.path
 		res := ts.send(tt.method, tt.path, "", "Origin", ts.origin)

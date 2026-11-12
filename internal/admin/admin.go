@@ -46,8 +46,8 @@ type Config struct {
 	// not read; nil discards them.
 	ErrorLog *log.Logger
 	// Publisher calls the operations that save the documents (internal/edit) and the builds. It must use the store of
-	// Accounts. It may be nil: the server then has no routes for the documents, the media, the publishing and the builds.
-	// New does not run it: the caller calls Run.
+	// Accounts. It may be nil: the server then has no routes for the documents, the media, the publishing and the builds,
+	// but has those of the accounts, the passwords and the logs. New does not run it: the caller calls Run.
 	Publisher *publish.Publisher
 	// Now is the clock of the limits of login attempts, of the log lines that are limited to one a minute, and of the
 	// refusals that are recorded one by one; nil is time.Now. It should be monotonic: a clock that goes back makes the waits
@@ -81,8 +81,11 @@ type Server struct {
 	heavy     chan struct{}
 	placeWait time.Duration
 	placeRun  time.Duration
+	// logReads is the place of reading the logs, apart from heavy: one request has it at a time and none waits for it (inLogs).
+	logReads  chan struct{}
 	inflight  inflight
 	denials   denials
+	passwords *passwordAttempts // the wrong current passwords of the sessions (PUT /api/session/password)
 	// denialWait is how long the record of a refusal waits for the store; the tests shorten it.
 	denialWait time.Duration
 	// hook is nil outside the tests, which run something at a point of a request (at).
@@ -129,6 +132,8 @@ func New(c Config) (*Server, error) {
 		logins:       make(chan struct{}, maxLogins),
 		forwardedDue: everyMinute(now),
 		heavy:        make(chan struct{}, 1),
+		logReads:     make(chan struct{}, 1),
+		passwords:    newPasswordAttempts(now, passwordAttemptsCapacity),
 		placeWait:    heavyWait,
 		placeRun:     heavyRun,
 		denialWait:   denialWait,
@@ -152,6 +157,9 @@ func New(c Config) (*Server, error) {
 // routes registers the routes of the admin API besides those of the session: first those that need only the store of the
 // Accounts (the accounts, the passwords and the logs), then, if there is a Publisher, those that call its Editor and it.
 func (s *Server) routes() {
+	s.accountRoutes()
+	s.passwordRoutes()
+	s.logRoutes()
 	if s.publisher == nil {
 		return
 	}
