@@ -105,8 +105,9 @@ func fromAnotherSite(r *http.Request) bool {
 
 // withSession returns the handler that calls h with the Principal of the session in the cookie of the request, and else
 // answers 401, and clears the cookie if the request had one. It is the one place that turns the cookie into a Principal:
-// the routes of #48 that need a login go through it. A request from a page of another origin gets 403 before the cookie
-// is read, whatever its method: a GET reads nothing across origins, but it would keep a session from going idle.
+// the routes of the admin API (9.7) that need a login go through it. A request from a page of another origin gets 403
+// before the cookie is read, whatever its method: a GET reads nothing across origins, but it would keep a session from
+// going idle.
 func (s *Server) withSession(h func(http.ResponseWriter, *http.Request, account.Principal)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if fromAnotherSite(r) {

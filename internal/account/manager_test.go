@@ -1254,7 +1254,7 @@ func TestRead(t *testing.T) {
 		}
 	})
 	t.Run("in an Update that checks an account", func(t *testing.T) {
-		// What a save operation of #48 does: read the account and check its rights in the Update that writes.
+		// What the admin API does in the Update of an operation (9.7): read the account and check its rights there.
 		err := e.s.Update(t.Context(), func(tx *store.Tx) error {
 			got, err := Read(tx, a.ID)
 			if err != nil {

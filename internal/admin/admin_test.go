@@ -1319,7 +1319,7 @@ func TestPanicOnTheWire(t *testing.T) {
 }
 
 // TestResponseController shows that the wrapper of the response lets http.ResponseController reach the writer of
-// net/http, as the routes of #48 will need.
+// net/http, as the routes of the uploads and the downloads need.
 func TestResponseController(t *testing.T) {
 	ts := newTestServer(t, localOrigin)
 	result := func(err error) string {
