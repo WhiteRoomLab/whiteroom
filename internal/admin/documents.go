@@ -24,6 +24,7 @@ const (
 	scopeRole     scope = iota // nothing: the role decides
 	scopeAuthor                // the author profile that is changed: an author account may change its own
 	scopeUploader              // the account that uploaded the medium: an author account may change its own
+	scopeCreator               // the account that created the entry: an author account may change its own
 )
 
 // docRule is who may do an operation to a kind of document: the action of 7.3, and what it depends on. The zero rule is
@@ -196,20 +197,22 @@ func (s *Server) allowRule(w http.ResponseWriter, r *http.Request, p account.Pri
 	case scopeRole:
 	case scopeAuthor:
 		target.Author = id
-	case scopeUploader:
+	case scopeUploader, scopeCreator:
 		return s.allowAsOwn(w, r, p, rule.action, named)
 	}
 	return s.allow(w, r, p, rule.action, target, named)
 }
 
 // check returns the check of the permission that an operation of the principal to the document id calls in its Update
-// (edit.Op.Check).
-func (rule docRule) check(p account.Principal, id string, named audit.Target) func(tx *store.Tx) error {
+// (edit.Op.Check): that of the rule, and the actions of also, which the principal must have as well.
+func (rule docRule) check(p account.Principal, id string, named audit.Target, also ...account.Action) func(tx *store.Tx) error {
 	var target func(tx *store.Tx) (account.Target, error)
 	switch rule.scope {
 	case scopeRole:
 	case scopeAuthor:
 		target = func(*store.Tx) (account.Target, error) { return account.Target{Author: id}, nil }
+	case scopeCreator:
+		target = entryOwner(id)
 	case scopeUploader:
 		target = func(tx *store.Tx) (account.Target, error) {
 			m, err := readMedium(tx, id)
@@ -219,7 +222,7 @@ func (rule docRule) check(p account.Principal, id string, named audit.Target) fu
 			return account.Target{Owner: m.UploadedBy}, nil
 		}
 	}
-	return inUpdate(p, named, target, rule.action)
+	return inUpdate(p, named, target, append([]account.Action{rule.action}, also...)...)
 }
 
 // listDocuments is GET /api/<path>: the documents of the kind in the order of their IDs, a page of them, with the versions
