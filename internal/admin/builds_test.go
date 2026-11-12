@@ -358,6 +358,69 @@ func TestBuildFailures(t *testing.T) {
 	}
 }
 
+// TestBuildCacheFailure shows what the state says of a build that cannot write the image cache, which is a fault of the server
+// and none of the problems of the site: the fixed sentence for every role, which names no path of the server, and the text of
+// the failure in the activity log. The next build works when the cache can be written again.
+func TestBuildCacheFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may write in any directory")
+	}
+	cache := filepath.Join(t.TempDir(), "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := "Signature: 8a477f597d28d172789f06886806bc55\n" +
+		"# This file is a cache directory tag created by whiteroom.\n" +
+		"# For information about cache directory tags, see https://bford.info/cachedir/\n"
+	if err := os.WriteFile(filepath.Join(cache, "CACHEDIR.TAG"), []byte(tag), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cache, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o755) })
+
+	a := newAPIServerIn(t, httpsOrigin, cache)
+	a.waitBuilds(t)
+	for _, l := range apiLogins {
+		raw := body(t, "GET /api/builds as "+l.login, a.as(l.login).get("/api/builds"), http.StatusOK)
+		var st buildsAnswer
+		if err := json.Unmarshal([]byte(raw), &st); err != nil {
+			t.Fatal(err)
+		}
+		if last := st.Last; last == nil || last.Failed == nil || !*last.Failed || last.Error != detailBuildFailed || len(last.Errors) != 0 ||
+			last.OmittedErrors != 0 || last.Release != "" {
+			t.Errorf("the last build for %s is %+v, want a failure with the fixed sentence and no problems of the site", l.login, last)
+		}
+		for _, secret := range []string{cache, filepath.Dir(cache), "permission denied", "mkdir"} {
+			if strings.Contains(raw, secret) {
+				t.Errorf("the state for %s has %q: %s", l.login, secret, raw)
+			}
+		}
+	}
+	builds := a.records(t, audit.Build)
+	if len(builds) != 1 {
+		t.Fatalf("the activity log has %d records of builds, want the one that failed", len(builds))
+	}
+	if r := builds[0]; r.Result != "failed" || !strings.Contains(r.Detail["error"], cache) || !strings.Contains(r.Detail["error"], "permission denied") {
+		t.Errorf("the record of the build is %+v, want a failure whose text names the cache and says why", r)
+	}
+	if releases := readReleases(t, a.as("viewer")); releases.Current != "" || len(releases.Names) != 0 {
+		t.Errorf("the releases are %+v after a build that failed, want none", releases)
+	}
+
+	if err := os.Chmod(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := a.as("admin").post("/api/builds", ""); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /api/builds has the status %d", res.StatusCode)
+	}
+	a.waitBuilds(t)
+	if last := readBuilds(t, a.as("viewer")).Last; last == nil || last.Failed == nil || *last.Failed || last.Error != "" || last.Release == "" {
+		t.Errorf("the last build after the cache could be written is %+v, want one that did not fail", last)
+	}
+}
+
 // TestBuildsRunning shows the state while a build runs, and that the requests that come meanwhile wait for the next build.
 func TestBuildsRunning(t *testing.T) {
 	a := newAPIServer(t)

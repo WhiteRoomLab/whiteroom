@@ -119,6 +119,42 @@ func TestDefinitions(t *testing.T) {
 	}
 }
 
+// TestDefinitionsRefuseWhatTheyDoNotTake shows that the routes of the definitions refuse the header Idempotency-Key and any
+// query, as the other routes that read do, in that order and before they do anything.
+func TestDefinitionsRefuseWhatTheyDoNotTake(t *testing.T) {
+	a := newAPIServer(t)
+	var reached int
+	a.hook = func(point string) {
+		if point == "checked" {
+			reached++
+		}
+	}
+	for _, path := range []string{"/api/schema", "/api/theme"} {
+		for _, l := range apiLogins {
+			as := a.as(l.login)
+			for _, query := range []string{"?anything=1", "?limit=5", "?x=", "?x"} {
+				checkProblem(t, "GET "+path+query+" as "+l.login, as.get(path+query), "bad-query")
+			}
+			checkProblem(t, "GET "+path+" with an Idempotency-Key as "+l.login, as.send(http.MethodGet, path, "", key(1)...), "bad-header")
+			checkProblem(t, "GET "+path+" with a key that is none as "+l.login,
+				as.send(http.MethodGet, path, "", "Idempotency-Key", "not a key"), "bad-header")
+			checkProblem(t, "GET "+path+" with a key and a query as "+l.login, as.send(http.MethodGet, path+"?anything=1", "", key(1)...), "bad-header")
+		}
+	}
+	if reached != 0 {
+		t.Errorf("the hook \"checked\" was called %d times by requests that must not reach the routes", reached)
+	}
+	if got := a.records(t, audit.AccessDenied); len(got) != 0 {
+		t.Errorf("the refusals made %d records of access.denied, want none", len(got))
+	}
+	if logged := a.logs.String(); logged != "" {
+		t.Errorf("the log is %q, want nothing", logged)
+	}
+	// What they take still works.
+	body(t, "GET /api/schema", a.as("viewer").get("/api/schema"), http.StatusOK)
+	body(t, "GET /api/theme", a.as("viewer").get("/api/theme"), http.StatusOK)
+}
+
 // definitionJSON returns the JSON that GET /api/schema answers for the schema file schema.
 func definitionJSON(t *testing.T, schema string) string {
 	t.Helper()

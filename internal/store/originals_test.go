@@ -232,6 +232,106 @@ func TestPutOriginalRenameError(t *testing.T) {
 	})
 }
 
+// TestFilesGone checks that CreateTemp and PutOriginal fail with the error of the file system when files/ is gone, or the
+// temporary file of PutOriginal is: the text of the error is kept, but it does not wrap fs.ErrNotExist, which is for a
+// document or an original that is not there.
+func TestFilesGone(t *testing.T) {
+	data := []byte("GIF89a")
+	fault := func(t *testing.T, what string, err error) {
+		t.Helper()
+		switch {
+		case err == nil:
+			t.Errorf("%s = nil, want an error", what)
+		case errors.Is(err, fs.ErrNotExist):
+			t.Errorf("%s = %q, which wraps fs.ErrNotExist", what, err)
+		case !strings.Contains(err.Error(), syscall.ENOENT.Error()):
+			t.Errorf("%s = %q, want the error of the file system in it", what, err)
+		}
+	}
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		t.Run("files/ is gone", func(t *testing.T) {
+			s, dir := newStore(t, tb)
+			if err := os.RemoveAll(filepath.Join(dir, "files")); err != nil {
+				t.Fatal(err)
+			}
+			f, err := s.CreateTemp()
+			if f != nil {
+				_ = f.Close()
+			}
+			fault(t, "CreateTemp()", err)
+			o, err := s.PutOriginal(t.Context(), bytes.NewReader(data))
+			fault(t, "PutOriginal()", err)
+			if o != (Original{}) {
+				t.Errorf("PutOriginal() = %+v, want none", o)
+			}
+			// An original that is not there is not there, as before.
+			if _, err := s.OpenOriginal(sum(data)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("OpenOriginal() of an original that is not there = %v, want an error that wraps fs.ErrNotExist", err)
+			}
+		})
+		for _, tt := range []struct {
+			name string
+			gone func(t *testing.T, dir string)
+		}{
+			{"files/ is gone after the temporary file is written", func(t *testing.T, dir string) {
+				if err := os.RemoveAll(filepath.Join(dir, "files")); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"the temporary file is gone after it is written", func(t *testing.T, dir string) {
+				for _, name := range names(t, filepath.Join(dir, "files")) {
+					if tempName.MatchString(name) {
+						if err := os.Remove(filepath.Join(dir, "files", name)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				s, dir := newStore(t, tb)
+				s.hook = func(point string) error {
+					if point == "original:synced" {
+						tt.gone(t, dir)
+					}
+					return nil
+				}
+				o, err := s.PutOriginal(t.Context(), bytes.NewReader(data))
+				fault(t, "PutOriginal()", err)
+				if o != (Original{}) {
+					t.Errorf("PutOriginal() = %+v, want none", o)
+				}
+			})
+		}
+	})
+}
+
+// TestFilesGoneAtTheSync checks that a sync of the directory of an original that fails because the directory is gone stops
+// the saving of originals, as any failed sync does, and that its error keeps the text of the file system and does not wrap
+// fs.ErrNotExist.
+func TestFilesGoneAtTheSync(t *testing.T) {
+	fsys := simfs.New("data")
+	s, err := create("data", options{log: &logdb.Options{}, fs: fsys})
+	if err != nil {
+		t.Fatalf("create() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+		return op.Kind == simfs.OpSyncDir && strings.HasPrefix(op.Path, "files/")
+	}, Err: syscall.ENOENT, Times: 1})
+	o, err := s.PutOriginal(t.Context(), strings.NewReader("GIF89a"))
+	switch {
+	case err == nil:
+		t.Errorf("PutOriginal() = %+v, nil, want an error", o)
+	case !errors.Is(err, errOriginalsStopped):
+		t.Errorf("PutOriginal() = %q, want an error that wraps %q", err, errOriginalsStopped)
+	case errors.Is(err, fs.ErrNotExist):
+		t.Errorf("PutOriginal() = %q, which wraps fs.ErrNotExist", err)
+	case !strings.Contains(err.Error(), syscall.ENOENT.Error()):
+		t.Errorf("PutOriginal() = %q, want the error of the file system in it", err)
+	}
+}
+
 // TestOriginalDirDurable checks that PutOriginal syncs files/ also when the directory of the original is there, but
 // its name may not be durable yet, as when a process that was killed has made it. On simfs, a crash keeps only what
 // has been synced. After a failed sync, PutOriginal fails (TestOriginalAfterFailedSync).

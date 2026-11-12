@@ -136,7 +136,8 @@ func declaredType(r *http.Request) string {
 	return mediaType
 }
 
-// refuseBody answers the failure err of reading the body of an upload: 413 if it has more than a file may, and else 400.
+// refuseBody answers the failure err of reading the body of an upload: 413 if it has more than a file may, and else 400, for
+// a body that cannot be read to its end.
 func refuseBody(w http.ResponseWriter, err error) {
 	_ = extendWrite(w, writeTimeout)
 	var tooLarge *http.MaxBytesError
@@ -144,7 +145,7 @@ func refuseBody(w http.ResponseWriter, err error) {
 		writeProblem(w, http.StatusRequestEntityTooLarge, codeTooLarge, detailTooLarge)
 		return
 	}
-	writeProblem(w, http.StatusBadRequest, codeBadRequest, detailBadRequest)
+	writeProblem(w, http.StatusBadRequest, codeUnreadableBody, detailUnreadableBody)
 }
 
 // showMediumFile is GET /api/media/{id}/file: the original of the medium, whole, as a file to save and not one to show. It

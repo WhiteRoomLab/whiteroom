@@ -216,6 +216,35 @@ func TestSecretWatchHandedToken(t *testing.T) {
 	}
 }
 
+// TestSecretWatchHandedTokenTwice shows that the answer that hands a token over is left as it is when it has the token more
+// than once, so that the watch finds the copy that is not the member token, and says which answer shows it, never the token.
+func TestSecretWatchHandedTokenTwice(t *testing.T) {
+	token := strings.Repeat("I", 43)
+	for _, tt := range []struct{ name, what, body string }{
+		{"in another member", "POST /api/accounts", `{"account":{"id":"usr_x","name":"` + token + `"},"token":"` + token + `","expiresAt":"2026-11-19T12:00:00Z"}`},
+		{"in a text", "POST /api/accounts", `{"account":{"id":"usr_x"},"token":"` + token + `","url":"https://example.com/?token=` + token + `"}`},
+		{"in the answer to a reset", "POST /api/accounts/usr_x/reset", `{"token":"` + token + `","note":"` + token + `"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newSecretWatch()
+			w.record(tt.what, http.StatusOK, http.Header{}, []byte(tt.body))
+			want := []string{"the answer to " + tt.what + " has a token of the test"}
+			got := w.problems("")
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("problems() = %q, want %q", got, want)
+			}
+			for _, line := range got {
+				if strings.Contains(line, token) {
+					t.Errorf("the problem %q shows the secret", line)
+				}
+			}
+			if _, tokens, answers := w.watching(); tokens != 1 || answers != 1 {
+				t.Errorf("the watch has %d tokens and %d answers, want the token of the member and the answer", tokens, answers)
+			}
+		})
+	}
+}
+
 func TestAnswerFor(t *testing.T) {
 	at := time.Date(2026, time.November, 9, 12, 0, 0, 500000000, time.UTC)
 	p := account.Principal{

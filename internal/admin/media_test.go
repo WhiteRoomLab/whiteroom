@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -445,8 +446,8 @@ func TestMediaTooLarge(t *testing.T) {
 	}
 }
 
-// TestMediaBodyFails shows that a body that cannot be read to its end is a 400, and leaves nothing: neither a medium, nor an
-// original, nor a temporary file.
+// TestMediaBodyFails shows that a body that cannot be read to its end is a 400 (unreadable-body), and leaves nothing: neither
+// a medium, nor an original, nor a temporary file.
 func TestMediaBodyFails(t *testing.T) {
 	a := newAPIServer(t)
 	before, originals := a.versions(t), a.originals(t)
@@ -462,7 +463,7 @@ func TestMediaBodyFails(t *testing.T) {
 		{"at once", errReader{broken}},
 	} {
 		req := a.bodyRequest("editor", http.MethodPost, "/api/media?fileName=a.png", tt.body, "Content-Type", "image/png")
-		checkProblem(t, "a body that fails "+tt.name, a.respond(req), "bad-request")
+		checkProblem(t, "a body that fails "+tt.name, a.respond(req), "unreadable-body")
 	}
 	if got := a.versions(t); got != before {
 		t.Errorf("the uploads that failed have changed the store:\n%s\nwant\n%s", got, before)
@@ -475,6 +476,33 @@ func TestMediaBodyFails(t *testing.T) {
 	}
 	if logged := a.logs.String(); logged != "" {
 		t.Errorf("the log is %q, want nothing", logged)
+	}
+}
+
+// TestMissingFilesDirectory shows that a data directory that has lost files/ is a fault of the server, and not a resource that
+// is not there: the answer that is longer than the memory of a spool, which goes to a temporary file, and the upload of a
+// file are 500, and the log has the cause.
+func TestMissingFilesDirectory(t *testing.T) {
+	a := newAPIServer(t)
+	as := a.as("editor")
+	e := a.newEntry(t, "editor", "post", "ja")
+	saved := a.addRevision(t, "editor", e.ID, bigRevision("大きい", 600_000))
+	a.waitBuilds(t)
+	if err := os.RemoveAll(filepath.Join(a.dir, "files")); err != nil {
+		t.Fatal(err)
+	}
+	a.logs.Reset()
+
+	checkProblem(t, "GET of a revision of more than 256 KiB without files/", as.get("/api/revisions/"+saved.Revision), "internal")
+	checkProblem(t, "an upload without files/", as.upload("lost.png", "image/png", testPNG(t, 8, 8)), "internal")
+	lines := strings.Split(strings.TrimSuffix(a.logs.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("the log is %q, want a line for each of the two faults", a.logs.String())
+	}
+	for i, want := range []string{`GET "/api/revisions/` + saved.Revision + `"`, `POST "/api/media?fileName=lost.png"`} {
+		if !strings.HasPrefix(lines[i], want) || !strings.Contains(lines[i], syscall.ENOENT.Error()) {
+			t.Errorf("line %d of the log is %q, want the request %s and the error of the file system", i+1, lines[i], want)
+		}
 	}
 }
 

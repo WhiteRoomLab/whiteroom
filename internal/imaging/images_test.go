@@ -19,8 +19,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 )
 
@@ -417,6 +419,9 @@ func TestImagesWriteError(t *testing.T) {
 		if want := s.hash + tt.err; err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("%s: Files() error %v, want %q", tt.what, err, want)
 		}
+		if !errors.Is(err, ErrIO) {
+			t.Errorf("%s: Files() error %v is not ErrIO", tt.what, err)
+		}
 		if entries, err := os.ReadDir(filepath.Dir(name)); err == nil {
 			for _, e := range entries {
 				if strings.HasPrefix(e.Name(), ".tmp") {
@@ -425,6 +430,141 @@ func TestImagesWriteError(t *testing.T) {
 			}
 		}
 	}
+}
+
+// closeFails is an original that reads from r and fails to close with err.
+type closeFails struct {
+	io.Reader
+	err error
+}
+
+func (c closeFails) Close() error { return c.err }
+
+// zeroReader reads zeros without end.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// TestImagesIOError checks which errors of Info and Files are ErrIO: those of opening, reading and closing the original, and
+// of writing the cache, and none of an original that is not there or is no good, of a variant that does not fit the image, or
+// of the end of ctx.
+func TestImagesIOError(t *testing.T) {
+	s := newSource(pngOf(t, colored(40, 30)))
+	other := newSource(pngOf(t, colored(80, 60)))
+	pdf := newSource([]byte("%PDF-1.7\n"))
+	jpeg := largeJPEG(t, 1)
+	cut := newSource(jpeg[:bytes.Index(jpeg, []byte{0xff, 0xda})+20]) // the headers are whole, and the data is not
+	sinfo, oinfo := infoOf(t, newImages(t, t.TempDir(), 0), s), infoOf(t, newImages(t, t.TempDir(), 0), other)
+	cinfo, err := Inspect(cut.data)
+	if err != nil {
+		t.Fatalf("Inspect() of the cut JPEG error = %v", err)
+	}
+	broken := errors.New("input/output error")
+	opens := func(r io.Reader, closeErr error) func() (io.ReadCloser, error) {
+		return func() (io.ReadCloser, error) { return closeFails{r, closeErr}, nil }
+	}
+	failsWith := func(err error) func() (io.ReadCloser, error) {
+		return func() (io.ReadCloser, error) { return nil, err }
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, tt := range []struct {
+		name string
+		hash string
+		info Info // for Files
+		vs   []Variant
+		open func() (io.ReadCloser, error)
+		ctx  context.Context
+		// filesOnly is true if only Files fails: Info of the original is good.
+		filesOnly bool
+		io        bool  // the error is ErrIO
+		is        error // that the error wraps, if not nil
+	}{
+		{name: "open fails", hash: s.hash, info: sinfo, open: failsWith(broken), io: true, is: broken},
+		{name: "open is denied", hash: s.hash, info: sinfo, open: failsWith(&fs.PathError{Op: "open", Path: "files/x", Err: fs.ErrPermission}),
+			io: true, is: fs.ErrPermission},
+		{name: "read fails at once", hash: s.hash, info: sinfo, open: opens(iotest.ErrReader(broken), nil), io: true, is: broken},
+		{name: "read fails later", hash: s.hash, info: sinfo,
+			open: opens(io.MultiReader(bytes.NewReader(s.data[:10]), iotest.ErrReader(broken)), nil), io: true, is: broken},
+		{name: "close fails", hash: s.hash, info: sinfo, open: opens(bytes.NewReader(s.data), broken), io: true, is: broken},
+		{name: "the original is not there", hash: s.hash, info: sinfo,
+			open: failsWith(&fs.PathError{Op: "open", Path: "files/x", Err: fs.ErrNotExist}), is: fs.ErrNotExist},
+		{name: "another original", hash: other.hash, info: oinfo, open: s.open},
+		{name: "not an image", hash: pdf.hash, info: sinfo, open: pdf.open},
+		{name: "larger than an original may be", hash: s.hash, info: sinfo,
+			open: opens(io.LimitReader(zeroReader{}, content.MaxMediaBytes+1), nil)},
+		{name: "image data that cannot be decoded", hash: cut.hash, info: cinfo, vs: []Variant{Published(cinfo)}, open: cut.open,
+			filesOnly: true},
+		{name: "Info of another original", hash: s.hash, info: oinfo, open: s.open, filesOnly: true},
+		{name: "variant larger than the image", hash: s.hash, info: sinfo, vs: []Variant{pngVariant(41, 30)}, open: s.open,
+			filesOnly: true},
+		{name: "ctx is done", hash: s.hash, info: sinfo, open: s.open, ctx: canceled, filesOnly: true, is: context.Canceled},
+	} {
+		check := func(what string, err error) {
+			t.Helper()
+			switch {
+			case err == nil:
+				t.Errorf("%s: %s: no error", tt.name, what)
+				return
+			case errors.Is(err, ErrIO) != tt.io:
+				t.Errorf("%s: %s: error %q is ErrIO: %v, want %v", tt.name, what, err, !tt.io, tt.io)
+			case tt.is != nil && !errors.Is(err, tt.is):
+				t.Errorf("%s: %s: error %q does not wrap %q", tt.name, what, err, tt.is)
+			}
+		}
+		if tt.ctx == nil {
+			tt.ctx = t.Context()
+		}
+		if !tt.filesOnly {
+			_, err := newImages(t, t.TempDir(), 0).Info(tt.hash, tt.open)
+			check("Info", err)
+		}
+		vs := tt.vs
+		if vs == nil {
+			vs = []Variant{Published(tt.info)}
+		}
+		_, err := newImages(t, t.TempDir(), 0).Files(tt.ctx, tt.hash, tt.open, tt.info, vs)
+		check("Files", err)
+	}
+}
+
+// TestImagesCacheIOError checks that a cache that cannot be written fails Info and Files with ErrIO, and keeps the error of
+// the file system in the text.
+func TestImagesCacheIOError(t *testing.T) {
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("a directory that cannot be written can be written by root")
+	}
+	s := newSource(pngOf(t, colored(40, 30)))
+	readOnly := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	}
+
+	t.Run("Info", func(t *testing.T) {
+		dir := t.TempDir()
+		im := newImages(t, dir, 0)
+		readOnly(t, dir)
+		_, err := im.Info(s.hash, s.open)
+		if !errors.Is(err, ErrIO) || !errors.Is(err, fs.ErrPermission) || !strings.HasPrefix(err.Error(), s.hash+": mkdir "+filepath.Join(dir, versionDir)) {
+			t.Errorf("Info() into a cache that cannot be written = %v, want an ErrIO that has the error of mkdir", err)
+		}
+	})
+	t.Run("Files", func(t *testing.T) {
+		dir := t.TempDir()
+		im := newImages(t, dir, 0)
+		info := infoOf(t, im, s)
+		readOnly(t, filepath.Join(dir, versionDir))
+		_, err := im.Files(t.Context(), s.hash, s.open, info, []Variant{Published(info)})
+		if !errors.Is(err, ErrIO) || !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), ": mkdir "+filepath.Join(dir, versionDir, "files")) {
+			t.Errorf("Files() into a cache that cannot be written = %v, want an ErrIO that has the error of mkdir", err)
+		}
+	})
 }
 
 // treeOf returns the files and directories in dir, relative to it in slashes, with "/" after directories, in order.

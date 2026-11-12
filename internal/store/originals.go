@@ -35,7 +35,8 @@ var errOriginalsStopped = errors.New("saving originals has stopped after a sync 
 // to the name of the original, so that the original is whole or missing, even after a crash. It replaces a file of
 // that name, which has the same data unless it is damaged. It checks ctx before each read of r. Once a sync of a
 // PutOriginal has failed, every PutOriginal fails, also one that runs at the same time, until the store is opened
-// again, after a restart of the machine.
+// again, after a restart of the machine. The error of the file system, as when files/ is gone, does not wrap
+// fs.ErrNotExist, which is for a document or an original that is not there.
 func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) {
 	if s.readOnly {
 		return Original{}, errors.New("the store is opened to read only")
@@ -66,7 +67,7 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 		return Original{}, err
 	}
 	if err := s.files.Rename(tmp, dir+"/"+digits); err != nil {
-		return Original{}, err
+		return Original{}, notMissing(err)
 	}
 	renamed = true
 	if err := s.syncOriginal(func() error { return s.files.SyncDir(dir) }); err != nil {
@@ -94,9 +95,19 @@ func (s *Store) syncOriginal(sync func() error) error {
 	}
 	if err := sync(); err != nil {
 		s.originalsStopped.Store(true)
-		return fmt.Errorf("%w: %w", errOriginalsStopped, err)
+		return fmt.Errorf("%w: %w", errOriginalsStopped, notMissing(err))
 	}
 	return nil
+}
+
+// notMissing returns err, an error of the file system under files/, as it is, but for one that wraps fs.ErrNotExist: that
+// one keeps its text and loses its chain. A file that files/ lacks, or files/ itself, is a fault of the store, and not a
+// document or an original that is not there, which is what fs.ErrNotExist tells the callers.
+func notMissing(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.New(err.Error())
+	}
+	return err
 }
 
 // createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, opened with access, os.O_WRONLY or
@@ -109,7 +120,7 @@ func (s *Store) createTemp(access int) (vfs.File, string, error) {
 		tmp := tempPrefix + hex.EncodeToString(b[:])
 		var f vfs.File
 		if f, err = s.files.OpenFile(tmp, access|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
-			return f, tmp, err
+			return f, tmp, notMissing(err)
 		}
 	}
 	return nil, "", err
@@ -144,7 +155,9 @@ type TempFile struct {
 }
 
 // CreateTemp makes a new empty temporary file in files/, to read and write: it is named like the temporary file of
-// PutOriginal, .tmp-<16 random hex digits>, and has the mode 0600. A store that is opened to read only makes none.
+// PutOriginal, .tmp-<16 random hex digits>, and has the mode 0600. A store that is opened to read only makes none. The
+// error of the file system, as when files/ is gone, does not wrap fs.ErrNotExist, which is for a document or an original
+// that is not there.
 func (s *Store) CreateTemp() (*TempFile, error) {
 	if s.readOnly {
 		return nil, errReadOnly
@@ -246,7 +259,7 @@ func (s *Store) mkdir(dir string) error {
 			return nil
 		}
 	case err != nil:
-		return err
+		return notMissing(err)
 	}
 	if err := s.syncOriginal(func() error { return s.files.SyncDir(".") }); err != nil {
 		return err

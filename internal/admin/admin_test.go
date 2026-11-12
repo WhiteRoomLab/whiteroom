@@ -300,6 +300,7 @@ var problems = map[string]struct {
 	"too-large":              {http.StatusRequestEntityTooLarge, "the body is too large"},
 	"unsupported-media-type": {http.StatusUnsupportedMediaType, "the body must be application/json"},
 	"bad-request":            {http.StatusBadRequest, "the body is not the JSON that this resource takes"},
+	"unreadable-body":        {http.StatusBadRequest, "the body could not be read to its end"},
 	"too-many-attempts":      {http.StatusTooManyRequests, "too many failed logins; try again later"},
 	"bad-credentials":        {http.StatusUnauthorized, "wrong login name or password"},
 	"unauthenticated":        {http.StatusUnauthorized, "not logged in"},
@@ -1046,12 +1047,12 @@ func TestReadJSON(t *testing.T) {
 		t.Errorf("requests with bodies that are refused have logged %q", got)
 	}
 
-	// A body that cannot be read is not the JSON that the resource takes, and its error is not shown.
+	// A body that cannot be read to its end is not one that is the wrong JSON, and its error is not shown.
 	req := ts.request(http.MethodPost, "/api/test", "", "Origin", ts.origin, "Content-Type", "application/json")
 	req.Body = io.NopCloser(iotest.ErrReader(errors.New("the secret text of a read error")))
 	rec := httptest.NewRecorder()
 	ts.ServeHTTP(rec, req)
-	checkProblem(t, "POST with a body that fails to be read", rec.Result(), "bad-request")
+	checkProblem(t, "POST with a body that fails to be read", rec.Result(), "unreadable-body")
 }
 
 func TestReadJSONClosesConnection(t *testing.T) {

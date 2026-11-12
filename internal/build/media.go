@@ -34,6 +34,7 @@ type resolver struct {
 	mu    sync.Mutex
 	infos map[string]func() (imaging.Info, error) // by hash, each called once
 	asked map[string]map[imaging.Variant]bool     // the media asked about by ID, with the files of the images
+	fault error                                   // the first error of an inspection that is imaging.ErrIO
 }
 
 // newResolver returns the resolver of b, which makes the files of images with images and reads inspecting originals at
@@ -200,12 +201,28 @@ func (r *resolver) info(hash string) (imaging.Info, error) {
 		info = sync.OnceValues(func() (imaging.Info, error) {
 			r.sem <- struct{}{}
 			defer func() { <-r.sem }()
-			return r.images.Info(hash, r.open(hash))
+			info, err := r.images.Info(hash, r.open(hash))
+			if errors.Is(err, imaging.ErrIO) {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				if r.fault == nil {
+					r.fault = err
+				}
+			}
+			return info, err
 		})
 		r.infos[hash] = info
 	}
 	r.mu.Unlock()
 	return info()
+}
+
+// failure returns the first error of an inspection that is imaging.ErrIO: a fault of the files, and not a problem of the
+// site, which Build returns whatever else it finds. It is nil if there was none.
+func (r *resolver) failure() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fault
 }
 
 // open returns the function that opens the original whose Media.Hash is hash, for imaging.
@@ -295,13 +312,17 @@ func (b *builder) publishMedium(
 
 // publishImage checks what imaging read from the original of d, the image medium with the ID id, against d, and writes
 // its files vs, which imaging makes, into pub. It returns their outputs, or none if d has problems, which go to p; the
-// warnings about the original go to b.warnings.
+// warnings about the original go to b.warnings. A failure to read the original or to write the cache (imaging.ErrIO) is
+// an error of the build, and not a problem of d.
 func (b *builder) publishImage(
 	ctx context.Context, pub *os.Root, id string, d *doc[content.Media], vs []imaging.Variant, p *problems,
 ) ([]siteplan.Output, error) {
 	m := &d.V
 	info, err := b.res.info(m.Hash)
-	if err != nil {
+	switch {
+	case errors.Is(err, imaging.ErrIO):
+		return nil, fmt.Errorf("%s: cannot read the original: %w", d.File.Name, err)
+	case err != nil:
 		p.add(d.File, "", "cannot read the original: %v", err)
 		return nil, nil
 	}
@@ -333,6 +354,8 @@ func (b *builder) publishImage(
 	switch {
 	case ctx.Err() != nil:
 		return nil, ctx.Err()
+	case errors.Is(err, imaging.ErrIO):
+		return nil, fmt.Errorf("%s: cannot make the files: %w", d.File.Name, err)
 	case err != nil:
 		p.add(d.File, "", "cannot make the files: %v", err)
 		return nil, nil

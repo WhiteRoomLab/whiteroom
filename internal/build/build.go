@@ -64,7 +64,8 @@ type Result struct {
 // If Build fails, Out stays as it was: Build removes the temporary directory of the release, and makes only Out, .lock
 // and releases if they are missing. The error is then content.Errors, sorted by file, line, column and pointer, if the
 // site has problems: documents that do not validate, outputs with the same paths, originals of media that do not match
-// their documents; ctx.Err() if ctx is done; or else another error, such as one of the Source or of the file system, or
+// their documents; ctx.Err() if ctx is done; or else another error, such as one of the Source or of the file system (also
+// a failure to open, read or close the original of an image, or to write the image cache, which wraps imaging.ErrIO), or
 // that a revision has changed since the build validated it, which says what failed. If Build has published the release
 // but cannot remove the old releases or prune the cache, it returns the Result with that error.
 //
@@ -123,6 +124,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	b.res = newResolver(b, images, min(workers, 4))
 	p := problems{read: b.revisionData}
 	b.resolveRedirects(b.res.mediaPath, &p)
+	if err := b.res.failure(); err != nil {
+		return nil, fmt.Errorf("inspecting the originals of the redirects: %w", err)
+	}
 	b.checkPaths(&p)
 	if p.len() > 0 {
 		return nil, p.sorted()

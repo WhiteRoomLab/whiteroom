@@ -355,7 +355,6 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
-            - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$

@@ -98,7 +98,8 @@ func handsToken(what string, status int) bool {
 }
 
 // takeToken watches for the token that the body of an answer which hands one over has as its member token, and returns the
-// body without it, as the tokens of a Set-Cookie are left out of what is kept.
+// body without it, as the tokens of a Set-Cookie are left out of what is kept. A body that has the token more than once
+// is returned as it is: the copy that is not the member is a token where it must not be, and problems finds it.
 func (w *secretWatch) takeToken(body []byte) []byte {
 	var v struct {
 		Token string `json:"token"`
@@ -107,6 +108,9 @@ func (w *secretWatch) takeToken(body []byte) []byte {
 		return body
 	}
 	w.token(v.Token)
+	if bytes.Count(body, []byte(v.Token)) != 1 {
+		return body
+	}
 	return bytes.ReplaceAll(body, []byte(v.Token), []byte("<token>"))
 }
 

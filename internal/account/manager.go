@@ -146,16 +146,26 @@ func (m *Manager) newHash(ctx context.Context, p string) (hash string, err error
 	return hash, hashErr
 }
 
-// Actor is who does an account operation: an account, by By, or the commands on the server, System. It does not carry how
-// the session of the account was authenticated; 7.3 keeps that path for the operations that will ask for a recent
-// re-authentication. The zero Actor, which By("") is too, may do nothing.
+// Actor is who does an account operation: an account, by By or ByPrincipal, or the commands on the server, System. It does
+// not carry how the session of the account was authenticated; 7.3 keeps that path for the operations that will ask for a
+// recent re-authentication. The zero Actor, which By("") is too, may do nothing.
 type Actor struct {
 	id     string
 	system bool
+	// credentials is the CredentialsChangedAt that the account had when ByPrincipal saw it; it counts only if sessioned.
+	credentials time.Time
+	sessioned   bool
 }
 
 func By(id string) Actor {
 	return Actor{id: id}
+}
+
+// ByPrincipal is By for the account of p, which a session has authenticated: besides what By is checked for, the Update
+// of the operation reads the account again, and fails with an error that wraps ErrNoSession, and writes nothing, if the
+// account is gone or has other credentials than p's account had, as a session ends then (Account.CredentialsChangedAt).
+func ByPrincipal(p Principal) Actor {
+	return Actor{id: p.Account.ID, credentials: p.Account.CredentialsChangedAt, sessioned: true}
 }
 
 // System may do every account operation, but not what would leave a store without an active administrator, except
@@ -249,7 +259,8 @@ func indexOfID(rows []row, id string) int {
 }
 
 // authorize checks that by may do act, which is about the account target, with the accounts as they are in rows:
-// System always; an account if it is one of rows and Check allows it.
+// System always; an account if it is one of rows and Check allows it. An Actor made by ByPrincipal also needs its
+// account to have the credentials that it had (ErrNoSession), before Check is asked.
 func authorize(rows []row, by Actor, act Action, target string) error {
 	switch {
 	case by.system:
@@ -263,7 +274,13 @@ func authorize(rows []row, by Actor, act Action, target string) error {
 		if content.CheckID(content.RefUser, who) != nil {
 			who = strconv.Quote(who)
 		}
+		if by.sessioned {
+			return fmt.Errorf("%s: %w: no such account", who, ErrNoSession)
+		}
 		return fmt.Errorf("%s: %w: no such account", who, ErrForbidden)
+	}
+	if by.sessioned && !rows[i].CredentialsChangedAt.Equal(by.credentials) {
+		return fmt.Errorf("%s: %w: its credentials changed after the session was authenticated", by.id, ErrNoSession)
 	}
 	return Check(Principal{Account: rows[i].account()}, act, Target{Account: target})
 }

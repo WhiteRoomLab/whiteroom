@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,7 +73,7 @@ func TestHeavyBody(t *testing.T) {
 		{"no content type", func() *http.Response { return post(name(50), "Content-Type", "") }, "unsupported-media-type"},
 		{"a body that cannot be read", func() *http.Response {
 			return ws.serve(ws.bodyRequest(iotest.ErrReader(errors.New("the secret text of a read error")), -1))
-		}, "bad-request"},
+		}, "unreadable-body"},
 	} {
 		before := ws.begun.Load()
 		checkProblem(t, tt.name, tt.do(), tt.code)
@@ -98,6 +100,65 @@ func TestHeavyBody(t *testing.T) {
 	}
 	if files := ts.tempFiles(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay after the requests", len(files))
+	}
+}
+
+// TestBodyCutShort shows that a request whose body ends before the length that it declares, or whose chunks are broken, is 400
+// (unreadable-body) for each kind of body that the routes read, over a connection: a small JSON, a document that goes to a
+// spool, and a file; and that it leaves no temporary file and no line in the log.
+func TestBodyCutShort(t *testing.T) {
+	a, ls := newLiveAPIServer(t)
+	host := strings.TrimPrefix(ls.url, "http://")
+	token := a.people["editor"].token
+	routes := []struct{ name, path, contentType, body string }{
+		{"a small JSON", "/api/entries", "application/json", `{"type":"post","language":"ja"`},
+		{"a document", "/api/terms", "application/json", `{"document":{"schemaVersion":1,"id":`},
+		{"a file", "/api/media?fileName=cut.png", "image/png", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"},
+	}
+	framings := []struct {
+		name string
+		// frame returns the header lines (with the CRLF after each) and the bytes that go after the header, for a body.
+		frame func(body string) (header, payload string)
+	}{
+		{"a body shorter than its length", func(body string) (string, string) {
+			return fmt.Sprintf("Content-Length: %d\r\n", len(body)+1000), body
+		}},
+		{"a chunk that is broken", func(body string) (string, string) {
+			return "Transfer-Encoding: chunked\r\n", fmt.Sprintf("%x\r\n%s\r\nzz\r\n", len(body), body)
+		}},
+	}
+	for _, route := range routes {
+		for _, framing := range framings {
+			t.Run(route.name+", "+framing.name, func(t *testing.T) {
+				header, payload := framing.frame(route.body)
+				request := "POST " + route.path + " HTTP/1.1\r\nHost: " + host + "\r\nOrigin: " + ls.origin + "\r\nCookie: " +
+					ls.wantCookieName() + "=" + token + "\r\nContent-Type: " + route.contentType + "\r\n" + header + "\r\n" + payload
+				conn, err := net.Dial("tcp", host)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = conn.Close() })
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				if _, err := io.WriteString(conn, request); err != nil {
+					t.Fatal(err)
+				}
+				// The body ends here for the server, which has all that the client will send.
+				if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+					t.Fatal(err)
+				}
+				res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkProblem(t, "POST "+route.path+" with "+framing.name, res, "unreadable-body")
+			})
+		}
+	}
+	if files := a.tempFiles(t); len(files) != 0 {
+		t.Errorf("%d temporary files stay: %v", len(files), files)
+	}
+	if logged := a.logs.String(); logged != "" {
+		t.Errorf("the log is %q, want nothing", logged)
 	}
 }
 

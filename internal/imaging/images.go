@@ -41,6 +41,23 @@ const (
 // versionDir is the directory of the cache of processingVersion in the cache directory.
 var versionDir = "v" + strconv.Itoa(processingVersion)
 
+// ErrIO is wrapped by the error of Info and Files for a failure to read the original (to open it, to read it, or to close
+// it) or to write the cache: a fault of the files that the program uses, which the caller does not report as a problem of
+// the medium. It is not wrapped for an original that is not there (the error of open wraps fs.ErrNotExist), nor for one that
+// is not an image, is larger than content.MaxMediaBytes, has another hash than Media.Hash or another size than its Info says,
+// nor for a variant that does not fit the image, nor for the end of ctx.
+var ErrIO = errors.New("cannot read the original or write the cache")
+
+// ioError is an error of reading the original or of writing the cache. It has the text of the error that it wraps, and is
+// ErrIO.
+type ioError struct{ err error }
+
+func (e ioError) Error() string { return e.err.Error() }
+
+func (e ioError) Unwrap() error { return e.err }
+
+func (ioError) Is(target error) bool { return target == ErrIO }
+
 // Images makes the files of image media from their originals and caches them in a directory, with what Inspect reads
 // from the originals, by the hashes of the originals: what Info returns in v<version>/info/<2 hex digits>/<64 hex
 // digits of the hash>.json, and each file in v<version>/files/<2 hex digits>/<cache key><extension>. The files are the
@@ -123,7 +140,8 @@ func openCacheDir(dir string) error {
 }
 
 // Info returns what Inspect reads from the original whose Media.Hash is hash: from the cache, or else from the
-// original that open opens, which it checks against hash, and caches it.
+// original that open opens, which it checks against hash, and caches it. A failure to read the original or to write the
+// cache is ErrIO.
 func (im *Images) Info(hash string, open func() (io.ReadCloser, error)) (Info, error) {
 	digits, err := hashDigits(hash)
 	if err != nil {
@@ -201,7 +219,7 @@ func readInfo(name string) (Info, bool) {
 // Files returns the files of the variants vs, in their order, of the original whose Media.Hash is hash and whose Info
 // is info, as Info returns it. It reads them from the cache, or makes those that the cache does not have from the
 // original that open opens, which it checks against hash, within the memory budget, and caches them. It returns
-// ctx.Err() if ctx is done before it has made them.
+// ctx.Err() if ctx is done before it has made them. A failure to read the original or to write the cache is ErrIO.
 func (im *Images) Files(
 	ctx context.Context, hash string, open func() (io.ReadCloser, error), info Info, vs []Variant,
 ) ([][]byte, error) {
@@ -408,15 +426,18 @@ func hashDigits(hash string) (string, error) {
 }
 
 // loadOriginal reads the original whose Media.Hash is hash, and of about size bytes if size is not 0, from open, and
-// checks it against hash.
+// checks it against hash. The errors of open, of the reads and of Close are ErrIO, but for an original that is not there.
 func loadOriginal(hash string, open func() (io.ReadCloser, error), size int) ([]byte, error) {
 	r, err := open()
 	if err != nil {
-		return nil, err
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		return nil, ioError{err}
 	}
 	data, err := readMedia(r, size)
-	if cerr := r.Close(); err == nil {
-		err = cerr
+	if cerr := r.Close(); err == nil && cerr != nil {
+		err = ioError{cerr}
 	}
 	if err != nil {
 		return nil, err
@@ -428,7 +449,8 @@ func loadOriginal(hash string, open func() (io.ReadCloser, error), size int) ([]
 	return data, nil
 }
 
-// readMedia reads r to its end into a buffer of size bytes at first, and returns an error after content.MaxMediaBytes.
+// readMedia reads r to its end into a buffer of size bytes at first, and returns an error after content.MaxMediaBytes. The
+// error of a read is ErrIO.
 func readMedia(r io.Reader, size int) ([]byte, error) {
 	const limit = content.MaxMediaBytes + 1 // a byte more than an original has, to read the end without growing
 	b := make([]byte, 0, min(max(size, 512)+1, limit))
@@ -441,7 +463,7 @@ func readMedia(r io.Reader, size int) ([]byte, error) {
 		case errors.Is(err, io.EOF):
 			return b, nil
 		case err != nil:
-			return nil, err
+			return nil, ioError{err}
 		case len(b) == cap(b):
 			b = append(make([]byte, 0, min(2*cap(b), limit)), b...)
 		}
@@ -449,8 +471,13 @@ func readMedia(r io.Reader, size int) ([]byte, error) {
 }
 
 // writeFile writes data to the file name atomically: to a temporary file in its directory, which it syncs and then
-// renames, so that the file is whole or missing, even after a crash.
-func writeFile(name string, data []byte) error {
+// renames, so that the file is whole or missing, even after a crash. Its errors are ErrIO.
+func writeFile(name string, data []byte) (err error) {
+	defer func() {
+		if err != nil {
+			err = ioError{err}
+		}
+	}()
 	dir := filepath.Dir(name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

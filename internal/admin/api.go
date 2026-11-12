@@ -112,7 +112,8 @@ func (s *Server) deadlineOf(pattern string) time.Duration {
 // at calls the hook of the tests at point: "checked" when a route has checked the request and is about to do what it asks
 // (heavyWork: in the place, before it works; the routes of the builds and of the accounts: before they call the Publisher or
 // the Manager; the change of one's own password: after the attempt is counted; the logs: in their place, before they read),
-// and "sending" when a place is given back and the answer is not yet written.
+// and "sending" when a place is given back and the answer is not yet written, and "reset" when the route of a reset has made
+// the reset and not yet read the account for the time at which the token stops working.
 func (s *Server) at(point string) {
 	if s.hook != nil {
 		s.hook(point)
@@ -226,7 +227,7 @@ func (s *Server) receiveBody(w http.ResponseWriter, r *http.Request, limit int64
 		case errors.As(body.err, &tooLarge):
 			writeProblem(w, http.StatusRequestEntityTooLarge, codeTooLarge, detailTooLarge)
 		case body.err != nil:
-			writeProblem(w, http.StatusBadRequest, codeBadRequest, detailBadRequest)
+			writeProblem(w, http.StatusBadRequest, codeUnreadableBody, detailUnreadableBody)
 		default:
 			s.fail(w, r, err)
 		}

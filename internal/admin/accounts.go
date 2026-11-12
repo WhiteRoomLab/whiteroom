@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -202,7 +204,7 @@ type invitationReply struct {
 }
 
 // resetReply is the answer to a reset: the token for setting a new credential, and until when it works. ExpiresAt is left out
-// if the account has no token when it is read, because it was used meanwhile.
+// if the account has no token when it is read, because it was used meanwhile, or cannot be read.
 type resetReply struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
@@ -234,7 +236,7 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request, p account
 		return
 	}
 	s.at("checked")
-	a, token, err := s.accounts.Invite(r.Context(), account.By(p.Account.ID), in)
+	a, token, err := s.accounts.Invite(r.Context(), account.ByPrincipal(p), in)
 	if err != nil {
 		s.answerError(w, r, p, err, attempt{action: account.ManageAccounts})
 		return
@@ -278,7 +280,7 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request, p account
 		return
 	}
 	s.at("checked")
-	a, err := s.accounts.Update(r.Context(), account.By(p.Account.ID), id, c)
+	a, err := s.accounts.Update(r.Context(), account.ByPrincipal(p), id, c)
 	if err != nil {
 		s.answerError(w, r, p, err, attempt{action: act, target: userTarget(id)})
 		return
@@ -311,7 +313,7 @@ func (s *Server) toggleAccount(w http.ResponseWriter, r *http.Request, p account
 		return
 	}
 	s.at("checked")
-	a, err := do(r.Context(), account.By(p.Account.ID), id)
+	a, err := do(r.Context(), account.ByPrincipal(p), id)
 	if err != nil {
 		s.answerError(w, r, p, err, attempt{action: account.ManageAccounts, target: userTarget(id)})
 		return
@@ -336,7 +338,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request, p account
 		return
 	}
 	s.at("checked")
-	if err := s.accounts.Delete(r.Context(), account.By(p.Account.ID), id); err != nil {
+	if err := s.accounts.Delete(r.Context(), account.ByPrincipal(p), id); err != nil {
 		s.answerError(w, r, p, err, attempt{action: account.ManageAccounts, target: userTarget(id)})
 		return
 	}
@@ -345,26 +347,29 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request, p account
 
 // resetAccount is POST /api/accounts/{id}/reset: it removes the credentials of the account, ends its sessions, and tells the
 // token with which its holder sets a new password. The account is read after the reset for the time at which the token stops
-// working.
+// working; if that fails the answer is still 200 with the token, which nothing else keeps, and without the time.
 func (s *Server) resetAccount(w http.ResponseWriter, r *http.Request, p account.Principal) {
 	id, ok := s.changeAccount(w, r, p)
 	if !ok {
 		return
 	}
 	s.at("checked")
-	token, err := s.accounts.Reset(r.Context(), account.By(p.Account.ID), id)
+	token, err := s.accounts.Reset(r.Context(), account.ByPrincipal(p), id)
 	if err != nil {
 		s.answerError(w, r, p, err, attempt{action: account.ManageAccounts, target: userTarget(id)})
 		return
 	}
-	a, err := s.accounts.Get(r.Context(), id)
-	if err != nil {
-		s.answerError(w, r, p, err, attempt{})
-		return
-	}
+	s.at("reset")
 	reply := resetReply{Token: token}
-	if a.Token.Purpose != "" {
-		reply.ExpiresAt = a.Token.ExpiresAt.UTC()
+	switch a, err := s.accounts.Get(r.Context(), id); {
+	case err == nil:
+		if a.Token.Purpose != "" {
+			reply.ExpiresAt = a.Token.ExpiresAt.UTC()
+		}
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, fs.ErrNotExist):
+		// The request is over, or the account is gone: nothing to log.
+	default:
+		s.log.Printf("%s %q: cannot read the account after its reset: %v", r.Method, r.RequestURI, err)
 	}
 	writeJSON(w, http.StatusOK, reply)
 }

@@ -112,7 +112,10 @@ func fieldOf(f *content.FieldDef) fieldAnswer {
 // showSchema is GET /api/schema: the definitions that the Editor validates the documents against, from the schema file that
 // it was made with.
 func (s *Server) showSchema(w http.ResponseWriter, r *http.Request, p account.Principal) {
-	if !s.allowView(w, r, p) {
+	if !s.allowView(w, r, p) || !noOperationID(w, r) {
+		return
+	}
+	if _, ok := readQuery(w, r, nil); !ok {
 		return
 	}
 	s.at("checked")
@@ -246,7 +249,10 @@ func namesOf(ns []content.ThemeName) []nameAnswer {
 
 // showTheme is GET /api/theme: the settings of the theme that the Editor validates the documents against.
 func (s *Server) showTheme(w http.ResponseWriter, r *http.Request, p account.Principal) {
-	if !s.allowView(w, r, p) {
+	if !s.allowView(w, r, p) || !noOperationID(w, r) {
+		return
+	}
+	if _, ok := readQuery(w, r, nil); !ok {
 		return
 	}
 	s.at("checked")

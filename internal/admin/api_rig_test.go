@@ -80,9 +80,15 @@ func newTestPublisher(t *testing.T, ts *testServer, st *store.Store) (p *publish
 // newTestPublisherWith is newTestPublisher for the theme th.
 func newTestPublisherWith(t *testing.T, ts *testServer, st *store.Store, th fs.FS) (p *publish.Publisher, out string) {
 	t.Helper()
+	return newTestPublisherIn(t, ts, st, th, t.TempDir())
+}
+
+// newTestPublisherIn is newTestPublisherWith for the image cache in the directory cache.
+func newTestPublisherIn(t *testing.T, ts *testServer, st *store.Store, th fs.FS, cache string) (p *publish.Publisher, out string) {
+	t.Helper()
 	out = t.TempDir()
 	p, err := publish.New(publish.Options{
-		Store: st, Schema: sampleSchema(t), Theme: th, Out: out, CacheDir: t.TempDir(), Workers: 2,
+		Store: st, Schema: sampleSchema(t), Theme: th, Out: out, CacheDir: cache, Workers: 2,
 		Now: ts.clock.now,
 		OnRecordError: func(a audit.Action, err error) {
 			_, _ = ts.logs.Write([]byte("cannot record " + string(a) + ": " + err.Error() + "\n"))
@@ -129,12 +135,18 @@ func newAPIServer(t *testing.T) *apiServer {
 // newAPIServerAt is newAPIServer for the server of origin.
 func newAPIServerAt(t *testing.T, origin string) *apiServer {
 	t.Helper()
+	return newAPIServerIn(t, origin, t.TempDir())
+}
+
+// newAPIServerIn is newAPIServerAt for the image cache in the directory cache.
+func newAPIServerIn(t *testing.T, origin, cache string) *apiServer {
+	t.Helper()
 	ts := newTestBase()
 	db, dir := testStore(t)
 	importSample(t, db)
 	m := testManager(t, db)
 	gate := newBuildGate()
-	p, out := newTestPublisherWith(t, ts, db, gatedFS{FS: exampleTheme(t), gate: gate})
+	p, out := newTestPublisherIn(t, ts, db, gatedFS{FS: exampleTheme(t), gate: gate}, cache)
 	ts.serve(t, Config{Origin: origin, Accounts: m, Publisher: p}, db, dir)
 	a := &apiServer{testServer: ts, pub: p, out: out, builds: gate, people: make(map[string]*person)}
 

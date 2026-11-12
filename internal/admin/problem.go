@@ -24,6 +24,7 @@ const (
 	codeTooLarge             = "too-large"
 	codeUnsupportedMediaType = "unsupported-media-type"
 	codeBadRequest           = "bad-request"
+	codeUnreadableBody       = "unreadable-body"
 	codeTooManyAttempts      = "too-many-attempts"
 	codeBadCredentials       = "bad-credentials"
 	codeUnauthenticated      = "unauthenticated"
@@ -48,6 +49,7 @@ const (
 	detailTooLarge             = "the body is too large"
 	detailUnsupportedMediaType = "the body must be application/json"
 	detailBadRequest           = "the body is not the JSON that this resource takes"
+	detailUnreadableBody       = "the body could not be read to its end"
 	detailTooManyAttempts      = "too many failed logins; try again later"
 	detailBadCredentials       = "wrong login name or password"
 	detailUnauthenticated      = "not logged in"
@@ -179,8 +181,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // readJSON reads the body of r, which must be application/json of at most limit bytes, into v, a pointer. Members that
-// v does not have are refused, and so is anything after the value. If it fails it has answered with the problem, and
-// returns false.
+// v does not have are refused, and so is anything after the value. If it fails it has answered with the problem (413 for a
+// body that is too large, 400 for one that cannot be read to its end, and else for one that is not the JSON that v takes),
+// and returns false.
 func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
 		writeProblem(w, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, detailUnsupportedMediaType)
@@ -192,7 +195,7 @@ func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 		if errors.As(err, &tooLarge) {
 			writeProblem(w, http.StatusRequestEntityTooLarge, codeTooLarge, detailTooLarge)
 		} else {
-			writeProblem(w, http.StatusBadRequest, codeBadRequest, detailBadRequest)
+			writeProblem(w, http.StatusBadRequest, codeUnreadableBody, detailUnreadableBody)
 		}
 		return false
 	}

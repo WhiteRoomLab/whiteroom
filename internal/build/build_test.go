@@ -19,6 +19,7 @@ import (
 	"testing/fstest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 )
 
 // buildSource returns the fixture with the example theme (internal/theme/testdata/example) and small originals of the
@@ -576,6 +577,149 @@ func checkFileError(t *testing.T, what string, src Source, out, cache, pattern s
 		t.Errorf("%s: Build() = %+v, %v, want an error that matches %s", what, res, err, pattern)
 	}
 	checkTree(t, what, out, before)
+}
+
+// ioFailures is a Source whose originals fail to read or to close with the errors that it has.
+type ioFailures struct {
+	Source
+	read, closing error
+}
+
+func (s ioFailures) OpenMedia(hash string) (fs.File, error) {
+	f, err := s.Source.OpenMedia(hash)
+	if err != nil {
+		return nil, err
+	}
+	return ioFailure{File: f, read: s.read, closing: s.closing}, nil
+}
+
+type ioFailure struct {
+	fs.File
+	read, closing error
+}
+
+func (f ioFailure) Read(p []byte) (int, error) {
+	if f.read != nil {
+		return 0, f.read
+	}
+	return f.File.Read(p)
+}
+
+func (f ioFailure) Close() error {
+	err := f.File.Close()
+	if f.closing != nil {
+		return f.closing
+	}
+	return err
+}
+
+// TestBuildImageIOErrors checks that a build that cannot read the original of an image, or write the image cache, fails with
+// an error that wraps imaging.ErrIO and is not the problems of the site (content.Errors), and leaves the output directory as
+// it was.
+func TestBuildImageIOErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may write in any directory")
+	}
+	const (
+		doc  = `media/med_[0-9A-Z]{26}\.json`
+		hash = `sha256:[0-9a-f]{64}`
+	)
+	broken := errors.New("input/output error")
+	readOnly := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	}
+	tests := []struct {
+		name string
+		// run makes what the failing build needs, and returns its options and the pattern of the error.
+		run func(t *testing.T, src *memSource) (opts Options, out, want string)
+	}{
+		{"a cache that cannot be written for what is read of the originals", func(t *testing.T, src *memSource) (Options, string, string) {
+			out, cache := t.TempDir(), t.TempDir()
+			mustBuild(t, src, out, t.TempDir(), 4)
+			newTestImages(t, cache) // makes the tag in it
+			readOnly(t, cache)
+			want := `^publishing the media: ` + doc + `: cannot read the original: ` + hash + `: mkdir ` + regexp.QuoteMeta(cache) +
+				`/v[0-9]+: permission denied$`
+			return buildOptions(src, out, cache, 4), out, want
+		}},
+		{"a cache that cannot be written for the files", func(t *testing.T, src *memSource) (Options, string, string) {
+			out, cache := t.TempDir(), t.TempDir()
+			mustBuild(t, src, out, cache, 4)
+			versions, err := filepath.Glob(filepath.Join(cache, "v[0-9]*"))
+			if err != nil || len(versions) != 1 {
+				t.Fatalf("the cache holds %q, %v, want one version", versions, err)
+			}
+			if err := os.RemoveAll(filepath.Join(versions[0], "files")); err != nil {
+				t.Fatal(err)
+			}
+			readOnly(t, versions[0])
+			want := `^publishing the media: ` + doc + `: cannot make the files: ` + hash + `: .*: mkdir ` +
+				regexp.QuoteMeta(filepath.Join(versions[0], "files")) + `: permission denied$`
+			return buildOptions(src, out, cache, 4), out, want
+		}},
+		{"an original that cannot be read", func(t *testing.T, src *memSource) (Options, string, string) {
+			out := t.TempDir()
+			mustBuild(t, src, out, t.TempDir(), 4)
+			want := `^publishing the media: ` + doc + `: cannot read the original: ` + hash + `: input/output error$`
+			return buildOptions(ioFailures{Source: src, read: broken}, out, t.TempDir(), 4), out, want
+		}},
+		{"an original that cannot be closed", func(t *testing.T, src *memSource) (Options, string, string) {
+			out := t.TempDir()
+			mustBuild(t, src, out, t.TempDir(), 4)
+			want := `^publishing the media: ` + doc + `: cannot read the original: ` + hash + `: input/output error$`
+			return buildOptions(ioFailures{Source: src, closing: broken}, out, t.TempDir(), 4), out, want
+		}},
+		{"the original of a redirect that cannot be read", func(t *testing.T, src *memSource) (Options, string, string) {
+			src.addRedirect(t, 1, "/wp-content/uploads/logo.png", logoID)
+			out := t.TempDir()
+			mustBuild(t, src, out, t.TempDir(), 4)
+			want := `^inspecting the originals of the redirects: ` + hash + `: input/output error$`
+			return buildOptions(ioFailures{Source: src, read: broken}, out, t.TempDir(), 4), out, want
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, out, want := tt.run(t, buildSource(t))
+			before := tree(t, out)
+			res, err := Build(t.Context(), opts)
+			var problems content.Errors
+			switch {
+			case res != nil || err == nil:
+				t.Fatalf("Build() = %+v, %v, want an error", res, err)
+			case errors.As(err, &problems):
+				t.Errorf("Build() fails with the problems of the site, want a fault of the files:\n%v", err)
+			case !errors.Is(err, imaging.ErrIO):
+				t.Errorf("Build() error %q does not wrap imaging.ErrIO", err)
+			case !regexp.MustCompile(want).MatchString(err.Error()):
+				t.Errorf("Build() error %q does not match %s", err, want)
+			}
+			checkTree(t, tt.name, out, before)
+		})
+	}
+}
+
+// TestBuildMissingOriginalOfRedirect checks that an original that is not there is a problem of the site (content.Errors), and
+// not a fault of the files, also when the build comes upon it at the redirect to its medium, before it writes anything.
+func TestBuildMissingOriginalOfRedirect(t *testing.T) {
+	src := buildSource(t)
+	logo := src.putOriginal(t, logoID, "logo.png", testPNG(t, 41, 10))
+	digits := strings.TrimPrefix(logo.Hash, "sha256:")
+	delete(src.files, digits)
+	src.addRedirect(t, 1, "/wp-content/uploads/logo.png", logoID)
+	out := t.TempDir()
+	res, err := Build(t.Context(), buildOptions(src, out, t.TempDir(), 4))
+	var problems content.Errors
+	if res != nil || !errors.As(err, &problems) || errors.Is(err, imaging.ErrIO) {
+		t.Fatalf("Build() = %+v, %v, want the problems of the site that are no fault of the files", res, err)
+	}
+	want := "/to: cannot make the path: cannot read the original: " + logo.Hash + ": open " + digits + ": file does not exist"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("Build() error:\n%v\nwant a problem with %q", err, want)
+	}
 }
 
 // TestBuildRemoveError checks that a build that has published its release but cannot remove an old one returns the

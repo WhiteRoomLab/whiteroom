@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const missingUser = "usr_01JB8T7H4MA2C5E8G1J4K7N3ZZ" // the form of the ID of an account, and none that the store has
@@ -370,6 +373,173 @@ func TestAccountsRoleChangesInUpdate(t *testing.T) {
 			got := slices.DeleteFunc(slices.Clone(after), func(x account.Account) bool { return x.ID == boss })
 			if !slices.Equal(got, want) {
 				t.Errorf("the accounts are\n%+v\nwant\n%+v", got, want)
+			}
+		})
+	}
+}
+
+// TestAccountsCredentialsChangeInUpdate shows that the accounts check the credentials of the administrator again in their
+// Update, as the routes of the documents do: an administrator whose password changes, whose credentials are reset, or whose
+// account is deleted, after the route has checked its request but before the operation, is answered as one without a session,
+// 401 with the cookie cleared, and nothing is changed or recorded; it is no refusal of a permission.
+func TestAccountsCredentialsChangeInUpdate(t *testing.T) {
+	a := newAPIServer(t)
+	a.waitBuilds(t) // the record of the build of the start is not one of the request
+	victim := a.people["viewer"].account.ID
+	item := "/api/accounts/" + victim
+	operations := []struct{ name, method, path, body string }{
+		{"invite", http.MethodPost, "/api/accounts", newbieBody},
+		{"update", http.MethodPatch, item, `{"name":"Changed"}`},
+		{"disable", http.MethodPost, item + "/disable", ""},
+		{"enable", http.MethodPost, item + "/enable", ""},
+		{"reset", http.MethodPost, item + "/reset", ""},
+		{"delete", http.MethodDelete, item, ""},
+	}
+	changes := []struct {
+		name string
+		do   func(t *testing.T, boss, login string)
+	}{
+		{"its password changes", func(t *testing.T, boss, login string) {
+			next := login + " has another long password"
+			a.seen.password(next)
+			if err := a.accounts.ChangePassword(t.Context(), boss, testPassword(login), next); err != nil {
+				t.Errorf("ChangePassword() error = %v", err)
+			}
+		}},
+		{"its credentials are reset", func(t *testing.T, boss, _ string) {
+			token, err := a.accounts.Reset(t.Context(), account.System, boss)
+			if err != nil {
+				t.Errorf("Reset() error = %v", err)
+			}
+			a.seen.token(token)
+		}},
+		{"its account is deleted", func(t *testing.T, boss, _ string) {
+			if err := a.accounts.Delete(t.Context(), account.System, boss); err != nil {
+				t.Errorf("Delete() error = %v", err)
+			}
+		}},
+	}
+	for i, op := range operations {
+		for j, change := range changes {
+			t.Run(op.name+" when "+change.name, func(t *testing.T) {
+				login := "stale" + strconv.Itoa(i) + strconv.Itoa(j)
+				boss := a.victim(t, login, account.RoleAdmin)
+				before, err := a.accounts.List(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fired atomic.Int32
+				var recordsAfterChange int
+				a.hook = func(point string) {
+					if point == "checked" && fired.Add(1) == 1 {
+						a.clock.advance(time.Minute) // the time of the credentials is that of the clock
+						change.do(t, boss, login)
+						recordsAfterChange = len(a.records(t, ""))
+					}
+				}
+				denied := len(a.records(t, audit.AccessDenied))
+				res := a.as(login).send(op.method, op.path, op.body)
+				a.hook = nil
+				if fired.Load() != 1 {
+					t.Fatalf("the hook ran %d times, want 1", fired.Load())
+				}
+				checkProblem(t, op.name+" by an administrator whose account changed meanwhile", res, "unauthenticated")
+				if got := res.Header.Values("Set-Cookie"); !equalValues(got, a.clearLine()) {
+					t.Errorf("the answer sets the cookies %q, want the one that clears the session", got)
+				}
+				if got := len(a.records(t, audit.AccessDenied)); got != denied {
+					t.Errorf("the request made %d records of access.denied, want none: it is not a refusal of a permission", got-denied)
+				}
+				if got := len(a.records(t, "")); got != recordsAfterChange {
+					t.Errorf("the request wrote %d records after the account changed, want none", got-recordsAfterChange)
+				}
+				after, err := a.accounts.List(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The administrator differs, or is gone; nothing else may, and no account is made.
+				want := slices.DeleteFunc(slices.Clone(before), func(x account.Account) bool { return x.ID == boss })
+				got := slices.DeleteFunc(slices.Clone(after), func(x account.Account) bool { return x.ID == boss })
+				if !slices.Equal(got, want) {
+					t.Errorf("the accounts are\n%+v\nwant\n%+v", got, want)
+				}
+				checkProblem(t, "a request after the change", a.as(login).get("/api/accounts"), "unauthenticated")
+			})
+		}
+	}
+}
+
+// TestAccountResetReadFails shows that the answer to a reset has the token when the account cannot be read for the time at which
+// the token stops working, since the reset has been made and nothing else keeps the token: it is 200 without the time. A
+// failure that is neither the end of the request nor an account that is gone is logged, without the token.
+func TestAccountResetReadFails(t *testing.T) {
+	a := newAPIServer(t)
+	for i, tt := range []struct {
+		name    string
+		timeout time.Duration // the request has this long; it has no limit but the end of the test if 0
+		fail    func(t *testing.T, id string, ctx context.Context, end context.CancelFunc)
+		logged  bool
+		usable  bool // the token sets a password
+	}{
+		{"the account is deleted", 0, func(t *testing.T, id string, _ context.Context, _ context.CancelFunc) {
+			if err := a.accounts.Delete(t.Context(), account.System, id); err != nil {
+				t.Errorf("Delete() error = %v", err)
+			}
+		}, false, false},
+		{"the request ends", 0, func(_ *testing.T, _ string, _ context.Context, end context.CancelFunc) { end() }, false, true},
+		{"the request is out of time", 2 * time.Second, func(_ *testing.T, _ string, ctx context.Context, _ context.CancelFunc) {
+			<-ctx.Done()
+		}, false, true},
+		{"the row cannot be read", 0, func(t *testing.T, id string, _ context.Context, _ context.CancelFunc) {
+			err := a.db.Update(t.Context(), storeWrite(func(tx *store.Tx) error { return tx.PutAccount(id, []byte("not json")) }))
+			if err != nil {
+				t.Errorf("PutAccount() error = %v", err)
+			}
+		}, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := a.addAccount(t, "resetread"+strconv.Itoa(i), account.RoleViewer)
+			a.logs.Reset()
+			var ctx context.Context
+			var end context.CancelFunc
+			if tt.timeout > 0 {
+				ctx, end = context.WithTimeout(t.Context(), tt.timeout)
+			} else {
+				ctx, end = context.WithCancel(t.Context())
+			}
+			defer end()
+			a.hook = func(point string) {
+				if point == "reset" {
+					tt.fail(t, target.ID, ctx, end)
+				}
+			}
+			path := "/api/accounts/" + target.ID + "/reset"
+			req := a.request(http.MethodPost, path, "", append(a.cookie(a.people["admin"].token), "Origin", a.origin)...).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			a.ServeHTTP(rec, req)
+			a.seen.record("POST "+path, rec.Code, rec.Header(), rec.Body.Bytes())
+			a.hook = nil
+
+			reset := readObject(t, "reset", rec.Result(), http.StatusOK)
+			if got := reset.names(); !slices.Equal(got, []string{"token"}) {
+				t.Errorf("the reset answers the members %v, want the token alone", got)
+			}
+			token := reset.str(t, "token")
+			if !tokenText.MatchString(token) {
+				t.Errorf("the reset gives a token of %d characters, want one of 43 that base64url writes", len(token))
+			}
+			logged := a.logs.String()
+			switch {
+			case tt.logged && (strings.Count(logged, "\n") != 1 || !strings.Contains(logged, "cannot read the account after its reset") ||
+				!strings.Contains(logged, strconv.Quote(path))):
+				t.Errorf("the log is %q, want one line about the account that could not be read after the reset of %s", logged, path)
+			case !tt.logged && logged != "":
+				t.Errorf("the log is %q, want nothing", logged)
+			case strings.Contains(logged, token):
+				t.Error("the log has the token")
+			}
+			if tt.usable {
+				body(t, "POST /api/password with the token of the reset", a.postPassword(token, "the target has a password again"), http.StatusOK)
 			}
 		})
 	}

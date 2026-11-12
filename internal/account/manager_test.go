@@ -2206,11 +2206,15 @@ func mgrRefusal(actor string, accounts map[string]Account) string {
 	return mgrNotAllowed(accounts[actor], "manage accounts")
 }
 
-func TestOperationActors(t *testing.T) {
-	operations := []struct {
-		name string
-		do   func(e *mgrEnv, by Actor, accounts map[string]Account) error
-	}{
+// mgrActorOperation is an operation of the Manager that an actor does to the accounts of mgrFixture.
+type mgrActorOperation struct {
+	name string
+	do   func(e *mgrEnv, by Actor, accounts map[string]Account) error
+}
+
+// mgrActorOperations returns the operations that take an Actor.
+func mgrActorOperations(t *testing.T) []mgrActorOperation {
+	return []mgrActorOperation{
 		{"Invite", func(e *mgrEnv, by Actor, _ map[string]Account) error {
 			_, _, err := e.m.Invite(t.Context(), by, mgrInput("newbie", RoleViewer))
 			return err
@@ -2235,10 +2239,13 @@ func TestOperationActors(t *testing.T) {
 			return e.m.Delete(t.Context(), by, accounts["target"].ID)
 		}},
 	}
+}
+
+func TestOperationActors(t *testing.T) {
 	actorNames := []string{
 		"admin", "boss", "editor", "author", "viewer", "pending", "off", "target", "sleeper", "system", "missing", "garbage", "zero",
 	}
-	for _, op := range operations {
+	for _, op := range mgrActorOperations(t) {
 		for _, name := range actorNames {
 			t.Run(op.name+" by "+name, func(t *testing.T) {
 				e, actors, accounts := mgrFixture(t)
@@ -2256,6 +2263,149 @@ func TestOperationActors(t *testing.T) {
 				e.unchanged(t, before)
 			})
 		}
+	}
+}
+
+// TestOperationActorsByPrincipal checks the Actor that ByPrincipal makes of the Principal of a session. The role and the
+// status that the row has now decide, as they do for By; but an account that is gone, or that has other credentials than the
+// Principal's account had, is ErrNoSession, which comes before the role is looked at, and nothing is written.
+func TestOperationActorsByPrincipal(t *testing.T) {
+	const credentials = "its credentials changed after the session was authenticated"
+	// as returns the principal of the account name of the fixture, with change applied to its account.
+	as := func(name string, change func(a *Account)) func(map[string]Account) Principal {
+		return func(accounts map[string]Account) Principal {
+			a := accounts[name]
+			if change != nil {
+				change(&a)
+			}
+			return Principal{Account: a}
+		}
+	}
+	minuteBefore := func(a *Account) { a.CredentialsChangedAt = a.CredentialsChangedAt.Add(-time.Minute) }
+	for _, op := range mgrActorOperations(t) {
+		for _, tt := range []struct {
+			name      string
+			principal func(accounts map[string]Account) Principal
+			is        error // that the error wraps; nil if the operation works
+			text      func(accounts map[string]Account) string
+		}{
+			{"admin", as("admin", nil), nil, nil},
+			{"boss", as("boss", nil), nil, nil},
+			{"admin in another zone", as("admin", func(a *Account) {
+				a.CredentialsChangedAt = a.CredentialsChangedAt.In(time.FixedZone("JST", 9*3600))
+			}), nil, nil},
+			{"editor", as("editor", nil), ErrForbidden, func(accounts map[string]Account) string { return mgrRefusal("editor", accounts) }},
+			{"pending", as("pending", nil), ErrForbidden, func(accounts map[string]Account) string { return mgrRefusal("pending", accounts) }},
+			{"off", as("off", nil), ErrForbidden, func(accounts map[string]Account) string { return mgrRefusal("off", accounts) }},
+			{"editor that the principal calls an admin", as("editor", func(a *Account) { a.Role = RoleAdmin }), ErrForbidden,
+				func(accounts map[string]Account) string { return mgrRefusal("editor", accounts) }},
+			{"admin with the credentials of a minute before", as("admin", minuteBefore), ErrNoSession,
+				func(accounts map[string]Account) string {
+					return accounts["admin"].ID + ": " + ErrNoSession.Error() + ": " + credentials
+				}},
+			{"admin with the credentials of a minute after", as("admin", func(a *Account) {
+				a.CredentialsChangedAt = a.CredentialsChangedAt.Add(time.Minute)
+			}), ErrNoSession, func(accounts map[string]Account) string {
+				return accounts["admin"].ID + ": " + ErrNoSession.Error() + ": " + credentials
+			}},
+			{"admin without the time of its credentials", as("admin", func(a *Account) { a.CredentialsChangedAt = time.Time{} }),
+				ErrNoSession, func(accounts map[string]Account) string {
+					return accounts["admin"].ID + ": " + ErrNoSession.Error() + ": " + credentials
+				}},
+			{"editor with the credentials of a minute before", as("editor", minuteBefore), ErrNoSession,
+				func(accounts map[string]Account) string {
+					return accounts["editor"].ID + ": " + ErrNoSession.Error() + ": " + credentials
+				}},
+			{"an account that is gone", func(map[string]Account) Principal { return Principal{Account: Account{ID: mgrMissingID}} }, ErrNoSession,
+				func(map[string]Account) string {
+					return mgrMissingID + ": " + ErrNoSession.Error() + ": no such account"
+				}},
+			{"an ID that is none", func(map[string]Account) Principal { return Principal{Account: Account{ID: "not an id\n"}} }, ErrNoSession,
+				func(map[string]Account) string {
+					return strconv.Quote("not an id\n") + ": " + ErrNoSession.Error() + ": no such account"
+				}},
+			{"no account", func(map[string]Account) Principal { return Principal{} }, ErrForbidden,
+				func(map[string]Account) string { return mgrRefusal("zero", nil) }},
+		} {
+			t.Run(op.name+" by "+tt.name, func(t *testing.T) {
+				e, _, accounts := mgrFixture(t)
+				before := e.mark(t)
+				err := op.do(e, ByPrincipal(tt.principal(accounts)), accounts)
+				if tt.is == nil {
+					if err != nil {
+						t.Errorf("%s by %s = %v, want nil", op.name, tt.name, err)
+					}
+					return
+				}
+				mgrError(t, err, tt.is, tt.text(accounts))
+				e.unchanged(t, before)
+			})
+		}
+	}
+}
+
+// TestByPrincipalAfterCredentialsChange checks that an operation done as the Principal of an account whose credentials
+// have changed since is ErrNoSession whichever operation changed them, or deleted the account, and that the Principal of the
+// account as it is now works again.
+func TestByPrincipalAfterCredentialsChange(t *testing.T) {
+	const newPassword = "the admin has another long password"
+	for _, tt := range []struct {
+		name   string
+		change func(t *testing.T, e *mgrEnv, admin Account)
+		works  bool // the account as it is then may invite
+	}{
+		{"ChangePassword", func(t *testing.T, e *mgrEnv, admin Account) {
+			if err := e.m.ChangePassword(t.Context(), admin.ID, mgrPassword("admin"), newPassword); err != nil {
+				t.Fatalf("ChangePassword() = %v", err)
+			}
+		}, true},
+		{"Reset and SetPassword", func(t *testing.T, e *mgrEnv, admin Account) {
+			token, err := e.m.Reset(t.Context(), System, admin.ID)
+			if err != nil {
+				t.Fatalf("Reset() = %v", err)
+			}
+			if _, err := e.m.SetPassword(t.Context(), mgrClient, token, newPassword); err != nil {
+				t.Fatalf("SetPassword() = %v", err)
+			}
+		}, true},
+		{"Reset", func(t *testing.T, e *mgrEnv, admin Account) {
+			if _, err := e.m.Reset(t.Context(), System, admin.ID); err != nil {
+				t.Fatalf("Reset() = %v", err)
+			}
+		}, false},
+		{"Delete", func(t *testing.T, e *mgrEnv, admin Account) {
+			if err := e.m.Delete(t.Context(), System, admin.ID); err != nil {
+				t.Fatalf("Delete() = %v", err)
+			}
+		}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newMgr(t)
+			admin := e.first(t)
+			e.add(t, "boss", RoleAdmin) // so that the administrator is not the last one
+			stale := ByPrincipal(Principal{Account: admin})
+			e.clock.add(time.Minute) // the time of the credentials is that of the clock
+			tt.change(t, e, admin)
+
+			before := e.mark(t)
+			_, _, err := e.m.Invite(t.Context(), stale, mgrInput("newbie", RoleViewer))
+			if !errors.Is(err, ErrNoSession) || errors.Is(err, ErrForbidden) {
+				t.Errorf("Invite() as the Principal from before = %v, want an error that wraps ErrNoSession alone", err)
+			}
+			e.unchanged(t, before)
+
+			now, err := e.m.Get(t.Context(), admin.ID)
+			if err != nil {
+				if tt.works {
+					t.Fatalf("Get() = %v", err)
+				}
+				return
+			}
+			_, _, err = e.m.Invite(t.Context(), ByPrincipal(Principal{Account: now}), mgrInput("newbie", RoleViewer))
+			if tt.works != (err == nil) {
+				t.Errorf("Invite() as the Principal from after = %v, want it to work: %v", err, tt.works)
+			}
+		})
 	}
 }
 
