@@ -28,14 +28,33 @@ var requestKeys = []struct{ reason, key string }{
 	{reasonResume, "requestsResume"},
 }
 
-// record adds r to the activity log in an Update of its own (7.4), which writes nothing else.
-func (p *Publisher) record(ctx context.Context, r audit.Record) error {
-	return p.o.Store.Update(ctx, func(tx *store.Tx) error { return tx.Record(r) })
+// record adds r to the activity log in an Update of its own (7.4), which writes nothing else. check, if it is not nil, is
+// called first in that Update, and its error is the error of the Update, with no record.
+func (p *Publisher) record(ctx context.Context, r audit.Record, check func(*store.Tx) error) error {
+	return p.o.Store.Update(ctx, func(tx *store.Tx) error {
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
+		return tx.Record(r)
+	})
 }
 
 // recordRequest records the request of a user before it is done, so that it is not done if the record cannot be written.
-func (p *Publisher) recordRequest(ctx context.Context, r audit.Record) error {
-	if err := p.record(ctx, r); err != nil {
+// The error of check, the caller's check of who may ask, is returned as it is; the others tell that the record failed.
+func (p *Publisher) recordRequest(ctx context.Context, r audit.Record, check func(*store.Tx) error) error {
+	var refused error
+	err := p.record(ctx, r, func(tx *store.Tx) error {
+		if check != nil {
+			refused = check(tx)
+		}
+		return refused
+	})
+	switch {
+	case refused != nil:
+		return refused
+	case err != nil:
 		return fmt.Errorf("cannot record %s: %w", r.Action, err)
 	}
 	return nil
@@ -46,7 +65,7 @@ func (p *Publisher) recordRequest(ctx context.Context, r audit.Record) error {
 func (p *Publisher) recordEnded(ctx context.Context, r audit.Record) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 	defer cancel()
-	if err := p.record(ctx, r); err != nil && p.o.OnRecordError != nil {
+	if err := p.record(ctx, r, nil); err != nil && p.o.OnRecordError != nil {
 		p.o.OnRecordError(r.Action, err)
 	}
 }

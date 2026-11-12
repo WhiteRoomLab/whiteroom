@@ -1279,7 +1279,7 @@ func TestScheduledProtected(t *testing.T) {
 }`
 		x := newSmallSite(t, settings(",\n  \"allowHtml\": true"), nil)
 		entry := newDraft(t, x.ed, content.TypePost, "ja")
-		rev := must(t)(x.ed.SaveRevision(t.Context(), op, entry, "", []byte(post))).Revision
+		rev := must(t)(x.ed.SaveRevision(t.Context(), Op{By: userID, EditHTML: true}, entry, "", []byte(post))).Revision
 		must(t)(x.ed.Schedule(t.Context(), op, entry, entrySeq(t, x.s, entry), rev, careersAt))
 		before, index := snapshot(t, x.s), indexOf(t, x.s)
 		_, err := x.ed.SaveSettings(t.Context(), op, read(t, x.s, store.SettingsKind, "").Seq, []byte(settings("")))

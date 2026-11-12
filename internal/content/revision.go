@@ -263,6 +263,7 @@ type RevisionOptions struct {
 	Entry    *Entry         // the state of the entry; the revision is checked with its ID, type and language
 	Publish  bool           // the revision is to be published or scheduled, which needs the required items
 	Import   bool           // as in ValidateOptions
+	LockHTML bool           // as in ValidateOptions
 	Previous *Revision      // the previous revision of the entry, whose blocks are matched by ID as in ValidateOptions
 	Theme    *ThemeSettings // as in ValidateOptions
 	Lookup   func(kind RefKind, id string) (Ref, bool)
@@ -279,7 +280,8 @@ func (x Revision) Validate(opts RevisionOptions) error {
 	}
 	c := checker{doc: &docState{
 		opts: ValidateOptions{
-			AllowHTML: opts.Site.AllowHTML, Import: opts.Import, Previous: prev, Theme: opts.Theme, Lookup: opts.Lookup,
+			AllowHTML: opts.Site.AllowHTML, LockHTML: opts.LockHTML, Import: opts.Import, Previous: prev, Theme: opts.Theme,
+			Lookup: opts.Lookup,
 		},
 		publish:   opts.Publish,
 		language:  opts.Entry.Language,

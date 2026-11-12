@@ -356,8 +356,8 @@ func TestOperationID(t *testing.T) {
 		}},
 	} {
 		res, err := tt.call()
-		if err == nil || err.Error() != wantErr || snapshot(t, s) != after {
-			t.Errorf("%s: the same operation ID = %+v, %v; want the error %q and no change", tt.name, res, err, wantErr)
+		if err == nil || err.Error() != wantErr || !errors.Is(err, ErrOperationReused) || snapshot(t, s) != after {
+			t.Errorf("%s: the same operation ID = %+v, %v; want the error %q that wraps ErrOperationReused, and no change", tt.name, res, err, wantErr)
 		}
 	}
 

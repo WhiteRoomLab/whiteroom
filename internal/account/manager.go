@@ -93,6 +93,10 @@ func (m *Manager) SetClock(now func() time.Time) {
 	m.now = now
 }
 
+// Store returns the store that the Manager was made for, for a caller that reads the accounts (Read) and the documents
+// in one View or Update.
+func (m *Manager) Store() *store.Store { return m.st }
+
 func (m *Manager) at(point string) {
 	if m.hook != nil {
 		m.hook(point)

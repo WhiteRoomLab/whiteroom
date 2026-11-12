@@ -557,6 +557,27 @@ func TestThemeLists(t *testing.T) {
 	}
 }
 
+// TestStyleItems checks that StyleItems returns the 13 items of Style in order, as a slice of its own.
+func TestStyleItems(t *testing.T) {
+	style := reflect.TypeFor[Style]()
+	var want []string
+	for i := range style.NumField() {
+		name, _, _ := strings.Cut(style.Field(i).Tag.Get("json"), ",")
+		want = append(want, name)
+	}
+	got := StyleItems()
+	if len(got) != 13 || !slices.Equal(got, want) {
+		t.Errorf("StyleItems() = %q, want the 13 keys of Style, %q", got, want)
+	}
+	got[0] = "changed"
+	if again := StyleItems(); !slices.Equal(again, want) {
+		t.Errorf("StyleItems() after a change of an earlier result = %q, want %q", again, want)
+	}
+	if !slices.Equal(styleItems, want) {
+		t.Errorf("styleItems = %q after a change of a result, want %q", styleItems, want)
+	}
+}
+
 var validateThemeTests = []struct {
 	name   string
 	modify func(s *ThemeSettings)

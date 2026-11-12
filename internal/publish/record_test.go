@@ -3,6 +3,7 @@ package publish
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"maps"
 	"path/filepath"
 	"reflect"
@@ -313,7 +314,7 @@ func TestRebuildRecord(t *testing.T) {
 		t.Fatalf("the requests are %v, want only the start", got)
 	}
 	r.reread = false
-	if err := r.Rebuild(t.Context(), otherUser); err != nil {
+	if err := r.Rebuild(t.Context(), otherUser, nil); err != nil {
 		t.Fatalf("Rebuild() error = %v", err)
 	}
 	wantRecords(t, since(t, r.s, n), audit.Record{Actor: otherUser, Action: audit.BuildRebuild})
@@ -335,9 +336,9 @@ func TestRequestsRefuseTheUser(t *testing.T) {
 		"", "usr_", userID[:len(userID)-1], userID + "0", strings.ToLower(userID), audit.System, "ent_01JB8T7H4MA2C5E8G1J4K7N3P6",
 	} {
 		errs := map[string]error{
-			"Rebuild":  r.Rebuild(t.Context(), by),
-			"Rollback": r.Rollback(t.Context(), by, "0123456789abcdef"),
-			"Resume":   r.Resume(t.Context(), by),
+			"Rebuild":  r.Rebuild(t.Context(), by, nil),
+			"Rollback": r.Rollback(t.Context(), by, "0123456789abcdef", nil),
+			"Resume":   r.Resume(t.Context(), by, nil),
 		}
 		for name, err := range errs {
 			if err == nil || !strings.Contains(err.Error(), "invalid user ID") {
@@ -364,9 +365,9 @@ func TestRequestsWithEndedContext(t *testing.T) {
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	for what, err := range map[string]error{
-		"Rebuild":  r.Rebuild(canceled, userID),
-		"Rollback": r.Rollback(canceled, userID, "0123456789abcdef"),
-		"Resume":   r.Resume(canceled, userID),
+		"Rebuild":  r.Rebuild(canceled, userID, nil),
+		"Rollback": r.Rollback(canceled, userID, "0123456789abcdef", nil),
+		"Resume":   r.Resume(canceled, userID, nil),
 	} {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("%s() with a context that has ended: error = %v, want %v", what, err, context.Canceled)
@@ -406,8 +407,8 @@ func TestRequestsNeedTheirRecord(t *testing.T) {
 	}
 
 	st := r.Status()
-	refused("Rebuild()", r.Rebuild(t.Context(), userID), audit.BuildRebuild)
-	refused("Rollback()", r.Rollback(t.Context(), userID, first), audit.ReleaseRollback)
+	refused("Rebuild()", r.Rebuild(t.Context(), userID, nil), audit.BuildRebuild)
+	refused("Rollback()", r.Rollback(t.Context(), userID, first, nil), audit.ReleaseRollback)
 	r.wantReleases(second, first, second)
 	if got := r.Status(); !reflect.DeepEqual(got, st) {
 		t.Errorf("Status() = %+v, want %+v: nothing was asked for", got, st)
@@ -416,10 +417,168 @@ func TestRequestsNeedTheirRecord(t *testing.T) {
 	r.mu.Lock()
 	r.paused = true
 	r.mu.Unlock()
-	refused("Resume()", r.Resume(t.Context(), userID), audit.BuildResume)
+	refused("Resume()", r.Resume(t.Context(), userID, nil), audit.BuildResume)
 	if got := r.Status(); !got.Paused || got.Pending {
 		t.Errorf("Status() = %+v, want the builds still paused and none wanted", got)
 	}
+}
+
+// TestRequestsCheck checks the check that Rebuild, Rollback and Resume take: it is called once, in the Update that records the
+// request and before the record, and its error, as it is, is the error of the request, which does nothing and records nothing.
+func TestRequestsCheck(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	h := holdBuild(t, r.Publisher, 0)
+	r.start()
+	r.idle()
+	first := r.current()
+	r.renameNews("News 1")
+	r.idle()
+	second := r.current()
+
+	// writes adds a record to the Update of the check, which only an Update can: what stays of it shows where the check was
+	// called.
+	writes := func(tx *store.Tx) error {
+		return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: userID, Action: audit.StoreWrite})
+	}
+	errDenied := errors.New("the check says no")
+	denied := func(tx *store.Tx) error {
+		if err := writes(tx); err != nil {
+			return err
+		}
+		return errDenied
+	}
+	calls := 0
+	allowed := func(tx *store.Tx) error {
+		calls++
+		if _, err := tx.Document(store.SettingsKind, ""); err != nil { // it reads the store
+			return err
+		}
+		return writes(tx)
+	}
+	written := audit.Record{Actor: userID, Action: audit.StoreWrite}
+	asked := func(action audit.Action, changed bool) audit.Record {
+		return audit.Record{Actor: userID, Action: action, Changed: changed}
+	}
+	// sameUpdate checks that the records after n are the write of the check and then the request, saved together.
+	sameUpdate := func(n int, request audit.Record) []audit.Record {
+		t.Helper()
+		records := since(t, r.s, n)
+		if len(records) < 2 {
+			t.Fatalf("%d records were added, want the write of the check and the request", len(records))
+		}
+		checkRecord(t, records[0], written)
+		checkRecord(t, records[1], request)
+		if !records[0].At.Equal(records[1].At) || records[1].N != records[0].N+1 {
+			t.Errorf("the records %+v and %+v were not saved together", records[0], records[1])
+		}
+		return records[2:]
+	}
+	refused := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, errDenied) || err.Error() != errDenied.Error() {
+			t.Errorf("%s error = %v, want the error of the check, as it is", what, err)
+		}
+	}
+	nothingChanged := func(what string, n, builds int, st Status, current string) {
+		t.Helper()
+		r.idle()
+		if got := activity(t, r.s); len(got) != n {
+			t.Errorf("%s added the records %+v, want none: not even what the check wrote", what, got[n:])
+		}
+		if got := r.Status(); !reflect.DeepEqual(got, st) || h.builds() != builds {
+			t.Errorf("%s: Status() = %+v after %d builds, want %+v after %d", what, got, h.builds(), st, builds)
+		}
+		r.wantReleases(current, first, second)
+	}
+
+	// A check that refuses stops each of them before the record: the builds are not asked for, not paused, and not resumed.
+	n, builds, st := len(activity(t, r.s)), h.builds(), r.Status()
+	refused("Rebuild()", r.Rebuild(t.Context(), userID, denied))
+	refused("Rollback()", r.Rollback(t.Context(), userID, first, denied))
+	refused("Resume()", r.Resume(t.Context(), userID, denied))
+	nothingChanged("the requests that the check refused", n, builds, st, second)
+	if r.Status().Paused {
+		t.Errorf("Status() = %+v, want the builds not paused", r.Status())
+	}
+	if calls != 0 {
+		t.Fatalf("the check that allows was called %d times, want none yet", calls)
+	}
+
+	// A check that allows is called once, with the record in its Update.
+	if err := r.Rebuild(t.Context(), userID, allowed); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	r.idle()
+	b := wantBuild(t, r.Status(), "rebuild")
+	if rest := sameUpdate(n, asked(audit.BuildRebuild, false)); len(rest) != 1 {
+		t.Errorf("Rebuild() added the records %+v after its request, want the build", rest)
+	} else {
+		checkRecord(t, rest[0], builtRecord(b.Result, map[string]string{"requestsRebuild": "1"}))
+	}
+	if calls != 1 {
+		t.Errorf("the check was called %d times by Rebuild(), want once", calls)
+	}
+	n = len(activity(t, r.s))
+
+	if err := r.Rollback(t.Context(), userID, first, allowed); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	rollback := audit.Record{
+		Actor: userID, Action: audit.ReleaseRollback, Target: releaseTarget(first), Detail: map[string]string{"to": first, "from": second},
+	}
+	if rest := sameUpdate(n, rollback); len(rest) != 0 {
+		t.Errorf("Rollback() added the records %+v after its request, want none", rest)
+	}
+	if calls != 2 || !r.Status().Paused {
+		t.Errorf("the check was called %d times by Rollback() and paused is %v, want 2 calls and the builds paused", calls, r.Status().Paused)
+	}
+	r.wantReleases(first, first, second)
+	n, builds, st = len(activity(t, r.s)), h.builds(), r.Status()
+
+	// The pause is as it was after a Resume that the check refuses, and ended by one that it allows.
+	refused("Resume() while paused", r.Resume(t.Context(), userID, denied))
+	nothingChanged("the Resume that the check refused", n, builds, st, first)
+	if !r.Status().Paused {
+		t.Errorf("Status() = %+v, want the builds still paused", r.Status())
+	}
+	if err := r.Resume(t.Context(), userID, allowed); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	r.idle()
+	b = wantBuild(t, r.Status(), "resume")
+	if rest := sameUpdate(n, asked(audit.BuildResume, true)); len(rest) != 1 {
+		t.Errorf("Resume() added the records %+v after its request, want the build", rest)
+	} else {
+		checkRecord(t, rest[0], builtRecord(b.Result, map[string]string{"requestsResume": "1"}))
+	}
+	if calls != 3 || r.Status().Paused {
+		t.Errorf("the check was called %d times by Resume() and paused is %v, want 3 calls and the pause ended", calls, r.Status().Paused)
+	}
+	n = len(activity(t, r.s))
+
+	// The record of a Rollback that fails afterwards is not checked again: the check was called for its request alone.
+	unknown := "0123456789abcdef"
+	err := r.Rollback(t.Context(), userID, unknown, allowed)
+	if !errors.Is(err, fs.ErrNotExist) || !strings.HasSuffix(err.Error(), ": no such release") {
+		t.Fatalf("Rollback() to an unknown release: error = %v, want one that wraps %v", err, fs.ErrNotExist)
+	}
+	request := audit.Record{
+		Actor: userID, Action: audit.ReleaseRollback, Target: releaseTarget(unknown),
+		Detail: map[string]string{"to": unknown, "from": r.current()},
+	}
+	failed := request
+	failed.Result = "failed"
+	failed.Detail = map[string]string{"to": unknown, "error": err.Error()}
+	rest := sameUpdate(n, request)
+	if len(rest) != 1 {
+		t.Fatalf("the Rollback added the records %+v after its request, want its failure", rest)
+	}
+	checkRecord(t, rest[0], failed)
+	if calls != 4 {
+		t.Errorf("the check was called %d times, want once more for the Rollback that failed, and not for its failure", calls)
+	}
+	verifyChains(t, r.s)
 }
 
 // readOnlyRig returns a rig of the sample site whose store was opened by OpenReader, in which no record can be written
@@ -502,8 +661,8 @@ func TestBuildRecordFailure(t *testing.T) {
 	// What the requests record is returned to the caller, not told to the function, and they do nothing.
 	st := r.Status()
 	for what, err := range map[string]error{
-		"Rebuild":  r.Rebuild(t.Context(), userID),
-		"Rollback": r.Rollback(t.Context(), userID, b.Result.Release),
+		"Rebuild":  r.Rebuild(t.Context(), userID, nil),
+		"Rollback": r.Rollback(t.Context(), userID, b.Result.Release, nil),
 	} {
 		if err == nil || !strings.HasPrefix(err.Error(), "cannot record ") || !strings.Contains(err.Error(), "read-only") {
 			t.Errorf("%s error = %v, want the record refused", what, err)
@@ -534,7 +693,7 @@ func TestRollbackRecordFailure(t *testing.T) {
 
 	ctx, giveUp := context.WithCancel(t.Context())
 	errc := make(chan error, 1)
-	go func() { errc <- r.Rollback(ctx, userID, first) }()
+	go func() { errc <- r.Rollback(ctx, userID, first, nil) }()
 	r.until("the rollback runs", func() bool { return r.rolling })
 	// The request has been recorded; the failure cannot be.
 	if err := r.s.Close(); err != nil {
@@ -702,7 +861,7 @@ func TestRollbackRecords(t *testing.T) {
 	}
 	rollback := func(by, release string) error {
 		t.Helper()
-		return r.Rollback(t.Context(), by, release)
+		return r.Rollback(t.Context(), by, release, nil)
 	}
 
 	// A rollback that is done is one record, with the release that was published, and so is one to the release that is.
@@ -785,7 +944,7 @@ func TestRollbackRecordsWaiting(t *testing.T) {
 
 	ctx, giveUp := context.WithCancel(t.Context())
 	errc := make(chan error, 1)
-	go func() { errc <- r.Rollback(ctx, userID, first) }()
+	go func() { errc <- r.Rollback(ctx, userID, first, nil) }()
 	r.until("the rollback runs", func() bool { return r.rolling })
 	asked := audit.Record{
 		Actor: userID, Action: audit.ReleaseRollback, Target: releaseTarget(first),
@@ -794,9 +953,9 @@ func TestRollbackRecordsWaiting(t *testing.T) {
 	wantRecords(t, since(t, r.s, n), asked) // although the build that it waits for has not ended
 
 	// A second Rollback by another user is refused.
-	err := r.Rollback(t.Context(), otherUser, first)
-	if err == nil || err.Error() != "another rollback is running" {
-		t.Fatalf("Rollback() while another one runs: error = %v", err)
+	err := r.Rollback(t.Context(), otherUser, first, nil)
+	if err == nil || err.Error() != "another rollback is running" || !errors.Is(err, ErrRollbackRunning) {
+		t.Fatalf("Rollback() while another one runs: error = %v, want ErrRollbackRunning", err)
 	}
 	askedAgain, refused := asked, asked
 	askedAgain.Actor, refused.Actor = otherUser, otherUser
@@ -866,7 +1025,7 @@ func TestRollbackRecordsLocked(t *testing.T) {
 		t.Fatal("the build does not hold the lock")
 	}
 
-	err := r.Rollback(t.Context(), userID, first)
+	err := r.Rollback(t.Context(), userID, first, nil)
 	want := "another build is running in " + r.opts.Out
 	if err == nil || err.Error() != want {
 		t.Fatalf("Rollback() while a build holds the lock: error = %v, want %q", err, want)
@@ -890,7 +1049,7 @@ func TestRollbackRecordNoRelease(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	n := len(activity(t, r.s))
-	err := r.Rollback(t.Context(), userID, "0123456789abcdef")
+	err := r.Rollback(t.Context(), userID, "0123456789abcdef", nil)
 	if err == nil {
 		t.Fatal("Rollback() before the first build succeeded")
 	}
@@ -915,12 +1074,12 @@ func TestResumeRecords(t *testing.T) {
 	first := r.current()
 	r.renameNews("News 1")
 	r.idle()
-	if err := r.Rollback(t.Context(), userID, first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first, nil); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 	n := len(activity(t, r.s))
 
-	if err := r.Resume(t.Context(), otherUser); err != nil {
+	if err := r.Resume(t.Context(), otherUser, nil); err != nil {
 		t.Fatalf("Resume() error = %v", err)
 	}
 	r.idle()
@@ -935,7 +1094,7 @@ func TestResumeRecords(t *testing.T) {
 	builds := h.builds()
 
 	// The builds are not paused now: the request is recorded as one that changed nothing, and asks for nothing.
-	if err := r.Resume(t.Context(), userID); err != nil {
+	if err := r.Resume(t.Context(), userID, nil); err != nil {
 		t.Fatalf("Resume() error = %v", err)
 	}
 	r.idle()
@@ -960,7 +1119,7 @@ func TestResumeTogether(t *testing.T) {
 	for range callers {
 		wg.Go(func() {
 			<-start
-			errs <- p.Resume(t.Context(), userID)
+			errs <- p.Resume(t.Context(), userID, nil)
 		})
 	}
 	close(start)
@@ -1002,7 +1161,7 @@ func TestResumeOneAtATime(t *testing.T) {
 	release := holdStore(t, p.o.Store)
 
 	first := make(chan error, 1)
-	go func() { first <- p.Resume(t.Context(), userID) }()
+	go func() { first <- p.Resume(t.Context(), userID, nil) }()
 	deadline := time.After(time.Minute)
 	for len(p.resumeGate) == 0 { // the first Resume has its turn, and waits for the store to record its request
 		select {
@@ -1015,7 +1174,7 @@ func TestResumeOneAtATime(t *testing.T) {
 	// A context that has ended is seen only by a Resume that waits for its turn: one that goes on fails to record.
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := p.Resume(canceled, otherUser); !errors.Is(err, context.Canceled) || errors.Unwrap(err) != nil {
+	if err := p.Resume(canceled, otherUser, nil); !errors.Is(err, context.Canceled) || errors.Unwrap(err) != nil {
 		t.Errorf("Resume() while another one records: error = %v, want the error of its context, from the wait", err)
 	}
 
@@ -1078,10 +1237,10 @@ func TestRecordsHoldNoSecrets(t *testing.T) {
 	must(t)(r.Editor().Delete(t.Context(), r.op(), content.RefRedirect, created.ID, created.Version.Seq))
 	r.idle()
 	r.rebuild()
-	if err := r.Rollback(t.Context(), userID, first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first, nil); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
-	if err := r.Rollback(t.Context(), userID, "0123456789abcdef"); err == nil {
+	if err := r.Rollback(t.Context(), userID, "0123456789abcdef", nil); err == nil {
 		t.Fatal("Rollback() to an unknown release succeeded")
 	}
 	r.resume()

@@ -55,6 +55,10 @@ var styleItems = []string{
 	"lineHeight", "padding", "margin", "blockGap", "border",
 }
 
+// StyleItems returns the items of Style, in its order: those that blocks can use if the styles of the theme are not set
+// (5.4.2).
+func StyleItems() []string { return slices.Clone(styleItems) }
+
 // presetKinds are the keys of the kinds of presets, in the order of Presets.
 var presetKinds = []string{"color", "fontSize", "spacing", "fontFamily", "gradient", "shadow"}
 

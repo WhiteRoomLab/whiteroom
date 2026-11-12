@@ -98,11 +98,11 @@ func (e *Editor) CreateEntry(ctx context.Context, op Op, typ, language string) (
 }
 
 // validateRevision validates rev, a normalized revision of the entry ent that follows prev (nil if it follows none), as one
-// that is to be published if publish is true. The problems, located in f, are returned; an error of the store in the
-// lookup is the error instead of them.
-func (r *run) validateRevision(site *content.Site, ent *content.Entry, rev, prev *content.Revision, publish bool, f content.SiteFile) (content.Errors, error) {
+// that is to be published if publish is true, and with the html blocks locked to those of prev if lockHTML is true. The
+// problems, located in f, are returned; an error of the store in the lookup is the error instead of them.
+func (r *run) validateRevision(site *content.Site, ent *content.Entry, rev, prev *content.Revision, publish, lockHTML bool, f content.SiteFile) (content.Errors, error) {
 	err := rev.Validate(content.RevisionOptions{
-		Site: site, Entry: ent, Publish: publish, Previous: prev, Theme: r.e.theme.Settings, Lookup: r.lookup,
+		Site: site, Entry: ent, Publish: publish, LockHTML: lockHTML, Previous: prev, Theme: r.e.theme.Settings, Lookup: r.lookup,
 	})
 	if r.err != nil {
 		return nil, r.err
@@ -111,16 +111,17 @@ func (r *run) validateRevision(site *content.Site, ent *content.Entry, rev, prev
 }
 
 // checkRevision validates rev as validateRevision does: its problems are the error, except for the missing items that
-// only a revision to be published needs (6.4.2), which are the warnings that it returns.
-func (r *run) checkRevision(site *content.Site, ent *content.Entry, rev, prev *content.Revision, f content.SiteFile) (content.Errors, error) {
-	errs, err := r.validateRevision(site, ent, rev, prev, false, f)
+// only a revision to be published needs (6.4.2), which are the warnings that it returns. lockHTML is for the first
+// validation alone: a revision that passes it has no html block that the second would lock.
+func (r *run) checkRevision(site *content.Site, ent *content.Entry, rev, prev *content.Revision, lockHTML bool, f content.SiteFile) (content.Errors, error) {
+	errs, err := r.validateRevision(site, ent, rev, prev, false, lockHTML, f)
 	if err != nil {
 		return nil, err
 	}
 	if len(errs) > 0 {
 		return nil, errs
 	}
-	return r.validateRevision(site, ent, rev, prev, true, f)
+	return r.validateRevision(site, ent, rev, prev, true, false, f)
 }
 
 // lastRevision returns the revision id of an entry, decoded: nil if id is "", or if it does not decode.
@@ -292,7 +293,7 @@ func (e *Editor) SaveRevision(ctx context.Context, op Op, entry, base string, da
 		if err != nil {
 			return Result{}, err
 		}
-		warnings, err := r.checkRevision(site, &ent, &rev, prev, f)
+		warnings, err := r.checkRevision(site, &ent, &rev, prev, !op.EditHTML, f)
 		if err != nil {
 			return Result{}, err
 		}
@@ -434,7 +435,7 @@ func (e *Editor) CreateTranslation(ctx context.Context, op Op, source, language 
 		if err != nil {
 			return Result{}, err
 		}
-		publishOnly, err := r.checkRevision(site, &entry, rev, prev, f)
+		publishOnly, err := r.checkRevision(site, &entry, rev, prev, !op.EditHTML, f)
 		if err != nil {
 			return Result{}, err
 		}

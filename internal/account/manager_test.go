@@ -478,6 +478,32 @@ func TestNew(t *testing.T) {
 	}
 }
 
+// TestManagerStore checks that Store returns the store that the Manager was made for, in which Read finds its accounts.
+func TestManagerStore(t *testing.T) {
+	a, b := newMgr(t), newMgr(t)
+	if a.m.Store() != a.s || b.m.Store() != b.s || a.m.Store() == b.m.Store() {
+		t.Errorf("Store() = %p and %p, want the stores %p and %p that the Managers were made for", a.m.Store(), b.m.Store(), a.s, b.s)
+	}
+	first := a.first(t)
+	err := a.m.Store().View(t.Context(), func(tx *store.Tx) error {
+		got, err := Read(tx, first.ID)
+		if err == nil && got.ID != first.ID {
+			t.Errorf("Read() = %+v, want the account %s", got, first.ID)
+		}
+		return err
+	})
+	if err != nil {
+		t.Errorf("Read() in a View of Store() = %v", err)
+	}
+	err = b.m.Store().View(t.Context(), func(tx *store.Tx) error {
+		_, err := Read(tx, first.ID)
+		return err
+	})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Read() in a View of the store of the other Manager = %v, want an error that wraps %v", err, fs.ErrNotExist)
+	}
+}
+
 type mgrCountingReader struct {
 	r io.Reader
 	n atomic.Int64

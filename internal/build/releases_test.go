@@ -187,8 +187,13 @@ func TestRollbackErrors(t *testing.T) {
 		}
 		want := cmp.Or(tt.want, filepath.Join(dir, "releases", tt.name)+": no such release")
 		before := tree(t, dir)
-		if changed, err := Rollback(dir, tt.name); changed || err == nil || err.Error() != want {
+		changed, err := Rollback(dir, tt.name)
+		if changed || err == nil || err.Error() != want {
 			t.Errorf("%s: Rollback() = %v, %v, want the error %q", tt.what, changed, err, want)
+		}
+		// A release that the directory does not have is an error that wraps fs.ErrNotExist, and foreign files are not.
+		if missing := tt.want == ""; errors.Is(err, fs.ErrNotExist) != missing {
+			t.Errorf("%s: Rollback() = %v, which wraps %v = %v, want %v", tt.what, err, fs.ErrNotExist, !missing, missing)
 		}
 		checkTree(t, tt.what, dir, before)
 	}
@@ -298,8 +303,8 @@ func TestRollbackRecheck(t *testing.T) {
 	dir := makeDir(t, ".lock", "releases/"+releaseA+"/public/a", "current -> releases/"+releaseA)
 	before := tree(t, dir)
 	want := filepath.Join(dir, "releases", releaseB) + ": no such release"
-	if changed, err := rollbackLocked(openRoot(t, dir), releaseB); changed || err == nil || err.Error() != want {
-		t.Errorf("rollbackLocked() to a release that is gone = %v, %v, want the error %q", changed, err, want)
+	if changed, err := rollbackLocked(openRoot(t, dir), releaseB); changed || err == nil || err.Error() != want || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("rollbackLocked() to a release that is gone = %v, %v, want the error %q that wraps %v", changed, err, want, fs.ErrNotExist)
 	}
 	checkTree(t, "a release that is gone", dir, before)
 

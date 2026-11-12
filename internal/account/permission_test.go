@@ -35,6 +35,7 @@ var permissionTable = []permissionRow{
 	{EditEntry, "entry.edit", "edit entries", "edit entries that other accounts made", "all", "all", "owner", "-"},
 	{PublishEntry, "entry.publish", "publish entries", "publish entries that other accounts made", "all", "all", "owner", "-"},
 	{DeleteEntry, "entry.delete", "delete entries", "delete entries that other accounts made", "all", "all", "owner", "-"},
+	{EditHTML, "html.edit", "add or change html blocks", "", "all", "-", "-", "-"},
 	{AddMedia, "media.add", "add media", "", "all", "all", "all", "-"},
 	{EditMedia, "media.edit", "edit media", "edit media that other accounts uploaded", "all", "all", "owner", "-"},
 	{DeleteMedia, "media.delete", "delete media", "delete media that other accounts uploaded", "all", "all", "owner", "-"},
@@ -209,6 +210,35 @@ func TestViaOwns(t *testing.T) {
 	}
 }
 
+// TestEditHTML checks html.edit, which the caller reads for Op.EditHTML of internal/edit: only an active administrator has it,
+// on any target.
+func TestEditHTML(t *testing.T) {
+	const phrase = "add or change html blocks"
+	for _, role := range permAllRoles() {
+		for _, tg := range permissionTargets() {
+			a := permissionAccount(role, testAuthorID)
+			err := Check(Principal{Account: a}, EditHTML, tg)
+			if role == RoleAdmin {
+				if err != nil {
+					t.Errorf("Check(admin, html.edit, %+v) = %v, want nil", tg, err)
+				}
+				continue
+			}
+			if want := permRefusalText(a, phrase); err == nil || err.Error() != want || !errors.Is(err, ErrForbidden) {
+				t.Errorf("Check(%q, html.edit, %+v) = %v, want %q", role, tg, err, want)
+			}
+		}
+	}
+	for _, status := range []Status{StatusPending, StatusDisabled} {
+		a := permissionAccount(RoleAdmin, "")
+		a.Status = status
+		err := Check(Principal{Account: a}, EditHTML, Target{})
+		if want := permRefusalText(a, phrase); err == nil || err.Error() != want || !errors.Is(err, ErrForbidden) {
+			t.Errorf("Check(%s admin, html.edit) = %v, want %q", status, err, want)
+		}
+	}
+}
+
 func TestCheckInactive(t *testing.T) {
 	statuses := []Status{StatusPending, StatusDisabled, "", "locked", "Active", "active "}
 	targets := []Target{
@@ -323,8 +353,8 @@ func TestActions(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("Actions() = %v, want %v", got, want)
 	}
-	if len(got) != 20 {
-		t.Errorf("Actions() has %d actions, want 20", len(got))
+	if len(got) != 21 {
+		t.Errorf("Actions() has %d actions, want 21", len(got))
 	}
 	seen := map[Action]bool{}
 	for _, act := range got {
@@ -510,7 +540,7 @@ func FuzzPermissionCheck(f *testing.F) {
 		if act == EditSelf && (a.ID == "" || account != a.ID) {
 			t.Fatalf("Check() allowed EditSelf on the account %q to %q", account, a.ID)
 		}
-		if slices.Contains([]Action{EditSettings, ManageBuilds, ManageAccounts, ViewLogs}, act) && a.Role != RoleAdmin {
+		if slices.Contains([]Action{EditHTML, EditSettings, ManageBuilds, ManageAccounts, ViewLogs}, act) && a.Role != RoleAdmin {
 			t.Fatalf("Check() allowed %q to the role %q", act, a.Role)
 		}
 	})
