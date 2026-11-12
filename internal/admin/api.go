@@ -110,7 +110,8 @@ func (s *Server) deadlineOf(pattern string) time.Duration {
 }
 
 // at calls the hook of the tests at point: "checked" when a route has checked the request and is about to do what it asks
-// (heavyWork: in the place, before it works), and "sending" when a place is given back and the answer is not yet written.
+// (heavyWork: in the place, before it works; the routes of the builds: before they call the Publisher), and "sending" when a
+// place is given back and the answer is not yet written.
 func (s *Server) at(point string) {
 	if s.hook != nil {
 		s.hook(point)

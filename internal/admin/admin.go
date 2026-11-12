@@ -160,6 +160,8 @@ func (s *Server) routes() {
 	s.documentRoutes()
 	s.entryRoutes()
 	s.mediaRoutes()
+	s.publishingRoutes()
+	s.buildRoutes()
 }
 
 // ServeHTTP checks the Host (421) and the path (404), then that a request that changes something comes from the

@@ -74,9 +74,15 @@ func importSample(t *testing.T, st *store.Store) {
 // output is in a temporary directory, which is out.
 func newTestPublisher(t *testing.T, ts *testServer, st *store.Store) (p *publish.Publisher, out string) {
 	t.Helper()
+	return newTestPublisherWith(t, ts, st, exampleTheme(t))
+}
+
+// newTestPublisherWith is newTestPublisher for the theme th.
+func newTestPublisherWith(t *testing.T, ts *testServer, st *store.Store, th fs.FS) (p *publish.Publisher, out string) {
+	t.Helper()
 	out = t.TempDir()
 	p, err := publish.New(publish.Options{
-		Store: st, Schema: sampleSchema(t), Theme: exampleTheme(t), Out: out, CacheDir: t.TempDir(), Workers: 2,
+		Store: st, Schema: sampleSchema(t), Theme: th, Out: out, CacheDir: t.TempDir(), Workers: 2,
 		Now: ts.clock.now,
 		OnRecordError: func(a audit.Action, err error) {
 			_, _ = ts.logs.Write([]byte("cannot record " + string(a) + ": " + err.Error() + "\n"))
@@ -93,7 +99,8 @@ func newTestPublisher(t *testing.T, ts *testServer, st *store.Store) (p *publish
 type apiServer struct {
 	*testServer
 	pub    *publish.Publisher
-	out    string // the output directory of the Publisher
+	out    string     // the output directory of the Publisher
+	builds *buildGate // holds the builds of pub; nil for a server whose Publisher does not run
 	people map[string]*person
 }
 
@@ -126,9 +133,10 @@ func newAPIServerAt(t *testing.T, origin string) *apiServer {
 	db, dir := testStore(t)
 	importSample(t, db)
 	m := testManager(t, db)
-	p, out := newTestPublisher(t, ts, db)
+	gate := newBuildGate()
+	p, out := newTestPublisherWith(t, ts, db, gatedFS{FS: exampleTheme(t), gate: gate})
 	ts.serve(t, Config{Origin: origin, Accounts: m, Publisher: p}, db, dir)
-	a := &apiServer{testServer: ts, pub: p, out: out, people: make(map[string]*person)}
+	a := &apiServer{testServer: ts, pub: p, out: out, builds: gate, people: make(map[string]*person)}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -139,6 +147,7 @@ func newAPIServerAt(t *testing.T, origin string) *apiServer {
 			t.Errorf("Run() error = %v", err)
 		}
 	})
+	t.Cleanup(gate.letGo) // before Run is stopped, which waits for the build that is held
 
 	for _, l := range apiLogins {
 		acct := ts.addAccount(t, l.login, l.role)
