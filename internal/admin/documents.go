@@ -43,6 +43,13 @@ type docKind struct {
 	filters              []listFilter // the names that a list takes besides its page
 }
 
+// mediaKind is the kind of the media: docKinds serves their documents, and media.go their files.
+var mediaKind = docKind{
+	path: "media", kind: content.RefMedia,
+	save: docRule{account.EditMedia, scopeUploader}, remove: docRule{account.DeleteMedia, scopeUploader},
+	filters: []listFilter{mediaKindFilter, uploadedByFilter},
+}
+
 // docKinds are the kinds that this file serves. The media are made by the upload, which is not here.
 var docKinds = []docKind{
 	{
@@ -69,11 +76,7 @@ var docKinds = []docKind{
 		create: docRule{action: account.EditRedirects}, save: docRule{action: account.EditRedirects},
 		remove: docRule{action: account.EditRedirects},
 	},
-	{
-		path: "media", kind: content.RefMedia,
-		save: docRule{account.EditMedia, scopeUploader}, remove: docRule{account.DeleteMedia, scopeUploader},
-		filters: []listFilter{mediaKindFilter, uploadedByFilter},
-	},
+	mediaKind,
 }
 
 // listFilter is a name of the query of a list that keeps the documents which have a value: valid checks the form of the

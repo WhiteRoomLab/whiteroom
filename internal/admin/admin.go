@@ -159,6 +159,7 @@ func (s *Server) routes() {
 	s.api("GET /api/theme", s.showTheme)
 	s.documentRoutes()
 	s.entryRoutes()
+	s.mediaRoutes()
 }
 
 // ServeHTTP checks the Host (421) and the path (404), then that a request that changes something comes from the
