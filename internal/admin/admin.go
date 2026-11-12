@@ -14,9 +14,13 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/edit"
+	"github.com/WhiteRoomLab/whiteroom/internal/publish"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const (
@@ -37,11 +41,17 @@ type Config struct {
 	// authenticates may write the time of its session. Its clock decides the times of the sessions. New sets its
 	// OnRecordError, so that a record of the login history that cannot be written is logged to ErrorLog.
 	Accounts *account.Manager
-	// ErrorLog gets the errors that requests run into, the records of the login history that could not be written, and
-	// the warnings about full tables of attempts and about an X-Forwarded-For header that is not read; nil discards them.
+	// ErrorLog gets the errors that requests run into, the records of the login history and of the refusals of permission
+	// that could not be written, and the warnings about full tables of attempts and about an X-Forwarded-For header that is
+	// not read; nil discards them.
 	ErrorLog *log.Logger
-	// Now is the clock of the limits of login attempts, and of the log lines that are limited to one a minute; nil is time.Now.
-	// It should be monotonic: a clock that goes back makes the waits longer.
+	// Publisher calls the operations that save the documents (internal/edit) and the builds. It must use the store of
+	// Accounts. It may be nil: the server then has no routes for the documents, the media, the publishing and the builds.
+	// New does not run it: the caller calls Run.
+	Publisher *publish.Publisher
+	// Now is the clock of the limits of login attempts, of the log lines that are limited to one a minute, and of the
+	// refusals that are recorded one by one; nil is time.Now. It should be monotonic: a clock that goes back makes the waits
+	// longer.
 	Now func() time.Time
 }
 
@@ -51,14 +61,32 @@ type Server struct {
 	hosts        []string // the values of Host that name the origin, in lower case
 	proxies      []netip.Prefix
 	accounts     *account.Manager
+	store        *store.Store       // that of accounts
+	publisher    *publish.Publisher // nil: no routes for the documents and the builds
+	editor       *edit.Editor       // that of publisher
+	now          func() time.Time
 	cookieName   string // of the cookie of the session
 	log          *log.Logger
 	mux          *http.ServeMux
-	deadline     time.Duration
+	deadline     time.Duration // of the routes that have none of their own
 	attempts     *attempts
 	logins       chan struct{} // a place for each login that attempts has allowed and that has not ended
 	forwardedDue func() bool   // true at most once a minute: the time to log an X-Forwarded-For that is not read
 	handler      http.Handler  // the check of cross-origin requests, then the routes
+
+	deadlinesMu sync.RWMutex
+	deadlines   map[string]time.Duration // by pattern, for the routes that have a deadline of their own
+	// heavy is the place of heavy work: a request that works in it has it alone (heavyWork). placeWait is how long a
+	// request waits for it, and placeRun how long the work in it may take; the tests shorten them.
+	heavy     chan struct{}
+	placeWait time.Duration
+	placeRun  time.Duration
+	inflight  inflight
+	denials   denials
+	// denialWait is how long the record of a refusal waits for the store; the tests shorten it.
+	denialWait time.Duration
+	// hook is nil outside the tests, which run something at a point of a request (at).
+	hook func(point string)
 }
 
 func New(c Config) (*Server, error) {
@@ -77,6 +105,9 @@ func New(c Config) (*Server, error) {
 	if c.Accounts == nil {
 		return nil, errors.New("admin: Config.Accounts is required")
 	}
+	if c.Publisher != nil && c.Publisher.Store() != c.Accounts.Store() {
+		return nil, errors.New("admin: Config.Publisher must use the store of Config.Accounts")
+	}
 	https := o.scheme == "https"
 	now := c.Now
 	if now == nil {
@@ -88,12 +119,22 @@ func New(c Config) (*Server, error) {
 		hosts:        o.hosts(),
 		proxies:      slices.Clone(c.TrustedProxies),
 		accounts:     c.Accounts,
+		store:        c.Accounts.Store(),
+		publisher:    c.Publisher,
+		now:          now,
 		cookieName:   sessionCookieName(https),
 		log:          c.ErrorLog,
 		mux:          http.NewServeMux(),
 		deadline:     defaultDeadline,
 		logins:       make(chan struct{}, maxLogins),
 		forwardedDue: everyMinute(now),
+		heavy:        make(chan struct{}, 1),
+		placeWait:    heavyWait,
+		placeRun:     heavyRun,
+		denialWait:   denialWait,
+	}
+	if c.Publisher != nil {
+		s.editor = c.Publisher.Editor()
 	}
 	if s.log == nil {
 		s.log = log.New(io.Discard, "", 0)
@@ -103,8 +144,19 @@ func New(c Config) (*Server, error) {
 	s.handle("POST /api/session", http.HandlerFunc(s.login))
 	s.handle("GET /api/session", s.withSession(s.showSession))
 	s.handle("DELETE /api/session", http.HandlerFunc(s.logout))
+	s.routes()
 	s.handler = s.csrf(http.HandlerFunc(s.serveRoutes))
 	return s, nil
+}
+
+// routes registers the routes of the admin API besides those of the session: first those that need only the store of the
+// Accounts (the accounts, the passwords and the logs), then, if there is a Publisher, those that call its Editor and it.
+func (s *Server) routes() {
+	if s.publisher == nil {
+		return
+	}
+	s.api("GET /api/schema", s.showSchema)
+	s.api("GET /api/theme", s.showTheme)
 }
 
 // ServeHTTP checks the Host (421) and the path (404), then that a request that changes something comes from the
@@ -143,14 +195,14 @@ func (s *Server) handle(pattern string, h http.Handler) {
 }
 
 func (s *Server) serveRoutes(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.deadline)
-	defer cancel()
-	r = r.WithContext(ctx)
-	if h, pattern := s.mux.Handler(r); pattern == "" {
+	h, pattern := s.mux.Handler(r)
+	if pattern == "" {
 		noRoute(w, r, h)
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	ctx, cancel := context.WithTimeout(r.Context(), s.deadlineOf(pattern))
+	defer cancel()
+	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // noRoute answers a request that no route takes, for which ServeMux returns h: with 405 and its Allow if h says 405,

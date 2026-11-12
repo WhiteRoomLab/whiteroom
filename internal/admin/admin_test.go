@@ -91,20 +91,34 @@ type testIn struct {
 	Name string `json:"name"`
 }
 
-// testAccounts returns a Manager for a store in a temporary directory, and the store. The hashes have 2 iterations: the
-// real count takes about a second under the race detector, and only account.NewWithIterations lets a test change it.
-func testAccounts(tb testing.TB) (*account.Manager, *store.Store) {
+// testStore returns a new store in a temporary directory, and the data directory.
+func testStore(tb testing.TB) (*store.Store, string) {
 	tb.Helper()
-	s, err := store.Create(filepath.Join(tb.TempDir(), "data"))
+	dir := filepath.Join(tb.TempDir(), "data")
+	s, err := store.Create(dir)
 	if err != nil {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { _ = s.Close() })
+	return s, dir
+}
+
+// testManager returns a Manager for s. The hashes have 2 iterations: the real count takes about a second under the race
+// detector, and only account.NewWithIterations lets a test change it.
+func testManager(tb testing.TB, s *store.Store) *account.Manager {
+	tb.Helper()
 	m, err := account.NewWithIterations(s, 2)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return m, s
+	return m
+}
+
+// testAccounts returns a Manager for a store in a temporary directory, and the store.
+func testAccounts(tb testing.TB) (*account.Manager, *store.Store) {
+	tb.Helper()
+	s, _ := testStore(tb)
+	return testManager(tb, s), s
 }
 
 // storeWrite returns f followed by the record store.write, which an Update that writes with the store's own API needs
@@ -128,6 +142,7 @@ type testServer struct {
 	logs    *syncBuffer
 	clock   *fakeClock
 	db      *store.Store
+	dir     string // the data directory of db
 	seen    *secretWatch
 	reached atomic.Int32 // the requests that POST and DELETE /api/test have taken
 	left    atomic.Int64 // the time left of the context of GET /api/deadline, in nanoseconds
@@ -139,15 +154,27 @@ type testServer struct {
 // GET /api/abort, /api/halfway and /api/panic-after-* (which panic after they write something).
 func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 	t.Helper()
-	ts := &testServer{logs: new(syncBuffer), clock: newFakeClock(), seen: newSecretWatch()}
 	var prefixes []netip.Prefix
 	for _, p := range proxies {
 		prefixes = append(prefixes, netip.MustParsePrefix(p))
 	}
-	m, db := testAccounts(t)
-	m.SetClock(ts.clock.now)
-	ts.db = db
-	c := testConfig(m, origin, prefixes...)
+	db, dir := testStore(t)
+	ts := newTestBase()
+	ts.serve(t, testConfig(testManager(t, db), origin, prefixes...), db, dir)
+	return ts
+}
+
+// newTestBase returns a testServer that has no Server yet: its log, its clock and the watch of its secrets.
+func newTestBase() *testServer {
+	return &testServer{logs: new(syncBuffer), clock: newFakeClock(), seen: newSecretWatch()}
+}
+
+// serve makes the Server of ts from c, whose Accounts is a Manager of the store db in dir; it sets the clock and the log of
+// ts in the Manager and the Server, and adds the routes of newTestServer.
+func (ts *testServer) serve(t *testing.T, c Config, db *store.Store, dir string) {
+	t.Helper()
+	c.Accounts.SetClock(ts.clock.now)
+	ts.db, ts.dir = db, dir
 	c.ErrorLog = log.New(ts.logs, "", 0)
 	c.Now = ts.clock.now
 	s, err := New(c)
@@ -211,7 +238,6 @@ func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	return ts
 }
 
 // request returns a request for path to ts, as a server reads it. headers are names and values; the name Host sets the
@@ -279,6 +305,16 @@ var problems = map[string]struct {
 	"unauthenticated":        {http.StatusUnauthorized, "not logged in"},
 	"busy":                   {http.StatusServiceUnavailable, "the server could not answer in time; try again later"},
 	"internal":               {http.StatusInternalServerError, "the server failed to answer"},
+	"too-many-requests":      {http.StatusTooManyRequests, "too many requests at once; try again later"},
+	"forbidden":              {http.StatusForbidden, "the account is not allowed to do this"},
+	"conflict":               {http.StatusConflict, "the document has changed since it was read"},
+	"invalid":                {http.StatusUnprocessableEntity, "the request has problems"},
+	"operation-reused":       {http.StatusUnprocessableEntity, "the Idempotency-Key was used for another request"},
+	"last-admin":             {http.StatusConflict, "it would leave no active administrator"},
+	"invalid-token":          {http.StatusUnauthorized, "invalid or expired token"},
+	"rollback-running":       {http.StatusConflict, "another rollback is running"},
+	"bad-query":              {http.StatusBadRequest, "the query is not one that this resource takes"},
+	"bad-header":             {http.StatusBadRequest, "a header of the request is not one that this resource takes"},
 }
 
 func problemJSON(code string) string {
@@ -308,6 +344,10 @@ func checkProblem(t *testing.T, what string, res *http.Response, code string) {
 	case "busy":
 		if !equalValues(retry, "5") {
 			t.Errorf("%s has the Retry-After %q, want 5", what, retry)
+		}
+	case "too-many-requests":
+		if !equalValues(retry, "1") {
+			t.Errorf("%s has the Retry-After %q, want 1", what, retry)
 		}
 	case "too-many-attempts":
 		// The wait is in whole seconds, without a sign or a unit.
@@ -544,6 +584,34 @@ func TestNewTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestNewPublisher(t *testing.T) {
+	base := newTestBase()
+	db, _ := testStore(t)
+	m := testManager(t, db)
+	other, _ := testStore(t)
+	foreign, _ := newTestPublisher(t, base, other)
+	_, err := New(Config{Origin: httpsOrigin, Accounts: m, Publisher: foreign})
+	if want := "admin: Config.Publisher must use the store of Config.Accounts"; err == nil || err.Error() != want {
+		t.Errorf("New with a Publisher of another store = %v, want the error %q", err, want)
+	}
+
+	own, _ := newTestPublisher(t, base, db)
+	s, err := New(Config{Origin: httpsOrigin, Accounts: m, Publisher: own})
+	if err != nil {
+		t.Fatalf("New with a Publisher of the store of the Accounts = %v", err)
+	}
+	if s.publisher != own || s.editor != own.Editor() || s.store != db {
+		t.Error("the Server does not keep the Publisher, its Editor and the store of the Accounts")
+	}
+	s, err = New(Config{Origin: httpsOrigin, Accounts: m})
+	if err != nil {
+		t.Fatalf("New without a Publisher = %v", err)
+	}
+	if s.publisher != nil || s.editor != nil || s.store != db {
+		t.Error("a Server without a Publisher has a Publisher or an Editor")
+	}
+}
+
 func TestHeaders(t *testing.T) {
 	for _, origin := range []string{httpsOrigin, localOrigin} {
 		ts := newTestServer(t, origin)
@@ -595,8 +663,11 @@ func TestProblem(t *testing.T) {
 	for code, p := range problems {
 		rec := httptest.NewRecorder()
 		rec.Header().Set("Content-Length", "123")
-		if code == "too-many-attempts" {
+		switch code {
+		case "too-many-attempts":
 			rec.Header().Set("Retry-After", "30")
+		case "too-many-requests":
+			rec.Header().Set("Retry-After", "1")
 		}
 		writeProblem(rec, p.status, code, p.detail)
 		res := rec.Result()
