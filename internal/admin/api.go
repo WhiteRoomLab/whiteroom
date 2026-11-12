@@ -473,24 +473,14 @@ func writeDocument(out io.Writer, d store.Document) error {
 // writeDocuments writes {"items":[{"version":…,"document":…},…],"total":…,"offset":…,"limit":…} to out: the documents of
 // a page of a list as they are, one for each item.
 func writeDocuments(out io.Writer, docs []store.Document, total, offset, limit int) error {
-	j := newJSONStream(out)
-	j.object()
-	j.key("items")
-	j.array()
-	for _, d := range docs {
-		j.object()
-		j.versioned(d)
-		j.end()
-	}
-	j.end()
-	j.key("total")
-	j.value(total)
-	j.key("offset")
-	j.value(offset)
-	j.key("limit")
-	j.value(limit)
-	j.end()
-	return j.done()
+	return writeList(out, total, page{offset: offset, limit: limit}, func(j *jsonStream) error {
+		for _, d := range docs {
+			j.object()
+			j.versioned(d)
+			j.end()
+		}
+		return nil
+	})
 }
 
 // extendWrite gives the write of the response d from now, for an answer that comes after a long wait or is long. It does

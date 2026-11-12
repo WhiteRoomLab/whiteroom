@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,12 +116,18 @@ var apiLogins = []struct {
 // seconds, for the import and the build that the Publisher makes at its start: a test uses one for as much as it can.
 func newAPIServer(t *testing.T) *apiServer {
 	t.Helper()
+	return newAPIServerAt(t, httpsOrigin)
+}
+
+// newAPIServerAt is newAPIServer for the server of origin.
+func newAPIServerAt(t *testing.T, origin string) *apiServer {
+	t.Helper()
 	ts := newTestBase()
 	db, dir := testStore(t)
 	importSample(t, db)
 	m := testManager(t, db)
 	p, out := newTestPublisher(t, ts, db)
-	ts.serve(t, Config{Origin: httpsOrigin, Accounts: m, Publisher: p}, db, dir)
+	ts.serve(t, Config{Origin: origin, Accounts: m, Publisher: p}, db, dir)
 	a := &apiServer{testServer: ts, pub: p, out: out, people: make(map[string]*person)}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -138,6 +145,19 @@ func newAPIServer(t *testing.T) *apiServer {
 		a.people[l.login] = &person{account: acct, token: ts.logIn(t, l.login)}
 	}
 	return a
+}
+
+// newLiveAPIServer is newAPIServer for a server that listens on a loopback port over HTTP, whose requests the test sends
+// over a connection, such as the slow ones of liveServer. The live server is the one of the API server.
+func newLiveAPIServer(t *testing.T) (*apiServer, *liveServer) {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(nil)
+	url := "http://" + srv.Listener.Addr().String()
+	a := newAPIServerAt(t, url)
+	srv.Config.Handler = a.Server
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return a, &liveServer{testServer: a.testServer, srv: srv, url: url}
 }
 
 // waitBuilds returns when the Publisher has no build that runs or is due.

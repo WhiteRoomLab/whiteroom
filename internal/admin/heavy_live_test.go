@@ -43,8 +43,14 @@ type slowResult struct {
 // slowPost starts a POST of path as the account with token, and sends the first part of its body.
 func (ls *liveServer) slowPost(t *testing.T, path, token, first string) slowRequest {
 	t.Helper()
+	return ls.slowSend(t, http.MethodPost, path, token, first)
+}
+
+// slowSend starts a request of method to path as the account with token, and sends the first part of its body.
+func (ls *liveServer) slowSend(t *testing.T, method, path, token, first string) slowRequest {
+	t.Helper()
 	pr, pw := io.Pipe()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ls.url+path, pr)
+	req, err := http.NewRequestWithContext(t.Context(), method, ls.url+path, pr)
 	if err != nil {
 		t.Fatal(err)
 	}
