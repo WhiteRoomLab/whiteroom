@@ -656,7 +656,7 @@ func TestScheduledPaused(t *testing.T) {
 	r.start()
 	r.idle()
 	first := r.current()
-	if err := r.Rollback(t.Context(), userID, first); err != nil {
+	if err := r.Rollback(t.Context(), userID, first, nil); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 

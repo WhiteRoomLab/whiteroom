@@ -3,6 +3,7 @@ package build
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,10 +46,10 @@ func ListReleases(out string) (Releases, error) {
 // and another Rollback can point to it, until a build removes it.
 //
 // The errors are: no output directory, if out is empty; invalid release name "<name>", if name is not 16 lower case hex
-// digits; those of ListReleases, if out holds what Build has not made; <out>/releases/<name>: no such release; another
-// build is running in <out>, if a build or another Rollback holds the lock, which Rollback does not wait for; and those
-// of the file system, which wrap their causes, such as fs.ErrNotExist for a missing out. If Rollback fails, current is
-// as it was. Like Build, it needs flock(2).
+// digits; those of ListReleases, if out holds what Build has not made; <out>/releases/<name>: no such release, which wraps
+// fs.ErrNotExist; another build is running in <out>, if a build or another Rollback holds the lock, which Rollback does
+// not wait for; and those of the file system, which wrap their causes, such as fs.ErrNotExist for a missing out. If
+// Rollback fails, current is as it was. Like Build, it needs flock(2).
 func Rollback(out, name string) (changed bool, err error) {
 	switch {
 	case out == "":
@@ -90,6 +91,12 @@ func rollbackLocked(root *os.Root, name string) (changed bool, err error) {
 	return true, nil
 }
 
+// noReleaseError is the error of a release that the output directory does not have, which wraps fs.ErrNotExist.
+type noReleaseError struct{ path string }
+
+func (e noReleaseError) Error() string { return e.path + ": no such release" }
+func (e noReleaseError) Unwrap() error { return fs.ErrNotExist }
+
 // checkRelease returns what root, an output directory, holds (checkLayout), if it holds the release name.
 func checkRelease(root *os.Root, name string) (*layout, error) {
 	l, err := checkLayout(root)
@@ -97,7 +104,7 @@ func checkRelease(root *os.Root, name string) (*layout, error) {
 		return nil, err
 	}
 	if !slices.Contains(l.releases, name) {
-		return nil, fmt.Errorf("%s: no such release", filepath.Join(root.Name(), releasesDir, name))
+		return nil, noReleaseError{filepath.Join(root.Name(), releasesDir, name)}
 	}
 	return l, nil
 }

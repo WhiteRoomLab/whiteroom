@@ -88,6 +88,13 @@ const (
 	BuildResume     Action = "build.resume"
 	ReleaseRollback Action = "release.rollback"
 
+	// AccessDenied is a request that the permissions of its account refused.
+	AccessDenied Action = "access.denied"
+
+	// OperationsExpire is the removal of the records of operation IDs that have been kept long enough; its detail has the
+	// number of those that it removed.
+	OperationsExpire Action = "operations.expire"
+
 	StoreCreate  Action = "store.create"
 	StoreUpgrade Action = "store.upgrade"
 	StoreWrite   Action = "store.write"
@@ -114,6 +121,7 @@ var logOf = map[Action]Log{
 	AccountDisable: ActivityLog, AccountEnable: ActivityLog, AccountDelete: ActivityLog,
 	Build: ActivityLog, BuildRebuild: ActivityLog, BuildResume: ActivityLog, ReleaseRollback: ActivityLog,
 	StoreCreate: ActivityLog, StoreUpgrade: ActivityLog, StoreWrite: ActivityLog, Backup: ActivityLog,
+	AccessDenied: ActivityLog, OperationsExpire: ActivityLog,
 }
 
 // System is the actor of what the system does, such as the build and the store itself.

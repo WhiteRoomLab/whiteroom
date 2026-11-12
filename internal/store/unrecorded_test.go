@@ -92,8 +92,9 @@ func TestUnrecordedWrite(t *testing.T) {
 			}
 			return tx.b.indexDelete(indexSummaries, docKey(content.RefEntry, entryID))
 		},
-		"DeleteAccount": func(tx *Tx) error { return tx.PutAccount(userID, []byte("row")) },
-		"DeleteSession": func(tx *Tx) error { return tx.PutSession(sessionKeyOf("a"), []byte("session")) },
+		"DeleteOperation": func(tx *Tx) error { return tx.PutOperation("op_A", []byte("operation")) },
+		"DeleteAccount":   func(tx *Tx) error { return tx.PutAccount(userID, []byte("row")) },
+		"DeleteSession":   func(tx *Tx) error { return tx.PutSession(sessionKeyOf("a"), []byte("session")) },
 	}
 	for _, name := range writes {
 		t.Run(name, func(t *testing.T) {
@@ -197,8 +198,11 @@ func TestUnrecordedRules(t *testing.T) {
 			_, _ = tx.Put(content.RefEntry, "ent_x", docJSON(content.RefEntry, entryID), userID)
 			_, _ = tx.Delete(content.RefTerm, termID, userID)
 			_ = tx.DeleteSession(sessionKeyOf("z"))
+			_ = tx.DeleteOperation("")
 			return nil
 		}, nil, false, 0},
+		{"a DeleteOperation of an operation that has no data", func(tx *Tx) error { return tx.DeleteOperation("op_Z") }, nil,
+			false, 0},
 		{"a write and a record that is refused, which f does not return", func(tx *Tx) error {
 			bad := eventRecord("bad")
 			bad.Actor = "alice"

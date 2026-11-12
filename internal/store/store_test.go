@@ -457,27 +457,29 @@ func calls(tx *Tx) map[string]func() error {
 			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
 			return err
 		},
-		"Summary":       func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
-		"Summaries":     func() error { _, err := tx.Summaries(content.RefEntry); return err },
-		"Referrers":     func() error { _, err := tx.Referrers(content.RefEntry, entryID); return err },
-		"LastNumber":    func() error { _, err := tx.LastNumber(); return err },
-		"Operation":     func() error { _, _, err := tx.Operation("op_A"); return err },
-		"PutOperation":  func() error { return tx.PutOperation("op_A", []byte("data")) },
-		"RebuildIndex":  tx.RebuildIndex,
-		"Account":       func() error { _, _, err := tx.Account(userID); return err },
-		"Accounts":      func() error { _, err := tx.Accounts(); return err },
-		"PutAccount":    func() error { return tx.PutAccount(userID, []byte("data")) },
-		"DeleteAccount": func() error { return tx.DeleteAccount(userID) },
-		"Session":       func() error { _, _, err := tx.Session(sessionKeyOf("a")); return err },
-		"Sessions":      func() error { _, err := tx.Sessions(); return err },
-		"PutSession":    func() error { return tx.PutSession(sessionKeyOf("a"), []byte("data")) },
-		"DeleteSession": func() error { return tx.DeleteSession(sessionKeyOf("a")) },
+		"Summary":         func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
+		"Summaries":       func() error { _, err := tx.Summaries(content.RefEntry); return err },
+		"Referrers":       func() error { _, err := tx.Referrers(content.RefEntry, entryID); return err },
+		"LastNumber":      func() error { _, err := tx.LastNumber(); return err },
+		"Operation":       func() error { _, _, err := tx.Operation("op_A"); return err },
+		"Operations":      func() error { return tx.Operations(func(string, []byte) bool { return true }) },
+		"PutOperation":    func() error { return tx.PutOperation("op_A", []byte("data")) },
+		"DeleteOperation": func() error { return tx.DeleteOperation("op_A") },
+		"RebuildIndex":    tx.RebuildIndex,
+		"Account":         func() error { _, _, err := tx.Account(userID); return err },
+		"Accounts":        func() error { _, err := tx.Accounts(); return err },
+		"PutAccount":      func() error { return tx.PutAccount(userID, []byte("data")) },
+		"DeleteAccount":   func() error { return tx.DeleteAccount(userID) },
+		"Session":         func() error { _, _, err := tx.Session(sessionKeyOf("a")); return err },
+		"Sessions":        func() error { _, err := tx.Sessions(); return err },
+		"PutSession":      func() error { return tx.PutSession(sessionKeyOf("a"), []byte("data")) },
+		"DeleteSession":   func() error { return tx.DeleteSession(sessionKeyOf("a")) },
 	}
 }
 
 var writes = []string{
-	"Put", "Delete", "AddRevision", "PutOperation", "RebuildIndex", "PutAccount", "DeleteAccount", "PutSession",
-	"DeleteSession",
+	"Put", "Delete", "AddRevision", "PutOperation", "DeleteOperation", "RebuildIndex", "PutAccount", "DeleteAccount",
+	"PutSession", "DeleteSession",
 }
 
 // putWithRevision puts the entry entryID with its revision revisionID, whose data calls has, in an Update of s.

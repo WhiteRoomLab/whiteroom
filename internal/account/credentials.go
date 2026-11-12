@@ -94,8 +94,8 @@ func (m *Manager) setPassword(ctx context.Context, token, password string) (Acco
 
 // Reset removes every credential of the account id at once, which is today its password, and returns a token for
 // setting up a new one with SetPassword: valid for 24 hours, or for 7 days if the account has never had a credential.
-// It replaces an older token, and ends the account's sessions in the same Update. The account must not be disabled. Only
-// an administrator, or System, may; the last active administrator can be reset by System only.
+// It replaces an older token, and ends the account's sessions in the same Update. The account must not be disabled: the
+// error wraps ErrDisabled. Only an administrator, or System, may; the last active administrator can be reset by System only.
 func (m *Manager) Reset(ctx context.Context, by Actor, id string) (string, error) {
 	var token string
 	err := m.logged(ctx, func(tx *store.Tx, h *history) error {
@@ -112,7 +112,7 @@ func (m *Manager) Reset(ctx context.Context, by Actor, id string) (string, error
 		}
 		next := rows[i]
 		if next.Disabled {
-			return fmt.Errorf("%s is disabled: enable it first", id)
+			return disabledError(fmt.Sprintf("%s is disabled: enable it first", id))
 		}
 		now := m.now()
 		if next.removeCredentials() {

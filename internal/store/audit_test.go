@@ -416,7 +416,8 @@ func TestChanged(t *testing.T) {
 			if _, err := tx.AddRevision(entryID, revisionID, revJSON("A"), userID); err != nil {
 				return err
 			}
-			return errors.Join(tx.PutAccount(userID, []byte("row")), tx.PutSession(sessionKeyOf("a"), []byte("s")))
+			return errors.Join(tx.PutAccount(userID, []byte("row")), tx.PutSession(sessionKeyOf("a"), []byte("s")),
+				tx.PutOperation("op_B", []byte("b")))
 		})
 		for _, tt := range []struct {
 			name string
@@ -462,6 +463,8 @@ func TestChanged(t *testing.T) {
 				return err
 			}, true},
 			{"a PutOperation", func(tx *Tx) error { return tx.PutOperation("op_A", []byte("x")) }, true},
+			{"a DeleteOperation", func(tx *Tx) error { return tx.DeleteOperation("op_B") }, true},
+			{"a DeleteOperation of an operation that has no data", func(tx *Tx) error { return tx.DeleteOperation("op_Z") }, false},
 			{"a PutAccount", func(tx *Tx) error { return tx.PutAccount(otherUser, []byte("row")) }, true},
 			{"a DeleteAccount", func(tx *Tx) error { return tx.DeleteAccount(userID) }, true},
 			{"a PutSession", func(tx *Tx) error { return tx.PutSession(sessionKeyOf("b"), []byte("s")) }, true},

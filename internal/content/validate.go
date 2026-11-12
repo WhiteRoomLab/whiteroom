@@ -9,6 +9,7 @@ import (
 
 type ValidateOptions struct {
 	AllowHTML bool           // html blocks are enabled in the site settings
+	LockHTML  bool           // an html block must be as in Previous, by ID: the saver lacks html.edit (7.3)
 	Import    bool           // the blocks come from an import, which may create legacy blocks and images without alt
 	Previous  Blocks         // blocks of the previous revision, matched by ID
 	Theme     *ThemeSettings // the settings of the theme of the site, which styles must keep to; nil skips those checks
@@ -102,8 +103,13 @@ func (x Blocks) checkIn(c *checker, path string, parent BlockType, depth int, in
 // check checks x, a block of a known type at depth, apart from its place in the document.
 // inColumns reports whether a columns block holds x.
 func (x *Block) check(c *checker, path string, spec blockSpec, depth int, inColumns bool) {
-	if x.Type == BlockHTML && !c.doc.opts.AllowHTML {
-		c.addf(path, "html blocks are not enabled")
+	if x.Type == BlockHTML {
+		switch {
+		case !c.doc.opts.AllowHTML:
+			c.addf(path, "html blocks are not enabled")
+		case c.doc.opts.LockHTML && !c.unchangedHTML(x):
+			c.addf(path, "only an administrator can add or change html blocks")
+		}
 	}
 	if x.Type == BlockLegacy && !c.doc.opts.Import && !c.unchangedLegacy(x) {
 		c.addf(path, "legacy blocks can only be created by import")
@@ -282,6 +288,12 @@ func (c *checker) previous(id string) *Block {
 func (c *checker) unchangedLegacy(x *Block) bool {
 	p := c.previous(x.ID)
 	return p != nil && p.Type == BlockLegacy && p.Attrs.HTML == x.Attrs.HTML && p.Attrs.Reason == x.Attrs.Reason
+}
+
+// unchangedHTML reports whether opts.Previous has x, an html block, with the same html.
+func (c *checker) unchangedHTML(x *Block) bool {
+	p := c.previous(x.ID)
+	return p != nil && p.Type == BlockHTML && p.Attrs.HTML == x.Attrs.HTML
 }
 
 // keptWithoutAlt reports whether opts.Previous has x, an image, with the same media and neither alt nor decorative.

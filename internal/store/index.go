@@ -854,3 +854,39 @@ func (t *Tx) PutOperation(id string, data []byte) error {
 	}
 	return t.b.indexPut(indexOperations, []byte(id), data)
 }
+
+// Operations calls fn with the ID and the data of each operation that PutOperation has saved, in the order of the IDs,
+// until fn returns false. It works in a View too. The data are a copy that fn may keep, and fn may call DeleteOperation:
+// the scan sees the operations as they were when it began. A key that is not an operation ID fails it. The store does not
+// read the data: the caller that wrote them decides which operations to delete.
+func (t *Tx) Operations(fn func(id string, data []byte) bool) error {
+	if err := t.check(false); err != nil {
+		return err
+	}
+	var rerr error
+	if err := t.b.indexScan(indexOperations, nil, func(key, value []byte) bool {
+		id := string(key)
+		if checkOperationID(id) != nil {
+			rerr = invalidKey(indexOperations, key)
+			return false
+		}
+		return fn(id, append([]byte{}, value...))
+	}); err != nil {
+		return err
+	}
+	return rerr
+}
+
+// DeleteOperation deletes the data of the operation id. If there are none, it does nothing.
+func (t *Tx) DeleteOperation(id string) error {
+	if err := t.check(true); err != nil {
+		return err
+	}
+	if err := checkOperationID(id); err != nil {
+		return err
+	}
+	if _, ok, err := t.b.indexGet(indexOperations, []byte(id)); err != nil || !ok {
+		return err
+	}
+	return t.b.indexDelete(indexOperations, []byte(id))
+}

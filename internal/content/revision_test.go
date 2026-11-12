@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -951,6 +952,118 @@ func TestRevisionValidatePrevious(t *testing.T) {
 			prev := mustRevision(t, tt.previous)
 			opts := RevisionOptions{Site: testSite(), Entry: testEntry(TypePost), Previous: &prev, Lookup: testLookup}
 			assertRevisionValidate(t, mustRevision(t, tt.in), opts, tt.paths, "")
+		})
+	}
+}
+
+// TestRevisionValidateLockHTML checks LockHTML through RevisionOptions: the html blocks of the body and of a blocks field
+// are matched with those of the previous revision by ID, wherever each of them is.
+func TestRevisionValidateLockHTML(t *testing.T) {
+	const locked = "only an administrator can add or change html blocks"
+	htmlA := `{"type":"html","id":"b_0000html","attrs":{"html":"<p>a</p>"}}`
+	htmlB := `{"type":"html","id":"b_0000html","attrs":{"html":"<p>b</p>"}}`
+	otherA := `{"type":"html","id":"b_1111html","attrs":{"html":"<p>a</p>"}}`
+	group := func(block string) string { return `{"type":"group","id":"b_00group1","content":[` + block + `]}` }
+	tests := []struct {
+		name     string
+		previous string // the previous revision; "" for none
+		in       string
+		opts     func(o *RevisionOptions) // changes the options; nil for none
+		want     []string                 // the problems as "path: message", in order
+	}{
+		{name: "new html in the body", in: rev(`,"body":[` + htmlA + `]`), want: []string{"/body/0: " + locked}},
+		{name: "new html in a field", in: revFields(`"sidebar":[` + htmlA + `]`), want: []string{"/fields/sidebar/0: " + locked}},
+		{
+			name:     "new html in a group in a field",
+			previous: rev(""),
+			in:       revFields(`"sidebar":[` + group(htmlA) + `]`),
+			want:     []string{"/fields/sidebar/0/content/0: " + locked},
+		},
+		{name: "html kept in the body", previous: rev(`,"body":[` + htmlA + `]`), in: rev(`,"body":[` + htmlA + `]`)},
+		{name: "html kept in a field", previous: revFields(`"sidebar":[` + htmlA + `]`), in: revFields(`"sidebar":[` + htmlA + `]`)},
+		{name: "html moved from the body to a field", previous: rev(`,"body":[` + htmlA + `]`), in: revFields(`"sidebar":[` + htmlA + `]`)},
+		{name: "html moved from a field to the body", previous: revFields(`"sidebar":[` + htmlA + `]`), in: rev(`,"body":[` + htmlA + `]`)},
+		{
+			name:     "html moved from a group to a field",
+			previous: rev(`,"body":[` + group(htmlA) + `]`),
+			in:       revFields(`"sidebar":[` + htmlA + `]`),
+		},
+		{name: "html removed", previous: rev(`,"body":[` + htmlA + `]`), in: rev("")},
+		{name: "html removed from a field", previous: revFields(`"sidebar":[` + htmlA + `]`), in: revFields(`"subtitle":"x"`)},
+		{
+			name:     "html changed in the body",
+			previous: rev(`,"body":[` + htmlA + `]`),
+			in:       rev(`,"body":[` + htmlB + `]`),
+			want:     []string{"/body/0: " + locked},
+		},
+		{
+			name:     "html changed in a field",
+			previous: revFields(`"sidebar":[` + htmlA + `]`),
+			in:       revFields(`"sidebar":[` + htmlB + `]`),
+			want:     []string{"/fields/sidebar/0: " + locked},
+		},
+		{
+			name:     "html copied under another ID",
+			previous: rev(`,"body":[` + htmlA + `]`),
+			in:       rev(`,"body":[` + htmlA + `,` + otherA + `]`),
+			want:     []string{"/body/1: " + locked},
+		},
+		{
+			name:     "html in a field that the type does not have",
+			previous: revFields(`"other":[` + htmlA + `]`),
+			in:       rev(`,"body":[` + htmlA + `]`),
+			want:     []string{"/body/0: " + locked},
+		},
+		{
+			name: "new html without a lock", in: rev(`,"body":[` + htmlA + `]`),
+			opts: func(o *RevisionOptions) { o.LockHTML = false },
+		},
+		{
+			name:     "changed html without a lock",
+			previous: rev(`,"body":[` + htmlA + `]`),
+			in:       rev(`,"body":[` + htmlB + `]`),
+			opts:     func(o *RevisionOptions) { o.LockHTML = false },
+		},
+		{
+			name: "html where it is not enabled",
+			in:   rev(`,"body":[` + htmlA + `]`),
+			opts: func(o *RevisionOptions) { o.Site.AllowHTML = false },
+			want: []string{"/body/0: html blocks are not enabled"},
+		},
+		{
+			name:     "kept html where it is not enabled",
+			previous: rev(`,"body":[` + htmlA + `]`),
+			in:       rev(`,"body":[` + htmlA + `]`),
+			opts:     func(o *RevisionOptions) { o.Site.AllowHTML = false },
+			want:     []string{"/body/0: html blocks are not enabled"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			site := testSite()
+			site.AllowHTML = true
+			opts := RevisionOptions{Site: site, Entry: testEntry(TypePost), LockHTML: true, Lookup: testLookup}
+			if tt.previous != "" {
+				prev := mustRevision(t, tt.previous)
+				opts.Previous = &prev
+			}
+			if tt.opts != nil {
+				tt.opts(&opts)
+			}
+			err := mustRevision(t, tt.in).Validate(opts)
+			var got []string
+			if err != nil {
+				var es Errors
+				if !errors.As(err, &es) {
+					t.Fatalf("Validate() = %v, want problems", err)
+				}
+				for _, e := range es {
+					got = append(got, e.Path+": "+e.Msg)
+				}
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Validate() problems = %q, want %q", got, tt.want)
+			}
 		})
 	}
 }

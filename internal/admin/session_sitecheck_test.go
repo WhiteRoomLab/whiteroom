@@ -90,7 +90,8 @@ func TestSessionFromAnotherSite(t *testing.T) {
 	}
 }
 
-// TestWithSessionFromAnotherSite shows the same for a route of #48 that goes through withSession: its handler is not called.
+// TestWithSessionFromAnotherSite shows the same for a route of the admin API that goes through withSession: its handler is
+// not called.
 func TestWithSessionFromAnotherSite(t *testing.T) {
 	ts := newTestServer(t, httpsOrigin)
 	ts.addAccount(t, "admin", account.RoleAdmin)

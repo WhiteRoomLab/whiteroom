@@ -1632,6 +1632,104 @@ func TestValidateOptions(t *testing.T) {
 	}
 }
 
+// TestValidateLockHTML checks the html blocks of a save by an account that may not add or change them: with LockHTML, an
+// html block is a problem unless opts.Previous has a block with its ID and the same html.
+func TestValidateLockHTML(t *testing.T) {
+	const (
+		locked     = "only an administrator can add or change html blocks"
+		notEnabled = "html blocks are not enabled"
+		id         = "b_0000html"
+	)
+	html := func(id, html string) Block { return Block{Type: BlockHTML, ID: id, Attrs: Attrs{HTML: html}} }
+	a, b := html(id, "<p>a</p>"), html(id, "<p>b</p>")
+	group := func(bs ...Block) Block { return Block{Type: BlockGroup, ID: "b_00group1", Children: bs} }
+	columns := func(bs ...Block) Block {
+		return Block{Type: BlockColumns, ID: "b_columns1", Children: Blocks{{Type: BlockColumn, ID: "b_0column1", Children: bs}}}
+	}
+	para := Block{Type: BlockParagraph, ID: "b_0paragr1"}
+	locking := func(prev ...Block) ValidateOptions {
+		return ValidateOptions{AllowHTML: true, LockHTML: true, Previous: prev}
+	}
+	tests := []struct {
+		name  string
+		in    Blocks
+		opts  ValidateOptions
+		paths []string
+		msg   string // the problems, one "path: message" line each, in order; not checked if ""
+	}{
+		{name: "new html", in: Blocks{a}, opts: locking(), paths: []string{"/0"}, msg: "/0: " + locked},
+		{name: "new html after a paragraph", in: Blocks{para, a}, opts: locking(para), paths: []string{"/1"}, msg: "/1: " + locked},
+		{
+			name: "new html twice", in: Blocks{a, html("b_1111html", "<p>a</p>")}, opts: locking(),
+			paths: []string{"/0", "/1"}, msg: "/0: " + locked + "\n/1: " + locked,
+		},
+		{name: "html kept", in: Blocks{a}, opts: locking(a)},
+		{name: "html kept after a new paragraph", in: Blocks{para, a}, opts: locking(a)},
+		{name: "html removed", in: Blocks{para}, opts: locking(a, para)},
+		{name: "html removed and nothing left", in: nil, opts: locking(a)},
+		{name: "html moved into a group", in: Blocks{para, group(a)}, opts: locking(a, para)},
+		{name: "html moved out of a group", in: Blocks{a}, opts: locking(group(a))},
+		{name: "html kept in a group", in: Blocks{group(a)}, opts: locking(group(a))},
+		{name: "html kept in a column", in: Blocks{columns(a)}, opts: locking(columns(a))},
+		{
+			name: "html changed", in: Blocks{b}, opts: locking(a), paths: []string{"/0"}, msg: "/0: " + locked,
+		},
+		{
+			name: "html with another ID", in: Blocks{html("b_1111html", "<p>a</p>")}, opts: locking(a),
+			paths: []string{"/0"}, msg: "/0: " + locked,
+		},
+		{
+			name: "html that was another block", in: Blocks{a}, opts: locking(Block{Type: BlockParagraph, ID: id}),
+			paths: []string{"/0"}, msg: "/0: " + locked,
+		},
+		{
+			name: "html that was a legacy block", in: Blocks{a},
+			opts:  locking(Block{Type: BlockLegacy, ID: id, Attrs: Attrs{HTML: "<p>a</p>"}}),
+			paths: []string{"/0"}, msg: "/0: " + locked,
+		},
+		{
+			name: "new html in a group", in: Blocks{para, group(a)}, opts: locking(para),
+			paths: []string{"/1/content/0"}, msg: "/1/content/0: " + locked,
+		},
+		{
+			name: "changed html in a column", in: Blocks{columns(b)}, opts: locking(columns(a)),
+			paths: []string{"/0/content/0/content/0"}, msg: "/0/content/0/content/0: " + locked,
+		},
+		{
+			name: "html compared with the first block of its ID", in: Blocks{a}, opts: locking(group(b), a),
+			paths: []string{"/0"}, msg: "/0: " + locked,
+		},
+		{name: "html kept without a lock", in: Blocks{a}, opts: ValidateOptions{AllowHTML: true, Previous: Blocks{a}}},
+		{name: "new html without a lock", in: Blocks{a}, opts: ValidateOptions{AllowHTML: true}},
+		{name: "changed html without a lock", in: Blocks{b}, opts: ValidateOptions{AllowHTML: true, Previous: Blocks{a}}},
+		{name: "html in a group without a lock", in: Blocks{group(a)}, opts: ValidateOptions{AllowHTML: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertBlocksValidate(t, tt.in, tt.opts, tt.paths, tt.msg)
+		})
+	}
+
+	// Where html blocks are not enabled that is the only problem, also for html that the previous revision has.
+	for _, tt := range []struct {
+		name string
+		opts ValidateOptions
+	}{
+		{"a lock", ValidateOptions{LockHTML: true}},
+		{"a lock and the previous revision", ValidateOptions{LockHTML: true, Previous: Blocks{a}}},
+		{"a lock and a previous revision without it", ValidateOptions{LockHTML: true, Previous: Blocks{para}}},
+		{"no lock", ValidateOptions{}},
+	} {
+		t.Run("not enabled with "+tt.name, func(t *testing.T) {
+			err := Blocks{a, group(html("b_2222html", "<p>b</p>"))}.Validate(tt.opts)
+			want := "/0: " + notEnabled + "\n/1/content/0: " + notEnabled
+			if err == nil || err.Error() != want {
+				t.Errorf("Validate() = %v, want only %q", err, want)
+			}
+		})
+	}
+}
+
 func TestCheckerRef(t *testing.T) {
 	type call struct {
 		kind RefKind

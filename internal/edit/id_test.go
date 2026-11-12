@@ -34,7 +34,7 @@ func TestNewIDUsesTheClock(t *testing.T) {
 	}
 }
 
-func TestCheckOpID(t *testing.T) {
+func TestCheckOperationID(t *testing.T) {
 	const ulid = "01JB8Y6T2RG7M4XK9P2D5W8NQ3"
 	for _, tt := range []struct {
 		in string
@@ -55,13 +55,13 @@ func TestCheckOpID(t *testing.T) {
 		{"op_" + ulid + "0", false},
 		{"op_01JB8Y6T2RG7M4XK9P2D5W8NQI", false},
 	} {
-		err := checkOpID(tt.in)
+		err := CheckOperationID(tt.in)
 		want := `invalid operation ID "` + tt.in + `": use "op_" and a ULID (26 characters in upper case)`
 		switch {
 		case tt.ok && err != nil:
-			t.Errorf("checkOpID(%q) = %v, want nil", tt.in, err)
+			t.Errorf("CheckOperationID(%q) = %v, want nil", tt.in, err)
 		case !tt.ok && (err == nil || err.Error() != want):
-			t.Errorf("checkOpID(%q) = %v, want %q", tt.in, err, want)
+			t.Errorf("CheckOperationID(%q) = %v, want %q", tt.in, err, want)
 		}
 	}
 }

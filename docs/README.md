@@ -49,6 +49,7 @@
 | 8. お問い合わせ機能 | [08-contact.md](08-contact.md) |
 | 9. Linuxでの配布・実行（9.1〜9.5） | [09-distribution.md](09-distribution.md) |
 | 9.6 管理用のサーバー（案） | [09.06-admin-server.md](09.06-admin-server.md) |
+| 9.7 管理のAPI（案） | [09.07-admin-api.md](09.07-admin-api.md) |
 | 10. セキュリティ設計の基本原則 | [10-security.md](10-security.md) |
 | 11. 初期実装の範囲（提案） | [11-initial-scope.md](11-initial-scope.md) |
 | 12. 次回以降の主要論点（未決定事項） | [12-next-topics.md](12-next-topics.md) |

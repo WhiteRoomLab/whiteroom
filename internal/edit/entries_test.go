@@ -632,6 +632,173 @@ func TestSaveRevisionKept(t *testing.T) {
 	}
 }
 
+// htmlSite makes the small site (referrers_test.go) with the settings extra adds, and a latest revision of its draft page,
+// in en, that is page(blocks...) of htmlPage; the page in ja, which is published, has the same blocks.
+func htmlSite(t *testing.T, extra string, blocks ...string) *smallSite {
+	t.Helper()
+	settings := strings.Replace(smallSettings, "%s", extra, 1)
+	return newSmallSite(t, settings, map[string]string{
+		revisionName(testID(content.RefRevision, 1)): htmlPage("ホーム", blocks...),
+		revisionName(testID(content.RefRevision, 2)): htmlPage("Draft", blocks...),
+	})
+}
+
+// htmlPage is a revision with the body blocks, and no body if there are none.
+func htmlPage(title string, blocks ...string) string {
+	body := ""
+	if len(blocks) > 0 {
+		body = `,"body":[` + strings.Join(blocks, ",") + `]`
+	}
+	return `{"schemaVersion":1,"title":"` + title + `","slug":"draft"` + body + `}`
+}
+
+func htmlBlock(id, html string) string {
+	return `{"type":"html","id":"` + id + `","attrs":{"html":"` + html + `"}}`
+}
+
+// TestSaveRevisionHTML checks Op.EditHTML: where the site allows html blocks (allowHtml), a user who may not edit them (EditHTML
+// is false) is refused an html block that the latest revision does not have, with its ID and html, and saves the others; a
+// user who may edit them saves any.
+func TestSaveRevisionHTML(t *testing.T) {
+	const locked = "only an administrator can add or change html blocks"
+	allow := ",\n  \"allowHtml\": true"
+	kept := htmlBlock("b_0000html", "<p>a</p>")
+	para := `{"type":"paragraph","id":"b_0paragr1","content":[{"type":"text","text":"x"}]}`
+	more := `{"type":"paragraph","id":"b_0paragr2","content":[{"type":"text","text":"y"}]}`
+	group := func(block string) string { return `{"type":"group","id":"b_00group1","content":[` + block + `]}` }
+	user, admin := Op{By: userID}, Op{By: userID, EditHTML: true}
+	revName := revisionName(predictIDs(t, content.RefRevision)[0])
+
+	// Refused: the problem is at the block, in the bytes that were given, and nothing is saved.
+	for _, tt := range []struct {
+		name   string
+		blocks []string
+		needle string // where the problem is, in the revision, and its path
+		path   string
+	}{
+		{"a new html block", []string{kept, para, htmlBlock("b_1111html", "<p>b</p>")}, `{"type":"html","id":"b_1111html"`, "/body/2"},
+		{"a new html block before the others", []string{htmlBlock("b_1111html", "<p>b</p>"), kept}, `{"type":"html","id":"b_1111html"`, "/body/0"},
+		{"a changed html block", []string{htmlBlock("b_0000html", "<p>changed</p>"), para}, `{"type":"html","id":"b_0000html"`, "/body/0"},
+		{"a copy of an html block", []string{kept, htmlBlock("b_2222html", "<p>a</p>")}, `{"type":"html","id":"b_2222html"`, "/body/1"},
+		{"a new html block in a group", []string{kept, group(htmlBlock("b_3333html", "<p>c</p>"))}, `{"type":"html","id":"b_3333html"`, "/body/1/content/0"},
+		{"a changed html block in a group", []string{group(htmlBlock("b_0000html", "<p>d</p>"))}, `{"type":"html","id":"b_0000html"`, "/body/0/content/0"},
+	} {
+		t.Run("refused: "+tt.name, func(t *testing.T) {
+			x := htmlSite(t, allow, kept, para)
+			before := snapshot(t, x.s)
+			data := htmlPage("Draft", tt.blocks...)
+			_, err := x.ed.SaveRevision(t.Context(), user, x.draft, x.draftRev, []byte(data))
+			want := where(t, revName, data, tt.needle) + tt.path + ": " + locked
+			if got := problemLines(t, err); !slices.Equal(got, []string{want}) {
+				t.Errorf("SaveRevision() problems:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
+			}
+			if got := snapshot(t, x.s); got != before {
+				t.Errorf("SaveRevision() has changed the store:\n%s\nwant\n%s", got, before)
+			}
+
+			// A user who may edit html blocks saves it.
+			res, err := x.ed.SaveRevision(t.Context(), admin, x.draft, x.draftRev, []byte(data))
+			if err != nil {
+				t.Fatalf("SaveRevision() with EditHTML = %v", err)
+			}
+			if got := revisionData(t, x.s, res.Revision); string(got) != data || summaryOf(t, x.s, x.draft).Latest != res.Revision {
+				t.Errorf("the stored revision is %s, want the bytes that were given", got)
+			}
+		})
+	}
+
+	// Saved by a user who may not edit html blocks: the blocks that the latest revision has, as they are, wherever they are.
+	for _, tt := range []struct {
+		name   string
+		blocks []string
+	}{
+		{"the html block kept", []string{kept, para}},
+		{"a block added", []string{kept, para, more}},
+		{"the html block moved", []string{para, more, kept}},
+		{"the html block moved into a group", []string{para, group(kept)}},
+		{"the html block removed", []string{para}},
+		{"no block", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			x := htmlSite(t, allow, kept, para)
+			data := htmlPage("Draft", tt.blocks...)
+			res, err := x.ed.SaveRevision(t.Context(), user, x.draft, x.draftRev, []byte(data))
+			if err != nil {
+				t.Fatalf("SaveRevision() = %+v, %v; want it saved", res, err)
+			}
+			if got := revisionData(t, x.s, res.Revision); string(got) != data || summaryOf(t, x.s, x.draft).Latest != res.Revision {
+				t.Errorf("the stored revision is %s, want the bytes that were given", got)
+			}
+		})
+	}
+
+	// The html block that the user may keep is the one of the latest revision: after it is removed, adding it is a new block.
+	t.Run("an html block that was removed", func(t *testing.T) {
+		x := htmlSite(t, allow, kept, para)
+		removed := must(t)(x.ed.SaveRevision(t.Context(), user, x.draft, x.draftRev, []byte(htmlPage("Draft", para))))
+		data := htmlPage("Draft", kept, para)
+		_, err := x.ed.SaveRevision(t.Context(), user, x.draft, removed.Revision, []byte(data))
+		want := where(t, revisionName(predictIDs(t, content.RefRevision, content.RefRevision)[1]), data, `{"type":"html"`) + "/body/0: " + locked
+		if got := problemLines(t, err); !slices.Equal(got, []string{want}) {
+			t.Errorf("SaveRevision() problems:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
+		}
+	})
+
+	// Where the site does not allow html blocks that is the only problem, also for the user who may edit them.
+	for _, op := range []Op{user, admin} {
+		t.Run(fmt.Sprintf("not allowed by the settings, EditHTML %v", op.EditHTML), func(t *testing.T) {
+			x := htmlSite(t, "", kept, para)
+			data := htmlPage("Draft", kept, para, htmlBlock("b_1111html", "<p>b</p>"))
+			_, err := x.ed.SaveRevision(t.Context(), op, x.draft, x.draftRev, []byte(data))
+			want := []string{
+				where(t, revName, data, `{"type":"html","id":"b_0000html"`) + "/body/0: html blocks are not enabled",
+				where(t, revName, data, `{"type":"html","id":"b_1111html"`) + "/body/2: html blocks are not enabled",
+			}
+			if got := problemLines(t, err); !slices.Equal(got, want) {
+				t.Errorf("SaveRevision() problems:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+// TestHTMLOfOtherOperations checks that Op.EditHTML is for saving a revision and translating an entry alone: a user who may
+// not edit html blocks translates an entry that has them, with the same IDs and html, and publishes and schedules a revision
+// that has them, as the build does.
+func TestHTMLOfOtherOperations(t *testing.T) {
+	allow := ",\n  \"allowHtml\": true"
+	kept := htmlBlock("b_0000html", "<p>a</p>")
+	para := `{"type":"paragraph","id":"b_0paragr1","content":[{"type":"text","text":"x"}]}`
+	user := Op{By: userID}
+
+	t.Run("CreateTranslation", func(t *testing.T) {
+		x := htmlSite(t, allow, kept, para)
+		res, err := x.ed.CreateTranslation(t.Context(), user, x.page, "en")
+		if err != nil {
+			t.Fatalf("CreateTranslation() = %+v, %v; want the translation made", res, err)
+		}
+		rev := decodeRevision(t, revisionData(t, x.s, res.Revision))
+		if len(rev.Body) != 2 || rev.Body[0].Type != content.BlockHTML || rev.Body[0].ID != "b_0000html" || rev.Body[0].Attrs.HTML != "<p>a</p>" {
+			t.Errorf("the revision of the translation has the blocks %+v, want the html block of the source, as it is", rev.Body)
+		}
+	})
+
+	t.Run("Publish", func(t *testing.T) {
+		x := htmlSite(t, allow, kept, para)
+		res, err := x.ed.Publish(t.Context(), user, x.draft, entrySeq(t, x.s, x.draft), x.draftRev)
+		if err != nil || res.Status != content.StatusPublished {
+			t.Errorf("Publish() = %+v, %v; want the revision with an html block published", res, err)
+		}
+	})
+
+	t.Run("Schedule", func(t *testing.T) {
+		x := htmlSite(t, allow, kept, para)
+		res, err := x.ed.Schedule(t.Context(), user, x.draft, entrySeq(t, x.s, x.draft), x.draftRev, careersAt)
+		if err != nil || res.Status != content.StatusScheduled {
+			t.Errorf("Schedule() = %+v, %v; want the revision with an html block scheduled", res, err)
+		}
+	})
+}
+
 // TestSaveRevisionTheme checks the theme: the items and the presets that it has are accepted, the others are errors.
 func TestSaveRevisionTheme(t *testing.T) {
 	op := Op{By: userID}

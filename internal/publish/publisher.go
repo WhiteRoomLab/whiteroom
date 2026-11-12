@@ -26,6 +26,9 @@ const (
 	reasonResume    = "resume"
 )
 
+// ErrRollbackRunning is the error of a Rollback that finds another one running.
+var ErrRollbackRunning = errors.New("another rollback is running")
+
 // Options are the options of New.
 type Options struct {
 	Store  *store.Store     // the store to publish, which the Publisher does not close
@@ -191,6 +194,9 @@ func themeErrors(err error) error {
 // Editor returns the Editor whose operations the Publisher follows. Its clock is Options.Now.
 func (p *Publisher) Editor() *edit.Editor { return p.ed }
 
+// Store returns Options.Store, the store that the Publisher builds from and records in.
+func (p *Publisher) Store() *store.Store { return p.o.Store }
+
 // notify is the Notify function of the Editor, which its operations call in their own goroutines. A Result of an entry
 // that has a Status is a change of the state of an entry, which can add, change or cancel a schedule.
 func (p *Publisher) notify(res edit.Result) {
@@ -320,13 +326,15 @@ func (p *Publisher) finish(ctx context.Context, b *Build, res *build.Result, err
 // Rebuild asks for a build of the store as it is, and for a step of the scheduler that reads the schedules again, also if
 // no operation of the Editor has asked for them: after a change that it does not see, such as an import or a save with
 // the store's own API. by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx:
-// if that fails Rebuild asks for nothing, and returns the error.
-func (p *Publisher) Rebuild(ctx context.Context, by string) error {
+// if that fails Rebuild asks for nothing, and returns the error. check, if it is not nil, is the caller's check of who may
+// ask, which Rebuild calls in the Update that records the request, before the record: if it returns an error Rebuild asks
+// for nothing, records nothing, and returns that error as it is.
+func (p *Publisher) Rebuild(ctx context.Context, by string, check func(*store.Tx) error) error {
 	if err := content.CheckID(content.RefUser, by); err != nil {
 		return err
 	}
 	rec := audit.Record{Log: audit.ActivityLog, Actor: by, Action: audit.BuildRebuild}
-	if err := p.recordRequest(ctx, rec); err != nil {
+	if err := p.recordRequest(ctx, rec, check); err != nil {
 		return err
 	}
 	p.request(reasonRebuild, edit.Result{}, true)
@@ -405,12 +413,13 @@ func (p *Publisher) Releases() (build.Releases, error) { return build.ListReleas
 //
 // by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx, with the release that
 // is published then, which a build that Rollback waits for may change: if that fails Rollback does nothing, and returns the
-// error. A Rollback that fails after that is recorded once more as failed, whatever ctx.
-func (p *Publisher) Rollback(ctx context.Context, by, release string) error {
+// error. A Rollback that fails after that is recorded once more as failed, whatever ctx. check is the caller's check of who
+// may ask, as that of Rebuild: it is called in the Update of the first record, before it, and not for the second.
+func (p *Publisher) Rollback(ctx context.Context, by, release string, check func(*store.Tx) error) error {
 	if err := content.CheckID(content.RefUser, by); err != nil {
 		return err
 	}
-	if err := p.recordRequest(ctx, rollbackRecord(by, release, p.published())); err != nil {
+	if err := p.recordRequest(ctx, rollbackRecord(by, release, p.published()), check); err != nil {
 		return err
 	}
 	err := p.rollback(ctx, release)
@@ -428,7 +437,7 @@ func (p *Publisher) rollback(ctx context.Context, release string) error {
 	p.mu.Lock()
 	if p.rolling {
 		p.mu.Unlock()
-		return errors.New("another rollback is running")
+		return ErrRollbackRunning
 	}
 	p.rolling = true
 	p.changeLocked()
@@ -454,8 +463,8 @@ func (p *Publisher) rollback(ctx context.Context, release string) error {
 //
 // by is the ID of the user who asks. The request is recorded first, in the activity log, within ctx, as changed if the
 // builds are paused: if that fails Resume does nothing, and returns the error. Resumes go one at a time, so that of two
-// that come together only one finds the builds paused.
-func (p *Publisher) Resume(ctx context.Context, by string) error {
+// that come together only one finds the builds paused. check is the caller's check of who may ask, as that of Rebuild.
+func (p *Publisher) Resume(ctx context.Context, by string, check func(*store.Tx) error) error {
 	if err := content.CheckID(content.RefUser, by); err != nil {
 		return err
 	}
@@ -470,7 +479,7 @@ func (p *Publisher) Resume(ctx context.Context, by string) error {
 	paused := p.paused
 	p.mu.Unlock()
 	rec := audit.Record{Log: audit.ActivityLog, Actor: by, Action: audit.BuildResume, Changed: paused}
-	if err := p.recordRequest(ctx, rec); err != nil {
+	if err := p.recordRequest(ctx, rec, check); err != nil {
 		return err
 	}
 	if !paused {

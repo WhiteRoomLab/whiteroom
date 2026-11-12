@@ -28,17 +28,19 @@ linters:
           list-mode: lax
           files:
             - $all
+            - "!**/internal/admin/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/publish$
-              desc: どのパッケージも publish を使わない
+              desc: admin のほかは publish を使わない（管理のAPIが、保存の操作とビルドを Publisher を通して呼ぶ。9.7）
         to-edit:
           list-mode: lax
           files:
             - $all
             - "!**/internal/publish/*.go"
+            - "!**/internal/admin/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/edit$
-              desc: publish のほかは edit を使わない（edit のテストが build を使うので、build が使うと循環する）
+              desc: publish と admin のほかは edit を使わない（edit のテストが build を使うので、build が使うと循環する）
         to-account:
           list-mode: lax
           files:
@@ -352,6 +354,12 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/publish$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/serve$
               desc: admin と serve は別のサーバーで、お互いを使わない
@@ -363,7 +371,12 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
+            - github.com/WhiteRoomLab/whiteroom/internal/publish$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
         wpimport:
           list-mode: strict

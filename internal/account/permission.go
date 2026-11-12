@@ -21,6 +21,9 @@ const (
 	PublishEntry Action = "entry.publish"
 	// DeleteEntry covers Delete of an entry.
 	DeleteEntry Action = "entry.delete"
+	// EditHTML covers adding or changing html blocks in SaveRevision and CreateTranslation (6.5.4); the caller sets
+	// Op.EditHTML of internal/edit by it.
+	EditHTML Action = "html.edit"
 	// AddMedia covers AddMedia.
 	AddMedia Action = "media.add"
 	// EditMedia covers Save of a medium and ReplaceMedia.
@@ -152,6 +155,7 @@ var rules = []rule{
 		action: DeleteEntry, phrase: "delete entries", grants: grants{reachAll, reachAll, reachOwn, reachNo},
 		own: viaOwner, others: "delete entries that other accounts made",
 	},
+	{action: EditHTML, phrase: "add or change html blocks", grants: grants{reachAll, reachNo, reachNo, reachNo}},
 	{action: AddMedia, phrase: "add media", grants: grants{reachAll, reachAll, reachAll, reachNo}},
 	{
 		action: EditMedia, phrase: "edit media", grants: grants{reachAll, reachAll, reachOwn, reachNo},

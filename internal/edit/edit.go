@@ -6,7 +6,9 @@
 // whose URL it changes. Schedule sets the time at which an entry that is not published is published, with the checks of a
 // publish, and PublishScheduled publishes it then. A Result says whether an operation has changed what a build of the site
 // publishes. Import imports a whole site that a Source reads, such as a site directory, into a store that has no documents.
-// Each operation that succeeds adds one record to the activity log of the store (7.4) in the Update that does it.
+// Each operation that succeeds adds one record to the activity log of the store (7.4) in the Update that does it. The
+// record of an operation ID answers a retry for 24 hours: an operation looks, at most once an hour, for the older records
+// and removes them in an Update of its own, with the record operations.expire.
 package edit
 
 import (
@@ -19,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
@@ -31,6 +34,9 @@ import (
 // since the caller read it.
 var ErrConflict = errors.New("changed since it was read")
 
+// ErrOperationReused is wrapped by the error of an operation whose ID (Op.ID) was used for another request.
+var ErrOperationReused = errors.New("was used for another request")
+
 // Editor saves the documents of a site into a store. It is safe for concurrent use.
 type Editor struct {
 	store  *store.Store
@@ -40,7 +46,18 @@ type Editor struct {
 	ids    *content.IDSource
 	notify func(Result)
 	wrap   func(reader) reader // nil outside the tests, which make the reads of the index fail
+
+	expireMu     sync.Mutex
+	expiredAt    time.Time    // when an operation last looked for the records of operation IDs to remove; zero before the first
+	beforeExpire func() error // nil outside the tests, which make the Update that removes the records fail
 }
+
+const (
+	// operationsKept is how long the record of an operation ID is kept, so that a retry within it returns the result.
+	operationsKept = 24 * time.Hour
+	// expireEvery is the least time between two looks for the records to remove.
+	expireEvery = time.Hour
+)
 
 // New returns an Editor of s for the site that has the schema file schema, named as in a site directory
 // (site/schema.yaml), and the theme th, which must not be nil.
@@ -59,13 +76,31 @@ func (e *Editor) Notify(f func(Result)) { e.notify = f }
 // growing whatever the clock does. SetClock must be called before the Editor is used.
 func (e *Editor) SetClock(now func() time.Time) { e.now = now }
 
+// Schema returns the schema file that New was given. The caller must not change its Data.
+func (e *Editor) Schema() content.SiteFile { return e.schema }
+
+// ThemeSettings returns the settings of the theme that New was given (theme.yaml), which revisions are validated against.
+// The caller must not change them.
+func (e *Editor) ThemeSettings() *content.ThemeSettings { return e.theme.Settings }
+
 // Op says who does an operation, and which one it is.
 type Op struct {
 	By string // the ID of the user (usr_), whose format the Editor checks; the caller checks the account and its permission (6.7)
 	// ID is "op_" and a ULID that the caller makes, or "". With it, the operation is recorded with its request in
 	// the Update that does it, so that a retry returns the result without doing it again; with another request, a
-	// retry fails.
+	// retry fails with an error that wraps ErrOperationReused. The record is kept for 24 hours (operationsKept): a
+	// retry after that does the operation as a new one.
 	ID string
+	// Check is the caller's check of the permission of By, or nil. The operation calls it once, in the Update that does the
+	// operation, after it has looked up the record of ID (a retry that returns the recorded result does not call it) and
+	// before it reads or writes anything else, so that the check and the change are one state. Its error is the error of
+	// the operation, as it is, and nothing stays but the original of a medium that AddMedia and ReplaceMedia have saved
+	// before the Update. The hash of the request of the record of ID does not have Check or EditHTML.
+	Check func(tx *store.Tx) error
+	// EditHTML says that By may add or change html blocks (html.edit, 7.3). If it is false, SaveRevision and
+	// CreateTranslation refuse a revision with an html block that the previous revision does not have, with its ID and
+	// html, when the site allows html blocks (allowHtml).
+	EditHTML bool
 }
 
 // Result is what an operation has done.
@@ -117,14 +152,17 @@ func checkOp(op Op) error {
 		return err
 	}
 	if op.ID != "" {
-		return checkOpID(op.ID)
+		return CheckOperationID(op.ID)
 	}
 	return nil
 }
 
 // run does an operation, whose op has passed checkOp, in one Update, with its record in the activity log and the record of
 // its operation ID: f makes its changes in the Update and returns its result, and if it returns an error, nothing stays.
+// op.Check, if there is one, is called in the Update before f, unless the operation ID has a record.
 func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result, error)) (Result, error) {
+	now := e.now()
+	e.expireOperations(ctx, now)
 	hash := ""
 	if op.ID != "" {
 		hash = q.hash(op.By)
@@ -144,10 +182,15 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 					return err
 				}
 				if rec.Request != hash {
-					return fmt.Errorf("operation ID %q was used for another request", op.ID)
+					return fmt.Errorf("operation ID %q %w", op.ID, ErrOperationReused)
 				}
 				res, replayed = rec.Result.result(), true
 				return nil
+			}
+		}
+		if op.Check != nil {
+			if err := op.Check(tx); err != nil {
+				return err
 			}
 		}
 		var err error
@@ -162,7 +205,7 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 		if op.ID == "" {
 			return nil
 		}
-		data, err := json.Marshal(record{Request: hash, Result: newRecordResult(res)})
+		data, err := json.Marshal(record{Request: hash, Result: newRecordResult(res), At: now.UTC()})
 		if err != nil {
 			return err
 		}
@@ -175,6 +218,52 @@ func (e *Editor) run(ctx context.Context, op Op, q request, f func(*run) (Result
 		e.notify(res)
 	}
 	return res, nil
+}
+
+// expireOperations removes the records of operation IDs that were made operationsKept before now or earlier, and those
+// that have no time, which an earlier program made, unless it has looked for them in the last expireEvery (it does at the
+// first operation). It does so in an Update of its own, before that of the operation, which it does not make longer, and
+// adds the record operations.expire if it has removed any. Its failure does not stop the operation: the records stay,
+// and the next look is expireEvery later. A record that cannot be read stays.
+func (e *Editor) expireOperations(ctx context.Context, now time.Time) {
+	e.expireMu.Lock()
+	due := e.expiredAt.IsZero() || now.Sub(e.expiredAt) >= expireEvery
+	if due {
+		e.expiredAt = now
+	}
+	e.expireMu.Unlock()
+	if !due {
+		return
+	}
+	cutoff := now.Add(-operationsKept)
+	_ = e.store.Update(ctx, func(tx *store.Tx) error {
+		if e.beforeExpire != nil {
+			if err := e.beforeExpire(); err != nil {
+				return err
+			}
+		}
+		var expired []string
+		if err := tx.Operations(func(id string, data []byte) bool {
+			if rec, err := decodeRecord(id, data); err == nil && !rec.At.After(cutoff) {
+				expired = append(expired, id)
+			}
+			return true
+		}); err != nil {
+			return err
+		}
+		if len(expired) == 0 {
+			return nil
+		}
+		for _, id := range expired {
+			if err := tx.DeleteOperation(id); err != nil {
+				return err
+			}
+		}
+		return tx.Record(audit.Record{
+			Log: audit.ActivityLog, Actor: audit.System, Action: audit.OperationsExpire,
+			Detail: map[string]string{"expired": strconv.Itoa(len(expired))},
+		})
+	})
 }
 
 // recordActivity adds the record of the operation q, whose result is res, to the activity log (7.4): it points at the
@@ -212,10 +301,13 @@ func (r *run) recordActivity(op Op, q request, res Result, changed bool) error {
 	return r.tx.Record(rec)
 }
 
-// record is the value of an operation in the table of operations of the store: the hash of the request, and the result.
+// record is the value of an operation in the table of operations of the store: the hash of the request, the result and
+// the time of the operation (UTC), which tells when the record can be removed. A record of an earlier program has no
+// time, and is removed at the first look.
 type record struct {
 	Request string       `json:"request"`
 	Result  recordResult `json:"result"`
+	At      time.Time    `json:"at,omitzero"`
 }
 
 type recordResult struct {

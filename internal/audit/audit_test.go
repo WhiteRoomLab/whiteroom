@@ -431,7 +431,8 @@ func TestActions(t *testing.T) {
 		MediaAdd, MediaReplace, MediaSave, MediaDelete, SettingsSave, SiteImport,
 		AccountCreateFirst, AccountInvite, AccountSetPassword, AccountReset, AccountChangePassword, AccountUpdate,
 		AccountDisable, AccountEnable, AccountDelete,
-		Build, BuildRebuild, BuildResume, ReleaseRollback, StoreCreate, StoreUpgrade, StoreWrite, Backup,
+		Build, BuildRebuild, BuildResume, ReleaseRollback, AccessDenied, OperationsExpire, StoreCreate, StoreUpgrade,
+		StoreWrite, Backup,
 	}
 	names := map[Action]string{
 		Login: "login", LoginFailure: "login.failure", LoginSuppressed: "login.suppressed", Logout: "logout",
@@ -454,6 +455,7 @@ func TestActions(t *testing.T) {
 		AccountDisable: "account.disable", AccountEnable: "account.enable", AccountDelete: "account.delete",
 		Build: "build", BuildRebuild: "build.rebuild", BuildResume: "build.resume", ReleaseRollback: "release.rollback",
 		StoreCreate: "store.create", StoreUpgrade: "store.upgrade", StoreWrite: "store.write", Backup: "backup",
+		AccessDenied: "access.denied", OperationsExpire: "operations.expire",
 	}
 	if len(logOf) != len(login)+len(activity) || len(names) != len(logOf) {
 		t.Errorf("the table of actions has %d, the lists %d and %d, the names %d", len(logOf), len(login), len(activity),
@@ -487,6 +489,88 @@ func TestActions(t *testing.T) {
 			t.Errorf("the action %s twice", a)
 		}
 		seen[string(a)] = true
+	}
+}
+
+// TestAccessDeniedRecord checks the records of requests that were refused, as the admin API writes them: the account is the
+// actor, the target is what the request was about, and the detail has the permission and the number of records left out.
+func TestAccessDeniedRecord(t *testing.T) {
+	for name, r := range map[string]Record{
+		"an entry": {Actor: userA, Target: Target{Kind: "entry", ID: entryID}, Detail: map[string]string{"permission": "entry.edit"}},
+		"a medium": {Actor: userA, Target: Target{Kind: "media", ID: mediaID}, Detail: map[string]string{"permission": "media.delete"}},
+		"the settings": {
+			Actor: userA, Target: Target{Kind: KindSettings}, Detail: map[string]string{"permission": "settings.edit"},
+		},
+		"a release": {
+			Actor: userA, Target: Target{Kind: KindRelease, ID: "0123456789abcdef"},
+			Detail: map[string]string{"permission": "builds.manage"},
+		},
+		"an account": {
+			Actor: userA, Target: Target{Kind: "user", ID: userB}, Detail: map[string]string{"permission": "accounts.manage"},
+		},
+		"no target, and left out records": {
+			Actor: userA, Detail: map[string]string{"permission": "logs.view", "suppressed": "12"},
+		},
+		"no actor": {Detail: map[string]string{"permission": "view"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r.Log, r.Action, r.N, r.At = ActivityLog, AccessDenied, 1, at
+			if err := r.Check(); err != nil {
+				t.Fatalf("Check() = %v", err)
+			}
+			data, err := Encode(r)
+			if err != nil {
+				t.Fatalf("Encode() = %v", err)
+			}
+			got, err := Decode(data)
+			if err != nil || !reflect.DeepEqual(got, r) {
+				t.Errorf("Decode(Encode(r)) = %+v, %v; want %+v", got, err, r)
+			}
+		})
+	}
+	// Like the others of the activity log, it tells nothing of where the request came from.
+	for name, r := range map[string]Record{
+		"a client":  {Client: Client{Addr: "192.0.2.1"}},
+		"a login":   {Login: "yamada"},
+		"a session": {Session: session},
+	} {
+		r.Log, r.Action = ActivityLog, AccessDenied
+		if err := r.Check(); err == nil {
+			t.Errorf("Check() takes %s in a record of access.denied", name)
+		}
+	}
+}
+
+// TestOperationsExpireRecord checks the record of the removal of the records of operation IDs: the system is the actor,
+// there is no target, and the detail has the number of those that it removed.
+func TestOperationsExpireRecord(t *testing.T) {
+	r := Record{
+		Log: ActivityLog, N: 1, At: at, Actor: System, Action: OperationsExpire, Detail: map[string]string{"expired": "12"},
+	}
+	if err := r.Check(); err != nil {
+		t.Fatalf("Check() = %v", err)
+	}
+	data, err := Encode(r)
+	if err != nil {
+		t.Fatalf("Encode() = %v", err)
+	}
+	got, err := Decode(data)
+	if err != nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("Decode(Encode(r)) = %+v, %v; want %+v", got, err, r)
+	}
+	// Like the others of the activity log, it tells nothing of where it came from.
+	for name, r := range map[string]Record{
+		"a client":  {Client: Client{Addr: "192.0.2.1"}},
+		"a login":   {Login: "yamada"},
+		"a session": {Session: session},
+	} {
+		r.Log, r.Action = ActivityLog, OperationsExpire
+		if err := r.Check(); err == nil {
+			t.Errorf("Check() takes %s in a record of operations.expire", name)
+		}
+	}
+	if err := (Record{Log: LoginLog, Action: OperationsExpire}).Check(); err == nil {
+		t.Errorf("Check() takes operations.expire in the login log")
 	}
 }
 

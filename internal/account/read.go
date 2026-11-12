@@ -8,7 +8,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// The reads check no actor: what a caller may read is the caller's to decide (#48).
+// The reads check no actor: what a caller may read is the caller's to decide (the admin API does, 9.7).
 
 // Get returns the account id. If there is none, the error wraps fs.ErrNotExist.
 func (m *Manager) Get(ctx context.Context, id string) (Account, error) {
@@ -67,7 +67,7 @@ func (m *Manager) Find(ctx context.Context, login string) (Account, error) {
 }
 
 // Read returns the account id as the transaction tx sees it, for a caller that checks an account inside its own Update
-// (#48). If there is none, the error wraps fs.ErrNotExist.
+// (the admin API does, 9.7). If there is none, the error wraps fs.ErrNotExist.
 func Read(tx *store.Tx, id string) (Account, error) {
 	data, ok, err := tx.Account(id)
 	switch {
