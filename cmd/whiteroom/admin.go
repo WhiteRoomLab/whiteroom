@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/admin"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -42,6 +43,10 @@ The reverse proxy for the second connects to the socket file, which the server
 makes with the mode 0660 and removes when it stops, and is always trusted. A
 socket has no address that the origin can be made of, so it needs -origin.
 
+It writes the heads of the chains of the audit logs to the standard error, a line
+each: when it starts, then every minute those that have changed, and when it
+stops, so that the journal keeps them outside the data directory.
+
 With -config, the items data, site, theme, out, cache, workers, memory, addr,
 socket, origin and trustedProxies of the YAML file give what the flags and SITE
 leave out. Without it, no config file is read.
@@ -52,6 +57,9 @@ Flags:
 const (
 	defaultAdminAddr  = "127.0.0.1:8081"
 	adminShutdownWait = 10 * time.Second
+	// recordWait is how long a write of the counted failures of logins, and the last write of the heads of the audit
+	// logs, may take.
+	recordWait = 5 * time.Second
 )
 
 // serveAdminFlags are the values of the flags of whiteroom serve admin, those of whiteroom build among them.
@@ -309,8 +317,13 @@ func reportRun(ctx context.Context, a *adminServer, p errorPrinter) int {
 type adminServer struct {
 	listener  net.Listener
 	origin    string
+	store     *store.Store
+	accounts  *account.Manager
 	publisher *publish.Publisher
 	http      *http.Server
+	logger    *log.Logger
+	heads     io.Writer // gets the heads of the audit logs, a line each
+	ticks     func() (<-chan time.Time, func())
 	closers   []func() // in the order of opening
 }
 
@@ -339,10 +352,12 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 		return err
 	}
 	a.closers = append(a.closers, closeSite)
+	a.logger, a.heads, a.ticks = logger, e.stderr, e.ticks
 	st, err := store.Open(s.data)
 	if err != nil {
 		return err
 	}
+	a.store = st
 	a.closers = append(a.closers, func() {
 		if err := st.Close(); err != nil {
 			logger.Printf("closing the data directory: %v", err)
@@ -362,7 +377,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	if tcp, ok := a.listener.Addr().(*net.TCPAddr); ok && a.origin == "" {
 		a.origin = listenOrigin(tcp.AddrPort())
 	}
-	accounts, err := e.newAccounts(st)
+	a.accounts, err = e.newAccounts(st)
 	if err != nil {
 		return err
 	}
@@ -376,7 +391,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 		return err
 	}
 	handler, err := admin.New(admin.Config{
-		Origin: a.origin, TrustedProxies: s.proxies, Accounts: accounts, ErrorLog: logger, Publisher: a.publisher,
+		Origin: a.origin, TrustedProxies: s.proxies, Accounts: a.accounts, ErrorLog: logger, Publisher: a.publisher,
 	})
 	if err != nil {
 		return err
@@ -459,13 +474,56 @@ func openAdminSite(site, theme string) (schema content.SiteFile, themeFS fs.FS, 
 	return schema, root.FS(), func() { _ = root.Close(); _ = d.Close() }, nil
 }
 
+// flushSuppressed records the failed logins that were counted and not recorded, as the minute and the stop of the server
+// ask, and logs the failure. The end of ctx does not stop it.
+func (a *adminServer) flushSuppressed(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWait)
+	defer cancel()
+	if err := a.accounts.FlushSuppressed(ctx); err != nil {
+		a.logger.Printf("cannot record login.suppressed: %v", err)
+	}
+}
+
 // runAdmin serves and builds until ctx is done, or one of the two fails, and then stops them in this order: the HTTP
-// server, which lets the requests in progress end; then the Publisher, whose build that runs is canceled. It returns
-// the first failure.
+// server, which lets the requests in progress end; the Publisher, whose build that runs is canceled; the minutes, with
+// a last record of the failed logins that were counted, which nothing adds to now; and the export of the heads of the
+// audit logs, whose last write has all the records. It returns the first failure.
 func runAdmin(ctx context.Context, a *adminServer) error {
 	// Not ctx: the builds go on while the requests end, which may ask for one.
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
+
+	// The heads are written after the records of the minute, and the last time after all that is recorded.
+	exportTicks := make(chan time.Time, 1)
+	exportCtx, cancelExport := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelExport()
+	exported := make(chan struct{})
+	go func() {
+		defer close(exported)
+		_ = audit.Export(exportCtx, a.store, a.heads, exportTicks, func(err error) { a.logger.Print(err) })
+	}()
+	minutes, stopMinutes := a.ticks()
+	endMinutes, minutesEnded := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(minutesEnded)
+		for {
+			select {
+			case <-endMinutes:
+				return
+			case at, ok := <-minutes:
+				if !ok {
+					minutes = nil
+					continue
+				}
+				a.flushSuppressed(ctx)
+				select {
+				case exportTicks <- at:
+				default:
+				}
+			}
+		}
+	}()
+
 	serving, running := make(chan error, 1), make(chan error, 1)
 	go func() { serving <- a.http.Serve(a.listener) }()
 	go func() { running <- a.publisher.Run(runCtx) }()
@@ -499,5 +557,11 @@ func runAdmin(ctx context.Context, a *adminServer) error {
 			failure = err
 		}
 	}
+	close(endMinutes)
+	<-minutesEnded
+	stopMinutes()
+	a.flushSuppressed(ctx)
+	cancelExport()
+	<-exported
 	return failure
 }

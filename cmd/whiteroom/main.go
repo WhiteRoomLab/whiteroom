@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -36,7 +37,13 @@ func main() {
 		<-ctx.Done()
 		stop()
 	}()
-	code := run(ctx, os.Args[1:], env{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, newAccounts: account.New})
+	code := run(ctx, os.Args[1:], env{
+		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, newAccounts: account.New,
+		ticks: func() (<-chan time.Time, func()) {
+			t := time.NewTicker(time.Minute)
+			return t.C, t.Stop
+		},
+	})
 	stop()
 	os.Exit(code)
 }
@@ -47,6 +54,8 @@ type env struct {
 	stdout, stderr io.Writer
 	// newAccounts makes the account Manager of a store: account.New, but in the tests cheaper password hashes.
 	newAccounts func(*store.Store) (*account.Manager, error)
+	// ticks makes the minutes of serve admin: the channel that gets a time every minute, and the function that stops it.
+	ticks func() (<-chan time.Time, func())
 }
 
 // run runs the command with args, those after its name, and returns its exit code: 0 on success, 1 on failure and 2

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
@@ -17,12 +18,13 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// testEnv is the env of a command with the standard input stdin, which writes to stdout and stderr, and makes the
-// accounts with cheap password hashes.
+// testEnv is the env of a command with the standard input stdin, which writes to stdout and stderr, makes the accounts
+// with cheap password hashes, and gets no minute.
 func testEnv(stdin io.Reader, stdout, stderr io.Writer) env {
 	return env{
 		stdin: stdin, stdout: stdout, stderr: stderr,
 		newAccounts: func(s *store.Store) (*account.Manager, error) { return account.NewWithIterations(s, 1) },
+		ticks:       func() (<-chan time.Time, func()) { return nil, func() {} },
 	}
 }
 

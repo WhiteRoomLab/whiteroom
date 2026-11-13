@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
@@ -139,6 +140,7 @@ type adminProc struct {
 	network, addr string // "tcp" and the address, or "unix" and the path of the socket, as the line tells
 	base          string // the URL of the origin, but http, for the requests
 	client        *http.Client
+	stdout        chanWriter // what it printed after its first line
 	stderr        *syncBuffer
 	cancel        context.CancelFunc
 	exited        chan struct{} // closed when the command has returned, with code set
@@ -152,12 +154,22 @@ var adminStartLine = regexp.MustCompile(`^serving admin of (.+) at (\S+) \(liste
 // that the line tells, whatever the URL says.
 func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminProc {
 	t.Helper()
+	return startAdminWith(t, ctx, nil, args...)
+}
+
+// startAdminWith is startAdminArgs with the env that the function mod, if there is one, has changed.
+func startAdminWith(t *testing.T, ctx context.Context, mod func(*env), args ...string) *adminProc {
+	t.Helper()
 	what := "whiteroom serve admin " + strings.Join(args, " ")
 	ctx, cancel := context.WithCancel(ctx)
 	stdout, stderr := make(chanWriter, 10), new(syncBuffer)
-	a := &adminProc{stderr: stderr, cancel: cancel, exited: make(chan struct{})}
+	a := &adminProc{stdout: stdout, stderr: stderr, cancel: cancel, exited: make(chan struct{})}
+	e := testEnv(strings.NewReader(""), stdout, stderr)
+	if mod != nil {
+		mod(&e)
+	}
 	go func() {
-		a.code = run(ctx, append([]string{"serve", "admin"}, args...), testEnv(strings.NewReader(""), stdout, stderr))
+		a.code = run(ctx, append([]string{"serve", "admin"}, args...), e)
 		close(a.exited)
 	}()
 	t.Cleanup(func() {
@@ -206,10 +218,22 @@ func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminPro
 // have neither -addr nor -socket. No test listens on a fixed port.
 func startAdmin(t *testing.T, ctx context.Context, args ...string) *adminProc {
 	t.Helper()
+	return startAdminArgs(t, ctx, onSystemPort(args)...)
+}
+
+// onSystemPort returns args, with -addr 127.0.0.1:0 before them unless they have -addr or -socket.
+func onSystemPort(args []string) []string {
 	if !slices.Contains(args, "-addr") && !slices.Contains(args, "-socket") {
-		args = append([]string{"-addr", "127.0.0.1:0"}, args...)
+		return append([]string{"-addr", "127.0.0.1:0"}, args...)
 	}
-	return startAdminArgs(t, ctx, args...)
+	return args
+}
+
+// startAdminTicks is startAdmin with the minutes of the server sent by the test, on ticks: none comes without it.
+func startAdminTicks(t *testing.T, ctx context.Context, ticks <-chan time.Time, args ...string) *adminProc {
+	t.Helper()
+	mod := func(e *env) { e.ticks = func() (<-chan time.Time, func()) { return ticks, func() {} } }
+	return startAdminWith(t, ctx, mod, onSystemPort(args)...)
 }
 
 // stop ends the context of the command, waits for it to return, and returns its exit code.
@@ -310,13 +334,20 @@ type buildsBody struct {
 	Running json.RawMessage `json:"running"`
 	Pending bool            `json:"pending"`
 	Last    *struct {
-		Release  string `json:"release"`
-		Failed   *bool  `json:"failed"`
-		Error    string `json:"error"`
-		Requests []struct {
-			Reason string `json:"reason"`
-		} `json:"requests"`
+		Release  string             `json:"release"`
+		Failed   *bool              `json:"failed"`
+		Error    string             `json:"error"`
+		Errors   json.RawMessage    `json:"errors"`
+		Requests []buildRequestBody `json:"requests"`
 	} `json:"last"`
+}
+
+// buildRequestBody is a request that a build covers.
+type buildRequestBody struct {
+	Reason string `json:"reason"`
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 // builds returns the state of the builds, for the session of cookie.
@@ -503,8 +534,8 @@ func TestServeAdmin(t *testing.T) {
 		t.Errorf("%s accepts a connection after the server has stopped", a.addr)
 	}
 	checkUnlocked(t, "after the stop", s.data)
-	if got := a.stderr.String(); got != "" {
-		t.Errorf("whiteroom serve admin printed on stderr:\n%s", got)
+	if got := a.logged(); got != "" {
+		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
 	}
 }
 
@@ -643,8 +674,9 @@ func TestServeAdminShutdown(t *testing.T) {
 	if code := b.stop(t); code != 0 {
 		t.Errorf("whiteroom serve admin = %d after its context is done while a build runs, want 0\nstderr:\n%s", code, b.stderr)
 	}
-	if got := b.stderr.String(); got != "" {
-		t.Errorf("whiteroom serve admin printed on stderr, after its context is done while a build runs:\n%s", got)
+	if got := b.logged(); got != "" {
+		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs, after its context is done while a build "+
+			"runs:\n%s", got)
 	}
 	if !slices.Contains(activityActions(t, s.data), audit.Build) {
 		t.Errorf("the activity log has no record of the build that was running when the server stopped")
@@ -709,8 +741,8 @@ func TestServeAdminSocket(t *testing.T) {
 	stopsWith(t, "the socket", a)
 	noFile(t, "after the server has stopped", sock)
 	checkUnlocked(t, "after the server on a socket has stopped", s.data)
-	if got := a.stderr.String(); got != "" {
-		t.Errorf("whiteroom serve admin on a socket printed on stderr:\n%s", got)
+	if got := a.logged(); got != "" {
+		t.Errorf("whiteroom serve admin on a socket printed on stderr, but the heads of the audit logs:\n%s", got)
 	}
 
 	// A socket file that a killed server has left: no one listens on it.
@@ -1571,11 +1603,17 @@ func (brokenListener) Accept() (net.Conn, error) { return nil, errors.New("accep
 // openForRun opens what serve admin serves, for the data directory of s, as the command does.
 func openForRun(t *testing.T, s adminSite) *adminServer {
 	t.Helper()
+	return openForRunLogging(t, s, log.New(io.Discard, "", 0))
+}
+
+// openForRunLogging is openForRun with the log of the server written by logger.
+func openForRunLogging(t *testing.T, s adminSite, logger *log.Logger) *adminServer {
+	t.Helper()
 	settings := adminSettings{
 		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
 		addr: "127.0.0.1:0",
 	}
-	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
+	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1630,6 +1668,116 @@ func TestRunAdminFailure(t *testing.T) {
 	}
 }
 
+// TestRunAdminRecordFailures checks that the server goes on when what it records cannot be written, with the failures in
+// its log: the counted logins that the minute and the stop cannot record, and the heads that cannot be read, which are
+// those of a store that is closed. It stops with no failure, and the minutes are stopped.
+func TestRunAdminRecordFailures(t *testing.T) {
+	var logged syncBuffer
+	a := openForRunLogging(t, initEmpty(t), log.New(&logged, "", 0))
+	dead, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := account.NewWithIterations(dead, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 25 {
+		accounts.LoginRefused(t.Context(), account.Client{}, "nobody", account.RefusedTooLong)
+	}
+	if err := dead.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.accounts, a.store = accounts, dead
+	ticks, stopped := make(chan time.Time), make(chan struct{})
+	a.ticks = func() (<-chan time.Time, func()) { return ticks, func() { close(stopped) } }
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runAdmin(ctx, a) }()
+	sendTick(t, ticks)
+	// The minutes that end with a channel that is closed are no more minutes, and are not tried again and again.
+	close(ticks)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the server that cannot record = %v, want it to stop with no failure", err)
+		}
+	case <-time.After(adminWait):
+		t.Fatalf("the server has not returned in %v after its context is done", adminWait)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Error("the minutes are not stopped")
+	}
+	var suppressed, heads int
+	for line := range strings.Lines(logged.String()) {
+		switch {
+		case strings.HasPrefix(line, "cannot record login.suppressed: "):
+			suppressed++
+		case strings.HasPrefix(line, "cannot read the heads of the audit logs: "):
+			heads++
+		default:
+			t.Errorf("the log has the line %q, which is none of the failures that the test makes", line)
+		}
+	}
+	// The minute and the stop each try the counts, and the start and the stop each try to write the heads.
+	if suppressed != 2 || heads < 2 {
+		t.Errorf("the log has %d lines of the counted logins that cannot be recorded, and %d of the heads that cannot be read, want "+
+			"2 and at least 2:\n%s", suppressed, heads, &logged)
+	}
+}
+
+// blockedWriter is a writer whose Write waits for release to be closed.
+type blockedWriter struct{ release chan struct{} }
+
+func (w blockedWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return len(p), nil
+}
+
+// TestRunAdminSlowHeads checks that a minute does not wait for the export of the heads: while a write of a head has not
+// returned, the minutes go on to be taken; and that the server does not return before that write has, as the data
+// directory is closed after it returns.
+func TestRunAdminSlowHeads(t *testing.T) {
+	a := openForRun(t, initEmpty(t))
+	release := make(chan struct{})
+	a.heads = blockedWriter{release}
+	ticks := make(chan time.Time)
+	a.ticks = func() (<-chan time.Time, func()) { return ticks, func() {} }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runAdmin(ctx, a) }()
+	for i := range 4 {
+		select {
+		case ticks <- time.Now():
+		case <-time.After(10 * time.Second):
+			close(release)
+			t.Fatalf("the server has not taken minute %d in 10 s, while the write of a head has not returned", i+1)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		close(release)
+		t.Fatalf("the server has returned (%v) while the write of a head has not", err)
+	case <-time.After(time.Second):
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the server = %v, want it to stop with no failure", err)
+		}
+	case <-time.After(adminWait):
+		t.Fatalf("the server has not returned in %v after the write of the head has", adminWait)
+	}
+}
+
 // TestParseProxy checks the trusted proxies: an IP address stands for itself alone, as an IPv4 address if it is a mapped
 // one, and without a zone; a range as it is; and no other text, and no range of every address.
 func TestParseProxy(t *testing.T) {
@@ -1659,5 +1807,397 @@ func TestParseProxy(t *testing.T) {
 		if got, err := parseProxy(in); err == nil || err.Error() != want {
 			t.Errorf("parseProxy(%q) = %v, %v, want the error %q", in, got, err, want)
 		}
+	}
+}
+
+// recordedWithin is how long the tests wait for what the server does after a minute, which takes a few records.
+const recordedWithin = 20 * time.Second
+
+// headPrefix starts the lines of the export of the heads of the audit logs.
+const headPrefix = "audit head "
+
+// withoutHeads returns text, what a server printed on stderr, without the lines of the heads of the audit logs.
+func withoutHeads(text string) string {
+	var b strings.Builder
+	for line := range strings.Lines(text) {
+		if !strings.HasPrefix(line, headPrefix) {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
+}
+
+// logged returns what the server printed on stderr but the heads of the audit logs.
+func (a *adminProc) logged() string { return withoutHeads(a.stderr.String()) }
+
+// heads returns the heads that the server has written to stderr, in the order of the lines.
+func (a *adminProc) heads() []audit.Head {
+	heads, _ := headsOf(a.stderr.String())
+	return heads
+}
+
+// headsOf reads the lines of text that start as a head, with audit.ParseHead: the heads, and the lines that it cannot read.
+func headsOf(text string) (heads []audit.Head, unread []string) {
+	for line := range strings.Lines(text) {
+		if !strings.HasPrefix(line, headPrefix) {
+			continue
+		}
+		h, err := audit.ParseHead(strings.TrimSuffix(line, "\n"))
+		if err != nil {
+			unread = append(unread, line)
+			continue
+		}
+		heads = append(heads, h)
+	}
+	return heads, unread
+}
+
+// lastHeads returns the last head of each log of heads.
+func lastHeads(heads []audit.Head) map[audit.Log]audit.Head {
+	last := map[audit.Log]audit.Head{}
+	for _, h := range heads {
+		last[h.Log] = h
+	}
+	return last
+}
+
+// storedHeads returns the head of each log that has records, from the data directory, which a server may have open: it is
+// read as another process reads it.
+func storedHeads(t *testing.T, data string) map[audit.Log]audit.Head {
+	t.Helper()
+	s, err := store.OpenReader(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	heads, err := s.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lastHeads(heads)
+}
+
+// verifyHeads checks that the chains of the audit logs of the data directory, which no process has open, are those that
+// heads, which a server has written, say.
+func verifyHeads(t *testing.T, what, data string, heads []audit.Head) {
+	t.Helper()
+	s, err := store.Open(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.VerifyAudit(t.Context(), heads); err != nil {
+		t.Errorf("%s: VerifyAudit with the %d heads that the server wrote: %v", what, len(heads), err)
+	}
+}
+
+// tooLongLogins counts, in the login history of the data directory, which a server may have open, the logins that were
+// refused for a password that is too long: those recorded one by one, and those that login.suppressed records count.
+func tooLongLogins(t *testing.T, data string) (recorded, counted int) {
+	t.Helper()
+	s, err := store.OpenReader(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	err = s.ReadAudit(t.Context(), audit.Filter{Log: audit.LoginLog}, func(r audit.Record) bool {
+		switch {
+		case r.Action == audit.LoginFailure && r.Result == "too-long":
+			recorded++
+		case r.Action == audit.LoginSuppressed:
+			n, err := strconv.Atoi(r.Detail["loginFailureTooLong"])
+			if r.Detail["loginFailureTooLong"] != "" && err != nil {
+				t.Errorf("login.suppressed has the count %q of the logins with a password that is too long", r.Detail["loginFailureTooLong"])
+			}
+			counted += n
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recorded, counted
+}
+
+// refuseLogins sends n logins with a password of 9000 bytes, which is too long: the server answers 401 at once, makes no
+// hash, and records the refusal, or counts it if it has recorded as many in the minute as it may.
+func (a *adminProc) refuseLogins(t *testing.T, n int) {
+	t.Helper()
+	password := strings.Repeat("x", 9000)
+	for range n {
+		if status, _ := a.tryLogin(t, "nobody", password); status != http.StatusUnauthorized {
+			t.Fatalf("a login with a password that is too long = %d, want 401", status)
+		}
+	}
+}
+
+// sendTick sends a minute to the server, which takes it when it is running.
+func sendTick(t *testing.T, ticks chan<- time.Time) {
+	t.Helper()
+	select {
+	case ticks <- time.Now():
+	case <-time.After(adminWait):
+		t.Fatalf("the server has not taken a minute in %v", adminWait)
+	}
+}
+
+// waitFor calls cond until it is true, for at most within.
+func (a *adminProc) waitFor(t *testing.T, within time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not come in %v\nstderr:\n%s", what, within, a.stderr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// firstPage is the JSON of a revision of a page with a paragraph.
+func firstPage(title, slug string) string {
+	return fmt.Sprintf(`{"schemaVersion":1,"title":%q,"slug":%q,"body":[{"type":"paragraph","id":"b_first001",`+
+		`"content":[{"type":"text","text":"The first page."}]}]}`, title, slug)
+}
+
+// publishPage makes a page in the language, saves a revision of it with the title and the slug, and publishes it, with the
+// requests of the API that the browser sends, for the session of cookie. It returns the ID of the entry.
+func (a *adminProc) publishPage(t *testing.T, cookie, language, title, slug string) string {
+	t.Helper()
+	call := func(method, path, body string, want int, out any) {
+		t.Helper()
+		status, answer := a.exchange(t, method, path, body, "Cookie", cookie)
+		if status != want {
+			t.Fatalf("%s %s = %d, with the body %s, want %d", method, path, status, answer, want)
+		}
+		if err := json.Unmarshal(answer, out); err != nil {
+			t.Fatalf("%s %s: %v: %s", method, path, err, answer)
+		}
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	call(http.MethodPost, "/api/entries", fmt.Sprintf(`{"type":"page","language":%q}`, language), http.StatusCreated, &created)
+	entry := "/api/entries/" + created.ID
+	var saved struct {
+		Revision string `json:"revision"`
+	}
+	call(http.MethodPost, entry+"/revisions", `{"base":"","revision":`+firstPage(title, slug)+`}`, http.StatusCreated, &saved)
+	var shown struct {
+		Version struct {
+			Seq int64 `json:"seq"`
+		} `json:"version"`
+		LatestRevision *struct {
+			ID string `json:"id"`
+		} `json:"latestRevision"`
+	}
+	call(http.MethodGet, entry, "", http.StatusOK, &shown)
+	if shown.LatestRevision == nil || shown.LatestRevision.ID != saved.Revision {
+		t.Fatalf("the entry %s has the last revision %+v, want %s, which was saved", created.ID, shown.LatestRevision, saved.Revision)
+	}
+	var published struct {
+		Status string `json:"status"`
+	}
+	call(http.MethodPost, entry+"/publish", fmt.Sprintf(`{"base":%d,"revision":%q}`, shown.Version.Seq, saved.Revision), http.StatusOK,
+		&published)
+	if published.Status != "published" {
+		t.Fatalf("the publishing of %s answers the status %q, want published", created.ID, published.Status)
+	}
+	return created.ID
+}
+
+// waitPublished reads the state of the builds until none runs or is wanted and the last has taken the publishing of the
+// entry, and returns it.
+func (a *adminProc) waitPublished(t *testing.T, cookie, entry string) buildsBody {
+	t.Helper()
+	var b buildsBody
+	a.waitFor(t, adminWait, "the build of the publishing", func() bool {
+		b = a.builds(t, cookie)
+		if len(b.Running) != 0 || b.Pending || b.Last == nil {
+			return false
+		}
+		return slices.ContainsFunc(b.Last.Requests, func(q buildRequestBody) bool {
+			return q.Reason == "operation" && q.Kind == "entry" && q.ID == entry && q.Status == "published"
+		})
+	})
+	return b
+}
+
+// TestServeAdminHeads checks the export of the heads of the audit logs to stderr: at the start, the head of the activity
+// log, which init has made records of, and none of the login history, which has none; the head of the login history
+// after a minute that follows a login, and not before; and at the stop, the last heads, which are those of the data
+// directory, and which VerifyAudit takes as the anchors. A login that is followed by the stop at once is in the last
+// head too. No head goes to stdout, and nothing but the heads goes to stderr.
+func TestServeAdminHeads(t *testing.T) {
+	s := initSample(t)
+	ticks := make(chan time.Time)
+	a := startAdminTicks(t, t.Context(), ticks, s.args()...)
+	a.waitFor(t, recordedWithin, "the head of the activity log", func() bool {
+		_, ok := lastHeads(a.heads())[audit.ActivityLog]
+		return ok
+	})
+	if h, ok := lastHeads(a.heads())[audit.LoginLog]; ok {
+		t.Errorf("the start has written the head %v of the login history, which has no record", h)
+	}
+	cookie := a.login(t)
+	if h, ok := lastHeads(a.heads())[audit.LoginLog]; ok {
+		t.Errorf("a login has made the server write the head %v of the login history before a minute has come", h)
+	}
+	a.waitBuilt(t, cookie)
+	sendTick(t, ticks)
+	a.waitFor(t, recordedWithin, "the head of the login history after a minute", func() bool {
+		h, ok := lastHeads(a.heads())[audit.LoginLog]
+		return ok && h == storedHeads(t, s.data)[audit.LoginLog]
+	})
+	if code := a.stop(t); code != 0 {
+		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+	}
+	heads, unread := headsOf(a.stderr.String())
+	if len(unread) > 0 {
+		t.Errorf("audit.ParseHead cannot read the lines:\n%s", strings.Join(unread, ""))
+	}
+	last := lastHeads(heads)
+	stored := storedHeads(t, s.data)
+	if len(last) != 2 || len(stored) != 2 {
+		t.Errorf("the server wrote the heads of %d logs, and the data directory has %d, want 2", len(last), len(stored))
+	}
+	for _, log := range []audit.Log{audit.LoginLog, audit.ActivityLog} {
+		if last[log] != stored[log] {
+			t.Errorf("the last head of the %s log that the server wrote is %v, and the data directory has %v", log, last[log], stored[log])
+		}
+	}
+	verifyHeads(t, "after the stop", s.data, heads)
+	if len(a.stdout) != 0 {
+		t.Errorf("whiteroom serve admin printed on stdout after its first line: %q", <-a.stdout)
+	}
+	if got := a.logged(); got != "" {
+		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
+	}
+
+	// A login, and no minute before the stop.
+	b := startAdminTicks(t, t.Context(), make(chan time.Time), s.args()...)
+	b.waitFor(t, recordedWithin, "the heads at the start", func() bool {
+		_, ok := lastHeads(b.heads())[audit.LoginLog]
+		return ok
+	})
+	b.login(t)
+	if code := b.stop(t); code != 0 {
+		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+	}
+	var logins []audit.Head
+	for _, h := range b.heads() {
+		if h.Log == audit.LoginLog {
+			logins = append(logins, h)
+		}
+	}
+	stored = storedHeads(t, s.data)
+	if len(logins) != 2 || logins[0] == logins[1] || logins[1] != stored[audit.LoginLog] {
+		t.Errorf("the heads of the login history that the server wrote, with a login and no minute, are %v, want the head at the "+
+			"start and then the head of the stop, %v", logins, stored[audit.LoginLog])
+	}
+	if got := b.logged(); got != "" {
+		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
+	}
+	verifyHeads(t, "after the second stop", s.data, append(heads, b.heads()...))
+}
+
+// TestServeAdminFlush checks that the failed logins that were counted and not recorded are recorded in a login.suppressed
+// record: when the server stops, and when a minute comes, which also makes the export write the head that follows.
+func TestServeAdminFlush(t *testing.T) {
+	const refused = 25
+	// recorded is at most the 10 refusals of a minute that are recorded, for the two minutes that 25 can take.
+	check := func(what, data string, a *adminProc) {
+		t.Helper()
+		recorded, counted := tooLongLogins(t, data)
+		if recorded+counted != refused || recorded > 20 || counted == 0 {
+			t.Errorf("%s: %d logins that were refused for a password that is too long are recorded, and %d are counted in "+
+				"login.suppressed records, want %d together, of which at most 20 recorded, and some counted", what, recorded, counted,
+				refused)
+		}
+		if got := a.stderr.String(); strings.Contains(got, "cannot record") {
+			t.Errorf("%s: whiteroom serve admin printed on stderr:\n%s", what, got)
+		}
+	}
+
+	// At the stop.
+	s := initEmpty(t)
+	a := startAdminTicks(t, t.Context(), make(chan time.Time), s.args()...)
+	a.refuseLogins(t, refused)
+	if code := a.stop(t); code != 0 {
+		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+	}
+	check("at the stop", s.data, a)
+	if last, stored := lastHeads(a.heads())[audit.LoginLog], storedHeads(t, s.data)[audit.LoginLog]; last != stored {
+		t.Errorf("at the stop: the last head of the login history that the server wrote is %v, and the data directory has %v", last,
+			stored)
+	}
+
+	// At a minute, while the server runs: the records are there, and the head that the export writes after is the last.
+	s = initEmpty(t)
+	ticks := make(chan time.Time)
+	b := startAdminTicks(t, t.Context(), ticks, s.args()...)
+	b.refuseLogins(t, refused)
+	sendTick(t, ticks)
+	b.waitFor(t, recordedWithin, "the record of the counted logins, and the head after it", func() bool {
+		recorded, counted := tooLongLogins(t, s.data)
+		last, ok := lastHeads(b.heads())[audit.LoginLog]
+		return recorded+counted == refused && ok && last == storedHeads(t, s.data)[audit.LoginLog]
+	})
+	check("at a minute", s.data, b)
+	if code := b.stop(t); code != 0 {
+		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+	}
+	check("after a minute and the stop", s.data, b)
+}
+
+// firstSettings is the settings of a site in one language, with which the first build of a store without settings works.
+const firstSettings = `{
+  "schemaVersion": 1,
+  "name": { "ja": "サイト" },
+  "url": "https://example.com",
+  "timeZone": "Asia/Tokyo",
+  "languages": ["ja"],
+  "defaultLanguage": "ja"
+}`
+
+// TestServeAdminFirstSettings goes from a data directory without documents: the start build fails, as it has no settings,
+// and the answer of the builds says so without a problem of the site; the settings that PUT /api/settings saves make the
+// next build work, which publishes a release; and a page that is made and published is in the output directory.
+func TestServeAdminFirstSettings(t *testing.T) {
+	s := initEmpty(t)
+	a := startAdmin(t, t.Context(), s.args()...)
+	cookie := a.login(t)
+	built := a.waitBuilt(t, cookie)
+	if !failedBuild(built) || built.Last.Error == "" || len(built.Last.Errors) != 0 || built.Last.Release != "" {
+		t.Fatalf("the start build of a store without settings has %+v, want a failure with a sentence, without the problems of the "+
+			"site and without a release", built.Last)
+	}
+
+	status, answer := a.exchange(t, http.MethodPut, "/api/settings", `{"base":0,"document":`+firstSettings+`}`, "Cookie", cookie)
+	if status != http.StatusOK {
+		t.Fatalf("PUT /api/settings = %d, with the body %s, want 200", status, answer)
+	}
+	a.waitFor(t, adminWait, "the build of the settings", func() bool {
+		b := a.builds(t, cookie)
+		built = b
+		return len(b.Running) == 0 && !b.Pending && b.Last != nil && !failedBuild(b) && b.Last.Release != ""
+	})
+	if got := currentOf(t, s.out); got != built.Last.Release {
+		t.Errorf("the build says that it has published %s, and current is %s", built.Last.Release, got)
+	}
+
+	const title = "The first page"
+	id := a.publishPage(t, cookie, "ja", title, "empty")
+	if b := a.waitPublished(t, cookie, id); failedBuild(b) || b.Last.Release == "" {
+		t.Fatalf("the build of the publishing has %+v, want a release\nstderr:\n%s", b.Last, a.stderr)
+	}
+	page, err := os.ReadFile(filepath.Join(s.out, "current", "public", "empty", "index.html"))
+	if err != nil {
+		t.Fatalf("the page of the language of the site is not in the output directory: %v", err)
+	}
+	if !strings.Contains(string(page), title) {
+		t.Errorf("the page does not have its title %q:\n%.600s", title, page)
+	}
+	if code := a.stop(t); code != 0 {
+		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
 }
