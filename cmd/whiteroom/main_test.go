@@ -63,6 +63,24 @@ func TestRun(t *testing.T) {
 		t.Errorf("the usage of whiteroom serve public has no flag -addr ADDR with its default:\n%s", serveHelp)
 	}
 
+	code, stdout, adminHelp := runCmd(t, "serve", "admin", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(adminHelp, serveAdminUsage) {
+		t.Fatalf("whiteroom serve admin -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code,
+			stdout, adminHelp)
+	}
+	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-origin URL", "-out DIR",
+		"-theme DIR", "-trusted-proxy PREFIX", "-workers N"} {
+		if !strings.Contains(adminHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom serve admin has no flag %s:\n%s", name, adminHelp)
+		}
+	}
+	if !strings.Contains(adminHelp, defaultAdminAddr) {
+		t.Errorf("the usage of whiteroom serve admin does not tell the default of -addr, %s:\n%s", defaultAdminAddr, adminHelp)
+	}
+	if !strings.Contains(usage, "\n  whiteroom serve admin [flags] [SITE]\n") {
+		t.Errorf("the list of the commands has no whiteroom serve admin:\n%s", usage)
+	}
+
 	code, stdout, initHelp := runCmd(t, "init", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
@@ -84,6 +102,7 @@ func TestRun(t *testing.T) {
 	withAdmin := func(more ...string) []string { return append(append([]string{"init"}, admin...), more...) }
 	tooManyInit := initUsageErr("too many arguments: give at most one SITE, after the flags")
 	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
+	adminErr := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + adminHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -128,7 +147,13 @@ func TestRun(t *testing.T) {
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
 		{[]string{"serve", "nope"}, 2, "", "whiteroom serve: unknown server \"nope\"\nRun \"whiteroom help\" for usage.\n"},
-		{[]string{"serve", "admin"}, 2, "", "whiteroom serve: admin is not available yet\n"},
+		{[]string{"serve", "admin"}, 2, "", adminErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"serve", "admin", "-data", "d", "a", "b"}, 2, "",
+			adminErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"serve", "admin", "-data", "d", "-addr", "localhost:8081"}, 2, "",
+			adminErr(`-addr "localhost:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`)},
+		{[]string{"serve", "admin", "-config", missing}, 2, "", "whiteroom serve admin: " + openErr.Error() + "\n"},
+		{[]string{"serve", "admin", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},
 		{[]string{"serve", "public", "a", "b"}, 2, "", tooManyOuts},
 		{[]string{"serve", "public", "a", "-addr", "b"}, 2, "", tooManyOuts},

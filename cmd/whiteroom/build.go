@@ -55,6 +55,12 @@ func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 		printf(flags.Output(), "%s", buildUsage)
 		flags.PrintDefaults()
 	}
+	return flags, addBuildFlags(flags)
+}
+
+// addBuildFlags adds to flags the flags that whiteroom build and whiteroom serve admin share, and returns where they put
+// their values.
+func addBuildFlags(flags *flag.FlagSet) *buildFlags {
 	var f buildFlags
 	flags.StringVar(&f.config, "config", "", "read the settings from the YAML file `FILE`; the flags and SITE override them")
 	flags.StringVar(&f.out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
@@ -62,7 +68,18 @@ func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 	flags.StringVar(&f.theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
 	flags.IntVar(&f.workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
 	flags.Int64Var(&f.memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
-	return flags, &f
+	return &f
+}
+
+// rangeError returns what is wrong with the values of -workers and -memory, or "" if they are in range.
+func (f *buildFlags) rangeError() string {
+	switch {
+	case f.workers < 0:
+		return fmt.Sprintf("-workers %d is out of range (0 or more)", f.workers)
+	case f.memory < 0 || f.memory > maxMemory:
+		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, maxMemory)
+	}
+	return ""
 }
 
 // buildSettings is what whiteroom build works with.
@@ -98,13 +115,11 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		return 2
 	}
-	switch {
-	case flags.NArg() > 1:
+	if flags.NArg() > 1 {
 		return usageError(flags, "too many arguments: give at most one SITE, after the flags")
-	case f.workers < 0:
-		return usageError(flags, "-workers %d is out of range (0 or more)", f.workers)
-	case f.memory < 0 || f.memory > maxMemory:
-		return usageError(flags, "-memory %d is out of range (0 to %d)", f.memory, maxMemory)
+	}
+	if msg := f.rangeError(); msg != "" {
+		return usageError(flags, "%s", msg)
 	}
 	cfg, err := loadConfig(f.config)
 	if err != nil {

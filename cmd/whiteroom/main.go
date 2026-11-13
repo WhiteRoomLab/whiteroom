@@ -21,9 +21,12 @@ const usage = `Usage:
         build the site in the directory SITE (default ".") and publish it
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
+  whiteroom serve admin [flags] [SITE]
+        serve the admin API of the data directory, and build the site from it
+        into the output directory
 
-Run "whiteroom init -h", "whiteroom build -h" or "whiteroom serve public -h"
-for the flags.
+Run "whiteroom init -h", "whiteroom build -h", "whiteroom serve public -h" or
+"whiteroom serve admin -h" for the flags.
 `
 
 func main() {
@@ -59,7 +62,7 @@ func run(ctx context.Context, args []string, e env) int {
 	case "build":
 		return runBuild(ctx, args[1:], e.stdout, e.stderr)
 	case "serve":
-		return runServe(ctx, args[1:], e.stdout, e.stderr)
+		return runServe(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
 		printf(e.stdout, "%s", usage)
 		return 0

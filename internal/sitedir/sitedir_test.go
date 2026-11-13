@@ -358,6 +358,82 @@ func TestSettingsErrors(t *testing.T) {
 	}
 }
 
+// TestSchema checks that Schema reads the file that Settings reads, of the sample site and of a valid one, also where
+// site/settings.json is missing, and that it fails as Settings does for the schema file and the directory site/.
+func TestSchema(t *testing.T) {
+	sample := openDir(t, "../build/testdata/site")
+	_, want, err := sample.Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sample.Schema()
+	if err != nil || got.Name != "site/schema.yaml" || len(got.Data) == 0 || got.Name != want.Name ||
+		!slices.Equal(got.Data, want.Data) {
+		t.Errorf("Schema() of the sample site = %q, %d bytes, %v; want %q, %d bytes", got.Name, len(got.Data), err, want.Name,
+			len(want.Data))
+	}
+
+	files := validSite()
+	delete(files, "site/settings.json")
+	got, err = openDir(t, writeTree(t, files)).Schema()
+	if err != nil {
+		t.Fatalf("Schema() without settings.json = %v", err)
+	}
+	checkFile(t, "Schema() without settings.json", got, "site/schema.yaml", files)
+
+	const (
+		settings = "site/settings.json"
+		schema   = "site/schema.yaml"
+	)
+	for _, tt := range []struct {
+		name  string
+		files map[string]string
+		links map[string]string // targets by name
+		want  []string
+	}{
+		{"missing schema", map[string]string{settings: "{}"}, nil, []string{"site/schema.yaml: missing file"}},
+		{"missing directory", nil, nil, []string{"site/schema.yaml: missing file"}},
+		{
+			"schema as a symbolic link", map[string]string{"schema.yaml": "", settings: "{}"},
+			map[string]string{schema: "../schema.yaml"}, []string{"site/schema.yaml: symbolic links are not allowed"},
+		},
+		{
+			"schema as a directory", map[string]string{schema + "/a": "", settings: "{}"}, nil,
+			[]string{"site/schema.yaml: must be a regular file"},
+		},
+		{
+			"directory as a symbolic link", map[string]string{"other/settings.json": "{}", "other/schema.yaml": ""},
+			map[string]string{"site": "other"}, []string{"site: symbolic links are not allowed"},
+		},
+		{"directory as a file", map[string]string{"site": ""}, nil, []string{"site: must be a directory"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, tt.files)
+			for name, target := range tt.links {
+				symlink(t, dir, target, name)
+			}
+			d := openDir(t, dir)
+			f, err := d.Schema()
+			if f.Name != "" || f.Data != nil {
+				t.Errorf("Schema() = %q, %q with an error", f.Name, f.Data)
+			}
+			checkErrors(t, "Schema()", err, tt.want)
+			// Settings finds this problem too, as the first of its own.
+			if _, _, err := d.Settings(); err == nil || !strings.HasPrefix(err.Error(), tt.want[0]) {
+				t.Errorf("Settings() = %v, want the error %q first", err, tt.want[0])
+			}
+		})
+	}
+
+	t.Run("a large file", func(t *testing.T) {
+		dir := writeTree(t, map[string]string{schema: strings.Repeat("a", content.MaxDocumentBytes+1)})
+		_, err := openDir(t, dir).Schema()
+		checkErrors(t, "Schema()", err, []string{
+			fmt.Sprintf("site/schema.yaml: too large: %d bytes (max %d)", content.MaxDocumentBytes+1, content.MaxDocumentBytes),
+		})
+	})
+}
+
 func TestRevision(t *testing.T) {
 	const (
 		linkID = "rev_01JB8X9Y3ZE5G8K1N4Q7S2V6W1"

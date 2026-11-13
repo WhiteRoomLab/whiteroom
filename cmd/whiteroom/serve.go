@@ -25,22 +25,21 @@ Flags:
 `
 
 // runServe runs whiteroom serve with args, those after serve.
-func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runServe(ctx context.Context, args []string, e env) int {
 	if len(args) == 0 {
-		printf(stderr, "%s", usage)
+		printf(e.stderr, "%s", usage)
 		return 2
 	}
 	switch args[0] {
 	case "public":
-		return servePublic(ctx, args[1:], stdout, stderr)
+		return servePublic(ctx, args[1:], e.stdout, e.stderr)
 	case "admin":
-		printf(stderr, "whiteroom serve: admin is not available yet\n")
-		return 2
+		return serveAdmin(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
-		printf(stdout, "%s", usage)
+		printf(e.stdout, "%s", usage)
 		return 0
 	}
-	printf(stderr, "whiteroom serve: unknown server %q\nRun \"whiteroom help\" for usage.\n", args[0])
+	printf(e.stderr, "whiteroom serve: unknown server %q\nRun \"whiteroom help\" for usage.\n", args[0])
 	return 2
 }
 
