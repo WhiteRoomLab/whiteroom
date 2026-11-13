@@ -114,6 +114,10 @@ func (b *modelBackend) update(ctx context.Context, f func(backendTx) error) erro
 	return nil
 }
 
+func (b *modelBackend) verify(context.Context) error {
+	return nil
+}
+
 // close keeps the state, so that a new Store on the same model is the store opened again.
 func (b *modelBackend) close() error {
 	return nil

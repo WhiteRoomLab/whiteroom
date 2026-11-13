@@ -427,6 +427,9 @@ linters:
         - pattern: ^account\.NewWithIterations$
           pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/account$
           msg: テストだけが使う（本番のコードは account.New）
+        - pattern: ^store\.DropIndexRow$
+          pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/store$
+          msg: テストだけが使う（わざと索引の行を消す）
     gomoddirectives:
       toolchain-forbidden: true
       tool-forbidden: true

@@ -1552,9 +1552,9 @@ func TestLogReader(t *testing.T) {
 	compareLines(t, "the reads of the reader without a writer", readAs(r), readAs(w))
 }
 
-// TestBackupLog checks that backupLog copies a store of the log backend, while its writer runs or not, to a data
+// TestBackup checks that Backup copies a store of the log backend, while its writer runs or not, to a data
 // directory that open opens with the same documents, revisions, audit records and originals.
-func TestBackupLog(t *testing.T) {
+func TestBackup(t *testing.T) {
 	o := logdb.Options{Placement: logdb.Hybrid, Threshold: 50}
 	s, dir := newLogStore(t, o)
 	putWithRevision(t, s)
@@ -1588,6 +1588,13 @@ func TestBackupLog(t *testing.T) {
 		t.Helper()
 		c := reopenLog(t, copied, o)
 		compareLines(t, "the reads of the copy", read(c), want)
+		wantProblems(t, "the copy", findProblems(t, c))
+		r, err := openLogReader(copied, logOpts(o))
+		if err != nil {
+			t.Fatalf("openLogReader() of the copy = %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		wantProblems(t, "the copy for a reader", findProblems(t, r))
 		for _, data := range originals {
 			if got, err := readOriginal(t, c, sum(data)); err != nil || !bytes.Equal(got, data) {
 				t.Errorf("the original of %d bytes in the copy reads %d bytes, %v", len(data), len(got), err)
@@ -1606,8 +1613,8 @@ func TestBackupLog(t *testing.T) {
 	}
 
 	copied := filepath.Join(t.TempDir(), "copy")
-	if err := backupLog(t.Context(), dir, copied); err != nil {
-		t.Fatalf("backupLog() while the writer runs = %v", err)
+	if err := Backup(t.Context(), dir, copied); err != nil {
+		t.Fatalf("Backup() while the writer runs = %v", err)
 	}
 	c := check(t, copied, read(s))
 	update(t, c, func(tx *Tx) error {
@@ -1627,25 +1634,25 @@ func TestBackupLog(t *testing.T) {
 		t.Fatalf("Close() = %v", err)
 	}
 	copied = filepath.Join(t.TempDir(), "copy")
-	if err := backupLog(t.Context(), dir, copied); err != nil {
-		t.Fatalf("backupLog() without a writer = %v", err)
+	if err := Backup(t.Context(), dir, copied); err != nil {
+		t.Fatalf("Backup() without a writer = %v", err)
 	}
 	check(t, copied, want)
 
 	t.Run("errors", func(t *testing.T) {
-		if err := backupLog(t.Context(), dir, copied); err == nil ||
+		if err := Backup(t.Context(), dir, copied); err == nil ||
 			err.Error() != copied+": not empty; a new data directory needs a missing or empty directory" {
-			t.Errorf("backupLog() to a data directory = %v, want an error", err)
+			t.Errorf("Backup() to a data directory = %v, want an error", err)
 		}
 		noLog := dataDirWithoutLog(t)
-		if err := backupLog(t.Context(), noLog, filepath.Join(t.TempDir(), "copy")); err == nil ||
+		if err := Backup(t.Context(), noLog, filepath.Join(t.TempDir(), "copy")); err == nil ||
 			err.Error() != noLog+"/logdb: missing directory" {
-			t.Errorf("backupLog() of a data directory without logdb/ = %v, want an error", err)
+			t.Errorf("Backup() of a data directory without logdb/ = %v, want an error", err)
 		}
 		canceled, cancel := context.WithCancel(t.Context())
 		cancel()
-		if err := backupLog(canceled, dir, filepath.Join(t.TempDir(), "copy")); !errors.Is(err, context.Canceled) {
-			t.Errorf("backupLog() with a canceled context = %v, want context.Canceled", err)
+		if err := Backup(canceled, dir, filepath.Join(t.TempDir(), "copy")); !errors.Is(err, context.Canceled) {
+			t.Errorf("Backup() with a canceled context = %v, want context.Canceled", err)
 		}
 		// The copy of files/ checks the context too.
 		src, dst := simfs.New("src"), simfs.New("dst")
