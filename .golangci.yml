@@ -387,6 +387,8 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/html$
+            - github.com/WhiteRoomLab/whiteroom/internal/imaging$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
             - github.com/WhiteRoomLab/whiteroom/internal/phpserialize$
             - github.com/WhiteRoomLab/whiteroom/internal/wpblock$
             - github.com/WhiteRoomLab/whiteroom/internal/wpformat$
@@ -400,8 +402,10 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/html$
+            - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
             - github.com/WhiteRoomLab/whiteroom/internal/phpserialize$
             - github.com/WhiteRoomLab/whiteroom/internal/render$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/theme$
             - github.com/WhiteRoomLab/whiteroom/internal/wpblock$
             - github.com/WhiteRoomLab/whiteroom/internal/wpformat$
