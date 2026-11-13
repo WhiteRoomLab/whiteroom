@@ -421,6 +421,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
     forbidigo:
       analyze-types: true
       forbid:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom build -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			help)
 	}
-	for _, name := range []string{"-cache DIR", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
+	for _, name := range []string{"-cache DIR", "-config FILE", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
 		if !strings.Contains(help, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
@@ -49,6 +50,12 @@ func TestRun(t *testing.T) {
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	_, openErr := os.Open(missing)
+	broken := filepath.Join(t.TempDir(), "broken.yaml")
+	if err := os.WriteFile(broken, []byte("data:\t/a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range []struct {
 		args           []string
 		code           int
@@ -67,6 +74,8 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-memory", "-1"}, 2, "", memory("-1")},
 		{[]string{"build", "-memory", "8796093022208"}, 2, "", memory("8796093022208")},
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
+		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},

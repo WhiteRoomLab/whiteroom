@@ -23,6 +23,9 @@ const buildUsage = `Usage: whiteroom build [flags] [SITE]
 Build the site in the directory SITE (default ".") into a new release in the
 output directory, and publish it.
 
+With -config, the items site, theme, out, cache, workers and memory of the YAML
+file give what the flags and SITE leave out. Without it, no config file is read.
+
 Flags:
 `
 
@@ -37,22 +40,58 @@ type themedSource struct {
 
 func (s themedSource) Theme() (fs.FS, error) { return s.theme, nil }
 
-// runBuild runs whiteroom build with args, those after build.
-func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// buildFlags are the values of the flags of whiteroom build.
+type buildFlags struct {
+	config, out, cache, theme string
+	workers                   int
+	memory                    int64
+}
+
+// newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
+func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 	flags := flag.NewFlagSet("whiteroom build", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
 		printf(flags.Output(), "%s", buildUsage)
 		flags.PrintDefaults()
 	}
-	var out, cache, theme string
-	var workers int
-	var memory int64
-	flags.StringVar(&out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
-	flags.StringVar(&cache, "cache", "", "cache the files of the images in `DIR` (default SITE/cache)")
-	flags.StringVar(&theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
-	flags.IntVar(&workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
-	flags.Int64Var(&memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
+	var f buildFlags
+	flags.StringVar(&f.config, "config", "", "read the settings from the YAML file `FILE`; the flags and SITE override them")
+	flags.StringVar(&f.out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
+	flags.StringVar(&f.cache, "cache", "", "cache the files of the images in `DIR` (default SITE/cache)")
+	flags.StringVar(&f.theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
+	flags.IntVar(&f.workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
+	flags.Int64Var(&f.memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
+	return flags, &f
+}
+
+// buildSettings is what whiteroom build works with.
+type buildSettings struct {
+	site, out, cache string
+	theme            string // "" for SITE/theme
+	workers          int
+	memory           int64 // MiB
+}
+
+// settings returns the settings from the flags, parsed into f, and the argument of flags, over those of cfg, over the
+// defaults. A number of cfg is used unless the command line gives its flag, with any value.
+func (f *buildFlags) settings(flags *flag.FlagSet, cfg config) buildSettings {
+	s := buildSettings{site: cmp.Or(flags.Arg(0), cfg.site, "."), theme: cmp.Or(f.theme, cfg.theme)}
+	s.out = cmp.Or(f.out, cfg.out, filepath.Join(s.site, "out"))
+	s.cache = cmp.Or(f.cache, cfg.cache, filepath.Join(s.site, "cache"))
+	s.workers, s.memory = cfg.workers, cfg.memory
+	if flagGiven(flags, "workers") {
+		s.workers = f.workers
+	}
+	if flagGiven(flags, "memory") {
+		s.memory = f.memory
+	}
+	return s
+}
+
+// runBuild runs whiteroom build with args, those after build.
+func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags, f := newBuildFlags(stderr)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -62,14 +101,18 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	switch {
 	case flags.NArg() > 1:
 		return usageError(flags, "too many arguments: give at most one SITE, after the flags")
-	case workers < 0:
-		return usageError(flags, "-workers %d is out of range (0 or more)", workers)
-	case memory < 0 || memory > maxMemory:
-		return usageError(flags, "-memory %d is out of range (0 to %d)", memory, maxMemory)
+	case f.workers < 0:
+		return usageError(flags, "-workers %d is out of range (0 or more)", f.workers)
+	case f.memory < 0 || f.memory > maxMemory:
+		return usageError(flags, "-memory %d is out of range (0 to %d)", f.memory, maxMemory)
 	}
-	site := cmp.Or(flags.Arg(0), ".")
-	out = cmp.Or(out, filepath.Join(site, "out"))
-	cache = cmp.Or(cache, filepath.Join(site, "cache"))
+	cfg, err := loadConfig(f.config)
+	if err != nil {
+		printConfigError(stderr, flags.Name(), err)
+		return 2
+	}
+	s := f.settings(flags, cfg)
+	site, out, cache, theme := s.site, s.out, s.cache, s.theme
 	p := errorPrinter{w: stderr, site: site, theme: theme}
 
 	d, err := sitedir.Open(site)
@@ -99,7 +142,7 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	res, err := build.Build(ctx, build.Options{
-		Source: src, Out: out, CacheDir: cache, Memory: memory << 20, Workers: workers,
+		Source: src, Out: out, CacheDir: cache, Memory: s.memory << 20, Workers: s.workers,
 	})
 	if res != nil {
 		for _, w := range res.Warnings {
