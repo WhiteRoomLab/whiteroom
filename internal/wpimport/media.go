@@ -55,8 +55,8 @@ type mediaJob struct {
 // kind that the reference of an imported one has is the one that its contents tell. site is the one that Site returned,
 // and its Logo and Icon are emptied, and recorded, if the medium that they name was not imported or is not an image.
 //
-// Call it once, after PlanMedia and Site, and before Terms, Authors and the conversion of the entries, which look the
-// media up: it adds to the report each time. The error is for an argument that is wrong, and for what stops the import:
+// Call it once, after PlanMedia and Site, and before the conversion of the entries, which looks the media up: it adds
+// to the report each time. The error is for an argument that is wrong, and for what stops the import:
 // ctx is done, opts.Files cannot be written, or the old site does not answer (Downloader). The references and the report
 // are not changed then, and the table only has the IDs that PlanMedia gives, but the originals that were written stay, so
 // run the import again.
