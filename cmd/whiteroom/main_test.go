@@ -5,20 +5,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// runCmd runs the command with args and returns its exit code and what it has written to stdout and stderr.
+// testEnv is the env of a command with the standard input stdin, which writes to stdout and stderr, and makes the
+// accounts with cheap password hashes.
+func testEnv(stdin io.Reader, stdout, stderr io.Writer) env {
+	return env{
+		stdin: stdin, stdout: stdout, stderr: stderr,
+		newAccounts: func(s *store.Store) (*account.Manager, error) { return account.NewWithIterations(s, 1) },
+	}
+}
+
+// runCmd runs the command with args and an empty standard input, and returns its exit code and what it has written to
+// stdout and stderr.
 func runCmd(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	return runCmdIn(t, strings.NewReader(""), args...)
+}
+
+// runCmdIn is runCmd with the standard input stdin.
+func runCmdIn(t *testing.T, stdin io.Reader, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
 	var o, e bytes.Buffer
-	code = run(t.Context(), args, &o, &e)
+	code = run(t.Context(), args, testEnv(stdin, &o, &e))
 	return code, o.String(), e.String()
 }
 
@@ -44,8 +63,26 @@ func TestRun(t *testing.T) {
 		t.Errorf("the usage of whiteroom serve public has no flag -addr ADDR with its default:\n%s", serveHelp)
 	}
 
+	code, stdout, initHelp := runCmd(t, "init", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
+		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			initHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR"} {
+		if !strings.Contains(initHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom init has no flag %s:\n%s", name, initHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom init [flags] [SITE]\n") {
+		t.Errorf("the list of the commands has no whiteroom init:\n%s", usage)
+	}
+
 	unknown := "whiteroom: unknown command \"nope\"\nRun \"whiteroom help\" for usage.\n"
 	tooMany := "whiteroom build: too many arguments: give at most one SITE, after the flags\n" + help
+	initUsageErr := func(msg string) string { return "whiteroom init: " + msg + "\n" + initHelp }
+	admin := []string{"-login", "a", "-name", "b", "-email", "c@example.com"}
+	withAdmin := func(more ...string) []string { return append(append([]string{"init"}, admin...), more...) }
+	tooManyInit := initUsageErr("too many arguments: give at most one SITE, after the flags")
 	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
@@ -76,6 +113,17 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
 		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
 		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"init", "-x"}, 2, "", "flag provided but not defined: -x\n" + initHelp},
+		{[]string{"init"}, 2, "", initUsageErr("-login is required")},
+		{[]string{"init", "-login", "a"}, 2, "", initUsageErr("-name is required")},
+		{[]string{"init", "-login", "a", "-name", "b"}, 2, "", initUsageErr("-email is required")},
+		{withAdmin(), 2, "", initUsageErr("no data directory: give -data DIR, or data in the config file")},
+		{withAdmin("-data", "d", "x", "y"), 2, "", tooManyInit},
+		{[]string{"init", "x", "y"}, 2, "", tooManyInit},
+		{withAdmin("-data", "d", "-theme", "t"), 2, "",
+			initUsageErr("-theme is for SITE: give the directory SITE of the site to import")},
+		{withAdmin("-config", missing), 2, "", "whiteroom init: " + openErr.Error() + "\n"},
+		{withAdmin("-config", broken), 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
@@ -179,7 +227,7 @@ func TestPrintError(t *testing.T) {
 		},
 	} {
 		var b strings.Builder
-		errorPrinter{w: &b, site: "site", theme: tt.theme}.printError(tt.ctx, tt.err)
+		errorPrinter{w: &b, command: "whiteroom build", site: "site", theme: tt.theme}.printError(tt.ctx, tt.err)
 		if want := strings.Join(tt.want, "\n") + "\n"; b.String() != want {
 			t.Errorf("%s: printed:\n%s\nwant:\n%s", tt.what, b.String(), want)
 		}

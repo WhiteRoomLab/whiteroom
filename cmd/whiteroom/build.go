@@ -113,33 +113,14 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	s := f.settings(flags, cfg)
 	site, out, cache, theme := s.site, s.out, s.cache, s.theme
-	p := errorPrinter{w: stderr, site: site, theme: theme}
+	p := errorPrinter{w: stderr, command: flags.Name(), site: site, theme: theme}
 
-	d, err := sitedir.Open(site)
+	src, closeSite, err := openSite(site, theme)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
 	}
-	defer func() { _ = d.Close() }()
-	var src build.Source = d
-	if theme != "" {
-		root, err := os.OpenRoot(theme)
-		if err != nil {
-			p.printError(ctx, err)
-			return 1
-		}
-		defer func() { _ = root.Close() }()
-		src = themedSource{Dir: d, theme: root.FS()}
-	}
-	// Not left to Build, which makes the output and the cache directories before it reads the site.
-	if _, _, err := src.Settings(); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-	if _, err := src.Theme(); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
+	defer closeSite()
 
 	res, err := build.Build(ctx, build.Options{
 		Source: src, Out: out, CacheDir: cache, Memory: s.memory << 20, Workers: s.workers,
@@ -155,6 +136,34 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	return 0
+}
+
+// openSite opens the site directory site, with the theme in the directory theme unless it is "", and checks that it has
+// its settings and its schema, and a theme that opens. closeSite closes what openSite has opened.
+func openSite(site, theme string) (src build.Source, closeSite func(), err error) {
+	d, err := sitedir.Open(site)
+	if err != nil {
+		return nil, nil, err
+	}
+	src, closeSite = d, func() { _ = d.Close() }
+	if theme != "" {
+		root, err := os.OpenRoot(theme)
+		if err != nil {
+			closeSite()
+			return nil, nil, err
+		}
+		src, closeSite = themedSource{Dir: d, theme: root.FS()}, func() { _ = root.Close(); _ = d.Close() }
+	}
+	// Not left to Build, which makes the output and the cache directories before it reads the site.
+	if _, _, err := src.Settings(); err != nil {
+		closeSite()
+		return nil, nil, err
+	}
+	if _, err := src.Theme(); err != nil {
+		closeSite()
+		return nil, nil, err
+	}
+	return src, closeSite, nil
 }
 
 // usageError prints the message of a usage error and the usage of flags, as flags.Parse does for the errors that it
@@ -186,11 +195,11 @@ func count(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// errorPrinter prints on w the problems and the errors of a build of the site in the directory site, with the theme
-// in the directory theme if it is not "".
+// errorPrinter prints on w the problems and the errors of command, such as "whiteroom build", on the site in the
+// directory site, with the theme in the directory theme if it is not "".
 type errorPrinter struct {
-	w           io.Writer
-	site, theme string
+	w                    io.Writer
+	command, site, theme string
 }
 
 // printProblem prints e, a problem in a file of the site, with the path of the file from the working directory.
@@ -212,7 +221,7 @@ func (p errorPrinter) path(file string) string {
 	return filepath.Join(p.site, filepath.FromSlash(file))
 }
 
-// printError prints err, an error of the build, a line for each part: each problem of the site as printProblem does,
+// printError prints err, an error of the command, a line for each part: each problem of the site as printProblem does,
 // "interrupted" for ctx.Err(), and any other error after the name of the command.
 func (p errorPrinter) printError(ctx context.Context, err error) {
 	// Before errors.As, which would find the problems in one of the errors and leave out the others.
@@ -232,8 +241,8 @@ func (p errorPrinter) printError(ctx context.Context, err error) {
 	case errors.As(err, &e):
 		p.printProblem(e)
 	case ctx.Err() != nil && errors.Is(err, ctx.Err()):
-		printf(p.w, "whiteroom build: interrupted\n")
+		printf(p.w, "%s: interrupted\n", p.command)
 	default:
-		printf(p.w, "whiteroom build: %v\n", err)
+		printf(p.w, "%s: %v\n", p.command, err)
 	}
 }

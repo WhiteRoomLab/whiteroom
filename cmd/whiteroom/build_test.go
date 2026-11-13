@@ -163,7 +163,7 @@ func TestBuildDefaults(t *testing.T) {
 func failingBuild(t *testing.T, what string, ctx context.Context, want string, args ...string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, append([]string{"build"}, args...), &stdout, &stderr)
+	code := run(ctx, append([]string{"build"}, args...), testEnv(strings.NewReader(""), &stdout, &stderr))
 	if code != 1 || stdout.Len() > 0 || stderr.String() != want {
 		t.Errorf("%s: whiteroom build %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr:\n%s", what,
 			strings.Join(args, " "), code, stdout.String(), stderr.String(), want)

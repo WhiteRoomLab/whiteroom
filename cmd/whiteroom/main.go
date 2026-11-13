@@ -8,15 +8,22 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const usage = `Usage:
+  whiteroom init [flags] [SITE]
+        make the data directory, with the first administrator, and import the
+        site in the directory SITE if given
   whiteroom build [flags] [SITE]
         build the site in the directory SITE (default ".") and publish it
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
 
-Run "whiteroom build -h" or "whiteroom serve public -h" for the flags.
+Run "whiteroom init -h", "whiteroom build -h" or "whiteroom serve public -h"
+for the flags.
 `
 
 func main() {
@@ -26,28 +33,38 @@ func main() {
 		<-ctx.Done()
 		stop()
 	}()
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := run(ctx, os.Args[1:], env{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, newAccounts: account.New})
 	stop()
 	os.Exit(code)
 }
 
+// env is what a command gets from its process.
+type env struct {
+	stdin          io.Reader
+	stdout, stderr io.Writer
+	// newAccounts makes the account Manager of a store: account.New, but in the tests cheaper password hashes.
+	newAccounts func(*store.Store) (*account.Manager, error)
+}
+
 // run runs the command with args, those after its name, and returns its exit code: 0 on success, 1 on failure and 2
 // on a usage error.
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, e env) int {
 	if len(args) == 0 {
-		printf(stderr, "%s", usage)
+		printf(e.stderr, "%s", usage)
 		return 2
 	}
 	switch args[0] {
+	case "init":
+		return runInit(ctx, args[1:], e)
 	case "build":
-		return runBuild(ctx, args[1:], stdout, stderr)
+		return runBuild(ctx, args[1:], e.stdout, e.stderr)
 	case "serve":
-		return runServe(ctx, args[1:], stdout, stderr)
+		return runServe(ctx, args[1:], e.stdout, e.stderr)
 	case "help", "-h", "-help", "--help":
-		printf(stdout, "%s", usage)
+		printf(e.stdout, "%s", usage)
 		return 0
 	}
-	printf(stderr, "whiteroom: unknown command %q\nRun \"whiteroom help\" for usage.\n", args[0])
+	printf(e.stderr, "whiteroom: unknown command %q\nRun \"whiteroom help\" for usage.\n", args[0])
 	return 2
 }
 

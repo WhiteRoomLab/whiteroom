@@ -29,26 +29,29 @@ linters:
           files:
             - $all
             - "!**/internal/admin/*.go"
+            - "!**/cmd/whiteroom/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/publish$
-              desc: admin のほかは publish を使わない（管理のAPIが、保存の操作とビルドを Publisher を通して呼ぶ。9.7）
+              desc: admin と cmd/whiteroom のほかは publish を使わない（管理のAPIが、保存の操作とビルドを Publisher を通して呼ぶ。9.7）
         to-edit:
           list-mode: lax
           files:
             - $all
             - "!**/internal/publish/*.go"
             - "!**/internal/admin/*.go"
+            - "!**/cmd/whiteroom/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/edit$
-              desc: publish と admin のほかは edit を使わない（edit のテストが build を使うので、build が使うと循環する）
+              desc: publish・admin・cmd/whiteroom のほかは edit を使わない（edit のテストが build を使うので、build が使うと循環する。cmd/whiteroom は、init の取り込みに使う）
         to-account:
           list-mode: lax
           files:
             - $all
             - "!**/internal/admin/*.go"
+            - "!**/cmd/whiteroom/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/account$
-              desc: admin のほかは、まだ account を使わない
+              desc: admin と cmd/whiteroom のほかは account を使わない（cmd/whiteroom は、init などのコマンドが使う）
         to-wpimport:
           list-mode: lax
           files:
@@ -417,10 +420,16 @@ linters:
             - "**/cmd/whiteroom/*.go"
           allow:
             - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/admin$
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/publish$
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
     forbidigo:
       analyze-types: true
