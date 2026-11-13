@@ -1,5 +1,6 @@
 site-rest.json: skipped: rest 5 (user "Ghost"): user 5 of the REST API is not an author in the WXR; it is not imported
 site.xml:12:1: skipped: channel: 2 comments on 1 item are not imported; whiteroom has no comments
+site.xml:12:1: skipped: channel: the titles of 2 attachments are not imported; whiteroom media have no titles
 site.xml:22:2: skipped: author "admin": the author has no posts; whiteroom makes author profiles only for the authors of posts
 site.xml:24:2: skipped: author "writer": the website "javascript:alert(1)" is not imported: scheme "javascript" is not allowed -> authors/aut_0000000000XCC758X7YMPSJ3AK.json#/links
 site.xml:25:2: skipped: author "guest": the author has no posts; whiteroom makes author profiles only for the authors of posts

@@ -3,6 +3,7 @@ package wpimport
 import (
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ type urlIndex struct {
 	home  *url.URL
 	base  string           // the path of the home, in the form of content.CanonicalFrom, without a slash at its end
 	paths map[string]int64 // the path in the site, in the form of content.CanonicalFrom and with no run of slashes -> the ID of the post
+	files map[string]int64 // the paths in paths that are those of files of attachments, not of their pages -> the ID of the attachment
 }
 
 // urlIndex returns the index of the URLs of the WXR, which it makes when it is first needed.
@@ -28,7 +30,7 @@ func (imp *Import) urlIndex() *urlIndex {
 }
 
 func newURLIndex(e *wxr.Export) *urlIndex {
-	x := &urlIndex{paths: make(map[string]int64)}
+	x := &urlIndex{paths: make(map[string]int64), files: make(map[string]int64)}
 	if e == nil {
 		return x
 	}
@@ -52,12 +54,54 @@ func newURLIndex(e *wxr.Export) *urlIndex {
 	return x
 }
 
+// MediaURL is a file of the old site that is the address of a medium.
+type MediaURL struct {
+	// Path is the path after the home page of the old site, in the form of content.CanonicalFrom, as the WXR writes it: the
+	// file name is not made NFC.
+	Path string
+	// Post is the wp:post_id of the attachment.
+	Post int64
+	// Media is the ID of the medium.
+	Media string
+}
+
+// MediaURLs returns, by their paths, the files of the old site that are the addresses of the media that were imported: the
+// file that wp:attachment_url gives, and those that _wp_attachment_metadata names (the smaller sizes, the previews of a
+// PDF, and the original image of a scaled one), which all give the medium of their attachment. A path that two attachments
+// have is that of the first in the WXR, as in the links of a body. The pages of the attachments (their links) are not
+// here, and the redirects are for the caller to make. Call it after Media, which takes out the attachments that it did not
+// import.
+func (imp *Import) MediaURLs() []MediaURL {
+	var urls []MediaURL
+	for p, post := range imp.urlIndex().files {
+		kind, id, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: post})
+		if !ok || kind != content.RefMedia {
+			continue
+		}
+		if _, ok := imp.Ref(content.RefMedia, id); !ok {
+			continue
+		}
+		urls = append(urls, MediaURL{Path: p, Post: post, Media: id})
+	}
+	slices.SortFunc(urls, func(a, b MediaURL) int { return strings.Compare(a.Path, b.Path) })
+	return urls
+}
+
 // add records that the path is the address of the post id, unless an earlier post has it. The path is kept as lookup reads an
 // address, with each run of slashes made one.
 func (x *urlIndex) add(p string, id int64) {
 	p = collapseSlashes(p)
 	if _, ok := x.paths[p]; !ok {
 		x.paths[p] = id
+	}
+}
+
+// addFile is add for a file of the attachment id, which is also kept in files if the path is then the address of id.
+func (x *urlIndex) addFile(p string, id int64) {
+	x.add(p, id)
+	p = collapseSlashes(p)
+	if x.paths[p] == id {
+		x.files[p] = id
 	}
 }
 
@@ -73,7 +117,7 @@ func (x *urlIndex) addFiles(it *wxr.Item) {
 	if !ok {
 		return
 	}
-	x.add(main, it.ID)
+	x.addFile(main, it.ID)
 	attached, _ := it.Meta.Get("_wp_attached_file")
 	attached = strings.TrimLeft(strings.TrimSpace(attached), "/")
 	if attached == "" || strings.ContainsAny(attached, "?#") {
@@ -87,7 +131,7 @@ func (x *urlIndex) addFiles(it *wxr.Item) {
 	dir := path.Dir("/" + attached)
 	for _, name := range x.fileNames(it) {
 		if name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/?#") {
-			x.add(uploads+rawPath(path.Join(dir, name)), it.ID)
+			x.addFile(uploads+rawPath(path.Join(dir, name)), it.ID)
 		}
 	}
 }

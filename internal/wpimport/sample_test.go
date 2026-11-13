@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
 )
 
@@ -28,7 +30,7 @@ var update = flag.Bool("update", false, "rewrite the golden files in testdata/ou
 
 // sampleOut holds the golden files of TestImportSample, which go test -update writes: settings.json and propose.txt, the
 // settings that the proposal gives and its report; and what the import makes of them, which is site/settings.json,
-// site/schema.yaml, terms/<ID>.json, authors/<ID>.json and import.txt, the report of the import.
+// site/schema.yaml, terms/<ID>.json, authors/<ID>.json, media/<ID>.json and import.txt, the report of the import.
 const sampleOut = "testdata/out"
 
 func readTestdata(t *testing.T, name string) []byte {
@@ -105,8 +107,20 @@ func reportText(t *testing.T, rep *Report) string {
 	return b.String()
 }
 
-// TestImportSample proposes the settings of the sample site, imports what the settings make of the site and its terms and
-// authors, and compares the files with the golden files in testdata/out.
+// sampleImages are the files of the logo and the icon of the sample site, which the copy of its uploads has. The PNG files
+// are not compressed, so they do not change with the version of Go.
+var sampleImages = map[string]struct {
+	post       int64
+	data       []byte
+	w, h       int
+	uploadedAt string
+}{
+	"logo.png": {50, testPNG(48, 16, 1), 48, 16, "2026-10-05T09:40:00+09:00"},
+	"icon.png": {51, testPNG(16, 16, 2), 16, 16, "2026-10-05T09:45:00+09:00"},
+}
+
+// TestImportSample proposes the settings of the sample site, imports what the settings make of the site and its terms,
+// authors and media, and compares the files with the golden files in testdata/out.
 func TestImportSample(t *testing.T) {
 	golden := make(map[string]string)
 	defs := sampleDefs(t)
@@ -134,10 +148,14 @@ func TestImportSample(t *testing.T) {
 	// The import, with another import and another report, as the two runs of the command will have them.
 	imp = sampleImport(t, true)
 	assignSample(t, imp)
+	if err := imp.PlanMedia(); err != nil {
+		t.Fatal(err)
+	}
 	site, err := imp.Site(settings, defs)
 	if err != nil {
 		t.Fatal(err)
 	}
+	logo, icon := site.Logo, site.Icon
 	settingsDoc, err := site.MarshalSettings()
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +188,22 @@ func TestImportSample(t *testing.T) {
 		}
 		golden["authors/"+a.ID+".json"] = string(b) + "\n"
 	}
+	copyOfUploads := make(map[string][]byte)
+	for name, img := range sampleImages {
+		copyOfUploads["2026/10/"+name] = img.data
+	}
+	filesPath := filesDir(t)
+	media, err := imp.Media(context.Background(), site, MediaOptions{Files: filesPath, Uploads: uploads(copyOfUploads), By: mediaTestBy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range media {
+		b, err := m.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		golden["media/"+m.ID+".json"] = string(b) + "\n"
+	}
 	golden["import.txt"] = reportText(t, imp.Report)
 
 	// The documents are what the site directory will hold: they load, and the terms and the authors read back the same.
@@ -192,6 +226,10 @@ func TestImportSample(t *testing.T) {
 			t.Errorf("author %s reads back as %+v, %v, want %+v", a.ID, back, err, a)
 		}
 	}
+	checkSampleMedia(t, imp, loaded, media, filesPath, golden)
+	if site.Logo != logo || site.Icon != icon || logo == "" || icon == "" {
+		t.Errorf("the logo and the icon are %q and %q after Media, want %q and %q, which are set", site.Logo, site.Icon, logo, icon)
+	}
 	for name, text := range golden {
 		if strings.Contains(text, "@") {
 			t.Errorf("%s has an @: an email address of the WXR got into the output", name)
@@ -209,6 +247,64 @@ func TestImportSample(t *testing.T) {
 	}
 	if got := goldenFiles(t, sampleOut); !slices.Equal(got, names) {
 		t.Errorf("%s has %q, want %q", sampleOut, got, names)
+	}
+}
+
+// checkSampleMedia checks the media that Media made of the logo and the icon of the sample site: they are the two documents
+// that are written, which are valid and read back, with the originals in the files of the site directory, and the old
+// addresses of their files are theirs.
+func checkSampleMedia(t *testing.T, imp *Import, site *content.Site, media []content.Media, filesPath string, golden map[string]string) {
+	t.Helper()
+	if len(media) != len(sampleImages) {
+		t.Fatalf("Media gives %d documents, want %d", len(media), len(sampleImages))
+	}
+	sd, err := sitedir.Open(filepath.Dir(filesPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sd.Close() }()
+	var wantURLs []MediaURL
+	for _, m := range media {
+		img, ok := sampleImages[m.FileName]
+		if !ok {
+			t.Errorf("Media gives the file name %q, want one of the sample", m.FileName)
+			continue
+		}
+		want := content.Media{
+			ID: m.ID, Hash: sha256Hash(img.data), FileName: m.FileName, MIMEType: "image/png", Size: len(img.data), Width: img.w, Height: img.h,
+			UploadedAt: img.uploadedAt, UploadedBy: mediaTestBy,
+		}
+		if !reflect.DeepEqual(m, want) {
+			t.Errorf("the medium of %s = %+v, want %+v", m.FileName, m, want)
+		}
+		if _, id, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: img.post}); !ok || id != m.ID {
+			t.Errorf("the ID of the attachment %d is %q, %t, want that of the medium %s", img.post, id, ok, m.ID)
+		}
+		if err := m.Validate(site); err != nil {
+			t.Errorf("medium %s: Validate: %v", m.ID, err)
+		}
+		var back content.Media
+		if err := back.UnmarshalJSON([]byte(golden["media/"+m.ID+".json"])); err != nil || !reflect.DeepEqual(back, m) {
+			t.Errorf("medium %s reads back as %+v, %v, want %+v", m.ID, back, err, m)
+		}
+		if ref, ok := imp.Ref(content.RefMedia, m.ID); !ok || ref.Type != content.MediaImage {
+			t.Errorf("the reference of the medium %s is %+v, %t, want an image", m.ID, ref, ok)
+		}
+		f, err := sd.OpenMedia(m.Hash)
+		if err != nil {
+			t.Errorf("OpenMedia(%s): %v", m.Hash, err)
+			continue
+		}
+		got, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil || !bytes.Equal(got, img.data) {
+			t.Errorf("the original of %s is %d bytes, %v, want the %d bytes of the PNG that the copy has", m.ID, len(got), err, len(img.data))
+		}
+		wantURLs = append(wantURLs, MediaURL{Path: "/wp-content/uploads/2026/10/" + m.FileName, Post: img.post, Media: m.ID})
+	}
+	slices.SortFunc(wantURLs, func(a, b MediaURL) int { return strings.Compare(a.Path, b.Path) })
+	if got := imp.MediaURLs(); !slices.Equal(got, wantURLs) {
+		t.Errorf("MediaURLs = %+v, want %+v", got, wantURLs)
 	}
 }
 
