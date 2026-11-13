@@ -93,6 +93,12 @@ func (s adminSite) args(more ...string) []string {
 // config writes a config file with the items of s, as absolute paths, and the lines more, and returns its path.
 func (s adminSite) config(t *testing.T, more ...string) string {
 	t.Helper()
+	return s.configIn(t, t.TempDir(), more...)
+}
+
+// configIn is config, with the file in the directory dir.
+func (s adminSite) configIn(t *testing.T, dir string, more ...string) string {
+	t.Helper()
 	lines := []string{"data: " + strconv.Quote(s.data), "site: " + strconv.Quote(s.site), "out: " + strconv.Quote(s.out),
 		"cache: " + strconv.Quote(s.cache)}
 	if s.theme != "" {
@@ -102,26 +108,48 @@ func (s adminSite) config(t *testing.T, more ...string) string {
 		}
 		lines = append(lines, "theme: "+strconv.Quote(theme))
 	}
-	return writeConfig(t, t.TempDir(), "whiteroom.yaml", strings.Join(append(lines, more...), "\n")+"\n")
+	return writeConfig(t, dir, "whiteroom.yaml", strings.Join(append(lines, more...), "\n")+"\n")
+}
+
+// socketDir returns a new directory for a socket, whose path with a name of one byte is short enough for a socket: a
+// directory of the test, or, if that is too long, as under a long TMPDIR, one in /tmp, which is removed after the test.
+func socketDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if len(dir) > 100 {
+		var err error
+		if dir, err = os.MkdirTemp("/tmp", "wr"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	}
+	return dir
+}
+
+// socketPath returns the path of a socket in a new directory.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(socketDir(t), "s")
 }
 
 // adminProc is a whiteroom serve admin that runs in a goroutine and listens.
 type adminProc struct {
-	line         string // the first line that it printed on stdout
-	origin, addr string // those that the line tells
-	base         string // the URL of the origin, but http, for the requests
-	client       *http.Client
-	stderr       *syncBuffer
-	cancel       context.CancelFunc
-	exited       chan struct{} // closed when the command has returned, with code set
-	code         int
+	line          string // the first line that it printed on stdout
+	origin        string // that which the line tells
+	network, addr string // "tcp" and the address, or "unix" and the path of the socket, as the line tells
+	base          string // the URL of the origin, but http, for the requests
+	client        *http.Client
+	stderr        *syncBuffer
+	cancel        context.CancelFunc
+	exited        chan struct{} // closed when the command has returned, with code set
+	code          int
 }
 
-var adminStartLine = regexp.MustCompile(`^serving admin of (.+) at (\S+) \(listening on (\S+)\)\n$`)
+var adminStartLine = regexp.MustCompile(`^serving admin of (.+) at (\S+) \(listening on (socket )?(\S+)\)\n$`)
 
 // startAdminArgs runs whiteroom serve admin with args and a context of ctx, in a goroutine, and returns it when it has
-// printed its first line, which must be that of a server that listens. Its client connects to the address that the line
-// tells, whatever the URL says.
+// printed its first line, which must be that of a server that listens. Its client connects to the address or the socket
+// that the line tells, whatever the URL says.
 func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminProc {
 	t.Helper()
 	what := "whiteroom serve admin " + strings.Join(args, " ")
@@ -156,7 +184,10 @@ func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminPro
 	if m == nil {
 		t.Fatalf("%s printed %q, which does not match %s", what, a.line, adminStartLine)
 	}
-	a.origin, a.addr = m[2], m[3]
+	a.origin, a.network, a.addr = m[2], "tcp", m[4]
+	if m[3] != "" {
+		a.network = "unix"
+	}
 	u, err := url.Parse(a.origin)
 	if err != nil {
 		t.Fatalf("%s tells the origin %q: %v", what, a.origin, err)
@@ -164,7 +195,7 @@ func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminPro
 	a.base = "http://" + u.Host
 	a.client.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return new(net.Dialer).DialContext(ctx, "tcp", a.addr)
+			return new(net.Dialer).DialContext(ctx, a.network, a.addr)
 		},
 		ExpectContinueTimeout: adminWait,
 	}
@@ -172,10 +203,10 @@ func startAdminArgs(t *testing.T, ctx context.Context, args ...string) *adminPro
 }
 
 // startAdmin is startAdminArgs with -addr 127.0.0.1:0, the system's choice of a port on the loopback interface, if args
-// do not have -addr. No test listens on a fixed port.
+// have neither -addr nor -socket. No test listens on a fixed port.
 func startAdmin(t *testing.T, ctx context.Context, args ...string) *adminProc {
 	t.Helper()
-	if !slices.Contains(args, "-addr") {
+	if !slices.Contains(args, "-addr") && !slices.Contains(args, "-socket") {
 		args = append([]string{"-addr", "127.0.0.1:0"}, args...)
 	}
 	return startAdminArgs(t, ctx, args...)
@@ -643,28 +674,214 @@ func stopsWith(t *testing.T, what string, a *adminProc) {
 	}
 }
 
-// TestServeAdminListen checks where the server listens: the choice among -addr, addr of the config file and the default,
-// the addresses that it takes, which are those of the loopback interfaces only, and those that it refuses, all before
-// the data directory is opened; and that -addr wins over the config file, and that an address in use fails the command,
-// which leaves the data directory open to others.
+// socketMode checks that path is a socket file with the mode 0660.
+func socketMode(t *testing.T, what, path string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Errorf("%s: %v", what, err)
+		return
+	}
+	if info.Mode().Type() != os.ModeSocket || info.Mode().Perm() != 0o660 {
+		t.Errorf("%s: %s has the mode %v, want a socket with 0660", what, path, info.Mode())
+	}
+}
+
+// TestServeAdminSocket starts the server on a Unix domain socket: it answers on the socket, which has the mode 0660, and
+// removes the file when it stops. A socket file that nobody listens on is replaced. Any other file, and a socket that
+// another process listens on, is left as it is, with the command failing before it comes to the socket if it is not the
+// first on the data directory. A path that a socket cannot have is a failure with the reason. None leaves the data
+// directory locked.
+func TestServeAdminSocket(t *testing.T) {
+	s := initEmpty(t)
+	origin := []string{"-origin", "http://localhost"}
+
+	sock := socketPath(t)
+	a := startAdmin(t, t.Context(), s.args(append([]string{"-socket", sock}, origin...)...)...)
+	if want := "serving admin of " + s.data + " at http://localhost (listening on socket " + sock + ")\n"; a.line != want {
+		t.Errorf("the server on a socket printed %q, want %q", a.line, want)
+	}
+	cookie := a.login(t)
+	if built := a.waitBuilt(t, cookie); !failedBuild(built) {
+		t.Errorf("the start build of a store without documents, on a socket, has %+v, want a failure", built.Last)
+	}
+	socketMode(t, "the socket of the server", sock)
+	stopsWith(t, "the socket", a)
+	noFile(t, "after the server has stopped", sock)
+	checkUnlocked(t, "after the server on a socket has stopped", s.data)
+	if got := a.stderr.String(); got != "" {
+		t.Errorf("whiteroom serve admin on a socket printed on stderr:\n%s", got)
+	}
+
+	// A socket file that a killed server has left: no one listens on it.
+	stale := socketPath(t)
+	l, err := net.Listen("unix", stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(stale); err != nil || info.Mode().Type() != os.ModeSocket {
+		t.Fatalf("the socket file that was left is %v (%v), want a socket", info, err)
+	}
+	b := startAdmin(t, t.Context(), s.args(append([]string{"-socket", stale}, origin...)...)...)
+	b.login(t)
+	socketMode(t, "the socket that replaced a stale one", stale)
+	stopsWith(t, "a stale socket", b)
+	noFile(t, "after the server on a stale socket has stopped", stale)
+
+	// Files that the server leaves as they are, and says why: a socket that another process listens on, and what is not a
+	// socket. The listener goes on to accept connections.
+	live := socketPath(t)
+	ll, err := net.Listen("unix", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ll.Close() }()
+	liveInfo, err := os.Lstat(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := func(what, path, reason string) {
+		t.Helper()
+		code, stdout, stderr := runAdminCmd(t, s.args(append([]string{"-socket", path}, origin...)...)...)
+		if want := "whiteroom serve admin: listen unix " + path + ": " + reason + "\n"; code != 1 || stdout != "" || stderr != want {
+			t.Errorf("%s: whiteroom serve admin = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr:\n%s", what, code, stdout, stderr,
+				want)
+		}
+		checkUnlocked(t, what, s.data)
+	}
+	fail("a socket that another process listens on", live, "another process listens on the socket, which is left as it is")
+	if now, err := os.Lstat(live); err != nil || !os.SameFile(liveInfo, now) {
+		t.Errorf("the socket that another process listens on is %v (%v) after the command, want the same file", now, err)
+	}
+	if conn, err := net.Dial("unix", live); err != nil {
+		t.Errorf("the socket that another process listens on does not take a connection after the command: %v", err)
+	} else {
+		_ = conn.Close()
+	}
+
+	notSocket := "the path exists and is not a socket, and is left as it is"
+	file := filepath.Join(socketDir(t), "s")
+	if err := os.WriteFile(file, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fail("a regular file", file, notSocket)
+	if got, err := os.ReadFile(file); err != nil || string(got) != "kept" {
+		t.Errorf("the regular file is %q (%v) after the command, want it as it was", got, err)
+	}
+	dir := filepath.Join(socketDir(t), "s")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fail("a directory", dir, notSocket)
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+		t.Errorf("the directory is %v (%v) after the command, want it as it was", info, err)
+	}
+	for _, tt := range []struct{ what, target string }{
+		{"a symbolic link to a socket that another process listens on", live},
+		{"a symbolic link to nothing", filepath.Join(socketDir(t), "none")},
+	} {
+		link := filepath.Join(socketDir(t), "s")
+		if err := os.Symlink(tt.target, link); err != nil {
+			t.Fatal(err)
+		}
+		fail(tt.what, link, notSocket)
+		if got, err := os.Readlink(link); err != nil || got != tt.target {
+			t.Errorf("%s: the link is to %q (%v) after the command, want %q", tt.what, got, err, tt.target)
+		}
+	}
+	if conn, err := net.Dial("unix", live); err != nil {
+		t.Errorf("the socket that another process listens on does not take a connection after the commands: %v", err)
+	} else {
+		_ = conn.Close()
+	}
+	fail("a path that starts with @", "@s", "a path that starts with @ is of an abstract socket, which has no file: start the "+
+		"path of a file with ./")
+
+	// A socket file that cannot be tried for a listener, as one that the user may not write to cannot: it is not replaced.
+	if os.Geteuid() != 0 {
+		locked := socketPath(t)
+		m, err := net.Listen("unix", locked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.(*net.UnixListener).SetUnlinkOnClose(false)
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0); err != nil {
+			t.Fatal(err)
+		}
+		fail("a socket file that cannot be written to", locked, "cannot tell whether another process listens on the socket, "+
+			"which is left as it is: dial unix "+locked+": connect: permission denied")
+		if info, err := os.Lstat(locked); err != nil || info.Mode().Type() != os.ModeSocket || info.Mode().Perm() != 0 {
+			t.Errorf("the socket file that cannot be written to is %v (%v) after the command, want it as it was", info, err)
+		}
+	}
+
+	// A socket that cannot be made: no directory to make it in, and a path that is too long.
+	missing := filepath.Join(socketDir(t), "missing", "s")
+	fail("no directory", missing, "bind: no such file or directory")
+	noFile(t, "no directory", filepath.Dir(missing))
+	long := socketDir(t)
+	for _, n := range []int{maxSocketPath + 1, maxSocketPath + 20} {
+		path := filepath.Join(long, strings.Repeat("x", n-len(long)-1))
+		if len(path) != n {
+			t.Fatalf("the path has %d bytes, want %d", len(path), n)
+		}
+		fail(fmt.Sprintf("a path of %d bytes", n), path, fmt.Sprintf("bind: invalid argument (the path of a socket has at most %d bytes, "+
+			"and this one has %d)", maxSocketPath, n))
+		noFile(t, "a path that is too long", path)
+	}
+}
+
+// TestServeAdminListen checks where the server listens: the choice among -addr, -socket, addr and socket of the config
+// file and the default, the addresses that it takes, which are those of the loopback interfaces only, and those that it
+// refuses, all before the data directory is opened; that a flag wins over the config file, and that -addr and -socket are
+// not both given; and that an address in use fails the command, which leaves the data directory open to others.
 func TestServeAdminListen(t *testing.T) {
 	for _, tt := range []struct {
-		what       string
-		flag       string
-		given      bool
-		cfg        string
-		want       string
-		fromConfig bool
+		what               string
+		addr               string
+		addrGiven          bool
+		socket             string
+		socketGiven        bool
+		cfgAddr, cfgSocket string
+		want               listenChoice
+		err                error
 	}{
-		{"none", "", false, "", "127.0.0.1:8081", false},
-		{"-addr", "127.0.0.1:9", true, "", "127.0.0.1:9", false},
-		{"the config file", "", false, "127.0.0.1:7", "127.0.0.1:7", true},
-		{"both", "127.0.0.1:9", true, "127.0.0.1:7", "127.0.0.1:9", false},
-		{"-addr with an empty value", "", true, "127.0.0.1:7", "", false},
+		{what: "none", want: listenChoice{network: "tcp", address: "127.0.0.1:8081"}},
+		{what: "-addr", addr: "127.0.0.1:9", addrGiven: true, want: listenChoice{network: "tcp", address: "127.0.0.1:9"}},
+		{what: "addr of the config file", cfgAddr: "127.0.0.1:7",
+			want: listenChoice{network: "tcp", address: "127.0.0.1:7", fromConfig: true}},
+		{what: "-addr and addr of the config file", addr: "127.0.0.1:9", addrGiven: true, cfgAddr: "127.0.0.1:7",
+			want: listenChoice{network: "tcp", address: "127.0.0.1:9"}},
+		{what: "-addr with an empty value", addrGiven: true, cfgAddr: "127.0.0.1:7", want: listenChoice{network: "tcp"}},
+		{what: "-socket", socket: "/run/a.sock", socketGiven: true, want: listenChoice{network: "unix", address: "/run/a.sock"}},
+		{what: "-socket with an empty value", socketGiven: true, cfgSocket: "/run/c.sock", want: listenChoice{network: "unix"}},
+		{what: "socket of the config file", cfgSocket: "/run/c.sock",
+			want: listenChoice{network: "unix", address: "/run/c.sock", fromConfig: true}},
+		{what: "-socket and socket of the config file", socket: "/run/a.sock", socketGiven: true, cfgSocket: "/run/c.sock",
+			want: listenChoice{network: "unix", address: "/run/a.sock"}},
+		{what: "-addr and -socket", addr: "127.0.0.1:9", addrGiven: true, socket: "/run/a.sock", socketGiven: true,
+			cfgAddr: "127.0.0.1:7", err: errBothFlags},
+		{what: "-addr and socket of the config file", addr: "127.0.0.1:9", addrGiven: true, cfgSocket: "/run/c.sock",
+			want: listenChoice{network: "tcp", address: "127.0.0.1:9"}},
+		{what: "-socket and addr of the config file", socket: "/run/a.sock", socketGiven: true, cfgAddr: "127.0.0.1:7",
+			want: listenChoice{network: "unix", address: "/run/a.sock"}},
+		{what: "-addr and both of the config file", addr: "127.0.0.1:9", addrGiven: true, cfgAddr: "127.0.0.1:7",
+			cfgSocket: "/run/c.sock", want: listenChoice{network: "tcp", address: "127.0.0.1:9"}},
+		{what: "-socket and both of the config file", socket: "/run/a.sock", socketGiven: true, cfgAddr: "127.0.0.1:7",
+			cfgSocket: "/run/c.sock", want: listenChoice{network: "unix", address: "/run/a.sock"}},
+		{what: "both of the config file", cfgAddr: "127.0.0.1:7", cfgSocket: "/run/c.sock", err: errBothConfig},
 	} {
-		if got, fromConfig := chooseAdminAddr(tt.flag, tt.given, tt.cfg); got != tt.want || fromConfig != tt.fromConfig {
-			t.Errorf("%s: chooseAdminAddr(%q, %t, %q) = %q, %t, want %q, %t", tt.what, tt.flag, tt.given, tt.cfg, got, fromConfig,
-				tt.want, tt.fromConfig)
+		got, err := chooseAdminListen(tt.addr, tt.addrGiven, tt.socket, tt.socketGiven, tt.cfgAddr, tt.cfgSocket)
+		if got != tt.want || !errors.Is(err, tt.err) {
+			t.Errorf("%s: chooseAdminListen(%q, %t, %q, %t, %q, %q) = %+v, %v, want %+v, %v", tt.what, tt.addr, tt.addrGiven,
+				tt.socket, tt.socketGiven, tt.cfgAddr, tt.cfgSocket, got, err, tt.want, tt.err)
 		}
 	}
 	for _, addr := range []string{
@@ -735,6 +952,55 @@ func TestServeAdminListen(t *testing.T) {
 				stderr, want)
 		}
 		checkUnlocked(t, tt.what+" of an address in use", s.data)
+	}
+
+	// -addr and -socket are one or the other: both are refused, on the command line and in the config file, before the data
+	// directory is opened, and no socket file is made.
+	sock := socketPath(t)
+	code, stdout, stderr = runAdminCmd(t, s.args("-addr", "127.0.0.1:0", "-socket", sock, "-origin", "http://localhost")...)
+	both := "-addr and -socket are both given: give one of them, as the server listens on one"
+	if want := "whiteroom serve admin: " + both + "\n" + help; code != 2 || stdout != "" || stderr != want {
+		t.Errorf("-addr and -socket = %d, with stdout %q and stderr:\n%s\nwant 2, with stderr:\n%s", code, stdout, stderr, want)
+	}
+	checkUnlocked(t, "-addr and -socket", s.data)
+	noFile(t, "-addr and -socket", sock)
+	file = s.config(t, "addr: 127.0.0.1:0", "socket: "+strconv.Quote(sock), "origin: http://localhost")
+	code, stdout, stderr = runAdminCmd(t, "-config", file)
+	if want := file + ": addr and socket are both given: give one of them, as the server listens on one\n"; code != 2 ||
+		stdout != "" || stderr != want {
+		t.Errorf("addr and socket of the config file = %d, with stdout %q and stderr:\n%s\nwant 2, with stderr:\n%s", code, stdout,
+			stderr, want)
+	}
+	checkUnlocked(t, "addr and socket of the config file", s.data)
+	noFile(t, "addr and socket of the config file", sock)
+	code, stdout, stderr = runAdminCmd(t, s.args("-socket", "", "-origin", "http://localhost")...)
+	if want := "whiteroom serve admin: -socket must not be empty\n" + help; code != 2 || stdout != "" || stderr != want {
+		t.Errorf("-socket \"\" = %d, with stdout %q and stderr:\n%s\nwant 2, with stderr:\n%s", code, stdout, stderr, want)
+	}
+	checkUnlocked(t, "-socket with an empty value", s.data)
+
+	// The flag wins over the other item of the config file: -socket over addr, and -addr over socket.
+	c := startAdminArgs(t, t.Context(), "-config", s.config(t, "addr: 127.0.0.1:0", "origin: http://localhost"), "-socket", sock)
+	if c.network != "unix" || c.addr != sock {
+		t.Errorf("-socket with addr of the config file: the server listens on the %s %q, want the socket %s", c.network, c.addr, sock)
+	}
+	stopsWith(t, "-socket over addr", c)
+	noFile(t, "-socket over addr, after the stop", sock)
+	other := socketPath(t)
+	d := startAdminArgs(t, t.Context(), "-config", s.config(t, "socket: "+strconv.Quote(other), "origin: http://localhost"),
+		"-addr", "127.0.0.1:0")
+	if _, port, err := net.SplitHostPort(d.addr); d.network != "tcp" || err != nil || port == "0" {
+		t.Errorf("-addr with socket of the config file: the server listens on the %s %q, want a TCP port", d.network, d.addr)
+	}
+	noFile(t, "-addr over socket", other)
+	stopsWith(t, "-addr over socket", d)
+}
+
+// noFile checks that nothing is at path.
+func noFile(t *testing.T, what, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err == nil {
+		t.Errorf("%s: %s exists", what, path)
 	}
 }
 
@@ -841,25 +1107,101 @@ func TestServeAdminOrigin(t *testing.T) {
 		t.Errorf("the server listens on %s, want %s, which the command has freed", e.addr, addr)
 	}
 	stopsWith(t, "the address that a failed command has freed", e)
+
+	// A socket: no origin is made of an address, so it is given, and the requests have its Host and its Origin.
+	sock := socketPath(t)
+	code, stdout, stderr = runAdminCmd(t, s.args("-socket", sock)...)
+	want = "whiteroom serve admin: no origin: a socket has no address that the origin can be made of: give -origin URL, or " +
+		"origin in the config file\n" + adminHelp(t)
+	if code != 2 || stdout != "" || stderr != want {
+		t.Errorf("-socket without -origin = %d, with stdout %q and stderr:\n%s\nwant 2, with stderr:\n%s", code, stdout, stderr, want)
+	}
+	checkUnlocked(t, "-socket without -origin", s.data)
+	noFile(t, "-socket without -origin", sock)
+
+	f := startAdmin(t, t.Context(), s.args("-socket", sock, "-origin", "http://localhost")...)
+	if want := "serving admin of " + s.data + " at http://localhost (listening on socket " + sock + ")\n"; f.line != want ||
+		f.network != "unix" {
+		t.Errorf("the server on a socket printed %q, want %q", f.line, want)
+	}
+	for host, want := range map[string]int{
+		"localhost": http.StatusUnauthorized, "localhost:80": http.StatusUnauthorized, "127.0.0.1": http.StatusMisdirectedRequest,
+		"localhost:8081": http.StatusMisdirectedRequest, "other.example": http.StatusMisdirectedRequest,
+	} {
+		if got := status(f, "Host", host); got != want {
+			t.Errorf("GET /api/session with the Host %s, on a socket at -origin http://localhost = %d, want %d", host, got, want)
+		}
+	}
+	for _, origin := range []string{"http://127.0.0.1", "https://localhost", "http://localhost:8081"} {
+		if got, _ := f.exchange(t, http.MethodPost, "/api/session", `{"login":"x","password":"y"}`, "Origin", origin); got != http.StatusForbidden {
+			t.Errorf("a login on a socket with the Origin %s = %d, want 403", origin, got)
+		}
+	}
+	if got, _ := f.exchange(t, http.MethodPost, "/api/session", `{"login":"x","password":"y"}`); got != http.StatusUnauthorized {
+		t.Errorf("a login on a socket with the Origin of the server = %d, want 401, as the login is wrong", got)
+	}
+	stopsWith(t, "a socket and -origin http://localhost", f)
+
+	g := startAdmin(t, t.Context(), s.args("-socket", socketPath(t), "-origin", "https://admin.example")...)
+	if g.origin != "https://admin.example" || g.base != "http://admin.example" || g.network != "unix" {
+		t.Errorf("the server on a socket with -origin https://admin.example tells the origin %q", g.origin)
+	}
+	loginOn := func(origin string) int {
+		t.Helper()
+		got, _ := g.exchange(t, http.MethodPost, "/api/session", `{"login":"x","password":"y"}`, "Origin", origin)
+		return got
+	}
+	if got := loginOn("https://admin.example"); got != http.StatusUnauthorized {
+		t.Errorf("a login on a socket with the Origin of the server = %d, want 401, as the login is wrong", got)
+	}
+	for _, origin := range []string{"http://admin.example", "https://other.example", "https://admin.example:8443"} {
+		if got := loginOn(origin); got != http.StatusForbidden {
+			t.Errorf("a login on a socket with the Origin %s = %d, want 403", origin, got)
+		}
+	}
+	if got := status(g, "Host", "other.example"); got != http.StatusMisdirectedRequest {
+		t.Errorf("GET /api/session on a socket with the Host other.example = %d, want 421", got)
+	}
+	stopsWith(t, "a socket and -origin https://admin.example", g)
+
+	// An origin that the server refuses: the command fails, and the socket file is not left, so that the same arguments
+	// with the origin made right start.
+	bad := socketPath(t)
+	code, stdout, stderr = runAdminCmd(t, s.args("-socket", bad, "-origin", "http://example.com")...)
+	want = "whiteroom serve admin: admin: invalid origin \"http://example.com\": use https, or http on localhost\n"
+	if code != 1 || stdout != "" || stderr != want {
+		t.Errorf("a socket and -origin http://example.com = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr:\n%s", code, stdout,
+			stderr, want)
+	}
+	noFile(t, "a socket and an origin that is refused", bad)
+	checkUnlocked(t, "a socket and an origin that is refused", s.data)
+	h := startAdmin(t, t.Context(), s.args("-socket", bad, "-origin", "http://localhost")...)
+	if h.addr != bad {
+		t.Errorf("the server listens on %s, want %s, which the command has freed", h.addr, bad)
+	}
+	stopsWith(t, "the socket that a failed command has freed", h)
 }
 
 // TestServeAdminWarning checks the warning that the origin is https while no proxy is trusted.
 func TestServeAdminWarning(t *testing.T) {
 	proxy := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	for _, tt := range []struct {
-		origin  string
-		proxies []netip.Prefix
-		want    bool
+		network, origin string
+		proxies         []netip.Prefix
+		want            bool
 	}{
-		{"https://admin.example", nil, true},
-		{"HTTPS://admin.example", nil, true},
-		{"https://admin.example", proxy, false},
-		{"http://localhost:8081", nil, false},
-		{"http://localhost:8081", proxy, false},
-		{"", nil, false},
+		{"tcp", "https://admin.example", nil, true},
+		{"tcp", "HTTPS://admin.example", nil, true},
+		{"tcp", "https://admin.example", proxy, false},
+		{"tcp", "http://localhost:8081", nil, false},
+		{"tcp", "http://localhost:8081", proxy, false},
+		{"tcp", "", nil, false},
+		{"unix", "https://admin.example", nil, false},
+		{"unix", "https://admin.example", proxy, false},
+		{"unix", "http://localhost", nil, false},
 	} {
-		if got := warnNoProxy(tt.origin, tt.proxies); got != tt.want {
-			t.Errorf("warnNoProxy(%q, %v) = %t, want %t", tt.origin, tt.proxies, got, tt.want)
+		if got := warnNoProxy(tt.network, tt.origin, tt.proxies); got != tt.want {
+			t.Errorf("warnNoProxy(%q, %q, %v) = %t, want %t", tt.network, tt.origin, tt.proxies, got, tt.want)
 		}
 	}
 
@@ -883,6 +1225,10 @@ func TestServeAdminWarning(t *testing.T) {
 			"addr: 127.0.0.1:0")}, true},
 		{"no origin", s.args(), false},
 		{"an http origin", s.args("-origin", "http://localhost:9"), false},
+		{"a socket and an https origin", s.args("-socket", socketPath(t), "-origin", "https://admin.example"), false},
+		{"a socket of the config file and an https origin", []string{"-config", s.configIn(t, socketDir(t),
+			"socket: s", "origin: https://admin.example")}, false},
+		{"a socket and an http origin", s.args("-socket", socketPath(t), "-origin", "http://localhost"), false},
 	} {
 		var a *adminProc
 		if slices.Contains(tt.args, "-config") {
@@ -953,8 +1299,28 @@ func TestServeAdminConfig(t *testing.T) {
 	}
 	stopsWith(t, "the flags over the config file", b)
 
-	// The trusted proxies of the file, and -trusted-proxy over them, as the client of the login tells.
+	// A socket in place of the address: its path is relative to the directory of the file, and -socket wins over it.
 	e := initEmpty(t)
+	sdir := socketDir(t)
+	viaSocket := e.configIn(t, sdir, "socket: s", "origin: http://localhost")
+	f := startAdminArgs(t, t.Context(), "-config", viaSocket)
+	if f.network != "unix" || f.addr != filepath.Join(sdir, "s") || f.origin != "http://localhost" {
+		t.Errorf("the server of the config file with socket printed %q, want the socket %s and the origin http://localhost", f.line,
+			filepath.Join(sdir, "s"))
+	}
+	f.login(t)
+	stopsWith(t, "the socket of the config file", f)
+	noFile(t, "the socket of the config file, after the stop", filepath.Join(sdir, "s"))
+	over := socketPath(t)
+	g := startAdminArgs(t, t.Context(), "-config", viaSocket, "-socket", over)
+	if g.network != "unix" || g.addr != over {
+		t.Errorf("the server with -socket over the config file listens on the %s %q, want the socket %s", g.network, g.addr, over)
+	}
+	g.login(t)
+	noFile(t, "-socket over the socket of the config file", filepath.Join(sdir, "s"))
+	stopsWith(t, "-socket over the socket of the config file", g)
+
+	// The trusted proxies of the file, and -trusted-proxy over them, as the client of the login tells.
 	proxies := e.config(t, "addr: 127.0.0.1:0", "trustedProxies:", "  - 127.0.0.1")
 	for _, tt := range []struct {
 		what string
@@ -1006,6 +1372,9 @@ func TestServeAdminConfig(t *testing.T) {
 // connection is that of a trusted proxy, and then the address that X-Forwarded-For has, if it has one.
 func TestServeAdminClient(t *testing.T) {
 	s := initEmpty(t)
+	onSocket := func(more ...string) []string {
+		return append([]string{"-socket", socketPath(t), "-origin", "http://localhost"}, more...)
+	}
 	for i, tt := range []struct {
 		what string
 		args []string
@@ -1022,6 +1391,12 @@ func TestServeAdminClient(t *testing.T) {
 		{"two proxies", []string{"-trusted-proxy", "10.0.0.1", "-trusted-proxy", "127.0.0.1"}, "203.0.113.9", "203.0.113.9"},
 		{"a proxy in the header", []string{"-trusted-proxy", "127.0.0.1", "-trusted-proxy", "198.51.100.0/24"},
 			"203.0.113.9, 198.51.100.7", "203.0.113.9"},
+		// The peer of a socket is a proxy always: the client is in the header, or none can be told.
+		{"a socket, with the header", onSocket(), "203.0.113.9", "203.0.113.9"},
+		{"a socket, with a header of two addresses", onSocket(), "203.0.113.9, 10.0.0.5", "10.0.0.5"},
+		{"a socket, with a header of two addresses and a proxy before it", onSocket("-trusted-proxy", "10.0.0.0/8"),
+			"203.0.113.9, 10.0.0.5", "203.0.113.9"},
+		{"a socket, without the header", onSocket(), "", "::"},
 	} {
 		a := startAdmin(t, t.Context(), s.args(tt.args...)...)
 		var headers []string
@@ -1109,34 +1484,40 @@ func TestServeAdminErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(brokenTheme, "theme.yaml"), []byte("schemaVersion: 99\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	with := func(data, site string, flags ...string) []string {
-		return append(append([]string{"-addr", "127.0.0.1:0", "-data", data, "-out", s.out, "-cache", s.cache}, flags...), site)
-	}
-	for _, tt := range []struct {
-		what   string
-		args   []string
-		stderr string // the whole of it, or "" for the start of it that is prefix
-		prefix string
-	}{
-		{"a missing data directory", with(missing, s.site, "-theme", exampleTheme), "whiteroom serve admin: " + dataErr.Error() + "\n", ""},
-		{"a data directory that is not a store", with(notStore, s.site, "-theme", exampleTheme),
-			"whiteroom serve admin: " + notStoreErr.Error() + "\n", ""},
-		{"a data directory that is a file", with(file, s.site, "-theme", exampleTheme),
-			"whiteroom serve admin: " + fileErr.Error() + "\n", ""},
-		{"a missing site", with(s.data, missing, "-theme", exampleTheme), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
-		{"a site without a schema", with(s.data, noSchema, "-theme", exampleTheme),
-			filepath.Join(noSchema, "site", "schema.yaml") + ": missing file\n", ""},
-		{"a site without a theme", with(s.data, noTheme), filepath.Join(noTheme, "theme") + ": missing directory\n", ""},
-		{"a missing theme", with(s.data, noTheme, "-theme", missing), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
-		{"a theme that is broken", with(s.data, noTheme, "-theme", brokenTheme), "", brokenTheme},
-	} {
-		code, stdout, stderr := runAdminCmd(t, tt.args...)
-		if code != 1 || stdout != "" || stderr == "" || (tt.stderr != "" && stderr != tt.stderr) ||
-			!strings.HasPrefix(stderr, tt.prefix) || strings.Contains(stderr, "Usage:") {
-			t.Errorf("%s: whiteroom serve admin %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr %q%s", tt.what,
-				strings.Join(tt.args, " "), code, stdout, stderr, tt.stderr, tt.prefix)
+	// Each fails the same on a TCP address and on a socket, and leaves no socket file.
+	sockFail := socketPath(t)
+	for _, listen := range [][]string{{"-addr", "127.0.0.1:0"}, {"-socket", sockFail, "-origin", "http://localhost"}} {
+		with := func(data, site string, flags ...string) []string {
+			args := append(slices.Clone(listen), "-data", data, "-out", s.out, "-cache", s.cache)
+			return append(append(args, flags...), site)
 		}
-		checkUnlocked(t, tt.what, s.data)
+		for _, tt := range []struct {
+			what   string
+			args   []string
+			stderr string // the whole of it, or "" for the start of it that is prefix
+			prefix string
+		}{
+			{"a missing data directory", with(missing, s.site, "-theme", exampleTheme), "whiteroom serve admin: " + dataErr.Error() + "\n", ""},
+			{"a data directory that is not a store", with(notStore, s.site, "-theme", exampleTheme),
+				"whiteroom serve admin: " + notStoreErr.Error() + "\n", ""},
+			{"a data directory that is a file", with(file, s.site, "-theme", exampleTheme),
+				"whiteroom serve admin: " + fileErr.Error() + "\n", ""},
+			{"a missing site", with(s.data, missing, "-theme", exampleTheme), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
+			{"a site without a schema", with(s.data, noSchema, "-theme", exampleTheme),
+				filepath.Join(noSchema, "site", "schema.yaml") + ": missing file\n", ""},
+			{"a site without a theme", with(s.data, noTheme), filepath.Join(noTheme, "theme") + ": missing directory\n", ""},
+			{"a missing theme", with(s.data, noTheme, "-theme", missing), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
+			{"a theme that is broken", with(s.data, noTheme, "-theme", brokenTheme), "", brokenTheme},
+		} {
+			code, stdout, stderr := runAdminCmd(t, tt.args...)
+			if code != 1 || stdout != "" || stderr == "" || (tt.stderr != "" && stderr != tt.stderr) ||
+				!strings.HasPrefix(stderr, tt.prefix) || strings.Contains(stderr, "Usage:") {
+				t.Errorf("%s: whiteroom serve admin %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr %q%s", tt.what,
+					strings.Join(tt.args, " "), code, stdout, stderr, tt.stderr, tt.prefix)
+			}
+			checkUnlocked(t, tt.what, s.data)
+			noFile(t, tt.what, sockFail)
+		}
 	}
 
 	// A second server on the data directory, which the first has open: it waits for the lock and fails with its error,
@@ -1153,6 +1534,33 @@ func TestServeAdminErrors(t *testing.T) {
 	first.login(t)
 	stopsWith(t, "the first server", first)
 	checkUnlocked(t, "after the first server", s.data)
+
+	// The same of a server on a socket: the second fails with the lock before it comes to the socket file, whether it is
+	// that of the first or another, and leaves the file of the first, which goes on, as it is.
+	sock := socketPath(t)
+	one := startAdmin(t, t.Context(), s.args("-socket", sock, "-origin", "http://localhost")...)
+	made, err := os.Lstat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	another := socketPath(t)
+	for _, path := range []string{sock, another} {
+		code, stdout, stderr := runAdminCmd(t, s.args("-socket", path, "-origin", "http://localhost")...)
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process holds the writer lock\n") ||
+			!strings.HasPrefix(stderr, "whiteroom serve admin: ") || strings.Count(stderr, "\n") != 1 {
+			t.Errorf("a second server with -socket %s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer lock",
+				path, code, stdout, stderr)
+		}
+		noFile(t, "a second server that fails", another)
+		if now, err := os.Lstat(sock); err != nil || !os.SameFile(made, now) || now.Mode() != made.Mode() {
+			t.Errorf("after a second server with -socket %s, the socket file of the first is %v (%v), want the file that it made", path,
+				now, err)
+		}
+	}
+	one.login(t)
+	stopsWith(t, "the first server on a socket", one)
+	noFile(t, "after the first server on a socket", sock)
+	checkUnlocked(t, "after the first server on a socket", s.data)
 }
 
 // brokenListener is a listener whose Accept fails.
@@ -1164,7 +1572,8 @@ func (brokenListener) Accept() (net.Conn, error) { return nil, errors.New("accep
 func openForRun(t *testing.T, s adminSite) *adminServer {
 	t.Helper()
 	settings := adminSettings{
-		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, addr: "127.0.0.1:0",
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
+		addr: "127.0.0.1:0",
 	}
 	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/admin"
@@ -33,14 +34,17 @@ output directory when the server starts, and after each change that publishes.
 From the site directory SITE (default ".") only the schema file site/schema.yaml
 and the theme are read.
 
-The server does not end TLS, and listens on a loopback address only: browsers
-open it over http on localhost, or through a reverse proxy that ends TLS, whose
-address -trusted-proxy names, so that the login history has the addresses of the
-clients.
+The server does not end TLS. It listens on one of a loopback TCP address (-addr)
+and a Unix domain socket (-socket): browsers open the first over http on
+localhost, or through a reverse proxy that ends TLS, whose address
+-trusted-proxy names, so that the login history has the addresses of the clients.
+The reverse proxy for the second connects to the socket file, which the server
+makes with the mode 0660 and removes when it stops, and is always trusted. A
+socket has no address that the origin can be made of, so it needs -origin.
 
 With -config, the items data, site, theme, out, cache, workers, memory, addr,
-origin and trustedProxies of the YAML file give what the flags and SITE leave
-out. Without it, no config file is read.
+socket, origin and trustedProxies of the YAML file give what the flags and SITE
+leave out. Without it, no config file is read.
 
 Flags:
 `
@@ -53,8 +57,8 @@ const (
 // serveAdminFlags are the values of the flags of whiteroom serve admin, those of whiteroom build among them.
 type serveAdminFlags struct {
 	*buildFlags
-	data, addr, origin string
-	proxies            []netip.Prefix // -trusted-proxy
+	data, addr, socket, origin string
+	proxies                    []netip.Prefix // -trusted-proxy
 }
 
 func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
@@ -67,11 +71,14 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 	f := &serveAdminFlags{buildFlags: addBuildFlags(flags)}
 	flags.StringVar(&f.data, "data", "", "open the data directory `DIR` (required unless the config file has data)")
 	flags.StringVar(&f.addr, "addr", "",
-		"listen on the loopback TCP address `ADDR`, an IP address and a port (default addr of the config file, else "+
-			defaultAdminAddr+")")
+		"listen on the loopback TCP address `ADDR`, an IP address and a port; not with -socket (default addr of the config "+
+			"file, else "+defaultAdminAddr+")")
+	flags.StringVar(&f.socket, "socket", "",
+		"listen on the Unix domain socket at `PATH` instead of a TCP address, which needs -origin; not with -addr "+
+			"(default socket of the config file)")
 	flags.StringVar(&f.origin, "origin", "",
-		"the origin `URL` that browsers open: https, or http on localhost (default origin of the config file, else "+
-			"http:// and the address that it listens on)")
+		"the origin `URL` that browsers open: https, or http on localhost (default origin of the config file, else, for a "+
+			"TCP address, http:// and the address that it listens on)")
 	flags.Func("trusted-proxy",
 		"trust the X-Forwarded-For header of the reverse proxy at `PREFIX`, an IP address or a CIDR range; repeat it for "+
 			"more (default trustedProxies of the config file)",
@@ -90,8 +97,9 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 type adminSettings struct {
 	buildSettings
 	data    string
-	addr    string // to listen on
-	origin  string // "" for the one that the listening address makes
+	network string // "tcp" or "unix"
+	addr    string // to listen on: a host:port, or the path of the socket
+	origin  string // "" for the one that the listening address makes, which only a TCP address can
 	proxies []netip.Prefix
 }
 
@@ -105,16 +113,34 @@ func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Wri
 		usageError(flags, "no data directory: give -data DIR, or data in the config file")
 		return s, false
 	}
-	addr, fromConfig := chooseAdminAddr(f.addr, flagGiven(flags, "addr"), cfg.addr)
-	if err := checkAdminAddr(addr); err != nil {
-		if fromConfig {
-			printConfigProblem(stderr, f.config, "/addr", err.Error())
-		} else {
-			usageError(flags, "-addr %v", err)
-		}
+	choice, err := chooseAdminListen(f.addr, flagGiven(flags, "addr"), f.socket, flagGiven(flags, "socket"), cfg.addr, cfg.socket)
+	switch {
+	case errors.Is(err, errBothFlags):
+		usageError(flags, "%v", err)
+		return s, false
+	case err != nil:
+		printConfigProblem(stderr, f.config, "", err.Error())
 		return s, false
 	}
-	s.addr = addr
+	s.network, s.addr = choice.network, choice.address
+	switch {
+	case s.network == "tcp":
+		if err := checkAdminAddr(s.addr); err != nil {
+			if choice.fromConfig {
+				printConfigProblem(stderr, f.config, "/addr", err.Error())
+			} else {
+				usageError(flags, "-addr %v", err)
+			}
+			return s, false
+		}
+	case s.addr == "":
+		usageError(flags, "-socket must not be empty")
+		return s, false
+	case s.origin == "":
+		usageError(flags, "no origin: a socket has no address that the origin can be made of: give -origin URL, or origin in "+
+			"the config file")
+		return s, false
+	}
 	if len(f.proxies) > 0 {
 		s.proxies = f.proxies
 		return s, true
@@ -137,16 +163,37 @@ func printConfigProblem(w io.Writer, file, path, msg string) {
 	printf(w, "%s\n", (&content.Error{File: file, Path: path, Msg: msg}).Error())
 }
 
-// chooseAdminAddr returns the address to listen on: that of -addr if the command line gives it, else that of the config
-// file, else the default. fromConfig tells that it is that of the config file.
-func chooseAdminAddr(flagAddr string, flagGiven bool, cfgAddr string) (addr string, fromConfig bool) {
+// listenChoice is what the server listens on, and whether the config file said so.
+type listenChoice struct {
+	network    string // "tcp", and address is a host:port; or "unix", and it is the path of the socket
+	address    string
+	fromConfig bool
+}
+
+var (
+	errBothFlags  = errors.New("-addr and -socket are both given: give one of them, as the server listens on one")
+	errBothConfig = errors.New("addr and socket are both given: give one of them, as the server listens on one")
+)
+
+// chooseAdminListen returns what to listen on: what the command line gives, -addr or -socket, which are not both given,
+// and then the config file is not read for it; else that of the config file, which does not give both items either; else
+// the default TCP address.
+func chooseAdminListen(flagAddr string, addrGiven bool, flagSocket string, socketGiven bool, cfgAddr, cfgSocket string) (listenChoice, error) {
 	switch {
-	case flagGiven:
-		return flagAddr, false
+	case addrGiven && socketGiven:
+		return listenChoice{}, errBothFlags
+	case addrGiven:
+		return listenChoice{network: "tcp", address: flagAddr}, nil
+	case socketGiven:
+		return listenChoice{network: "unix", address: flagSocket}, nil
+	case cfgAddr != "" && cfgSocket != "":
+		return listenChoice{}, errBothConfig
+	case cfgSocket != "":
+		return listenChoice{network: "unix", address: cfgSocket, fromConfig: true}, nil
 	case cfgAddr != "":
-		return cfgAddr, true
+		return listenChoice{network: "tcp", address: cfgAddr, fromConfig: true}, nil
 	}
-	return defaultAdminAddr, false
+	return listenChoice{network: "tcp", address: defaultAdminAddr}, nil
 }
 
 // checkAdminAddr checks that addr is the IP address of a loopback interface, 127.0.0.0/8 or ::1, with a port: the host
@@ -195,9 +242,9 @@ func parseProxy(s string) (netip.Prefix, error) {
 }
 
 // warnNoProxy reports whether to warn that the server has no trusted proxy: an https origin means a reverse proxy, which
-// every client counts as without one.
-func warnNoProxy(origin string, proxies []netip.Prefix) bool {
-	return len(proxies) == 0 && strings.HasPrefix(strings.ToLower(origin), "https://")
+// every client counts as without one. Not for a socket, whose peer is always trusted.
+func warnNoProxy(network, origin string, proxies []netip.Prefix) bool {
+	return network == "tcp" && len(proxies) == 0 && strings.HasPrefix(strings.ToLower(origin), "https://")
 }
 
 const noProxyWarning = "whiteroom serve admin: warning: the origin is https, but no trusted proxy is given: behind a " +
@@ -237,10 +284,14 @@ func serveAdmin(ctx context.Context, args []string, e env) int {
 		return 1
 	}
 	defer a.close()
-	if warnNoProxy(a.origin, s.proxies) {
+	if warnNoProxy(s.network, a.origin, s.proxies) {
 		printf(e.stderr, "%s", noProxyWarning)
 	}
-	printf(e.stdout, "serving admin of %s at %s (listening on %s)\n", s.data, a.origin, a.listener.Addr())
+	listening := a.listener.Addr().String()
+	if s.network == "unix" {
+		listening = "socket " + s.addr
+	}
+	printf(e.stdout, "serving admin of %s at %s (listening on %s)\n", s.data, a.origin, listening)
 	return reportRun(ctx, a, p)
 }
 
@@ -297,14 +348,19 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 			logger.Printf("closing the data directory: %v", err)
 		}
 	})
-	a.listener, err = net.Listen("tcp", s.addr)
+	if s.network == "unix" {
+		a.listener, err = listenSocket(s.addr)
+	} else {
+		a.listener, err = net.Listen("tcp", s.addr)
+	}
 	if err != nil {
 		return err
 	}
+	// Closing a socket's listener removes its file.
 	a.closers = append(a.closers, func() { _ = a.listener.Close() })
 	a.origin = s.origin
-	if a.origin == "" {
-		a.origin = listenOrigin(a.listener.Addr().(*net.TCPAddr).AddrPort())
+	if tcp, ok := a.listener.Addr().(*net.TCPAddr); ok && a.origin == "" {
+		a.origin = listenOrigin(tcp.AddrPort())
 	}
 	accounts, err := e.newAccounts(st)
 	if err != nil {
@@ -327,6 +383,54 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	}
 	a.http = admin.NewHTTPServer(handler, logger)
 	return nil
+}
+
+// maxSocketPath is the most bytes of the path of a Unix domain socket: 107 on Linux, whose address has room for 108 with the
+// NUL that ends it.
+const maxSocketPath = len(syscall.RawSockaddrUnix{}.Path) - 1
+
+// listenSocket listens on the Unix domain socket file at path, which it makes with the mode 0660: the owner and the group
+// connect to it, as a reverse proxy does. A socket file that nobody listens on, as a server that was killed leaves, is
+// replaced; any other file there is left as it is, and is an error. Closing the listener removes the file.
+func listenSocket(path string) (net.Listener, error) {
+	// Linux takes it for an abstract socket, which has no file: the dial below would miss a file of that name.
+	if strings.HasPrefix(path, "@") {
+		return nil, fmt.Errorf("listen unix %s: a path that starts with @ is of an abstract socket, which has no file: "+
+			"start the path of a file with ./", path)
+	}
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return nil, err
+	case info.Mode()&os.ModeSocket == 0:
+		return nil, fmt.Errorf("listen unix %s: the path exists and is not a socket, and is left as it is", path)
+	default:
+		conn, err := net.DialTimeout("unix", path, time.Second)
+		switch {
+		case err == nil:
+			_ = conn.Close()
+			return nil, fmt.Errorf("listen unix %s: another process listens on the socket, which is left as it is", path)
+		case !errors.Is(err, syscall.ECONNREFUSED):
+			return nil, fmt.Errorf("listen unix %s: cannot tell whether another process listens on the socket, which is left "+
+				"as it is: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		if len(path) > maxSocketPath {
+			err = fmt.Errorf("%w (the path of a socket has at most %d bytes, and this one has %d)", err, maxSocketPath, len(path))
+		}
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o660); err != nil {
+		_ = l.Close()
+		return nil, err
+	}
+	return l, nil
 }
 
 // openAdminSite opens the site directory site, of which the server reads only the schema file and the theme: the theme

@@ -69,7 +69,7 @@ func TestRun(t *testing.T) {
 			stdout, adminHelp)
 	}
 	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-origin URL", "-out DIR",
-		"-theme DIR", "-trusted-proxy PREFIX", "-workers N"} {
+		"-socket PATH", "-theme DIR", "-trusted-proxy PREFIX", "-workers N"} {
 		if !strings.Contains(adminHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom serve admin has no flag %s:\n%s", name, adminHelp)
 		}
@@ -152,6 +152,13 @@ func TestRun(t *testing.T) {
 			adminErr("too many arguments: give at most one SITE, after the flags")},
 		{[]string{"serve", "admin", "-data", "d", "-addr", "localhost:8081"}, 2, "",
 			adminErr(`-addr "localhost:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`)},
+		{[]string{"serve", "admin", "-data", "d", "-addr", "127.0.0.1:8081", "-socket", "s"}, 2, "",
+			adminErr("-addr and -socket are both given: give one of them, as the server listens on one")},
+		{[]string{"serve", "admin", "-data", "d", "-socket", "s"}, 2, "",
+			adminErr("no origin: a socket has no address that the origin can be made of: give -origin URL, or origin in the " +
+				"config file")},
+		{[]string{"serve", "admin", "-data", "d", "-socket", "", "-origin", "http://localhost"}, 2, "",
+			adminErr("-socket must not be empty")},
 		{[]string{"serve", "admin", "-config", missing}, 2, "", "whiteroom serve admin: " + openErr.Error() + "\n"},
 		{[]string{"serve", "admin", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},
