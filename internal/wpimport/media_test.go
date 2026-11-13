@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
@@ -642,6 +643,63 @@ func TestMediaConvertDownload(t *testing.T) {
 		}
 		wantFiles(t, dir, inCopy, original)
 	})
+}
+
+// TestMediaConvertDownloadFallsBack checks that an original image that the download cannot read, after all the attempts or
+// not, leaves the file that WordPress made of it to be tried.
+func TestMediaConvertDownloadFallsBack(t *testing.T) {
+	const dirPath = "/wp-content/uploads/2026/10/"
+	scaled := testJPEG(16, 8)
+	for _, tt := range []struct {
+		name     string
+		original http.HandlerFunc // for office.jpg
+		timeout  time.Duration    // of an attempt; 0 for the default
+		attempts int              // 0 for the default
+		reason   string           // after the address that is asked for, which the entry starts with
+		want     int              // requests for the original image
+	}{
+		{"an error of the server in every attempt", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) },
+			0, 0, "503 Service Unavailable (after 3 attempts)", 3},
+		{"no answer in time", func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+			40 * time.Millisecond, 2, "timed out after 40ms (after 2 attempts)", 2},
+		{"a redirect to another host", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://other.example/office.jpg", http.StatusFound)
+		}, 0, 0, "redirected to http://other.example/office.jpg, which is not on the old site or an allowed host", 1},
+		{"a single attempt", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) },
+			0, 1, "502 Bad Gateway (after 1 attempt)", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var paths []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				paths = append(paths, r.URL.Path)
+				mu.Unlock()
+				if r.URL.Path == dirPath+"office.jpg" {
+					tt.original(w, r)
+					return
+				}
+				_, _ = w.Write(scaled)
+			}))
+			t.Cleanup(srv.Close)
+			d := newTestDownloader(t)
+			d.Timeout, d.Attempts = tt.timeout, tt.attempts
+			c, dir := newMediaConv(t, MediaOptions{Download: d})
+			c.home = mustURL(t, srv.URL)
+			res := convertItem(t, c, mediaItem("2026/10/office-scaled.jpg", srv.URL+dirPath+"office-scaled.jpg", metaWith("office.jpg")))
+			checkMedia(t, res, wantMedia(scaled, "image/jpeg", "office-scaled.jpg", 16, 8))
+			wantEntries(t, res, fmt.Sprintf(`review: the original image "office.jpg" is not imported (GET %s: %s); `+
+				`the file "office-scaled.jpg" that WordPress made of it is imported`, srv.URL+dirPath+"office.jpg", tt.reason)+inMedia(""))
+			wantFiles(t, dir, scaled)
+			mu.Lock()
+			defer mu.Unlock()
+			want := slices.Repeat([]string{dirPath + "office.jpg"}, tt.want)
+			want = append(want, dirPath+"office-scaled.jpg")
+			if !slices.Equal(paths, want) {
+				t.Errorf("requests = %q, want %q", paths, want)
+			}
+		})
+	}
 }
 
 func TestMediaConvertNoPlaceToRead(t *testing.T) {
@@ -1479,6 +1537,8 @@ func TestMediaWrongArguments(t *testing.T) {
 		{"a default language that is not a language code", func(site *content.Site, _ *MediaOptions) { site.DefaultLanguage = "japanese" },
 			"the default language of the site: "},
 		{"a time zone that is not known", func(site *content.Site, _ *MediaOptions) { site.TimeZone = "Nowhere/Nowhere" }, "the time zone of the site: "},
+		// time.LoadLocation reads "" as UTC.
+		{"no time zone", func(site *content.Site, _ *MediaOptions) { site.TimeZone = "" }, "the time zone of the site: it is empty"},
 		{"an account that is not an ID", func(_ *content.Site, opts *MediaOptions) { opts.By = "admin" }, "the account that uploads the media: "},
 		{"an ID of another kind than an account", func(_ *content.Site, opts *MediaOptions) { opts.By = mediaTestID }, "the account that uploads the media: "},
 		{"no directory", func(_ *content.Site, opts *MediaOptions) { opts.Files = "" }, "the directory of the originals is needed"},

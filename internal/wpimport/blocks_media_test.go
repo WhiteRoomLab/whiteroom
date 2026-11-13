@@ -674,6 +674,40 @@ func TestMediaGalleries(t *testing.T) {
 	})
 }
 
+func TestMediaPathOfAnAttachmentThatIsNotImported(t *testing.T) {
+	// The attachment 31 has the path of the attachment 32, which is later in the WXR and is imported.
+	const shared = "https://example.com/wp-content/uploads/2026/10/shared.png"
+	for _, status := range []string{"trash", "auto-draft"} {
+		t.Run(status, func(t *testing.T) {
+			attachment := func(id int64, status string) wxr.Item {
+				return wxr.Item{
+					ID: id, Type: "attachment", Status: status, Title: "Shared", Link: fmt.Sprintf("https://example.com/shared-%d/", id),
+					AttachmentURL: shared, Meta: wxr.MetaList{{Key: "_wp_attached_file", Value: "2026/10/shared.png"}},
+				}
+			}
+			e := &wxr.Export{Channel: wxr.Channel{Link: "https://example.com"}, Items: []wxr.Item{attachment(31, status), attachment(32, "inherit")}}
+			imp := New("site.xml", e, NewReport(Info{File: "site.xml"}))
+			if err := imp.PlanMedia(); err != nil {
+				t.Fatal(err)
+			}
+			_, id, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: 32})
+			if !ok {
+				t.Fatal("the attachment that is imported has no ID")
+			}
+			text := wpImage(``, `<img src="`+shared+`" alt="a"/>`) + wpPara(`<a href="`+shared+`">the file</a>`)
+			res := convertMedia(t, imp, bodySite(false), nil, text)
+			got, err := res.Blocks.MarshalJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(string(got), fmt.Sprintf(`"media":%q`, id)); n != 2 || strings.Contains(string(got), `"legacy"`) {
+				t.Errorf("the blocks are\n%s\nwant the image and the link to refer to the medium %s, and no legacy block", got, id)
+			}
+			wantLines(t, imp.Report, nil)
+		})
+	}
+}
+
 func TestMediaFiles(t *testing.T) {
 	report, photo := mediaIDs.report, mediaIDs.photo
 	file := func(attrs, inner string) string {

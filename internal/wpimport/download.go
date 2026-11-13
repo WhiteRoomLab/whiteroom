@@ -94,7 +94,7 @@ func (d *Downloader) fetch(ctx context.Context, home, u *url.URL,
 	if n := d.failures.Add(1); n >= maxDownloadFailures {
 		return nil, fmt.Errorf("the old site does not answer: %d files in a row could not be downloaded; the last: %s", n, last)
 	}
-	return nil, skipf("%s (after %d attempts)", last, attempts)
+	return nil, skipf("%s (after %s)", last, count(attempts, "attempt"))
 }
 
 // attempt makes one request. A reason is the result if the attempt failed in a way that a new attempt may mend, and then

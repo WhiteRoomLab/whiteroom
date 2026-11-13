@@ -13,7 +13,7 @@ import (
 )
 
 // urlIndex finds the post of WordPress that a URL of the old site is the address of: a page, an entry, an attachment
-// page, or an attachment file.
+// page, or an attachment file. The attachments that are not imported (importsAttachment) are not in it.
 type urlIndex struct {
 	home  *url.URL
 	base  string           // the path of the home, in the form of content.CanonicalFrom, without a slash at its end
@@ -44,6 +44,10 @@ func newURLIndex(e *wxr.Export) *urlIndex {
 	x.base = homeBase(x.home)
 	for i := range e.Items {
 		it := &e.Items[i]
+		// Its paths would hold back those of an attachment that is imported, as the first in the WXR has a path.
+		if it.Type == "attachment" && !importsAttachment(it) {
+			continue
+		}
 		if p, ok := linkPath(x.home, it.Link); ok {
 			x.add(p, it.ID)
 		}
@@ -70,7 +74,8 @@ type MediaURL struct {
 // PDF, and the original image of a scaled one), which all give the medium of their attachment. A path that two attachments
 // have is that of the first in the WXR, as in the links of a body. The pages of the attachments (their links) are not
 // here, and the redirects are for the caller to make. Call it after Media, which takes out the attachments that it did not
-// import.
+// import. The attachments in the trash and the automatic drafts do not count: a path that one of them has too is that of
+// the first of the others that has it.
 func (imp *Import) MediaURLs() []MediaURL {
 	var urls []MediaURL
 	for p, post := range imp.urlIndex().files {

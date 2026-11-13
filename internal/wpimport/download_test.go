@@ -2,6 +2,7 @@ package wpimport
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -220,6 +221,7 @@ func TestDownloadGivesUp(t *testing.T) {
 		status, attempts, want int
 	}{
 		{http.StatusServiceUnavailable, 0, 3},
+		{http.StatusServiceUnavailable, 1, 1},
 		{http.StatusTooManyRequests, 3, 3},
 		{http.StatusInternalServerError, 2, 2},
 		{599, 5, 5},
@@ -231,7 +233,11 @@ func TestDownloadGivesUp(t *testing.T) {
 			c := newDownloadCase(t, d, srv.URL)
 			u := srv.URL + "/a.png"
 			_, err := c.fetch(context.Background(), u)
-			wantSkip(t, err, fmt.Sprintf("GET %s: %s (after %d attempts)", u, statusText(tt.status), tt.want))
+			after := fmt.Sprintf("%d attempts", tt.want)
+			if tt.want == 1 {
+				after = "1 attempt"
+			}
+			wantSkip(t, err, fmt.Sprintf("GET %s: %s (after %s)", u, statusText(tt.status), after))
 			wantHits(t, hits, int64(tt.want))
 			wantNames(t, c.dir)
 		})
@@ -391,6 +397,32 @@ func TestDownloadTooLarge(t *testing.T) {
 		_, err := c.fetch(context.Background(), srv.URL+"/a.png")
 		wantSkip(t, err, "too large: more than 1000 bytes")
 		wantHits(t, hits, 1)
+		wantNames(t, c.dir)
+	})
+	t.Run("gzip", func(t *testing.T) {
+		// The size that is counted is that of what the file is after the transport has unpacked it, not the Content-Length.
+		lowerMediaLimit(t, 1000)
+		var packed bytes.Buffer
+		zw := gzip.NewWriter(&packed)
+		_, _ = zw.Write(big)
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if packed.Len() >= 1000 {
+			t.Fatalf("the packed data is %d bytes, which the test needs to be under the limit", packed.Len())
+		}
+		srv, hits := newDownloadServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Length", strconv.Itoa(packed.Len()))
+			_, _ = w.Write(packed.Bytes())
+		})
+		c := newDownloadCase(t, newTestDownloader(t), srv.URL)
+		_, err := c.fetch(context.Background(), srv.URL+"/a.png")
+		wantSkip(t, err, "too large: more than 1000 bytes")
+		wantHits(t, hits, 1)
+		if got := c.saves.Load(); got != 1 {
+			t.Errorf("saves = %d, want 1: the body is read up to the limit", got)
+		}
 		wantNames(t, c.dir)
 	})
 	t.Run("exactly the limit", func(t *testing.T) {
@@ -675,7 +707,7 @@ func TestDownloadStopsWhenTheSiteDoesNotAnswer(t *testing.T) {
 		t.Helper()
 		for i := 1; i < maxDownloadFailures; i++ {
 			err := fail(i)
-			wantSkip(t, err, fmt.Sprintf("GET %s/fail%d.png: 503 Service Unavailable (after 1 attempts)", srv.URL, i))
+			wantSkip(t, err, fmt.Sprintf("GET %s/fail%d.png: 503 Service Unavailable (after 1 attempt)", srv.URL, i))
 		}
 		orig, err := c.fetch(context.Background(), srv.URL+answer)
 		switch answer {
@@ -692,7 +724,7 @@ func TestDownloadStopsWhenTheSiteDoesNotAnswer(t *testing.T) {
 	run("/html.png")
 	// No answer comes after the last 19.
 	for i := 1; i < maxDownloadFailures; i++ {
-		wantSkip(t, fail(i), fmt.Sprintf("GET %s/fail%d.png: 503 Service Unavailable (after 1 attempts)", srv.URL, i))
+		wantSkip(t, fail(i), fmt.Sprintf("GET %s/fail%d.png: 503 Service Unavailable (after 1 attempt)", srv.URL, i))
 	}
 	err := fail(20)
 	wantStopping(t, err)
@@ -705,7 +737,7 @@ func TestDownloadStopsWhenTheSiteDoesNotAnswer(t *testing.T) {
 	wantStopping(t, fail(21))
 	orig, err := c.fetch(context.Background(), srv.URL+"/ok.png")
 	c.wantFile(orig, err, data)
-	wantSkip(t, fail(22), fmt.Sprintf("GET %s/fail22.png: 503 Service Unavailable (after 1 attempts)", srv.URL))
+	wantSkip(t, fail(22), fmt.Sprintf("GET %s/fail22.png: 503 Service Unavailable (after 1 attempt)", srv.URL))
 }
 
 func TestDownloadRetriesCountOnce(t *testing.T) {

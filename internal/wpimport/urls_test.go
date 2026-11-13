@@ -1,6 +1,7 @@
 package wpimport
 
 import (
+	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
@@ -371,6 +372,86 @@ func TestMediaURLs(t *testing.T) {
 			t.Errorf("the path %q of the page of item %d is in MediaURLs", p, it.ID)
 		}
 	}
+}
+
+// sharedFileItems are two attachments that have the files a.png and a-150x150.png. The first, the post 1, has the status; the
+// second, the post 2, is imported, and its link is the address of the file if pageIsFile.
+func sharedFileItems(status string, pageIsFile bool) []wxr.Item {
+	const up = "https://example.com/wp-content/uploads/2026/10/"
+	first := uploadsAttachment(1, "https://example.com/gone/", "2026/10/a.png", up+"a.png", sizesMeta("a-150x150.png"))
+	first.Status = status
+	link := "https://example.com/a/"
+	if pageIsFile {
+		link = up + "a.png"
+	}
+	return []wxr.Item{first, uploadsAttachment(2, link, "2026/10/a.png", up+"a.png", sizesMeta("a-150x150.png"))}
+}
+
+func TestURLIndexSkipsAttachmentsThatAreNotImported(t *testing.T) {
+	const up = "https://example.com/wp-content/uploads/2026/10/"
+	for _, status := range []string{"trash", "auto-draft"} {
+		t.Run(status, func(t *testing.T) {
+			x := newURLIndex(&wxr.Export{Channel: wxr.Channel{Link: "https://example.com"}, Items: sharedFileItems(status, false)})
+			for _, tt := range []struct {
+				url  string
+				want int64
+			}{
+				{up + "a.png", 2}, {up + "a-150x150.png", 2}, {"https://example.com/a/", 2},
+				{"https://example.com/gone/", 0},
+			} {
+				if id, _, same := lookupURL(t, x, tt.url); id != tt.want || !same {
+					t.Errorf("lookup(%s) = %d, %t, want %d in the site", tt.url, id, same, tt.want)
+				}
+			}
+			if got := len(x.files); got != 2 {
+				t.Errorf("the index has %d files, want those of the attachment that is imported", got)
+			}
+		})
+	}
+	t.Run("the status of an item that is not an attachment", func(t *testing.T) {
+		// Only attachments are left out, which the bodies and the redirects do not need to find by their paths.
+		x := newURLIndex(&wxr.Export{Channel: wxr.Channel{Link: "https://example.com"}, Items: []wxr.Item{
+			{ID: 1, Type: "post", Status: "trash", Link: "https://example.com/gone/"},
+		}})
+		if id, _, _ := lookupURL(t, x, "https://example.com/gone/"); id != 1 {
+			t.Errorf("lookup = %d, want 1", id)
+		}
+	})
+}
+
+func TestMediaURLsOfAnAttachmentAfterOneThatIsNotImported(t *testing.T) {
+	const dir = "/wp-content/uploads/2026/10/"
+	for _, status := range []string{"trash", "auto-draft"} {
+		for _, pageIsFile := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, page is the file %t", status, pageIsFile), func(t *testing.T) {
+				imp := New("site.xml", &wxr.Export{Channel: wxr.Channel{Link: "https://example.com"}, Items: sharedFileItems(status, pageIsFile)},
+					NewReport(Info{}))
+				if err := imp.PlanMedia(); err != nil {
+					t.Fatal(err)
+				}
+				_, id, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: 2})
+				if !ok {
+					t.Fatal("the attachment that is imported has no ID")
+				}
+				if _, _, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: 1}); ok {
+					t.Fatal("the attachment that is not imported has an ID")
+				}
+				checkMediaURLs(t, imp, wantMediaURLs(map[int64]string{2: id}, mediaURLsWant{2, []string{dir + "a.png", dir + "a-150x150.png"}}))
+			})
+		}
+	}
+}
+
+func TestMediaURLsAfterMediaOfAnAttachmentInTheTrash(t *testing.T) {
+	data := testPNG(8, 8, 3)
+	trash := uploadItem(1, "a.png", "")
+	trash.Status = "trash"
+	imp := newPlannedImport(t, uploadExport("https://example.com", trash, uploadItem(2, "a.png", "")))
+	docs := runMedia(t, imp, MediaOptions{Files: filesDir(t), Uploads: uploads(map[string][]byte{"2026/10/a.png": data})})
+	if len(docs) != 1 {
+		t.Fatalf("Media gives %d documents, want 1", len(docs))
+	}
+	checkMediaURLs(t, imp, []MediaURL{{Path: "/wp-content/uploads/2026/10/a.png", Post: 2, Media: docs[0].ID}})
 }
 
 func TestMediaURLsNeedAMedium(t *testing.T) {

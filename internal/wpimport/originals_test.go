@@ -568,6 +568,27 @@ func (f *countFile) Stat() (fs.FileInfo, error) {
 	return f.File.Stat()
 }
 
+// openCountFS counts its Opens, and has the Lstat of its MapFS.
+type openCountFS struct {
+	fstest.MapFS
+	opened int
+}
+
+func (o *openCountFS) Open(name string) (fs.File, error) {
+	o.opened++
+	return o.MapFS.Open(name)
+}
+
+// lstatFailFS fails every Lstat with err.
+type lstatFailFS struct {
+	fstest.MapFS
+	err error
+}
+
+func (l lstatFailFS) Lstat(name string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "lstat", Path: name, Err: l.err}
+}
+
 // errorFS fails every Open with err.
 type errorFS struct{ err error }
 
@@ -645,6 +666,66 @@ func TestOpenUpload(t *testing.T) {
 			}
 			if fsys.opened != 1 || fsys.closed != 1 {
 				t.Errorf("%s: opened %d, closed %d", rel, fsys.opened, fsys.closed)
+			}
+		}
+	})
+	t.Run("not opened if it is not a regular file", func(t *testing.T) {
+		// What a file system that can Lstat says about the last element, before the file is opened.
+		for _, tt := range []struct {
+			name string
+			file *fstest.MapFile
+			why  string
+		}{
+			{"a link to a file", &fstest.MapFile{Data: []byte("a.png"), Mode: fs.ModeSymlink}, "a symbolic link in the copy of the uploads"},
+			{"a link to nothing", &fstest.MapFile{Data: []byte("gone.png"), Mode: fs.ModeSymlink}, "a symbolic link in the copy of the uploads"},
+			{"a link to a directory", &fstest.MapFile{Data: []byte("."), Mode: fs.ModeSymlink}, "a symbolic link in the copy of the uploads"},
+			{"a named pipe", &fstest.MapFile{Mode: fs.ModeNamedPipe}, "not a regular file in the copy of the uploads"},
+			{"a socket", &fstest.MapFile{Mode: fs.ModeSocket}, "not a regular file in the copy of the uploads"},
+			{"a device", &fstest.MapFile{Mode: fs.ModeDevice}, "not a regular file in the copy of the uploads"},
+			{"a directory", &fstest.MapFile{Mode: fs.ModeDir}, "not a regular file in the copy of the uploads"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				fsys := &openCountFS{MapFS: fstest.MapFS{"2026/10/a.png": {Data: data}, "2026/10/x": tt.file}}
+				f, err := openUpload(fsys, "2026/10/x")
+				if f != nil {
+					t.Errorf("file = %v, want none", f)
+				}
+				wantSkip(t, err, tt.why)
+				if errors.Is(err, errNotInCopy) {
+					t.Error("error is errNotInCopy, which the download follows")
+				}
+				if fsys.opened != 0 {
+					t.Errorf("opened %d files, want none", fsys.opened)
+				}
+				if f, err := openUpload(fsys, "2026/10/a.png"); err != nil || fsys.opened != 1 {
+					t.Errorf("a file: %v, %v after opening %d files; want it opened once", f, err, fsys.opened)
+				} else {
+					_ = f.Close()
+				}
+			})
+		}
+	})
+	t.Run("a file system that can Lstat", func(t *testing.T) {
+		fsys := fstest.MapFS{"2026/10/a.png": {Data: data}}
+		for _, rel := range []string{"2026/10/b.png", "2026/10/a.png/x", "2027"} {
+			if f, err := openUpload(fsys, rel); f != nil || !errors.Is(err, errNotInCopy) {
+				t.Errorf("%s: file = %v, error = %v; want errNotInCopy", rel, f, err)
+			}
+		}
+		// The errors of Lstat are read as those of Open.
+		for _, err := range []error{syscall.ENOTDIR, syscall.ENAMETOOLONG, fs.ErrNotExist} {
+			if f, got := openUpload(lstatFailFS{fsys, err}, "2026/10/a.png"); f != nil || !errors.Is(got, errNotInCopy) {
+				t.Errorf("Lstat fails with %v: file = %v, error = %v; want errNotInCopy", err, f, got)
+			}
+		}
+		for _, err := range []error{fs.ErrPermission, syscall.EIO} {
+			f, got := openUpload(lstatFailFS{fsys, err}, "2026/10/a.png")
+			if f != nil {
+				t.Errorf("Lstat fails with %v: file = %v, want none", err, f)
+			}
+			wantStopping(t, got)
+			if !errors.Is(got, err) || !strings.HasPrefix(got.Error(), "reading the copy of the uploads: ") {
+				t.Errorf("Lstat fails with %v: error = %v, want one that wraps it, after the reading", err, got)
 			}
 		}
 	})

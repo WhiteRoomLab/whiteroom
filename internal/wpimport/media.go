@@ -21,7 +21,8 @@ import (
 type MediaOptions struct {
 	// Files is the directory that the originals are written to: files/ of the site directory.
 	Files string
-	// Uploads is a copy of wp-content/uploads of the old site, or nil.
+	// Uploads is a copy of wp-content/uploads of the old site, or nil. Pass os.OpenRoot(dir).FS(), not os.DirFS(dir): only
+	// that stops a symbolic link in a directory of a path from leading out of the copy.
 	Uploads fs.FS
 	// Download reads from the old site the files that Uploads does not have, or is nil.
 	Download *Downloader
@@ -66,6 +67,10 @@ func (imp *Import) Media(ctx context.Context, site *content.Site, opts MediaOpti
 	}
 	if err := content.CheckLanguage(site.DefaultLanguage); err != nil {
 		return nil, fmt.Errorf("the default language of the site: %w", err)
+	}
+	// LoadLocation gives UTC for "".
+	if site.TimeZone == "" {
+		return nil, errors.New("the time zone of the site: it is empty")
 	}
 	zone, err := time.LoadLocation(site.TimeZone)
 	if err != nil {
@@ -118,7 +123,7 @@ func (imp *Import) Media(ctx context.Context, site *content.Site, opts MediaOpti
 	}
 
 	var media []content.Media
-	imported := make(map[string]*mediaJob, len(todo))
+	planned := make(map[string]*mediaJob, len(todo))
 	titles := 0
 	for _, j := range attachments {
 		it := j.it
@@ -126,7 +131,7 @@ func (imp *Import) Media(ctx context.Context, site *content.Site, opts MediaOpti
 			imp.dropAttachment(it)
 			continue
 		}
-		imported[j.id] = j
+		planned[j.id] = j
 		if j.note != nil {
 			imp.Report.Add(*j.note)
 		}
@@ -150,7 +155,7 @@ func (imp *Import) Media(ctx context.Context, site *content.Site, opts MediaOpti
 		id            *string
 		what, pointer string
 	}{{&site.Logo, "logo", "/logo"}, {&site.Icon, "icon", "/icon"}} {
-		j := imported[*s.id]
+		j := planned[*s.id]
 		if j == nil {
 			continue
 		}

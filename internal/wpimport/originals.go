@@ -175,34 +175,61 @@ func (f *original) read() ([]byte, error) {
 }
 
 // openUpload opens the file rel, a path in the copy of the uploads fsys, which has at most maxMediaBytes. The error is
-// errNotInCopy if there is no such file, a *skipError if it is not a regular file or is too large, and otherwise an error
-// that stops the import.
+// errNotInCopy if there is no such file, a *skipError if it is a symbolic link, is not a regular file or is too large, and
+// otherwise an error that stops the import. A file system that cannot Lstat (fs.ReadLinkFS) gets no look before the open.
 func openUpload(fsys fs.FS, rel string) (fs.File, error) {
 	if !fs.ValidPath(rel) {
 		return nil, errNotInCopy
 	}
+	// Before the open, which waits on a named pipe and follows a link out of the copy.
+	if l, ok := fsys.(fs.ReadLinkFS); ok {
+		info, err := l.Lstat(rel)
+		if err != nil {
+			return nil, uploadError(err)
+		}
+		if err := checkUploadMode(info.Mode()); err != nil {
+			return nil, err
+		}
+	}
 	f, err := fsys.Open(rel)
-	switch {
-	// A directory in the path that is a file, or a name that the file system cannot have, does not make the copy unreadable.
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ENAMETOOLONG):
-		return nil, errNotInCopy
-	case err != nil:
-		return nil, fmt.Errorf("reading the copy of the uploads: %w", err)
+	if err != nil {
+		return nil, uploadError(err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("reading the copy of the uploads: %w", err)
 	}
-	switch {
-	case !info.Mode().IsRegular():
+	if err := checkUploadMode(info.Mode()); err != nil {
 		_ = f.Close()
-		return nil, skipf("not a regular file in the copy of the uploads")
-	case info.Size() > maxMediaBytes:
+		return nil, err
+	}
+	if info.Size() > maxMediaBytes {
 		_ = f.Close()
 		return nil, skipf("too large: %d bytes (max %d)", info.Size(), maxMediaBytes)
 	}
 	return f, nil
+}
+
+// uploadError returns the error of looking at or opening a file of the copy of the uploads: errNotInCopy if there is no
+// such file, and otherwise one that stops the import.
+func uploadError(err error) error {
+	// A directory in the path that is a file, or a name that the file system cannot have, does not make the copy unreadable.
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ENAMETOOLONG) {
+		return errNotInCopy
+	}
+	return fmt.Errorf("reading the copy of the uploads: %w", err)
+}
+
+// checkUploadMode returns a *skipError unless mode is that of a regular file.
+func checkUploadMode(mode fs.FileMode) error {
+	switch {
+	case mode&fs.ModeSymlink != 0:
+		return skipf("a symbolic link in the copy of the uploads")
+	case !mode.IsRegular():
+		return skipf("not a regular file in the copy of the uploads")
+	}
+	return nil
 }
 
 // ctxReader reads from r unless ctx is done, whose error it then returns.
