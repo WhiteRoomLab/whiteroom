@@ -7,7 +7,9 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -27,6 +29,218 @@ type MediaOptions struct {
 	By string
 	// Workers is the number of attachments that are read at once.
 	Workers int
+}
+
+// DefaultMediaWorkers is the number of attachments that Media reads at once if MediaOptions.Workers is not set.
+const DefaultMediaWorkers = 4
+
+// mediaJob is an attachment of the WXR that Media goes through.
+type mediaJob struct {
+	it         *wxr.Item
+	id         string // of the medium; empty if the attachment is not one that is imported
+	files      []mediaFile
+	editedFrom string
+	note       *Entry
+	res        mediaResult
+}
+
+// Media makes the media (6.6.2) of the attachments of the WXR in the default language of site, and returns them in the
+// order of their IDs. The file of each is read from the copy of the uploads if it has it, and otherwise from the old site;
+// the original image of a scaled or rotated image is the one that is read (attachmentFiles), and the original is written
+// to opts.Files under the name of its hash. Up to opts.Workers attachments are converted at once, and the table, the
+// references and the report are changed in the order of the WXR, so the result does not depend on that number.
+//
+// An attachment that cannot be imported (its file is not found or not in a format of media, or it is in the trash) is
+// taken out of the table and the references, so what refers to it later finds nothing, and is recorded in the report. The
+// kind that the reference of an imported one has is the one that its contents tell. site is the one that Site returned,
+// and its Logo and Icon are emptied, and recorded, if the medium that they name was not imported or is not an image.
+//
+// Call it once, after PlanMedia and Site, and before Terms, Authors and the conversion of the entries, which look the
+// media up: it adds to the report each time. The error is for an argument that is wrong, and for what stops the import:
+// ctx is done, opts.Files cannot be written, or the old site does not answer (Downloader). The references and the report
+// are not changed then, and the table only has the IDs that PlanMedia gives, but the originals that were written stay, so
+// run the import again.
+func (imp *Import) Media(ctx context.Context, site *content.Site, opts MediaOptions) ([]content.Media, error) {
+	if site == nil {
+		return nil, errors.New("the settings of the site are needed to make media")
+	}
+	if err := content.CheckLanguage(site.DefaultLanguage); err != nil {
+		return nil, fmt.Errorf("the default language of the site: %w", err)
+	}
+	zone, err := time.LoadLocation(site.TimeZone)
+	if err != nil {
+		return nil, fmt.Errorf("the time zone of the site: %w", err)
+	}
+	if err := content.CheckID(content.RefUser, opts.By); err != nil {
+		return nil, fmt.Errorf("the account that uploads the media: %w", err)
+	}
+	switch {
+	case opts.Files == "":
+		return nil, errors.New("the directory of the originals is needed to make media")
+	case opts.Uploads == nil && opts.Download == nil:
+		return nil, errors.New("a copy of the uploads or a download is needed to make media")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var attachments, todo []*mediaJob
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		if it.Type != "attachment" {
+			continue
+		}
+		j := &mediaJob{it: it}
+		attachments = append(attachments, j)
+		if !importsAttachment(it) {
+			continue
+		}
+		id, err := imp.IDs.Assign(PostObject(it), content.RefMedia)
+		if err != nil {
+			return nil, err
+		}
+		j.id = id
+		j.files, j.editedFrom, j.note = imp.attachmentFiles(it)
+		todo = append(todo, j)
+	}
+	if len(todo) > 0 {
+		files, err := newOriginals(opts.Files)
+		if err != nil {
+			return nil, err
+		}
+		if opts.Download != nil {
+			defer opts.Download.close()
+		}
+		conv := &mediaConv{imp: imp, site: site, opts: opts, files: files, home: imp.urlIndex().home, zone: zone}
+		if err := conv.convertAll(ctx, todo); err != nil {
+			return nil, err
+		}
+	}
+
+	var media []content.Media
+	imported := make(map[string]*mediaJob, len(todo))
+	titles := 0
+	for _, j := range attachments {
+		it := j.it
+		if j.id == "" {
+			imp.dropAttachment(it)
+			continue
+		}
+		imported[j.id] = j
+		if j.note != nil {
+			imp.Report.Add(*j.note)
+		}
+		for _, e := range j.res.entries {
+			imp.Report.Add(e)
+		}
+		m := j.res.media
+		if m == nil {
+			imp.IDs.Drop(PostObject(it))
+			imp.DropRef(j.id)
+			continue
+		}
+		imp.AddRef(content.RefMedia, j.id, content.Ref{Type: m.Kind()})
+		media = append(media, *m)
+		if strings.TrimSpace(it.Title) != "" {
+			titles++
+		}
+	}
+
+	for _, s := range []struct {
+		id            *string
+		what, pointer string
+	}{{&site.Logo, "logo", "/logo"}, {&site.Icon, "icon", "/icon"}} {
+		j := imported[*s.id]
+		if j == nil {
+			continue
+		}
+		var why string
+		switch {
+		case j.res.media == nil:
+			why = "is not imported"
+		case j.res.media.Kind() != content.MediaImage:
+			why = "is not an image"
+		default:
+			continue
+		}
+		*s.id = ""
+		imp.entryAt(Skipped, ItemSource(imp.File, j.it), settingsTarget(s.pointer), "the %s, attachment %d, %s", s.what, j.it.ID, why)
+	}
+	switch titles {
+	case 0:
+	case 1:
+		imp.channelEntry(Skipped, Target{}, "the title of 1 attachment is not imported; whiteroom media have no titles")
+	default:
+		imp.channelEntry(Skipped, Target{}, "the titles of %d attachments are not imported; whiteroom media have no titles", titles)
+	}
+
+	slices.SortFunc(media, func(a, b content.Media) int { return strings.Compare(a.ID, b.ID) })
+	return media, nil
+}
+
+// dropAttachment takes an attachment that is not imported, because it is in the trash or an automatic draft, out of the
+// table and the references, and records it.
+func (imp *Import) dropAttachment(it *wxr.Item) {
+	if kind, id, ok := imp.IDs.Lookup(PostObject(it)); ok && kind == content.RefMedia {
+		imp.IDs.Drop(PostObject(it))
+		imp.DropRef(id)
+	}
+	why := "it is in the trash"
+	if it.Status == "auto-draft" {
+		why = "it is an auto-draft"
+	}
+	imp.Report.Add(Entry{Kind: Skipped, Source: ItemSource(imp.File, it), Message: "the attachment is not imported: " + why})
+}
+
+// convertAll converts the jobs, up to opts.Workers at once, and leaves the results in them. If one of them has an error
+// that stops the import, the others are not started, and the error is the first that was found.
+func (c *mediaConv) convertAll(ctx context.Context, jobs []*mediaJob) error {
+	workers := c.opts.Workers
+	if workers <= 0 {
+		workers = DefaultMediaWorkers
+	}
+	workers = min(workers, len(jobs))
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	var stop error
+	queue := make(chan *mediaJob)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range queue {
+				res, err := c.convert(ctx, j.it, j.id, j.files, j.editedFrom)
+				if err != nil {
+					// The others fail with the error of ctx once this has canceled it, which is not the cause.
+					mu.Lock()
+					if stop == nil {
+						stop = err
+						cancel()
+					}
+					mu.Unlock()
+					return
+				}
+				j.res = res
+			}
+		}()
+	}
+feed:
+	for _, j := range jobs {
+		select {
+		case queue <- j:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(queue)
+	wg.Wait()
+	if stop != nil {
+		return stop
+	}
+	return ctx.Err()
 }
 
 // mediaConv makes the media of the attachments of the WXR. Its methods may be called concurrently: it changes nothing of

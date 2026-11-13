@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -12,13 +13,16 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"testing/fstest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/wxr"
 )
 
@@ -821,4 +825,862 @@ func TestMediaConvertReadsNothingElse(t *testing.T) {
 		t.Errorf("opened %d files, want 1", fsys.opened)
 	}
 	wantFiles(t, dir, data)
+}
+
+// uploadItem is an attachment with the ID id and the title, whose file is called name in the uploads.
+func uploadItem(id int64, name, title string) *wxr.Item {
+	it := mediaItem("2026/10/"+name, uploadsURL+"2026/10/"+name, "")
+	it.ID, it.Title = id, title
+	return it
+}
+
+func uploadExport(link string, items ...*wxr.Item) *wxr.Export {
+	e := &wxr.Export{Channel: wxr.Channel{Link: link}}
+	for _, it := range items {
+		e.Items = append(e.Items, *it)
+	}
+	return e
+}
+
+// newPlannedImport is the import of e that has made its plan for the media, as the caller of Media does.
+func newPlannedImport(t *testing.T, e *wxr.Export) *Import {
+	t.Helper()
+	imp := New("wordpress.xml", e, NewReport(Info{}))
+	if err := imp.PlanMedia(); err != nil {
+		t.Fatal(err)
+	}
+	return imp
+}
+
+// newSampleMediaImport is the import of testdata/media.xml, with its plan if plan is true.
+func newSampleMediaImport(t *testing.T, plan bool) *Import {
+	t.Helper()
+	e, rep := readString(t, "media.xml", string(readTestdata(t, "media.xml")))
+	if n := len(rep.Entries()); n != 0 {
+		t.Fatalf("reading media.xml gives %d entries, want none", n)
+	}
+	imp := New("media.xml", e, rep)
+	if plan {
+		if err := imp.PlanMedia(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return imp
+}
+
+func filesDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "files")
+}
+
+// mediaState tells what the table and the references have of each attachment.
+func mediaState(imp *Import) string {
+	var b strings.Builder
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		kind, id, ok := imp.IDs.Lookup(PostObject(it))
+		ref, refOK := imp.Ref(content.RefMedia, id)
+		fmt.Fprintf(&b, "%d: %q %q %v %+v %v\n", it.ID, kind, id, ok, ref, refOK)
+	}
+	fmt.Fprintf(&b, "%d references\n", len(imp.refs))
+	return b.String()
+}
+
+func mediaJSON(t *testing.T, docs []content.Media) string {
+	t.Helper()
+	var b strings.Builder
+	for _, m := range docs {
+		data, err := m.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// entryLines writes the entries as lines that do not depend on the place in the WXR.
+func entryLines(entries []Entry) []string {
+	var lines []string
+	for _, e := range entries {
+		s := string(e.Kind) + " " + e.Source.Record
+		if e.Source.ID != 0 {
+			s += " " + strconv.FormatInt(e.Source.ID, 10)
+		}
+		if e.Source.Meta != "" {
+			s += " " + e.Source.Meta
+		}
+		s += ": " + e.Message
+		if e.Target.File != "" {
+			s += " -> " + e.Target.File + "#" + e.Target.Pointer
+		}
+		lines = append(lines, s)
+	}
+	return lines
+}
+
+// runMedia calls Media with the site of mediaSite, and with the default By if opts has none.
+func runMedia(t *testing.T, imp *Import, opts MediaOptions) []content.Media {
+	t.Helper()
+	if opts.By == "" {
+		opts.By = mediaTestBy
+	}
+	docs, err := imp.Media(context.Background(), mediaSite(), opts)
+	if err != nil {
+		t.Fatalf("Media: %v", err)
+	}
+	return docs
+}
+
+// mediaSampleCopy is a copy of the uploads for testdata/media.xml. The files that the sample names and that are not here
+// are the original image beach.heic, and missing.png.
+func mediaSampleCopy() map[string][]byte {
+	logo := testPNG(60, 20, 1)
+	return map[string][]byte{
+		"2026/10/office.jpg":                     testJPEG(32, 16),
+		"2026/10/office-scaled.jpg":              testJPEG(16, 8),
+		"2026/10/store.jpg":                      testJPEG(8, 12),
+		"2026/10/store-rotated.jpg":              testJPEG(12, 8),
+		"2026/10/logo.png":                       logo,
+		"2026/10/logo-copy.png":                  logo,
+		"2026/10/anim.gif":                       testGIF(12, 9, 2),
+		"2026/10/guide.pdf":                      testPDF(),
+		"2026/10/team.jpg":                       testJPEG(40, 20),
+		"2026/10/team-scaled-e1760000000123.jpg": testJPEG(20, 10),
+		"2026/10/beach-scaled.jpg":               testJPEG(10, 5),
+		"2026/10/diagram.svg":                    []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>`),
+		"2026/10/old.png":                        testPNG(8, 8, 5),
+		"2026/10/写真.png":                         testPNG(10, 20, 7),
+	}
+}
+
+func TestMediaSample(t *testing.T) {
+	imp := newSampleMediaImport(t, true)
+	ids := make(map[int64]string)
+	for i := range imp.WXR.Items {
+		if _, id, ok := imp.IDs.Lookup(PostObject(&imp.WXR.Items[i])); ok {
+			ids[imp.WXR.Items[i].ID] = id
+		}
+	}
+	if len(ids) != 11 {
+		t.Fatalf("the plan has %d media, want the 11 that are not in the trash", len(ids))
+	}
+	fsys := mediaSampleCopy()
+	dir := filesDir(t)
+	docs := runMedia(t, imp, MediaOptions{Files: dir, Uploads: uploads(fsys), Workers: 3})
+
+	type want struct {
+		post         int64
+		file         string // in the uploads, and the fileName
+		mimeType     string
+		w, h         int
+		alt, caption string
+		time         string
+	}
+	wants := []want{
+		{201, "office.jpg", "image/jpeg", 32, 16, "オフィスの外観", "本社の外観です。", "09:00"},
+		{202, "store.jpg", "image/jpeg", 8, 12, "", "", "09:10"},
+		{203, "logo.png", "image/png", 60, 20, "会社のロゴ", "", "09:20"},
+		{204, "anim.gif", "image/gif", 12, 9, "", "", "09:30"},
+		{205, "guide.pdf", "application/pdf", 0, 0, "", "", "09:40"},
+		{206, "logo-copy.png", "image/png", 60, 20, "", "", "09:50"},
+		{207, "team-scaled-e1760000000123.jpg", "image/jpeg", 20, 10, "チームの 集合写真", "", "10:00"},
+		{208, "beach-scaled.jpg", "image/jpeg", 10, 5, "", "", "10:10"},
+		{212, "写真.png", "image/png", 10, 20, "", "", "10:50"},
+	}
+	var wantDocs []content.Media
+	var datas [][]byte
+	for _, w := range wants {
+		data := fsys["2026/10/"+w.file]
+		m := content.Media{
+			ID: ids[w.post], Hash: sha256Hash(data), FileName: w.file, MIMEType: w.mimeType, Size: len(data), Width: w.w, Height: w.h,
+			UploadedAt: "2026-10-01T" + w.time + ":00+09:00", UploadedBy: mediaTestBy,
+		}
+		if w.alt != "" {
+			m.Alt = content.Localized{"ja": w.alt}
+		}
+		if w.caption != "" {
+			m.Caption = content.Localized{"ja": w.caption}
+		}
+		wantDocs = append(wantDocs, m)
+		if !slices.ContainsFunc(datas, func(d []byte) bool { return bytes.Equal(d, data) }) {
+			datas = append(datas, data)
+		}
+	}
+	slices.SortFunc(wantDocs, func(a, b content.Media) int { return strings.Compare(a.ID, b.ID) })
+
+	if len(docs) != len(wantDocs) {
+		t.Fatalf("Media gives %d documents, want %d", len(docs), len(wantDocs))
+	}
+	site := mediaSite()
+	for i, m := range docs {
+		if !reflect.DeepEqual(m, wantDocs[i]) {
+			t.Errorf("document %d = %.300v\nwant %.300v", i, m, wantDocs[i])
+		}
+		if err := m.Validate(site); err != nil {
+			t.Errorf("document %d: Validate: %v", i, err)
+		}
+		data, err := m.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back content.Media
+		if err := back.UnmarshalJSON(data); err != nil || !reflect.DeepEqual(back, m) {
+			t.Errorf("document %d: the JSON gives %.300v, %v", i, back, err)
+		}
+	}
+
+	// The originals are where the site directory has them, with the contents of the files that were imported.
+	wantFiles(t, dir, datas...)
+	sd, err := sitedir.Open(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sd.Close() }()
+	for _, m := range docs {
+		f, err := sd.OpenMedia(m.Hash)
+		if err != nil {
+			t.Errorf("OpenMedia(%s): %v", m.Hash, err)
+			continue
+		}
+		got, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil || sha256Hash(got) != m.Hash || len(got) != m.Size {
+			t.Errorf("the original of %s is %d bytes, %v", m.ID, len(got), err)
+		}
+	}
+
+	byPost := func(post int64) content.Media {
+		i := slices.IndexFunc(docs, func(m content.Media) bool { return m.ID == ids[post] })
+		if i < 0 {
+			t.Fatalf("no document for the post %d", post)
+		}
+		return docs[i]
+	}
+	if a, b := byPost(203), byPost(206); a.ID == b.ID || a.Hash != b.Hash {
+		t.Errorf("the same file twice gives %s %s and %s %s, want two media of one file", a.ID, a.Hash, b.ID, b.Hash)
+	}
+	if got, want := byPost(201).Hash, sha256Hash(fsys["2026/10/office.jpg"]); got != want {
+		t.Errorf("the hash of the scaled image = %s, want that of its original image %s", got, want)
+	}
+
+	for _, w := range wants {
+		kind, id, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: w.post})
+		ref, refOK := imp.Ref(content.RefMedia, ids[w.post])
+		wantKind := content.MediaImage
+		if w.mimeType == "application/pdf" {
+			wantKind = content.MediaPDF
+		}
+		if !ok || kind != content.RefMedia || id != ids[w.post] || !refOK || ref != (content.Ref{Type: wantKind}) {
+			t.Errorf("post %d: Lookup = %q %q %v, Ref = %+v %v; want the medium %s of the kind %s", w.post, kind, id, ok, ref, refOK, ids[w.post], wantKind)
+		}
+	}
+	for _, post := range []int64{209, 210, 211} {
+		if _, _, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: post}); ok {
+			t.Errorf("post %d is in the table, want it taken out", post)
+		}
+		if id, planned := ids[post]; planned {
+			if _, ok := imp.Ref(content.RefMedia, id); ok {
+				t.Errorf("post %d has a reference, want it dropped", post)
+			}
+		}
+	}
+
+	replace := func(s string) string {
+		for post, id := range ids {
+			s = strings.ReplaceAll(s, fmt.Sprintf("{%d}", post), id)
+		}
+		return s
+	}
+	wantLines := []string{
+		`skipped channel: the titles of 8 attachments are not imported; whiteroom media have no titles`,
+		replace(`skipped item 201: the description is not imported; whiteroom media have no descriptions -> media/{201}.json#`),
+		replace(`changed item 201: kept only the text of the HTML; lost <em> -> media/{201}.json#/caption`),
+		replace(`skipped item 205: the caption is not imported; a PDF has no caption in whiteroom -> media/{205}.json#`),
+		replace(`changed item 207: line breaks and tabs in the alt are spaces here -> media/{207}.json#/alt`),
+		replace(`review item 207: the image was edited in WordPress: the edited file "team-scaled-e1760000000123.jpg" is imported, not the original image "team.jpg" -> media/{207}.json#`),
+		replace(`review item 208: the original image "beach.heic" is not imported (not in the copy of the uploads); the file "beach-scaled.jpg" that WordPress made of it is imported -> media/{208}.json#`),
+		`skipped item 209: the attachment is not imported: "missing.png": not in the copy of the uploads`,
+		`skipped item 210: the attachment is not imported: "diagram.svg": cannot read the file: unsupported file format`,
+		`skipped item 211: the attachment is not imported: it is in the trash`,
+	}
+	if got := entryLines(imp.Report.Entries()); !slices.Equal(got, wantLines) {
+		t.Errorf("report:\n  %s\nwant:\n  %s", strings.Join(got, "\n  "), strings.Join(wantLines, "\n  "))
+	}
+}
+
+// mediaOutcome is what an import of the media leaves: the documents, the report, the table and the references, and the
+// files of the originals.
+type mediaOutcome struct {
+	docs, report, state string
+	files               []string
+}
+
+func importOutcome(t *testing.T, imp *Import, copyOf map[string][]byte, workers int) mediaOutcome {
+	t.Helper()
+	dir := filesDir(t)
+	docs := runMedia(t, imp, MediaOptions{Files: dir, Uploads: uploads(copyOf), Workers: workers})
+	return mediaOutcome{mediaJSON(t, docs), reportText(t, imp.Report), mediaState(imp), dirNames(t, dir)}
+}
+
+func wantSameOutcome(t *testing.T, what string, got, want mediaOutcome) {
+	t.Helper()
+	switch {
+	case got.docs != want.docs:
+		t.Errorf("%s: the documents differ:\n%s\nwant:\n%s", what, got.docs, want.docs)
+	case got.report != want.report:
+		t.Errorf("%s: the report differs:\n%s\nwant:\n%s", what, got.report, want.report)
+	case got.state != want.state:
+		t.Errorf("%s: the table and the references differ:\n%s\nwant:\n%s", what, got.state, want.state)
+	case !slices.Equal(got.files, want.files):
+		t.Errorf("%s: the originals are %q, want %q", what, got.files, want.files)
+	}
+}
+
+// mediaMix is a WXR of 60 attachments whose files are, in turn: a PNG of its own, a JPEG of its own, none, an SVG, a PDF
+// that all the PDFs have, and a PNG that every sixth has. The attachment 1007 is in the trash and 1013 is an automatic
+// draft.
+func mediaMix() (*wxr.Export, map[string][]byte) {
+	files := make(map[string][]byte)
+	shared := testPNG(9, 9, 1)
+	var items []*wxr.Item
+	for i := range 60 {
+		name := fmt.Sprintf("a%d", i)
+		switch i % 6 {
+		case 0:
+			name += ".png"
+			files["2026/10/"+name] = testPNG(4+i, 4, byte(i))
+		case 1:
+			name += ".jpg"
+			files["2026/10/"+name] = testJPEG(8+i, 8)
+		case 2:
+			name += ".png"
+		case 3:
+			name += ".svg"
+			files["2026/10/"+name] = []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>`)
+		case 4:
+			name += ".pdf"
+			files["2026/10/"+name] = testPDF()
+		case 5:
+			name += ".png"
+			files["2026/10/"+name] = shared
+		}
+		it := uploadItem(int64(1000+i), name, fmt.Sprintf("Title %d", i))
+		switch i {
+		case 7:
+			it.Status = "trash"
+		case 13:
+			it.Status = "auto-draft"
+		}
+		items = append(items, it)
+	}
+	return uploadExport("https://example.com", items...), files
+}
+
+func TestMediaWorkersDoNotChangeTheResult(t *testing.T) {
+	run := func(workers int) mediaOutcome {
+		e, files := mediaMix()
+		return importOutcome(t, newPlannedImport(t, e), files, workers)
+	}
+	want := run(1)
+	// 40 attachments have a file of a kind that is imported, and 2 of those are not imported as they are in the trash or a
+	// draft. The originals are 10 PNGs and 8 JPEGs of their own, and the PDF and the PNG that are shared.
+	if n := strings.Count(want.docs, "\n"); n != 38 || len(want.files) != 20 {
+		t.Fatalf("the import gives %d documents and %d originals, want 38 and 20", n, len(want.files))
+	}
+	for _, workers := range []int{0, 2, 3, 8, 100} {
+		wantSameOutcome(t, fmt.Sprintf("%d workers", workers), run(workers), want)
+	}
+
+	sample := func(workers int) mediaOutcome {
+		return importOutcome(t, newSampleMediaImport(t, true), mediaSampleCopy(), workers)
+	}
+	wantSameOutcome(t, "the sample with 8 workers", sample(8), sample(1))
+}
+
+func TestMediaWithoutPlan(t *testing.T) {
+	planned := importOutcome(t, newSampleMediaImport(t, true), mediaSampleCopy(), 2)
+	unplanned := importOutcome(t, newSampleMediaImport(t, false), mediaSampleCopy(), 2)
+	wantSameOutcome(t, "no plan", unplanned, planned)
+}
+
+func TestMediaKindFromContents(t *testing.T) {
+	imp := newPlannedImport(t, uploadExport("https://example.com", uploadItem(1, "a.jpg", ""), uploadItem(2, "b.pdf", ""), uploadItem(3, "c.png", "")))
+	kinds := func() string {
+		var got []string
+		for post := int64(1); post <= 3; post++ {
+			_, id, _ := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: post})
+			ref, ok := imp.Ref(content.RefMedia, id)
+			got = append(got, fmt.Sprintf("%v/%s", ok, ref.Type))
+		}
+		return strings.Join(got, " ")
+	}
+	if got, want := kinds(), "true/image true/pdf true/image"; got != want {
+		t.Fatalf("after the plan: %s, want %s, which the names of the files tell", got, want)
+	}
+	runMedia(t, imp, MediaOptions{Files: filesDir(t), Uploads: uploads(map[string][]byte{
+		"2026/10/a.jpg": testPDF(), "2026/10/b.pdf": testJPEG(8, 8), "2026/10/c.png": testPNG(8, 8, 0),
+	})})
+	if got, want := kinds(), "true/pdf true/image true/image"; got != want {
+		t.Errorf("after Media: %s, want %s, which the contents of the files tell", got, want)
+	}
+}
+
+func TestMediaLogoAndIcon(t *testing.T) {
+	const (
+		notImportedLogo = "skipped item 2: the logo, attachment 2, is not imported -> site/settings.json#/logo"
+		notImportedIcon = "skipped item 2: the icon, attachment 2, is not imported -> site/settings.json#/icon"
+		pdfLogo         = "skipped item 3: the logo, attachment 3, is not an image -> site/settings.json#/logo"
+		pdfIcon         = "skipped item 3: the icon, attachment 3, is not an image -> site/settings.json#/icon"
+	)
+	for _, tt := range []struct {
+		name        string
+		logo, icon  string // ok (image), gone (not imported), pdf, other (not of the import) or none
+		wantLogo    string
+		wantIcon    string
+		wantEntries []string
+	}{
+		{"images", "ok", "ok", "ok", "ok", nil},
+		{"the logo is not imported", "gone", "ok", "", "ok", []string{notImportedLogo}},
+		{"the icon is not imported", "ok", "gone", "ok", "", []string{notImportedIcon}},
+		{"the icon is a PDF", "ok", "pdf", "ok", "", []string{pdfIcon}},
+		{"the logo is a PDF", "pdf", "ok", "", "ok", []string{pdfLogo}},
+		{"both are one attachment that is not imported", "gone", "gone", "", "", []string{notImportedIcon, notImportedLogo}},
+		{"a PDF and one that is not imported", "pdf", "gone", "", "", []string{notImportedIcon, pdfLogo}},
+		{"media that the import has not made", "other", "other", "other", "other", nil},
+		{"none", "none", "none", "none", "none", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			imp := newPlannedImport(t, uploadExport("https://example.com", uploadItem(1, "ok.png", ""), uploadItem(2, "gone.png", ""), uploadItem(3, "doc.pdf", "")))
+			other := content.FormatID(content.RefMedia, [16]byte{15: 99})
+			id := func(key string) string {
+				switch key {
+				case "ok", "gone", "pdf":
+					post := map[string]int64{"ok": 1, "gone": 2, "pdf": 3}[key]
+					_, id, _ := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: post})
+					return id
+				case "other":
+					return other
+				}
+				return ""
+			}
+			site := mediaSite()
+			site.Logo, site.Icon = id(tt.logo), id(tt.icon)
+			wantLogo, wantIcon := id(tt.wantLogo), id(tt.wantIcon)
+			files := uploads(map[string][]byte{"2026/10/ok.png": testPNG(8, 8, 0), "2026/10/doc.pdf": testPDF()})
+			docs, err := imp.Media(context.Background(), site, MediaOptions{Files: filesDir(t), Uploads: files, By: mediaTestBy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(docs) != 2 {
+				t.Errorf("Media gives %d documents, want the image and the PDF", len(docs))
+			}
+			if site.Logo != wantLogo || site.Icon != wantIcon {
+				t.Errorf("logo = %q, icon = %q; want %q and %q", site.Logo, site.Icon, wantLogo, wantIcon)
+			}
+			var got []string
+			for _, line := range entryLines(imp.Report.Entries()) {
+				if strings.Contains(line, " -> site/settings.json#") {
+					got = append(got, line)
+				}
+			}
+			if !slices.Equal(got, tt.wantEntries) {
+				t.Errorf("entries about the settings = %q, want %q", got, tt.wantEntries)
+			}
+		})
+	}
+}
+
+func TestMediaTitles(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		titles []string // of the attachments, in turn; the last one has no file
+		want   string
+	}{
+		{"none", []string{"", " \n\t", ""}, ""},
+		{"one", []string{"Photo", "", "Not imported"}, "skipped channel: the title of 1 attachment is not imported; whiteroom media have no titles"},
+		{"two", []string{"A", "B", "Not imported"}, "skipped channel: the titles of 2 attachments are not imported; whiteroom media have no titles"},
+		{"three", []string{"A", "B", " ", "C", "Not imported"}, "skipped channel: the titles of 3 attachments are not imported; whiteroom media have no titles"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files := make(map[string][]byte)
+			var items []*wxr.Item
+			for i, title := range tt.titles {
+				name := fmt.Sprintf("%d.png", i)
+				if i < len(tt.titles)-1 {
+					files["2026/10/"+name] = testPNG(4+i, 4, 0)
+				}
+				items = append(items, uploadItem(int64(i+1), name, title))
+			}
+			imp := newPlannedImport(t, uploadExport("https://example.com", items...))
+			runMedia(t, imp, MediaOptions{Files: filesDir(t), Uploads: uploads(files)})
+			var got []string
+			for _, line := range entryLines(imp.Report.Entries()) {
+				if strings.HasPrefix(line, "skipped channel: ") {
+					got = append(got, line)
+				}
+			}
+			var want []string
+			if tt.want != "" {
+				want = []string{tt.want}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("entries of the channel = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestMediaTrashAndDraft(t *testing.T) {
+	trash, draft, kept := uploadItem(1, "trash.png", ""), uploadItem(2, "draft.png", ""), uploadItem(3, "kept.png", "")
+	trash.Status, draft.Status = "trash", "auto-draft"
+	imp := newPlannedImport(t, uploadExport("https://example.com", trash, draft, kept))
+	// Something else may have given the attachment in the trash an ID.
+	id, err := imp.IDs.Assign(Object{Kind: ObjectPost, ID: 1}, content.RefMedia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp.AddRef(content.RefMedia, id, content.Ref{Type: content.MediaImage})
+
+	data := testPNG(8, 8, 0)
+	dir := filesDir(t)
+	docs := runMedia(t, imp, MediaOptions{Files: dir, Uploads: uploads(map[string][]byte{
+		"2026/10/trash.png": testPNG(9, 9, 0), "2026/10/draft.png": testPNG(10, 10, 0), "2026/10/kept.png": data,
+	})})
+	if len(docs) != 1 || docs[0].Hash != sha256Hash(data) {
+		t.Errorf("documents = %v, want only the attachment that is not in the trash", docs)
+	}
+	wantFiles(t, dir, data)
+	if _, _, ok := imp.IDs.Lookup(Object{Kind: ObjectPost, ID: 1}); ok {
+		t.Error("the attachment in the trash is in the table")
+	}
+	if _, ok := imp.Ref(content.RefMedia, id); ok {
+		t.Error("the attachment in the trash has a reference")
+	}
+	want := []string{
+		"skipped item 1: the attachment is not imported: it is in the trash",
+		"skipped item 2: the attachment is not imported: it is an auto-draft",
+	}
+	if got := entryLines(imp.Report.Entries()); !slices.Equal(got, want) {
+		t.Errorf("report = %q, want %q", got, want)
+	}
+}
+
+func TestMediaDownload(t *testing.T) {
+	const dirPath = "/wp-content/uploads/2026/10/"
+	png, inCopy, pdf := testPNG(24, 12, 3), testPNG(8, 8, 9), testPDF()
+	srv, requested := newMediaServer(t, map[string][]byte{dirPath + "a.png": png, dirPath + "d.pdf": pdf})
+	newImport := func(t *testing.T) *Import {
+		item := func(id int64, name, fileURL string) *wxr.Item {
+			it := mediaItem("2026/10/"+name, fileURL, "")
+			it.ID, it.Title = id, ""
+			return it
+		}
+		return newPlannedImport(t, uploadExport(srv.URL,
+			item(1, "a.png", srv.URL+dirPath+"a.png"),
+			item(2, "b.png", srv.URL+dirPath+"b.png"),
+			item(3, "c.png", "http://other.example/wp-content/uploads/2026/10/c.png"),
+			item(4, "d.pdf", srv.URL+dirPath+"d.pdf"),
+		))
+	}
+	wantReport := []string{
+		"skipped item 2: the attachment is not imported: " + fmt.Sprintf(`"b.png": GET %s: 404 Not Found`, srv.URL+dirPath+"b.png"),
+		`skipped item 3: the attachment is not imported: "c.png": other.example` + errNotHost,
+	}
+
+	t.Run("without a copy", func(t *testing.T) {
+		before := len(requested())
+		imp := newImport(t)
+		dir := filesDir(t)
+		docs := runMedia(t, imp, MediaOptions{Files: dir, Download: newTestDownloader(t), Workers: 2})
+		if len(docs) != 2 || !slices.ContainsFunc(docs, func(m content.Media) bool { return m.Hash == sha256Hash(png) && m.FileName == "a.png" }) ||
+			!slices.ContainsFunc(docs, func(m content.Media) bool { return m.Hash == sha256Hash(pdf) && m.Kind() == content.MediaPDF }) {
+			t.Errorf("documents = %v, want the image a.png and the PDF d.pdf", docs)
+		}
+		wantFiles(t, dir, png, pdf)
+		if got := entryLines(imp.Report.Entries()); !slices.Equal(got, wantReport) {
+			t.Errorf("report = %q, want %q", got, wantReport)
+		}
+		got := requested()[before:]
+		slices.Sort(got)
+		if want := []string{dirPath + "a.png", dirPath + "b.png", dirPath + "d.pdf"}; !slices.Equal(got, want) {
+			t.Errorf("requests = %q, want %q: none to another host", got, want)
+		}
+	})
+	t.Run("the copy first", func(t *testing.T) {
+		before := len(requested())
+		imp := newImport(t)
+		dir := filesDir(t)
+		docs := runMedia(t, imp, MediaOptions{Files: dir, Uploads: uploads(map[string][]byte{"2026/10/a.png": inCopy}), Download: newTestDownloader(t), Workers: 1})
+		if len(docs) != 2 || !slices.ContainsFunc(docs, func(m content.Media) bool { return m.Hash == sha256Hash(inCopy) }) {
+			t.Errorf("documents = %v, want the file of the copy for a.png and the downloaded d.pdf", docs)
+		}
+		wantFiles(t, dir, inCopy, pdf)
+		got := requested()[before:]
+		slices.Sort(got)
+		if want := []string{dirPath + "b.png", dirPath + "d.pdf"}; !slices.Equal(got, want) {
+			t.Errorf("requests = %q, want %q: none for the file that the copy has", got, want)
+		}
+	})
+}
+
+// forbidFS fails the test if a file is opened.
+type forbidFS struct{ t *testing.T }
+
+func (f forbidFS) Open(name string) (fs.File, error) {
+	f.t.Errorf("opened %q", name)
+	return nil, fs.ErrNotExist
+}
+
+// hookFS calls hook once, when the first file is opened.
+type hookFS struct {
+	fs.FS
+	once sync.Once
+	hook func()
+}
+
+func (h *hookFS) Open(name string) (fs.File, error) {
+	h.once.Do(h.hook)
+	return h.FS.Open(name)
+}
+
+// closeHookFS calls hook when the file called name is closed, which is after it has been read.
+type closeHookFS struct {
+	fs.FS
+	name string
+	hook func()
+}
+
+func (c *closeHookFS) Open(name string) (fs.File, error) {
+	f, err := c.FS.Open(name)
+	if err != nil || name != c.name {
+		return f, err
+	}
+	return closeHookFile{f, c.hook}, nil
+}
+
+type closeHookFile struct {
+	fs.File
+	hook func()
+}
+
+func (f closeHookFile) Close() error {
+	f.hook()
+	return f.File.Close()
+}
+
+func TestMediaWrongArguments(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		edit func(site *content.Site, opts *MediaOptions)
+		want string
+	}{
+		{"a default language that is not a language code", func(site *content.Site, _ *MediaOptions) { site.DefaultLanguage = "japanese" },
+			"the default language of the site: "},
+		{"a time zone that is not known", func(site *content.Site, _ *MediaOptions) { site.TimeZone = "Nowhere/Nowhere" }, "the time zone of the site: "},
+		{"an account that is not an ID", func(_ *content.Site, opts *MediaOptions) { opts.By = "admin" }, "the account that uploads the media: "},
+		{"an ID of another kind than an account", func(_ *content.Site, opts *MediaOptions) { opts.By = mediaTestID }, "the account that uploads the media: "},
+		{"no directory", func(_ *content.Site, opts *MediaOptions) { opts.Files = "" }, "the directory of the originals is needed"},
+		{"nowhere to read from", func(_ *content.Site, opts *MediaOptions) { opts.Uploads = nil },
+			"a copy of the uploads or a download is needed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			imp := newSampleMediaImport(t, true)
+			before := mediaState(imp)
+			dir := filesDir(t)
+			site, opts := mediaSite(), MediaOptions{Files: dir, Uploads: forbidFS{t}, By: mediaTestBy}
+			tt.edit(site, &opts)
+			docs, err := imp.Media(context.Background(), site, opts)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || docs != nil {
+				t.Errorf("Media = %v, %v; want an error with %q", docs, err, tt.want)
+			}
+			checkUntouched(t, imp, before, dir)
+		})
+	}
+	t.Run("site is nil", func(t *testing.T) {
+		imp := newSampleMediaImport(t, true)
+		before := mediaState(imp)
+		dir := filesDir(t)
+		_, err := imp.Media(context.Background(), nil, MediaOptions{Files: dir, Uploads: forbidFS{t}, By: mediaTestBy})
+		if err == nil || !strings.Contains(err.Error(), "the settings of the site are needed") {
+			t.Errorf("error = %v, want the one for the site that is missing", err)
+		}
+		checkUntouched(t, imp, before, dir)
+	})
+}
+
+// checkUntouched checks that nothing is in the report, that the table and the references are as they were, and that
+// there is no directory dir.
+func checkUntouched(t *testing.T, imp *Import, before, dir string) {
+	t.Helper()
+	if got := entryLines(imp.Report.Entries()); len(got) != 0 {
+		t.Errorf("report = %q, want none", got)
+	}
+	if got := mediaState(imp); got != before {
+		t.Errorf("the table and the references are\n%s\nwant\n%s", got, before)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the directory %s: %v, want it not to exist", dir, err)
+	}
+}
+
+func TestMediaStops(t *testing.T) {
+	files := func() map[string][]byte {
+		m := make(map[string][]byte)
+		for i := range 6 {
+			m[fmt.Sprintf("2026/10/%d.png", i)] = testPNG(4+i, 4, 0)
+		}
+		return m
+	}
+	newImport := func(t *testing.T) *Import {
+		var items []*wxr.Item
+		for i := range 6 {
+			items = append(items, uploadItem(int64(i+1), fmt.Sprintf("%d.png", i), "Photo"))
+		}
+		return newPlannedImport(t, uploadExport("https://example.com", items...))
+	}
+	// wantStopped checks that the import has stopped without a change to the table, the references and the report.
+	wantStopped := func(t *testing.T, imp *Import, before string, err error) {
+		t.Helper()
+		if got := mediaState(imp); got != before {
+			t.Errorf("the table and the references are\n%s\nwant\n%s", got, before)
+		}
+		if got := entryLines(imp.Report.Entries()); len(got) != 0 {
+			t.Errorf("report = %q, want none", got)
+		}
+		if err == nil {
+			t.Error("no error")
+		}
+	}
+
+	t.Run("the context is done", func(t *testing.T) {
+		imp := newImport(t)
+		before := mediaState(imp)
+		dir := filesDir(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		docs, err := imp.Media(ctx, mediaSite(), MediaOptions{Files: dir, Uploads: forbidFS{t}, By: mediaTestBy})
+		if !errors.Is(err, context.Canceled) || docs != nil {
+			t.Errorf("Media = %v, %v; want the error of the context", docs, err)
+		}
+		checkUntouched(t, imp, before, dir)
+	})
+	t.Run("the context is done while the files are read", func(t *testing.T) {
+		for _, workers := range []int{1, 4} {
+			imp := newImport(t)
+			before := mediaState(imp)
+			ctx, cancel := context.WithCancel(context.Background())
+			fsys := &hookFS{FS: uploads(files()), hook: cancel}
+			docs, err := imp.Media(ctx, mediaSite(), MediaOptions{Files: filesDir(t), Uploads: fsys, By: mediaTestBy, Workers: workers})
+			if !errors.Is(err, context.Canceled) || docs != nil {
+				t.Errorf("%d workers: Media = %v, %v; want the error of the context", workers, docs, err)
+			}
+			wantStopped(t, imp, before, err)
+			cancel()
+		}
+	})
+	t.Run("the context is done after the last file", func(t *testing.T) {
+		imp := newImport(t)
+		before := mediaState(imp)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fsys := &closeHookFS{FS: uploads(files()), name: "2026/10/5.png", hook: cancel}
+		docs, err := imp.Media(ctx, mediaSite(), MediaOptions{Files: filesDir(t), Uploads: fsys, By: mediaTestBy, Workers: 1})
+		if !errors.Is(err, context.Canceled) || docs != nil {
+			t.Errorf("Media = %v, %v; want the error of the context, as not all of the work was done in time", docs, err)
+		}
+		wantStopped(t, imp, before, err)
+	})
+	t.Run("the directory is a file", func(t *testing.T) {
+		imp := newImport(t)
+		before := mediaState(imp)
+		dir := filepath.Join(t.TempDir(), "files")
+		if err := os.WriteFile(dir, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		docs, err := imp.Media(context.Background(), mediaSite(), MediaOptions{Files: dir, Uploads: forbidFS{t}, By: mediaTestBy})
+		if err == nil || !strings.HasPrefix(err.Error(), "creating the directory of the originals: ") || docs != nil {
+			t.Errorf("Media = %v, %v; want an error that the directory cannot be made", docs, err)
+		}
+		wantStopped(t, imp, before, err)
+	})
+	t.Run("the directory is gone", func(t *testing.T) {
+		imp := newImport(t)
+		before := mediaState(imp)
+		dir := filesDir(t)
+		fsys := &hookFS{FS: uploads(files()), hook: func() { _ = os.RemoveAll(dir) }}
+		docs, err := imp.Media(context.Background(), mediaSite(), MediaOptions{Files: dir, Uploads: fsys, By: mediaTestBy, Workers: 1})
+		if err == nil || !strings.HasPrefix(err.Error(), "saving an original in ") || docs != nil {
+			t.Errorf("Media = %v, %v; want an error that an original cannot be written", docs, err)
+		}
+		wantStopped(t, imp, before, err)
+	})
+	t.Run("the copy cannot be read", func(t *testing.T) {
+		imp := newImport(t)
+		before := mediaState(imp)
+		docs, err := imp.Media(context.Background(), mediaSite(), MediaOptions{Files: filesDir(t), Uploads: errorFS{syscall.EIO}, By: mediaTestBy})
+		if err == nil || !strings.HasPrefix(err.Error(), "reading the copy of the uploads: ") || docs != nil {
+			t.Errorf("Media = %v, %v; want an error that the copy cannot be read", docs, err)
+		}
+		wantStopped(t, imp, before, err)
+	})
+	t.Run("the old site does not answer", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			http.Error(w, "down", http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+		var items []*wxr.Item
+		for i := range 40 {
+			it := mediaItem(fmt.Sprintf("2026/10/%d.png", i), fmt.Sprintf("%s/wp-content/uploads/2026/10/%d.png", srv.URL, i), "")
+			it.ID = int64(i + 1)
+			items = append(items, it)
+		}
+		imp := newPlannedImport(t, uploadExport(srv.URL, items...))
+		before := mediaState(imp)
+		d := newTestDownloader(t)
+		d.Attempts = 1
+		dir := filesDir(t)
+		docs, err := imp.Media(context.Background(), mediaSite(), MediaOptions{Files: dir, Download: d, By: mediaTestBy, Workers: 4})
+		if err == nil || !strings.HasPrefix(err.Error(), "the old site does not answer: ") || docs != nil {
+			t.Errorf("Media = %v, %v; want the error that the old site does not answer", docs, err)
+		}
+		wantStopped(t, imp, before, err)
+		wantNames(t, dir)
+		if n := hits.Load(); n < maxDownloadFailures || n > int64(len(items)) {
+			t.Errorf("the old site was asked %d times, want %d to %d", n, maxDownloadFailures, len(items))
+		}
+	})
+}
+
+func TestMediaUnreadableMetadata(t *testing.T) {
+	data := testPNG(8, 8, 0)
+	it := mediaItem("2026/10/a.png", uploadsURL+"2026/10/a.png", "a:1:{broken}")
+	it.ID, it.Title = 1, ""
+	imp := newPlannedImport(t, uploadExport("https://example.com", it))
+	docs := runMedia(t, imp, MediaOptions{Files: filesDir(t), Uploads: uploads(map[string][]byte{"2026/10/a.png": data})})
+	if len(docs) != 1 || docs[0].Hash != sha256Hash(data) {
+		t.Errorf("documents = %v, want the attached file as it is", docs)
+	}
+	lines := entryLines(imp.Report.Entries())
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "review item 1 _wp_attachment_metadata: ") ||
+		!strings.HasSuffix(lines[0], "; the attached file is imported as it is") {
+		t.Errorf("report = %q, want one review of the metadata", lines)
+	}
+}
+
+func TestMediaWithoutAttachments(t *testing.T) {
+	page := &wxr.Item{ID: 10, Type: "page", Status: "publish", Title: "About"}
+	for _, e := range []*wxr.Export{uploadExport("https://example.com"), uploadExport("https://example.com", page)} {
+		imp := newPlannedImport(t, e)
+		before := mediaState(imp)
+		dir := filesDir(t)
+		docs, err := imp.Media(context.Background(), mediaSite(), MediaOptions{Files: dir, Uploads: forbidFS{t}, By: mediaTestBy})
+		if docs != nil || err != nil {
+			t.Errorf("Media = %v, %v; want nil and no error", docs, err)
+		}
+		checkUntouched(t, imp, before, dir)
+	}
 }
