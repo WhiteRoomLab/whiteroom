@@ -98,6 +98,11 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		}
 		return 1
 	}
+	if missing {
+		if err := store.SyncParent(dest); err != nil {
+			return fail(err)
+		}
+	}
 	if err := store.Backup(ctx, data, dest); err != nil {
 		return fail(err)
 	}

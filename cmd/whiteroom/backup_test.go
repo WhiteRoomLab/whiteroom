@@ -359,8 +359,9 @@ func TestBackupBuildsSameRelease(t *testing.T) {
 
 // TestBackupErrors checks the backups that fail, which print one line on stderr and nothing on stdout, and leave the data
 // directory as it was: a DEST that is not missing or empty is not changed; a DEST without a parent, a data directory that is
-// none, and a DEST that is the data directory or in it make nothing; and a backup that fails after it has begun, by a
-// context that is done or an original that cannot be read, leaves DEST as it was, and can be tried again.
+// none, and a DEST that is the data directory or in it make nothing; a DEST that is made but whose name cannot be synced is
+// removed, while one that was there is used; and a backup that fails after it has begun, by a context that is done or an
+// original that cannot be read, leaves DEST as it was, and can be tried again.
 func TestBackupErrors(t *testing.T) {
 	const need = "; DEST must be missing or an empty directory\n"
 
@@ -415,6 +416,38 @@ func TestBackupErrors(t *testing.T) {
 		}
 		if after := stateOf(t, s.data); after != before {
 			t.Errorf("a DEST without a parent: the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
+
+	t.Run("a DEST whose name cannot be synced", func(t *testing.T) {
+		const what = "a DEST whose name cannot be synced"
+		if os.Geteuid() == 0 {
+			t.Skip("root can open every directory")
+		}
+		s := initSample(t)
+		// Write and search, but not read: DEST can be made in it, but it cannot be opened to sync the name of DEST.
+		parent := t.TempDir()
+		there := filepath.Join(parent, "there")
+		if err := os.Mkdir(there, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o300); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+		dest := filepath.Join(parent, "backup")
+		before := stateOf(t, s.data)
+		got := failingBackup(t, what, t.Context(), "-data", s.data, dest)
+		if want := "whiteroom backup: open " + parent + ": permission denied\n"; got != want {
+			t.Errorf("%s: whiteroom backup printed %q, want %q", what, got, want)
+		}
+		checkMissing(t, what, dest)
+		if after := stateOf(t, s.data); after != before {
+			t.Errorf("%s: the data directory is changed:\n%s\nwas:\n%s", what, after, before)
+		}
+		// The name of a DEST that was there is not synced.
+		if code, _, stderr := runCmd(t, "backup", "-data", s.data, there); code != 0 {
+			t.Errorf("a DEST that was there, in the same directory: whiteroom backup = %d, with stderr:\n%s", code, stderr)
 		}
 	})
 
