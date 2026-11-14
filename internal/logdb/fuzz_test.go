@@ -2,12 +2,14 @@ package logdb
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
 	"os"
 	"slices"
 	"testing"
+	"testing/cryptotest"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
@@ -235,6 +237,161 @@ func FuzzCheckpoint(f *testing.F) {
 			if again := fileData(t, fsys, "checkpoint"); !bytes.Equal(again, c) {
 				t.Fatalf("written again\n%x, was\n%x", again, c)
 			}
+		}
+	})
+}
+
+// fuzzStore is a store that FuzzOpen damages: its files, and, by sequence number, what it has in memory after each
+// commit (the tables and the objects) and the events that its log has.
+type fuzzStore struct {
+	fsys   *simfs.FS
+	names  []string
+	states []string
+	events []string
+}
+
+var fuzzOptions = Options{Placement: Hybrid, Threshold: 100, SegmentBytes: 400, CheckpointBytes: -1}
+
+// fuzzStores are the stores of FuzzOpen, by image&3, made when first used.
+var fuzzStores [4]*fuzzStore
+
+// inMemory returns the tables and the objects of db, without reading a file.
+func inMemory(t *testing.T, db *DB) string {
+	t.Helper()
+	return dump(t, db) + "\nobjects:\n" + objectList(t, db)
+}
+
+// newFuzzStore makes a store with 8 commits of every kind of change, in several segments, and closes it. If compacted,
+// a compaction after the commit 5 has written them as the base of generation 2; if noCheckpoint, the checkpoint of
+// Close is removed, so that Open replays the log. The salts are those of the seed 1, so that a failing input fails
+// again.
+func newFuzzStore(t *testing.T, compacted, noCheckpoint bool) *fuzzStore {
+	t.Helper()
+	cryptotest.SetGlobalRandom(t, 1)
+	withBaseBytes(t, 300)
+	fsys := simfs.New(simDir)
+	db, err := Create(fsys, fuzzOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &fuzzStore{states: []string{inMemory(t, db)}, events: []string{eventLines(t, db)}}
+	for i := 1; i <= 8; i++ {
+		change(t, db, i)
+		s.states, s.events = append(s.states, inMemory(t, db)), append(s.events, eventLines(t, db))
+		if compacted && i == 5 {
+			if err := compactDB(db, Rewrite{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	closeDB(t, db)
+	if noCheckpoint {
+		dropCheckpoint(t, fsys)
+	}
+	s.fsys = copyFS(fsys)
+	s.fsys.Walk(func(p string, _ []byte) { s.names = append(s.names, p) })
+	return s
+}
+
+// isRefusal reports whether err is a CorruptError or a VersionError, or, if removed names a file that the test has
+// removed, the error that names it as missing.
+func isRefusal(err error, removed string) bool {
+	var ce *CorruptError
+	var ve *VersionError
+	return errors.As(err, &ce) || errors.As(err, &ve) || removed != "" && err.Error() == simPath(removed)+": missing file"
+}
+
+// FuzzOpen damages one file of a store and opens it. Open must not panic. It refuses the store with a CorruptError or
+// a VersionError (or names a missing file of the layout) and changes no file, or opens it with the tables and the
+// objects after one of its commits; then a reader sees the same, the store opens again the same way, and, if Verify
+// passes, the events and the data of the objects are those of that commit too.
+func FuzzOpen(f *testing.F) {
+	for i := range uint8(32) {
+		f.Add(i, i, uint8(0), uint32(70), []byte{0xff})
+		f.Add(i, i, uint8(1), uint32(100), []byte{})
+		f.Add(i, i, uint8(2), uint32(0), []byte("whrm-log\x02\x00\x00\x00"))
+		f.Add(i, i, uint8(3), uint32(0), make([]byte, 40))
+		f.Add(i, i, uint8(4), uint32(0), []byte{})
+	}
+	f.Add(uint8(3), uint8(7), uint8(1), uint32(10), []byte{}) // a torn last segment, which Open removes
+	f.Fuzz(func(t *testing.T, image, file, mode uint8, off uint32, data []byte) {
+		if fuzzStores[image&3] == nil {
+			fuzzStores[image&3] = newFuzzStore(t, image&1 != 0, image&2 != 0)
+		}
+		base := fuzzStores[image&3]
+		fsys := copyFS(base.fsys)
+		name := base.names[int(file)%len(base.names)]
+		b := fileData(t, fsys, name)
+		at := int(off % uint32(len(b)+1))
+		removed := ""
+		switch mode % 5 {
+		case 0: // overwrite
+			b = slices.Concat(b[:at], data, b[min(len(b), at+len(data)):])
+		case 1: // cut
+			b = b[:at]
+		case 2: // replace
+			b = data
+		case 3: // append
+			b = slices.Concat(b, data)
+		case 4: // remove
+			removed = name
+		}
+		if removed != "" {
+			removeFile(t, fsys, name)
+		} else {
+			setFile(t, fsys, name, b)
+		}
+		before := fileMap(fsys)
+		forReader := copyFS(fsys)
+		db, err := Open(fsys, fuzzOptions)
+		if err != nil {
+			if !isRefusal(err, removed) {
+				t.Fatalf("Open: %v (%T)", err, err)
+			}
+			checkFilesUnchanged(t, fsys, before)
+			if rd, err := OpenReader(forReader, Options{}); err == nil {
+				_ = rd.Close()
+			} else if !isRefusal(err, removed) {
+				t.Fatalf("OpenReader: %v (%T)", err, err)
+			}
+			return
+		}
+		info := db.Recovery()
+		if info.Seq >= uint64(len(base.states)) {
+			t.Fatalf("recovery: %+v", info)
+		}
+		want := base.states[info.Seq]
+		if got := inMemory(t, db); got != want {
+			t.Fatalf("after %s was damaged, the state at the sequence %d is\n%s\nwant\n%s", name, info.Seq, got, want)
+		}
+		rd, err := OpenReader(forReader, Options{})
+		if err != nil {
+			t.Fatalf("OpenReader: %v", err)
+		}
+		if got := inMemory(t, rd); got != want {
+			t.Fatalf("the reader sees\n%s\nwant\n%s", got, want)
+		}
+		closeDB(t, rd)
+		// Open does not read the segments before the record of a checkpoint, nor the files of the objects: Verify does.
+		if err := db.Verify(context.Background()); err == nil {
+			if got, err := events(db); err != nil || got != base.events[info.Seq] {
+				t.Fatalf("after Verify, the events are\n%s\n%v, want\n%s", got, err, base.events[info.Seq])
+			}
+			checkObjects(t, db)
+		} else {
+			_, _ = events(db)
+		}
+		closeDB(t, db)
+		again, err := Open(fsys, fuzzOptions)
+		if err != nil {
+			t.Fatalf("the second Open: %v", err)
+		}
+		defer func() { _ = again.Close() }()
+		if got := inMemory(t, again); got != want {
+			t.Fatalf("the second Open: the state is\n%s\nwant\n%s", got, want)
+		}
+		if info2 := again.Recovery(); info2.Seq != info.Seq || info2.TruncatedAt != -1 || info2.RemovedSegment != "" {
+			t.Fatalf("the second recovery: %+v after %+v", info2, info)
 		}
 	})
 }
