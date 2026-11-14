@@ -929,6 +929,110 @@ func TestImportAsImport(t *testing.T) {
 	}
 }
 
+// TestImportWithURL checks ImportOptions.URL: the checks of the import, those of each document and those across the
+// documents, use it instead of the URL of the settings, which the store keeps as the source has it; the Import without it
+// accepts what only that URL refuses; a URL that does not pass is an error before the source is read.
+func TestImportWithURL(t *testing.T) {
+	t.Parallel()
+	const staging = "https://staging.example.com"
+	redirects := func(t *testing.T, rs ...[2]string) (dir string, names []string, data []string) {
+		t.Helper()
+		dir = copySite(t)
+		for i, r := range rs {
+			id := testID(content.RefRedirect, i+1)
+			names, data = append(names, docName(content.RefRedirect, id)), append(data, indentRedirect(t, id, r[0], r[1]))
+			writeSite(t, dir, names[i], data[i])
+		}
+		return dir, names, data
+	}
+	with := func(t *testing.T, dir string) (*store.Store, content.Errors, error) {
+		t.Helper()
+		s := newStore(t)
+		warnings, err := ImportWith(t.Context(), s, openSite(t, dir), userID, ImportOptions{URL: staging})
+		return s, warnings, err
+	}
+
+	t.Run("a redirect to itself", func(t *testing.T) {
+		dir, names, data := redirects(t, [2]string{"/staging-only", staging + "/staging-only"})
+		if _, err := importSite(t, newStore(t), dir); err != nil {
+			t.Fatalf("Import() = %v, want the site to be accepted: the redirect goes out of it", err)
+		}
+		s, warnings, err := with(t, dir)
+		want := where(t, names[0], data[0], `"to"`) + "/to: redirects to itself"
+		if got := problemLines(t, err); !slices.Equal(got, []string{want}) || warnings != nil {
+			t.Errorf("ImportWith() = %v, %v; want the problem %q", warnings, got, want)
+		}
+		checkNoImport(t, s)
+	})
+
+	t.Run("a loop of redirects", func(t *testing.T) {
+		dir, names, data := redirects(t, [2]string{"/loop-a", staging + "/loop-b"}, [2]string{"/loop-b", staging + "/loop-a"})
+		if _, err := importSite(t, newStore(t), dir); err != nil {
+			t.Fatalf("Import() = %v, want the site to be accepted: the redirects go out of it", err)
+		}
+		s, warnings, err := with(t, dir)
+		cycle := strings.Join([]string{testID(content.RefRedirect, 1), testID(content.RefRedirect, 2), testID(content.RefRedirect, 1)}, " -> ")
+		want := []string{
+			where(t, names[0], data[0], `"to"`) + "/to: redirect loop: " + cycle,
+			where(t, names[1], data[1], `"to"`) + "/to: redirect loop: " + cycle,
+		}
+		if got := problemLines(t, err); !slices.Equal(got, want) || warnings != nil {
+			t.Errorf("ImportWith() = %v, %v; want the problems\n%s", warnings, got, strings.Join(want, "\n"))
+		}
+		checkNoImport(t, s)
+	})
+
+	t.Run("the settings stay as they are", func(t *testing.T) {
+		dir, _, _ := redirects(t, [2]string{"/production-only", "https://example.com/production-only"})
+		if _, err := importSite(t, newStore(t), dir); err == nil {
+			t.Fatal("Import() accepted a redirect to itself")
+		}
+		s, _, err := with(t, dir)
+		if err != nil {
+			t.Fatalf("ImportWith() with the URL %s = %v, want a redirect to the URL of the settings to go out of the site", staging, err)
+		}
+		if got := read(t, s, store.SettingsKind, ""); !bytes.Equal(got.Data, sampleFile(t, settingsName)) ||
+			!strings.Contains(string(got.Data), `"url": "https://example.com"`) {
+			t.Errorf("the settings that ImportWith() stored are\n%s\nwant the bytes of the file, with the URL of the settings", got.Data)
+		}
+	})
+
+	t.Run("the sample site", func(t *testing.T) {
+		s, warnings, err := with(t, sampleDir)
+		if err != nil {
+			t.Fatalf("ImportWith() of the sample site = %v", err)
+		}
+		_, plain := newImported(t)
+		sameIndex(t, "ImportWith() of the sample site", indexOf(t, s), indexOf(t, plain))
+		if want := sampleRedirectWarnings(t); len(want) == 0 || !slices.Equal(lines(warnings), want) {
+			t.Errorf("the warnings of ImportWith() of the sample site:\n%v\nwant\n%s", warnings, strings.Join(want, "\n"))
+		}
+	})
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		for _, bad := range []string{
+			"https://staging.example.com/", "https://Staging.example.com", "ftp://staging.example.com",
+			"https://user:s3cret@staging.example.com", "staging.example.com",
+		} {
+			s := newStore(t)
+			spy := &spySource{Source: openSample(t)}
+			warnings, err := ImportWith(t.Context(), s, spy, userID, ImportOptions{URL: bad})
+			var es content.Errors
+			switch {
+			case err == nil, errors.As(err, &es), !strings.HasPrefix(err.Error(), "invalid site URL: "):
+				t.Errorf("ImportWith() with the URL %q = %v, want an error that is not about the documents, starting with %q",
+					bad, err, "invalid site URL: ")
+			case strings.Contains(err.Error(), bad), strings.Contains(err.Error(), "s3cret"):
+				t.Errorf("the error of ImportWith() with the URL %q is %q, which has it in it", bad, err)
+			}
+			if warnings != nil || len(spy.calls) != 0 {
+				t.Errorf("ImportWith() with the URL %q returned %v and read the source %v", bad, warnings, spy.calls)
+			}
+			checkNoImport(t, s)
+		}
+	})
+}
+
 // TestImportRevisions checks which revisions the Import stores: those that the entries publish or schedule, and no other.
 func TestImportRevisions(t *testing.T) {
 	t.Parallel()

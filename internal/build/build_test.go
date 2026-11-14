@@ -852,3 +852,182 @@ func TestBuildOptions(t *testing.T) {
 		t.Errorf("Build() made %q in the cache directory", got)
 	}
 }
+
+// TestBuildURL checks Options.URL with the sample site, whose url is https://example.com: the URL replaces that of the
+// settings in the absolute URLs of the pages, the feeds and the sitemap, and in the path that the pages and server.json
+// take from it; the same URL gives the same release, and no URL the release of the settings; a redirect that leads back
+// to itself or loops only under the URL is a problem only with it; a URL that does not pass is refused before Build makes
+// anything; and the documents of the Source stay as they are.
+func TestBuildURL(t *testing.T) {
+	src := openSample(t)
+	settings, _, err := src.Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Data = slices.Clone(settings.Data)
+	cache := t.TempDir()
+	built := func(src Source, url string) (string, *Result) {
+		t.Helper()
+		opts := buildOptions(src, t.TempDir(), cache, 4)
+		opts.URL = url
+		res, err := Build(t.Context(), opts)
+		if err != nil {
+			t.Fatalf("Build() with the URL %q error:\n%v", url, err)
+		}
+		return opts.Out, res
+	}
+	read := func(out string, res *Result, name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(out, "releases", res.Release, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	_, base := built(src, "")
+	t.Run("the URL of the settings", func(t *testing.T) {
+		if _, res := built(src, "https://example.com"); res.Release != base.Release {
+			t.Errorf("Build() with the URL of the settings is the release %s, want %s, that without a URL", res.Release, base.Release)
+		}
+		_, plain := built(src, "")
+		if plain.Release != base.Release {
+			t.Errorf("Build() without a URL again is the release %s, want %s", plain.Release, base.Release)
+		}
+	})
+
+	t.Run("another host", func(t *testing.T) {
+		out, res := built(src, stagingURL)
+		if res.Release == base.Release {
+			t.Fatalf("Build() with the URL %s is the release %s of the URL of the settings", stagingURL, res.Release)
+		}
+		for name, wants := range map[string][]string{
+			"public/index.html": {
+				`<link rel="canonical" href="https://staging.example.com/">`,
+				`<link rel="alternate" hreflang="ja" href="https://staging.example.com/">`,
+				`<link rel="alternate" hreflang="en" href="https://staging.example.com/en/">`,
+				`<link rel="alternate" type="application/rss+xml" title="株式会社〇〇" href="https://staging.example.com/feed/">`,
+				`<meta property="og:url" content="https://staging.example.com/">`,
+				`"url":"https://staging.example.com/"`,
+			},
+			"public/feed/index.xml": {
+				"<link>https://staging.example.com/</link>",
+				`<atom:link href="https://staging.example.com/feed/" rel="self" type="application/rss+xml"/>`,
+				"<link>https://staging.example.com/2026/10/29/price/</link>",
+			},
+			"public/sitemap.xml": {
+				"<loc>https://staging.example.com/</loc>",
+				"<loc>https://staging.example.com/2026/10/29/price/</loc>",
+			},
+		} {
+			got := read(out, res, name)
+			for _, want := range wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s of the release with the URL %s does not have %s", name, stagingURL, want)
+				}
+			}
+			if strings.Contains(got, "https://example.com") {
+				t.Errorf("%s of the release with the URL %s has the URL of the settings", name, stagingURL)
+			}
+		}
+		if got := read(out, res, "server.json"); !strings.Contains(got, `"base": ""`) {
+			t.Errorf("server.json of the release with the URL %s does not have the base of the root", stagingURL)
+		}
+
+		if _, again := built(src, stagingURL); again.Release != res.Release {
+			t.Errorf("Build() with the URL %s again is the release %s, want %s", stagingURL, again.Release, res.Release)
+		}
+		if _, back := built(src, ""); back.Release != base.Release {
+			t.Errorf("Build() without a URL after one with it is the release %s, want %s", back.Release, base.Release)
+		}
+	})
+
+	t.Run("a path", func(t *testing.T) {
+		out, res := built(src, stagingURL+"/blog")
+		if res.Release == base.Release {
+			t.Fatalf("Build() with the URL %s/blog is the release of the URL of the settings", stagingURL)
+		}
+		if got := read(out, res, "public/index.html"); !strings.Contains(got, `href="/blog/`) ||
+			!strings.Contains(got, `<link rel="canonical" href="https://staging.example.com/blog/">`) {
+			t.Errorf("index.html of the release with the URL %s/blog has no link under /blog/ or no canonical URL:\n%s", stagingURL, got)
+		}
+		if got := read(out, res, "server.json"); !strings.Contains(got, `"base": "/blog"`) {
+			t.Errorf("server.json of the release with the URL %s/blog does not have the base /blog:\n%.200s", stagingURL, got)
+		}
+	})
+
+	t.Run("redirects", func(t *testing.T) {
+		const itself, loopA, loopB = "rdr_01JC0000000000000000000009", "rdr_01JC000000000000000000000A", "rdr_01JC000000000000000000000B"
+		redirect := func(id, from, to string) content.SiteFile {
+			return content.SiteFile{Name: "redirects/" + id + ".json", Data: []byte(`{
+  "schemaVersion": 1,
+  "id": "` + id + `",
+  "from": "` + from + `",
+  "to": "` + to + `",
+  "status": 301
+}
+`)}
+		}
+		for _, tt := range []struct {
+			what  string
+			files []content.SiteFile
+			want  []string // of the build with stagingURL
+		}{
+			{
+				what:  "a redirect that leads back to itself",
+				files: []content.SiteFile{redirect(itself, "/staging-only", stagingURL+"/staging-only")},
+				want:  []string{"redirects/" + itself + ".json:5:3: /to: redirects to itself"},
+			},
+			{
+				what: "a loop of redirects",
+				files: []content.SiteFile{
+					redirect(loopA, "/loop-a", stagingURL+"/loop-b"), redirect(loopB, "/loop-b", stagingURL+"/loop-a"),
+				},
+				want: []string{
+					"redirects/" + loopA + ".json:5:3: /to: redirect loop: " + strings.Join([]string{loopA, loopB, loopA}, " -> "),
+					"redirects/" + loopB + ".json:5:3: /to: redirect loop: " + strings.Join([]string{loopA, loopB, loopA}, " -> "),
+				},
+			},
+		} {
+			changed := changedSource{Source: src, files: tt.files}
+			out := t.TempDir()
+			opts := buildOptions(changed, out, cache, 4)
+			if _, err := Build(t.Context(), opts); err != nil {
+				t.Errorf("%s: Build() without a URL error:\n%v", tt.what, err)
+				continue
+			}
+			opts.URL = stagingURL
+			before := tree(t, out)
+			res, err := Build(t.Context(), opts)
+			if res != nil || err == nil {
+				t.Errorf("%s: Build() with the URL %s = %+v, %v, want an error", tt.what, stagingURL, res, err)
+				continue
+			}
+			if got := errorTexts(t, err); !slices.Equal(got, tt.want) {
+				t.Errorf("%s: Build() errors:\n%s\nwant:\n%s", tt.what, strings.Join(got, "\n"), strings.Join(tt.want, "\n"))
+			}
+			checkTree(t, tt.what, out, before)
+		}
+	})
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		for _, bad := range badSiteURLs {
+			dir := t.TempDir()
+			out, cache := filepath.Join(dir, "out"), filepath.Join(dir, "cache")
+			opts := buildOptions(src, out, cache, 4)
+			opts.URL = bad
+			res, err := Build(t.Context(), opts)
+			if res != nil {
+				t.Errorf("Build() with the URL %q = %+v", bad, res)
+			}
+			checkBadURL(t, "Build()", err, bad)
+			if got := namesIn(t, dir); len(got) > 0 {
+				t.Errorf("Build() with the URL %q made %q", bad, got)
+			}
+		}
+	})
+
+	if after, _, err := src.Settings(); err != nil || !slices.Equal(after.Data, settings.Data) {
+		t.Errorf("the settings of the Source after the builds = %q, %v, want those from before", after.Data, err)
+	}
+}

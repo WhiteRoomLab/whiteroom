@@ -292,6 +292,9 @@ func (s *Site) check(c *checker) {
 	}
 }
 
+// CheckSiteURL checks s by the rule of the url of the site settings.
+func CheckSiteURL(s string) error { return checkSiteURL(s) }
+
 // checkSiteURL accepts an http or https URL of the scheme and the host in lower case ASCII, an optional port other than
 // the default, and an optional path not ending with "/", such as "https://example.com" or "https://example.com/blog".
 func checkSiteURL(s string) error {

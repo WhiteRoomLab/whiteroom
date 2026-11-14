@@ -23,10 +23,10 @@ func backupMedia(n int) string {
 	return fmt.Sprintf("med_01JE%022d", n)
 }
 
-// TestBackupWhileWriting takes three copies of a store of the log backend with backupLog while a writer puts the pair
+// TestBackupWhileWriting takes three copies of a store of the log backend with Backup while a writer puts the pair
 // n = 1, 2, ..., with every fifth an original, put before the Update, and a media document that names it in the
 // Update, in segments of 4096 bytes with checkpoints every 8192 bytes. Each copy opens with open: it has the pair of
-// one n that the writer had committed while backupLog ran, n versions of each term, the media documents of the
+// one n that the writer had committed while Backup ran, n versions of each term, the media documents of the
 // multiples of 5 up to n, and their originals, whole; it passes checkIntegrity and checkConsistent, and goes on with
 // the next pair.
 func TestBackupWhileWriting(t *testing.T) {
@@ -86,13 +86,14 @@ func TestBackupWhileWriting(t *testing.T) {
 			}
 			before := committed.Load()
 			copied := filepath.Join(t.TempDir(), "copy")
-			if err := backupLog(t.Context(), dir, copied); err != nil {
-				t.Fatalf("backupLog() %d = %v", i+1, err)
+			if err := Backup(t.Context(), dir, copied); err != nil {
+				t.Fatalf("Backup() %d = %v", i+1, err)
 			}
 			after := committed.Load()
 			c := reopenLog(t, copied, o)
 			checkIntegrity(t, c)
 			checkConsistent(t, c)
+			wantProblems(t, fmt.Sprintf("the copy %d", i+1), findProblems(t, c))
 			var n int
 			view(t, c, func(tx *Tx) error {
 				var err error

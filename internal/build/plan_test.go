@@ -453,7 +453,7 @@ func TestPlanErrors(t *testing.T) {
 	src.editRevision(t, postID, func(r *content.Revision) { r.Slug = slug })
 	edit(t, src, content.RefTerm, enEventTagID, func(x *content.Term) { x.Slug = termSlug })
 	edit(t, src, content.RefAuthor, authorID, func(a *content.AuthorProfile) { a.Slug = authorSlug })
-	b, err := load(src)
+	b, err := load(src, "")
 	if b != nil {
 		t.Errorf("load() = %+v with an error", b)
 	}

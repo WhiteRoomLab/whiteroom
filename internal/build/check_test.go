@@ -1,7 +1,11 @@
 package build
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -377,7 +381,7 @@ func TestCheckAcross(t *testing.T) {
 				mustLoad(t, src)
 				return
 			}
-			b, err := load(src)
+			b, err := load(src, "")
 			if b != nil {
 				t.Errorf("load() = %+v with an error", b)
 			}
@@ -386,4 +390,244 @@ func TestCheckAcross(t *testing.T) {
 			}
 		})
 	}
+}
+
+// cancelingSource is a source that ends the context of its check when the check reads the theme.
+type cancelingSource struct {
+	*memSource
+	cancel context.CancelFunc
+}
+
+func (s cancelingSource) Theme() (fs.FS, error) {
+	s.cancel()
+	return s.memSource.Theme()
+}
+
+// TestCheck checks Check with the fixture: it passes a site that passes, also one that has warnings; it needs no original;
+// it returns the errors of the source as they are, and the end of the context; and it writes nothing.
+func TestCheck(t *testing.T) {
+	failure := errors.New("disk failure")
+
+	t.Run("sites that pass", func(t *testing.T) {
+		src := testSource(t)
+		if err := Check(t.Context(), src, ""); err != nil {
+			t.Errorf("Check() of the fixture = %v", err)
+		}
+		// A redirect to a page that is a draft is left out, with a warning.
+		src.addRedirect(t, 1, "/old-draft/", draftID)
+		b := mustLoad(t, src)
+		mustResolve(t, b)
+		if b.warnings.len() == 0 {
+			t.Fatalf("the redirect to a draft has no warning")
+		}
+		if err := Check(t.Context(), src, ""); err != nil {
+			t.Errorf("Check() of a site with a warning = %v", err)
+		}
+	})
+
+	t.Run("no original is opened", func(t *testing.T) {
+		src := testSource(t)
+		src.addRedirect(t, 1, "/old-logo.png", logoID)
+		src.fail = map[string]error{"OpenMedia": failure}
+		if err := Check(t.Context(), src, ""); err != nil {
+			t.Errorf("Check() of a site with a redirect to a medium and a source that cannot open an original = %v", err)
+		}
+		if len(src.opened) > 0 {
+			t.Errorf("Check() opened the originals %v", src.opened)
+		}
+	})
+
+	t.Run("errors of the source", func(t *testing.T) {
+		for _, method := range []string{"Settings", "Documents", "Theme", "Revision"} {
+			src := testSource(t)
+			src.fail = map[string]error{method: failure}
+			var es content.Errors
+			if err := Check(t.Context(), src, ""); !errors.Is(err, failure) || errors.As(err, &es) {
+				t.Errorf("Check() of a source whose %s fails = %v, want its error as it is", method, err)
+			}
+		}
+	})
+
+	t.Run("a context that is done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		src := testSource(t)
+		if err := Check(ctx, src, ""); !errors.Is(err, context.Canceled) {
+			t.Errorf("Check() with a context that is done = %v, want %v", err, context.Canceled)
+		}
+		if len(src.read) > 0 {
+			t.Errorf("Check() with a context that is done read the revisions %v", src.read)
+		}
+	})
+
+	t.Run("a context that is done during the check", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		if err := Check(ctx, cancelingSource{testSource(t), cancel}, ""); !errors.Is(err, context.Canceled) {
+			t.Errorf("Check() with a context that is done during it = %v, want %v", err, context.Canceled)
+		}
+	})
+
+	t.Run("nothing is written", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		src := testSource(t)
+		src.addRedirect(t, 1, "/about", "/contact/")
+		if err := Check(t.Context(), src, ""); err == nil {
+			t.Fatalf("Check() of a site that has a redirect from the path of a page = nil")
+		}
+		if entries, err := os.ReadDir("."); err != nil || len(entries) > 0 {
+			t.Errorf("Check() made %v in the working directory (%v)", entries, err)
+		}
+	})
+}
+
+// stagingURL is a URL that replaces the https://example.com of the fixture in the tests of the override.
+const stagingURL = "https://staging.example.com"
+
+// badSiteURLs are URLs that the override refuses, with the secret that one of them has in it.
+var badSiteURLs = []string{
+	"https://staging.example.com/", "https://Staging.example.com", "ftp://staging.example.com",
+	"https://user:s3cret@staging.example.com", "staging.example.com", "https://staging.example.com:443",
+}
+
+// untouchedSource is a Source that fails the test when it is read.
+type untouchedSource struct{ t testing.TB }
+
+func (s untouchedSource) Settings() (settings, schema content.SiteFile, err error) {
+	s.t.Error("Settings() was called")
+	return content.SiteFile{}, content.SiteFile{}, errors.New("read")
+}
+
+func (s untouchedSource) Documents(kind content.RefKind) (map[string]content.SiteFile, error) {
+	s.t.Errorf("Documents(%q) was called", kind)
+	return nil, errors.New("read")
+}
+
+func (s untouchedSource) Revision(id string) (content.SiteFile, error) {
+	s.t.Errorf("Revision(%q) was called", id)
+	return content.SiteFile{}, errors.New("read")
+}
+
+func (s untouchedSource) OpenMedia(hash string) (fs.File, error) {
+	s.t.Errorf("OpenMedia(%q) was called", hash)
+	return nil, errors.New("read")
+}
+
+func (s untouchedSource) Theme() (fs.FS, error) {
+	s.t.Error("Theme() was called")
+	return nil, errors.New("read")
+}
+
+// checkBadURL checks that err is the refusal of the URL bad of the override, with nothing of bad in its text.
+func checkBadURL(t *testing.T, what string, err error, bad string) {
+	t.Helper()
+	var es content.Errors
+	switch {
+	case err == nil:
+		t.Errorf("%s with the URL %q = nil, want an error", what, bad)
+	case errors.As(err, &es), !strings.HasPrefix(err.Error(), "invalid site URL: "):
+		t.Errorf("%s with a URL that does not pass = %v, want an error that is not about the documents, "+
+			`starting with "invalid site URL: "`, what, err)
+	case strings.Contains(err.Error(), bad), strings.Contains(err.Error(), "s3cret"):
+		t.Errorf("%s: the error %q has the URL %q in it", what, err, bad)
+	}
+}
+
+// TestCheckURL checks Check with a URL that replaces that of the site: what is a problem only under one of the two URLs
+// is one only under it, whether a redirect leads back to itself, loops, or is for the path of the site; a URL that does not
+// pass is an error before the source is read.
+func TestCheckURL(t *testing.T) {
+	rdr := func(n int) string { return fileOf(content.RefRedirect, newID("rdr", n)) }
+	loop := strings.Join([]string{newID("rdr", 1), newID("rdr", 2), newID("rdr", 1)}, " -> ")
+	tests := []struct {
+		name    string
+		url     string // the override
+		change  func(t *testing.T, s *memSource)
+		without []string // the errors of Check without the override
+		with    []string // the errors of Check with it
+	}{
+		{
+			name: "a redirect to itself under the override",
+			url:  stagingURL,
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/staging-only", stagingURL+"/staging-only")
+			},
+			with: []string{rdr(1) + ":5:3: /to: redirects to itself"},
+		},
+		{
+			name: "a redirect to itself under the URL of the settings",
+			url:  stagingURL,
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/production-only", "https://example.com/production-only")
+			},
+			without: []string{rdr(1) + ":5:3: /to: redirects to itself"},
+		},
+		{
+			name: "a loop of redirects under the override",
+			url:  stagingURL,
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/loop-a", stagingURL+"/loop-b")
+				s.addRedirect(t, 2, "/loop-b", stagingURL+"/loop-a")
+			},
+			with: []string{rdr(1) + ":5:3: /to: redirect loop: " + loop, rdr(2) + ":5:3: /to: redirect loop: " + loop},
+		},
+		{
+			name: "the path of the URL of the override",
+			url:  stagingURL + "/blog",
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/old", stagingURL+"/blog/old")
+			},
+			with: []string{rdr(1) + ":5:3: /to: redirects to itself"},
+		},
+		{
+			name: "the URL of the settings again",
+			url:  "https://example.com",
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/old", "https://example.com/old")
+			},
+			without: []string{rdr(1) + ":5:3: /to: redirects to itself"},
+			with:    []string{rdr(1) + ":5:3: /to: redirects to itself"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := testSource(t)
+			tt.change(t, src)
+			settings := src.settings
+			for _, c := range []struct {
+				url  string
+				want []string
+			}{{"", tt.without}, {tt.url, tt.with}} {
+				err := Check(t.Context(), src, c.url)
+				if c.want == nil {
+					if err != nil {
+						t.Errorf("Check() with the URL %q = %v, want nil", c.url, err)
+					}
+					continue
+				}
+				if got := errorTexts(t, err); !slices.Equal(got, c.want) {
+					t.Errorf("Check() with the URL %q:\n%s\nwant:\n%s", c.url, strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+				}
+			}
+			if !slices.Equal(src.settings.Data, settings.Data) {
+				t.Errorf("Check() changed the settings:\n%s\nwere:\n%s", src.settings.Data, settings.Data)
+			}
+		})
+	}
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		for _, bad := range badSiteURLs {
+			checkBadURL(t, "Check()", Check(t.Context(), untouchedSource{t}, bad), bad)
+		}
+	})
+
+	t.Run("the URL of the settings is checked as it is written", func(t *testing.T) {
+		src := testSource(t)
+		src.putSettings(t, func() *content.Site { s := testSite(); s.URL = "https://example.com/"; return s }())
+		for _, url := range []string{"", stagingURL} {
+			if err := Check(t.Context(), src, url); err == nil || !strings.Contains(err.Error(), "/url: must not end with") {
+				t.Errorf("Check() with the URL %q of settings that have a url that does not pass = %v, want that problem", url, err)
+			}
+		}
+	})
 }

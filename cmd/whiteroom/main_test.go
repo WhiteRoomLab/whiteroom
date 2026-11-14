@@ -5,19 +5,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
-// runCmd runs the command with args and returns its exit code and what it has written to stdout and stderr.
+// testEnv is the env of a command with the standard input stdin, which writes to stdout and stderr, makes the accounts
+// with cheap password hashes, and gets no minute.
+func testEnv(stdin io.Reader, stdout, stderr io.Writer) env {
+	return env{
+		stdin: stdin, stdout: stdout, stderr: stderr,
+		newAccounts: func(s *store.Store) (*account.Manager, error) { return account.NewWithIterations(s, 1) },
+		ticks:       func() (<-chan time.Time, func()) { return nil, func() {} },
+	}
+}
+
+// runCmd runs the command with args and an empty standard input, and returns its exit code and what it has written to
+// stdout and stderr.
 func runCmd(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	return runCmdIn(t, strings.NewReader(""), args...)
+}
+
+// runCmdIn is runCmd with the standard input stdin.
+func runCmdIn(t *testing.T, stdin io.Reader, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
 	var o, e bytes.Buffer
-	code = run(t.Context(), args, &o, &e)
+	code = run(t.Context(), args, testEnv(stdin, &o, &e))
 	return code, o.String(), e.String()
 }
 
@@ -29,7 +51,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom build -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			help)
 	}
-	for _, name := range []string{"-cache DIR", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
+	for _, name := range []string{"-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-out DIR", "-theme DIR", "-url URL", "-workers N"} {
 		if !strings.Contains(help, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
@@ -43,11 +65,130 @@ func TestRun(t *testing.T) {
 		t.Errorf("the usage of whiteroom serve public has no flag -addr ADDR with its default:\n%s", serveHelp)
 	}
 
+	code, stdout, adminHelp := runCmd(t, "serve", "admin", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(adminHelp, serveAdminUsage) {
+		t.Fatalf("whiteroom serve admin -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code,
+			stdout, adminHelp)
+	}
+	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-origin URL", "-out DIR",
+		"-socket PATH", "-theme DIR", "-trusted-proxy PREFIX", "-url URL", "-workers N"} {
+		if !strings.Contains(adminHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom serve admin has no flag %s:\n%s", name, adminHelp)
+		}
+	}
+	if !strings.Contains(adminHelp, defaultAdminAddr) {
+		t.Errorf("the usage of whiteroom serve admin does not tell the default of -addr, %s:\n%s", defaultAdminAddr, adminHelp)
+	}
+	if !strings.Contains(usage, "\n  whiteroom serve admin [flags] [SITE]\n") {
+		t.Errorf("the list of the commands has no whiteroom serve admin:\n%s", usage)
+	}
+
+	code, stdout, rollbackHelp := runCmd(t, "rollback", "-h")
+	if code != 0 || stdout != "" || rollbackHelp != rollbackUsage {
+		t.Fatalf("whiteroom rollback -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			rollbackHelp)
+	}
+	for _, line := range []string{"whiteroom rollback OUT [RELEASE]", "whiteroom build -data DIR [flags] [SITE]"} {
+		if !strings.Contains(usage, "\n  "+line+"\n") {
+			t.Errorf("the list of the commands has no %s:\n%s", line, usage)
+		}
+	}
+
+	code, stdout, backupHelp := runCmd(t, "backup", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(backupHelp, backupUsage) {
+		t.Fatalf("whiteroom backup -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			backupHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR"} {
+		if !strings.Contains(backupHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom backup has no flag %s:\n%s", name, backupHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom backup [flags] DEST\n") || !strings.Contains(usage, `"whiteroom backup -h"`) {
+		t.Errorf("the list of the commands has no whiteroom backup:\n%s", usage)
+	}
+
+	code, stdout, doctorHelp := runCmd(t, "doctor", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(doctorHelp, doctorUsage) {
+		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			doctorHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR", "-heads FILE", "-theme DIR", "-url URL"} {
+		if !strings.Contains(doctorHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom doctor has no flag %s:\n%s", name, doctorHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom doctor [flags] [SITE]\n") || !strings.Contains(usage, `"whiteroom doctor -h"`) {
+		t.Errorf("the list of the commands has no whiteroom doctor:\n%s", usage)
+	}
+
+	code, stdout, resetHelp := runCmd(t, "account", "reset", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(resetHelp, accountResetUsage) {
+		t.Fatalf("whiteroom account reset -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			resetHelp)
+	}
+	code, stdout, deleteHelp := runCmd(t, "account", "delete", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(deleteHelp, accountDeleteUsage) {
+		t.Fatalf("whiteroom account delete -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			deleteHelp)
+	}
+	for _, help := range []struct{ command, text string }{{"reset", resetHelp}, {"delete", deleteHelp}} {
+		for _, name := range []string{"-config FILE", "-data DIR"} {
+			if !strings.Contains(help.text, "\n  "+name+"\n") {
+				t.Errorf("the usage of whiteroom account %s has no flag %s:\n%s", help.command, name, help.text)
+			}
+		}
+		if strings.Contains(help.text, "-password") {
+			t.Errorf("the usage of whiteroom account %s has a flag for the password:\n%s", help.command, help.text)
+		}
+	}
+	for _, line := range []string{"whiteroom account reset [flags] LOGIN", "whiteroom account delete [flags] ID"} {
+		if !strings.Contains(usage, "\n  "+line+"\n") {
+			t.Errorf("the list of the commands has no %s:\n%s", line, usage)
+		}
+	}
+	for _, name := range []string{`"whiteroom account reset -h"`, `"whiteroom account delete -h"`} {
+		if !strings.Contains(usage, name) {
+			t.Errorf("the list of the commands does not name %s:\n%s", name, usage)
+		}
+	}
+
+	code, stdout, initHelp := runCmd(t, "init", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
+		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			initHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR", "-url URL"} {
+		if !strings.Contains(initHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom init has no flag %s:\n%s", name, initHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom init [flags] [SITE]\n") {
+		t.Errorf("the list of the commands has no whiteroom init:\n%s", usage)
+	}
+
 	unknown := "whiteroom: unknown command \"nope\"\nRun \"whiteroom help\" for usage.\n"
 	tooMany := "whiteroom build: too many arguments: give at most one SITE, after the flags\n" + help
+	initUsageErr := func(msg string) string { return "whiteroom init: " + msg + "\n" + initHelp }
+	admin := []string{"-login", "a", "-name", "b", "-email", "c@example.com"}
+	withAdmin := func(more ...string) []string { return append(append([]string{"init"}, admin...), more...) }
+	tooManyInit := initUsageErr("too many arguments: give at most one SITE, after the flags")
 	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
+	adminErr := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + adminHelp }
+	rollbackErr := func(msg string) string { return "whiteroom rollback: " + msg + "\n" + rollbackHelp }
+	backupErr := func(msg string) string { return "whiteroom backup: " + msg + "\n" + backupHelp }
+	doctorErr := func(msg string) string { return "whiteroom doctor: " + msg + "\n" + doctorHelp }
+	resetErr := func(msg string) string { return "whiteroom account reset: " + msg + "\n" + resetHelp }
+	deleteErr := func(msg string) string { return "whiteroom account delete: " + msg + "\n" + deleteHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
+	}
+	badURL := "whiteroom %s: -url is not a valid site URL: must not end with \"/\"\n"
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	_, openErr := os.Open(missing)
+	broken := filepath.Join(t.TempDir(), "broken.yaml")
+	if err := os.WriteFile(broken, []byte("data:\t/a\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	for _, tt := range []struct {
 		args           []string
@@ -67,12 +208,103 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-memory", "-1"}, 2, "", memory("-1")},
 		{[]string{"build", "-memory", "8796093022208"}, 2, "", memory("8796093022208")},
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"build", "-data", "d", "-workers", "-1"}, 2, "",
+			"whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"build", "-data", "d", "a", "b"}, 2, "", tooMany},
+		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
+		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"build", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "build")},
+		{[]string{"build", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "build")},
+		{[]string{"init", "-x"}, 2, "", "flag provided but not defined: -x\n" + initHelp},
+		{[]string{"init"}, 2, "", initUsageErr("-login is required")},
+		{[]string{"init", "-login", "a"}, 2, "", initUsageErr("-name is required")},
+		{[]string{"init", "-login", "a", "-name", "b"}, 2, "", initUsageErr("-email is required")},
+		{withAdmin(), 2, "", initUsageErr("no data directory: give -data DIR, or data in the config file")},
+		{withAdmin("-data", "d", "x", "y"), 2, "", tooManyInit},
+		{[]string{"init", "x", "y"}, 2, "", tooManyInit},
+		{withAdmin("-data", "d", "-theme", "t"), 2, "",
+			initUsageErr("-theme is for SITE: give the directory SITE of the site to import")},
+		{withAdmin("-config", missing), 2, "", "whiteroom init: " + openErr.Error() + "\n"},
+		{withAdmin("-config", broken), 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{withAdmin("-data", "d", "-url", "https://staging.example.com"), 2, "",
+			initUsageErr("-url is for SITE: give the directory SITE of the site to import")},
+		{withAdmin("-data", "d", "-url", "https://example.com/", "a"), 2, "", fmt.Sprintf(badURL, "init")},
+		{[]string{"rollback"}, 2, "", rollbackErr("no output directory: give OUT")},
+		{[]string{"rollback", "a", "b", "c"}, 2, "", rollbackErr("too many arguments: give OUT and at most one RELEASE")},
+		{[]string{"rollback", "-x"}, 2, "", "flag provided but not defined: -x\n" + rollbackHelp},
+		{[]string{"rollback", "-config", "c.yaml", "a"}, 2, "", "flag provided but not defined: -config\n" + rollbackHelp},
+		{[]string{"rollback", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + rollbackHelp},
+		{[]string{"rollback", "-url", "https://staging.example.com", "a"}, 2, "", "flag provided but not defined: -url\n" + rollbackHelp},
+		{[]string{"backup"}, 2, "", backupErr("no destination: give DEST, after the flags")},
+		{[]string{"backup", "-data", "d"}, 2, "", backupErr("no destination: give DEST, after the flags")},
+		{[]string{"backup", "-x", "d"}, 2, "", "flag provided but not defined: -x\n" + backupHelp},
+		{[]string{"backup", "d"}, 2, "", backupErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"backup", "-data", "d", "a", "b"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "a", "-data", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + backupHelp},
+		{[]string{"backup", "-config", missing, "d"}, 2, "", "whiteroom backup: " + openErr.Error() + "\n"},
+		{[]string{"backup", "-config", broken, "d"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"doctor"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"doctor", "-data", "d", "a", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "a", "-data", "d", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "-data", "d", "-theme", "t"}, 2, "",
+			doctorErr("-theme is for SITE: give the directory SITE of the site to check, or site in the config file")},
+		{[]string{"doctor", "-theme", "t"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"doctor", "-x"}, 2, "", "flag provided but not defined: -x\n" + doctorHelp},
+		{[]string{"doctor", "-data", "d", "-url", "https://staging.example.com"}, 2, "",
+			doctorErr("-url is for SITE: give the directory SITE of the site to check, or site in the config file")},
+		{[]string{"doctor", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "doctor")},
+		{[]string{"doctor", "-heads"}, 2, "", "flag needs an argument: -heads\n" + doctorHelp},
+		{[]string{"doctor", "-config", missing}, 2, "", "whiteroom doctor: " + openErr.Error() + "\n"},
+		{[]string{"doctor", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"account"}, 2, "", accountUsage},
+		{[]string{"account", "nope"}, 2, "", "whiteroom account: unknown subcommand \"nope\"\nRun \"whiteroom help\" for usage.\n"},
+		{[]string{"account", "-h"}, 0, accountUsage, ""},
+		{[]string{"account", "help"}, 0, accountUsage, ""},
+		{[]string{"account", "reset"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
+		{[]string{"account", "reset", "-data", "d"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
+		{[]string{"account", "reset", "a"}, 2, "", resetErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"account", "reset", "-data", "d", "a", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "a", "-data", "d", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "-password", "x", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -password\n" + resetHelp},
+		{[]string{"account", "reset", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + resetHelp},
+		{[]string{"account", "reset", "-config", missing, "a"}, 2, "", "whiteroom account reset: " + openErr.Error() + "\n"},
+		{[]string{"account", "reset", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"account", "delete"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
+		{[]string{"account", "delete", "-data", "d"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
+		{[]string{"account", "delete", "a"}, 2, "", deleteErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"account", "delete", "-data", "d", "a", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "a", "-data", "d", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "-password", "x", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -password\n" + deleteHelp},
+		{[]string{"account", "delete", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + deleteHelp},
+		{[]string{"account", "delete", "-config", missing, "a"}, 2, "", "whiteroom account delete: " + openErr.Error() + "\n"},
+		{[]string{"account", "delete", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
 		{[]string{"serve", "nope"}, 2, "", "whiteroom serve: unknown server \"nope\"\nRun \"whiteroom help\" for usage.\n"},
-		{[]string{"serve", "admin"}, 2, "", "whiteroom serve: admin is not available yet\n"},
+		{[]string{"serve", "admin"}, 2, "", adminErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"serve", "admin", "-data", "d", "a", "b"}, 2, "",
+			adminErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"serve", "admin", "-data", "d", "-addr", "localhost:8081"}, 2, "",
+			adminErr(`-addr "localhost:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`)},
+		{[]string{"serve", "admin", "-data", "d", "-addr", "127.0.0.1:8081", "-socket", "s"}, 2, "",
+			adminErr("-addr and -socket are both given: give one of them, as the server listens on one")},
+		{[]string{"serve", "admin", "-data", "d", "-socket", "s"}, 2, "",
+			adminErr("no origin: a socket has no address that the origin can be made of: give -origin URL, or origin in the " +
+				"config file")},
+		{[]string{"serve", "admin", "-data", "d", "-socket", "", "-origin", "http://localhost"}, 2, "",
+			adminErr("-socket must not be empty")},
+		{[]string{"serve", "admin", "-data", "d", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "serve admin")},
+		{[]string{"serve", "admin", "-config", missing}, 2, "", "whiteroom serve admin: " + openErr.Error() + "\n"},
+		{[]string{"serve", "admin", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},
+		{[]string{"serve", "public", "-url", "https://staging.example.com"}, 2, "", "flag provided but not defined: -url\n" + serveHelp},
 		{[]string{"serve", "public", "a", "b"}, 2, "", tooManyOuts},
 		{[]string{"serve", "public", "a", "-addr", "b"}, 2, "", tooManyOuts},
 	} {
@@ -103,13 +335,57 @@ func TestPrintError(t *testing.T) {
 		{File: "themes/a.json", Msg: "not the theme"},
 		{Path: "/url", Msg: "no file"},
 	}
+	storedProblems := content.Errors{
+		missingTitle,
+		{File: "site/schema.yaml", Line: 1, Column: 2, Msg: "not YAML"},
+		{File: "site", Msg: "missing directory"},
+		{File: "site/settings.json", Msg: "not found"},
+		{File: "theme", Msg: "no translation"},
+		{File: "theme/templates/entry.html", Line: 2, Column: 3, Msg: "unexpected EOF"},
+		{File: "themes/a.json", Msg: "not the theme"},
+		{Path: "/url", Msg: "no file"},
+	}
 	for _, tt := range []struct {
-		what  string
-		ctx   context.Context
-		theme string
-		err   error
-		want  []string
+		what   string
+		ctx    context.Context
+		theme  string
+		stored bool
+		err    error
+		want   []string
 	}{
+		{
+			what:   "problems of a data directory",
+			ctx:    t.Context(),
+			stored: true,
+			err:    storedProblems,
+			want: []string{
+				missingTitle.File + ":1:1: /title: missing title",
+				in("site", "site/schema.yaml") + ":1:2: not YAML",
+				in("site", "site") + ": missing directory",
+				"site/settings.json: not found",
+				in("site", "theme") + ": no translation",
+				in("site", "theme/templates/entry.html") + ":2:3: unexpected EOF",
+				"themes/a.json: not the theme",
+				"/url: no file",
+			},
+		},
+		{
+			what:   "problems of a data directory with -theme",
+			ctx:    t.Context(),
+			theme:  "../example",
+			stored: true,
+			err:    storedProblems,
+			want: []string{
+				missingTitle.File + ":1:1: /title: missing title",
+				in("site", "site/schema.yaml") + ":1:2: not YAML",
+				in("site", "site") + ": missing directory",
+				"site/settings.json: not found",
+				in("../example", "") + ": no translation",
+				in("../example", "templates/entry.html") + ":2:3: unexpected EOF",
+				"themes/a.json: not the theme",
+				"/url: no file",
+			},
+		},
 		{
 			what: "problems",
 			ctx:  t.Context(),
@@ -170,7 +446,7 @@ func TestPrintError(t *testing.T) {
 		},
 	} {
 		var b strings.Builder
-		errorPrinter{w: &b, site: "site", theme: tt.theme}.printError(tt.ctx, tt.err)
+		errorPrinter{w: &b, command: "whiteroom build", site: "site", theme: tt.theme, stored: tt.stored}.printError(tt.ctx, tt.err)
 		if want := strings.Join(tt.want, "\n") + "\n"; b.String() != want {
 			t.Errorf("%s: printed:\n%s\nwant:\n%s", tt.what, b.String(), want)
 		}

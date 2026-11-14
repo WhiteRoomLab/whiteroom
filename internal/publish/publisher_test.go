@@ -1333,6 +1333,9 @@ func TestNew(t *testing.T) {
 		{"no theme", func(o *Options) { o.Theme = nil }, "no theme"},
 		{"negative memory", func(o *Options) { o.Memory = -1 }, "memory -1 is out of range (0 or more)"},
 		{"negative workers", func(o *Options) { o.Workers = -1 }, "workers -1 is out of range (0 or more)"},
+		{"a URL with a slash at the end", func(o *Options) { o.URL = "https://staging.example.com/" }, `invalid site URL: must not end with "/"`},
+		{"a URL with credentials", func(o *Options) { o.URL = "https://user:s3cret@staging.example.com" },
+			"invalid site URL: credentials in URLs are not allowed"},
 		{"a theme that does not load", func(o *Options) { o.Theme = fstest.MapFS{} }, "theme/theme.yaml: missing file\ntheme/templates: missing directory"},
 	} {
 		o := good
@@ -1406,6 +1409,59 @@ func TestBuildOptions(t *testing.T) {
 	got.Source = nil
 	if want := (build.Options{Out: r.opts.Out, CacheDir: r.opts.CacheDir, Memory: 1 << 28, Workers: 3}); got != want {
 		t.Errorf("the options of the build are %+v, want %+v", got, want)
+	}
+}
+
+// TestPublisherURL checks Options.URL: the builds have it, so that the release is that of a build of a snapshot of the store
+// with it and not that of one without it; the Editor of the Publisher has it too, so that it refuses a redirect that leads
+// back to itself under it, as one without it does not; and New refuses a URL that does not pass.
+func TestPublisherURL(t *testing.T) {
+	t.Parallel()
+	const (
+		staging = "https://staging.example.com"
+		itself  = `{"schemaVersion":1,"from":"/staging-only","to":"https://staging.example.com/staging-only","status":301}`
+	)
+	r := newRig(t)
+	r.opts.URL = staging
+	p, err := New(r.opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	r.Publisher = p
+	var got build.Options
+	p.beforeBuild = func(o build.Options) { got = o }
+	r.start()
+	r.idle()
+	if got.URL != staging {
+		t.Errorf("the URL of the options of the build is %q, want %q", got.URL, staging)
+	}
+
+	opts := buildOptions(t, snapshotOf(t, r.s))
+	opts.URL = staging
+	with, err := build.Build(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("Build() with the URL error:\n%v", err)
+	}
+	without, _ := buildSite(t, snapshotOf(t, r.s))
+	if with.Release == without.Release {
+		t.Fatalf("the builds with the URL %s and without it are the same release, %s", staging, with.Release)
+	}
+	if cur := r.current(); cur != with.Release {
+		t.Errorf("the release %s is published, want %s, that of a build of the store with the URL %s", cur, with.Release, staging)
+	}
+	if page := string(r.file("public/index.html")); !strings.Contains(page, `<link rel="canonical" href="https://staging.example.com/">`) {
+		t.Errorf("the front page of the release that is published has no canonical URL under %s:\n%s", staging, page)
+	}
+
+	before := snapshotOf(t, r.s)
+	_, err = r.Editor().Create(t.Context(), r.op(), content.RefRedirect, []byte(itself))
+	if err == nil || !strings.HasSuffix(err.Error(), "/to: redirects to itself") {
+		t.Errorf("Create() of a redirect to itself under the URL = %v, want that problem", err)
+	}
+	sameDocuments(t, "a refused Create()", before, snapshotOf(t, r.s))
+	plain := newRig(t)
+	if _, err := plain.Editor().Create(t.Context(), plain.op(), content.RefRedirect, []byte(itself)); err != nil {
+		t.Errorf("Create() of the same redirect by a Publisher without the URL = %v, want it saved: it goes out of the site", err)
 	}
 }
 

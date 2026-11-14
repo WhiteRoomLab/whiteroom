@@ -154,6 +154,9 @@ func New(c Config) (*Server, error) {
 	return s, nil
 }
 
+// Origin returns the origin of the server in the form that the Origin header of a request is compared with.
+func (s *Server) Origin() string { return s.origin }
+
 // routes registers the routes of the admin API besides those of the session: first those that need only the store of the
 // Accounts (the accounts, the passwords and the logs), then, if there is a Publisher, those that call its Editor and it.
 func (s *Server) routes() {

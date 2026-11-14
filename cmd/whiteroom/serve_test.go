@@ -53,7 +53,9 @@ func startServe(t *testing.T, ctx context.Context, args ...string) (line string,
 	what := "whiteroom serve public " + strings.Join(args, " ")
 	stdout, stderr := make(chanWriter, 10), new(syncBuffer)
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, append([]string{"serve", "public"}, args...), stdout, stderr) }()
+	go func() {
+		done <- run(ctx, append([]string{"serve", "public"}, args...), testEnv(strings.NewReader(""), stdout, stderr))
+	}()
 	select {
 	case line = <-stdout:
 	case code := <-done:
@@ -319,7 +321,7 @@ func failingServe(t *testing.T, what, want string, args ...string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, append([]string{"serve", "public"}, args...), &stdout, &stderr)
+	code := run(ctx, append([]string{"serve", "public"}, args...), testEnv(strings.NewReader(""), &stdout, &stderr))
 	if code != 1 || stdout.Len() > 0 || stderr.String() != want {
 		t.Errorf("%s: whiteroom serve public %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr:\n%s", what,
 			strings.Join(args, " "), code, stdout.String(), stderr.String(), want)

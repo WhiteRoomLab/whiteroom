@@ -557,13 +557,13 @@ func benchCheckpoint(t *testing.T, bs benchSet, tb testBackend, res *benchResult
 	res.count(c)
 }
 
-// benchBackup measures backupLog of the data directory of the job, which no process has open, to a new directory. Then
+// benchBackup measures Backup of the data directory of the job, which no process has open, to a new directory. Then
 // it checks that the copy opens with what the store has.
 func benchBackup(t *testing.T, tb testBackend, res *benchResult) {
 	dir := res.Job.Dir
 	dst := filepath.Join(filepath.Dir(dir), "backup")
 	start := time.Now()
-	err := backupLog(t.Context(), dir, dst)
+	err := Backup(t.Context(), dir, dst)
 	res.Durations["backup"] = int64(time.Since(start))
 	if err != nil {
 		t.Fatal(err)

@@ -221,6 +221,10 @@ func (b *logBackend) close() error {
 	return errors.Join(b.db.Close(), b.fsys.Close())
 }
 
+func (b *logBackend) verify(ctx context.Context) error {
+	return b.db.Verify(ctx)
+}
+
 type logTx struct {
 	tx    *logdb.Tx
 	db    *logdb.DB // of tx
@@ -699,16 +703,16 @@ func hashText(sum []byte) string {
 	return "sha256:" + hex.EncodeToString(sum)
 }
 
-// backupLog copies the data directory srcDir of a store of the log backend, whose writer may go on writing, to dstDir,
-// which must be missing or an empty directory: logdb/ as it is at the last commit that is durable when backupLog
-// begins (logdb.Backup), and then files/, which has the originals of that commit by then, while the engine keeps
-// maintenance away. If it fails, dstDir must be emptied before it can try again.
-func backupLog(ctx context.Context, srcDir, dstDir string) error {
+// Backup copies the data directory srcDir of a store, whose writer may go on writing, to dstDir, which must be missing or
+// an empty directory: logdb/ as it is at the last commit that is durable when Backup begins (logdb.Backup), and then
+// files/, which has the originals of that commit by then, while the engine keeps maintenance away. If it fails, dstDir
+// must be emptied before it can try again.
+func Backup(ctx context.Context, srcDir, dstDir string) error {
 	return backup(ctx, srcDir, nil, dstDir, nil)
 }
 
-// backup is backupLog of the data directories src and dst, or of srcDir and dstDir on the OS if they are nil; srcDir
-// and dstDir name them in errors.
+// backup is Backup of the data directories src and dst, or of srcDir and dstDir on the OS if they are nil; srcDir and
+// dstDir name them in errors.
 func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst vfs.FS) error {
 	if err := newDataDir(dstDir, dst); err != nil {
 		return err

@@ -23,6 +23,23 @@ const buildUsage = `Usage: whiteroom build [flags] [SITE]
 Build the site in the directory SITE (default ".") into a new release in the
 output directory, and publish it.
 
+With -data, or data in the config file, the documents and the originals of the
+media are those of the data directory, which the build opens as a process that
+reads it and does not write it: a whiteroom serve admin may serve it at the same
+time, if the build has other -out and -cache directories. From SITE it reads only
+the schema file site/schema.yaml and the theme. Without -data and data, the whole
+site is read from SITE.
+
+With -url, or url in the config file, the build takes URL as the url of the site
+settings, for this build only: the settings are not changed, and the same
+documents give another release for another URL. It is for the site of another
+environment, such as https://staging.example.com. URL is checked as the url of
+the settings is.
+
+With -config, the items data, site, theme, out, cache, workers, memory and url of
+the YAML file give what the flags and SITE leave out. Without it, no config file
+is read.
+
 Flags:
 `
 
@@ -37,81 +54,163 @@ type themedSource struct {
 
 func (s themedSource) Theme() (fs.FS, error) { return s.theme, nil }
 
-// runBuild runs whiteroom build with args, those after build.
-func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// buildFlags are the values of the flags of whiteroom build.
+type buildFlags struct {
+	config, out, cache, theme, url string
+	workers                        int
+	memory                         int64
+	dataDir                        string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
+}
+
+// newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
+func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 	flags := flag.NewFlagSet("whiteroom build", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
 		printf(flags.Output(), "%s", buildUsage)
 		flags.PrintDefaults()
 	}
-	var out, cache, theme string
-	var workers int
-	var memory int64
-	flags.StringVar(&out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
-	flags.StringVar(&cache, "cache", "", "cache the files of the images in `DIR` (default SITE/cache)")
-	flags.StringVar(&theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
-	flags.IntVar(&workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
-	flags.Int64Var(&memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
+	f := addBuildFlags(flags)
+	flags.StringVar(&f.dataDir, "data", "", "read the documents and the originals from the data directory `DIR` instead of SITE "+
+		"(default data of the config file)")
+	return flags, f
+}
+
+// addBuildFlags adds to flags the flags that whiteroom build and whiteroom serve admin share, and returns where they put
+// their values.
+func addBuildFlags(flags *flag.FlagSet) *buildFlags {
+	var f buildFlags
+	flags.StringVar(&f.config, "config", "", "read the settings from the YAML file `FILE`; the flags and SITE override them")
+	flags.StringVar(&f.out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
+	flags.StringVar(&f.cache, "cache", "", "cache the files of the images in `DIR` (default SITE/cache)")
+	flags.StringVar(&f.theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
+	flags.StringVar(&f.url, "url", "", "use `URL` as the url of the site settings, in this process only; the settings are not "+
+		"changed (default url of the config file)")
+	flags.IntVar(&f.workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
+	flags.Int64Var(&f.memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
+	return &f
+}
+
+// rangeError returns what is wrong with the values of -workers and -memory, or "" if they are in range.
+func (f *buildFlags) rangeError() string {
+	switch {
+	case f.workers < 0:
+		return fmt.Sprintf("-workers %d is out of range (0 or more)", f.workers)
+	case f.memory < 0 || f.memory > maxMemory:
+		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, maxMemory)
+	}
+	return ""
+}
+
+// buildSettings is what whiteroom build works with.
+type buildSettings struct {
+	site, out, cache string
+	theme            string // "" for SITE/theme
+	url              string // "" for the url of the site settings
+	workers          int
+	memory           int64 // MiB
+}
+
+// settings returns the settings from the flags, parsed into f, and the argument of flags, over those of cfg, over the
+// defaults. A number of cfg is used unless the command line gives its flag, with any value.
+func (f *buildFlags) settings(flags *flag.FlagSet, cfg config) buildSettings {
+	s := buildSettings{site: cmp.Or(flags.Arg(0), cfg.site, "."), theme: cmp.Or(f.theme, cfg.theme)}
+	s.out = cmp.Or(f.out, cfg.out, filepath.Join(s.site, "out"))
+	s.cache = cmp.Or(f.cache, cfg.cache, filepath.Join(s.site, "cache"))
+	s.workers, s.memory = cfg.workers, cfg.memory
+	if flagGiven(flags, "workers") {
+		s.workers = f.workers
+	}
+	if flagGiven(flags, "memory") {
+		s.memory = f.memory
+	}
+	return s
+}
+
+// runBuild runs whiteroom build with args, those after build.
+func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags, f := newBuildFlags(stderr)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	switch {
-	case flags.NArg() > 1:
+	if flags.NArg() > 1 {
 		return usageError(flags, "too many arguments: give at most one SITE, after the flags")
-	case workers < 0:
-		return usageError(flags, "-workers %d is out of range (0 or more)", workers)
-	case memory < 0 || memory > maxMemory:
-		return usageError(flags, "-memory %d is out of range (0 to %d)", memory, maxMemory)
 	}
-	site := cmp.Or(flags.Arg(0), ".")
-	out = cmp.Or(out, filepath.Join(site, "out"))
-	cache = cmp.Or(cache, filepath.Join(site, "cache"))
-	p := errorPrinter{w: stderr, site: site, theme: theme}
+	if msg := f.rangeError(); msg != "" {
+		return usageError(flags, "%s", msg)
+	}
+	cfg, err := loadConfig(f.config)
+	if err != nil {
+		printConfigError(stderr, flags.Name(), err)
+		return 2
+	}
+	s := f.settings(flags, cfg)
+	var ok bool
+	if s.url, ok = siteURLOverride(stderr, flags.Name(), f.url, cfg); !ok {
+		return 2
+	}
+	p := errorPrinter{w: stderr, command: flags.Name(), site: s.site, theme: s.theme}
+	if data := cmp.Or(f.dataDir, cfg.data); data != "" {
+		return buildFromStore(ctx, stdout, p, data, s)
+	}
 
-	d, err := sitedir.Open(site)
+	src, closeSite, err := openSite(s.site, s.theme)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
 	}
-	defer func() { _ = d.Close() }()
-	var src build.Source = d
-	if theme != "" {
-		root, err := os.OpenRoot(theme)
-		if err != nil {
-			p.printError(ctx, err)
-			return 1
-		}
-		defer func() { _ = root.Close() }()
-		src = themedSource{Dir: d, theme: root.FS()}
-	}
-	// Not left to Build, which makes the output and the cache directories before it reads the site.
-	if _, _, err := src.Settings(); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-	if _, err := src.Theme(); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
+	defer closeSite()
+	return buildAndReport(ctx, stdout, p, src, s)
+}
 
+// buildAndReport builds src as s says, and prints the warnings and the error, if any, with p, and the summary on stdout. It
+// returns the exit code.
+func buildAndReport(ctx context.Context, stdout io.Writer, p errorPrinter, src build.Source, s buildSettings) int {
 	res, err := build.Build(ctx, build.Options{
-		Source: src, Out: out, CacheDir: cache, Memory: memory << 20, Workers: workers,
+		Source: src, Out: s.out, CacheDir: s.cache, Memory: s.memory << 20, Workers: s.workers, URL: s.url,
 	})
 	if res != nil {
 		for _, w := range res.Warnings {
 			p.printProblem(w)
 		}
-		printf(stdout, "%s\n", summary(res, out))
+		printf(stdout, "%s\n", summary(res, s.out))
 	}
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
 	}
 	return 0
+}
+
+// openSite opens the site directory site, with the theme in the directory theme unless it is "", and checks that it has
+// its settings and its schema, and a theme that opens. closeSite closes what openSite has opened.
+func openSite(site, theme string) (src build.Source, closeSite func(), err error) {
+	d, err := sitedir.Open(site)
+	if err != nil {
+		return nil, nil, err
+	}
+	src, closeSite = d, func() { _ = d.Close() }
+	if theme != "" {
+		root, err := os.OpenRoot(theme)
+		if err != nil {
+			closeSite()
+			return nil, nil, err
+		}
+		src, closeSite = themedSource{Dir: d, theme: root.FS()}, func() { _ = root.Close(); _ = d.Close() }
+	}
+	// Not left to Build, which makes the output and the cache directories before it reads the site.
+	if _, _, err := src.Settings(); err != nil {
+		closeSite()
+		return nil, nil, err
+	}
+	if _, err := src.Theme(); err != nil {
+		closeSite()
+		return nil, nil, err
+	}
+	return src, closeSite, nil
 }
 
 // usageError prints the message of a usage error and the usage of flags, as flags.Parse does for the errors that it
@@ -143,11 +242,13 @@ func count(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// errorPrinter prints on w the problems and the errors of a build of the site in the directory site, with the theme
-// in the directory theme if it is not "".
+// errorPrinter prints on w the problems and the errors of command, such as "whiteroom build", on the site in the
+// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of a
+// data directory, which have no files in site: only the schema file and the theme are there.
 type errorPrinter struct {
-	w           io.Writer
-	site, theme string
+	w                    io.Writer
+	command, site, theme string
+	stored               bool
 }
 
 // printProblem prints e, a problem in a file of the site, with the path of the file from the working directory.
@@ -159,17 +260,20 @@ func (p errorPrinter) printProblem(e *content.Error) {
 	printf(p.w, "%s\n", c.Error())
 }
 
-// path returns the path from the working directory of file, a path with "/" in the site directory.
+// path returns the path from the working directory of file, a path with "/" in the site directory; for a data directory,
+// the name of the document in it, which is not a path of the site directory, is the same.
 func (p errorPrinter) path(file string) string {
-	if p.theme != "" {
-		if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+	if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		if p.theme != "" {
 			return filepath.Join(p.theme, filepath.FromSlash(rest))
 		}
+	} else if p.stored && file != "site" && file != "site/schema.yaml" {
+		return file
 	}
 	return filepath.Join(p.site, filepath.FromSlash(file))
 }
 
-// printError prints err, an error of the build, a line for each part: each problem of the site as printProblem does,
+// printError prints err, an error of the command, a line for each part: each problem of the site as printProblem does,
 // "interrupted" for ctx.Err(), and any other error after the name of the command.
 func (p errorPrinter) printError(ctx context.Context, err error) {
 	// Before errors.As, which would find the problems in one of the errors and leave out the others.
@@ -189,8 +293,8 @@ func (p errorPrinter) printError(ctx context.Context, err error) {
 	case errors.As(err, &e):
 		p.printProblem(e)
 	case ctx.Err() != nil && errors.Is(err, ctx.Err()):
-		printf(p.w, "whiteroom build: interrupted\n")
+		printf(p.w, "%s: interrupted\n", p.command)
 	default:
-		printf(p.w, "whiteroom build: %v\n", err)
+		printf(p.w, "%s: %v\n", p.command, err)
 	}
 }

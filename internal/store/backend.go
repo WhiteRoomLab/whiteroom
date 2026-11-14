@@ -15,6 +15,7 @@ type backend interface {
 	// view and update run f in a transaction as View and Update do; update commits it if f returns nil.
 	view(ctx context.Context, f func(backendTx) error) error
 	update(ctx context.Context, f func(backendTx) error) error
+	verify(ctx context.Context) error // checks what the backend keeps, as Check needs; it writes nothing
 	close() error
 }
 

@@ -76,6 +76,20 @@ func (d *Dir) Settings() (settings, schema content.SiteFile, err error) {
 	return settings, schema, nil
 }
 
+// Schema reads the schema file only, as Settings does, for a store that holds the documents and needs nothing else of the
+// site: site/settings.json may be missing.
+func (d *Dir) Schema() (content.SiteFile, error) {
+	if _, e := d.stat("site", true); e != nil {
+		return content.SiteFile{}, content.Errors{e}
+	}
+	const name = "site/schema.yaml"
+	data, e := d.readFile(name)
+	if e != nil {
+		return content.SiteFile{}, content.Errors{e}
+	}
+	return content.SiteFile{Name: name, Data: data}, nil
+}
+
 // Documents reads the documents of kind from its directory, such as entries/, and returns them by their IDs; none if
 // the directory does not exist. Each entry of the directory, apart from hidden ones, must be a regular file named
 // <ID>.json with an ID of kind; the error has the problems of every entry, sorted.
