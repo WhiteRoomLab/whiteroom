@@ -44,7 +44,7 @@ func (m *Maintenance) CollectGarbage(ctx context.Context) (GCResult, error) {
 
 // gcSegments removes the segments of the generations other than gen, from the last one, and syncs log/ after each, so
 // that a crash leaves no gap in a newer generation, which recovery would refuse.
-func (db *DB) gcSegments(ctx context.Context, gen uint64, res *GCResult) error {
+func (db *DB) gcSegments(ctx context.Context, gen genNum, res *GCResult) error {
 	segs, err := listSegments(db.fsys)
 	if err != nil {
 		return err

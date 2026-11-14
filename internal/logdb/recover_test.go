@@ -652,13 +652,13 @@ func TestCrashDuringRecovery(t *testing.T) {
 }
 
 // genSeg returns the header of the segment index of generation gen, whose first sequence number is first, and its salt.
-func genSeg(gen, index, first uint64) ([]byte, uint64) {
-	salt := gen<<8 | index
+func genSeg(gen genNum, index segNum, first seqNum) ([]byte, uint64) {
+	salt := uint64(gen)<<8 | uint64(index)
 	return appendSegHeader(nil, segHeader{gen: gen, index: index, firstSeq: first, salt: salt}), salt
 }
 
 // writeSeg makes that segment with the frames of bodies, durably, and returns their offsets.
-func writeSeg(t *testing.T, fsys *simfs.FS, gen, index, first uint64, bodies ...[]byte) []int64 {
+func writeSeg(t *testing.T, fsys *simfs.FS, gen genNum, index segNum, first seqNum, bodies ...[]byte) []int64 {
 	t.Helper()
 	b, salt := genSeg(gen, index, first)
 	var offs []int64
@@ -726,9 +726,9 @@ func TestGenerations(t *testing.T) {
 	t.Run("a checkpoint of the base-end", func(t *testing.T) {
 		fsys := copyFS(base)
 		offs := writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
-		loc := slices.Concat(oh[:], []byte{placeInline}, uv(1, uint64(segHeaderSize+8+puts[3].valueOff), uint64(len(object))))
+		loc := slices.Concat(oh[:], []byte{byte(placeInline)}, uv(1, uint64(segHeaderSize+8+puts[3].valueOff), uint64(len(object))))
 		body := slices.Concat(uv(5, 1, 1, 1, 3), kv("k1", "value 1."), kv("k2", "value 2."), kv("k3", "value 3."), uv(1), loc)
-		setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: offs[1],
+		setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: segOff(offs[1]),
 			recCRC: crcAt(t, fsys, g21, offs[1])}, body))
 		db := reopen(t, fsys, Options{})
 		if info := db.Recovery(); info.Generation != 2 || info.Checkpoint != "used" || info.Replayed != 1 {
@@ -834,7 +834,7 @@ func TestGenerations(t *testing.T) {
 		}, "checkpoint", -1, "names generation 3, which is incomplete"},
 		{"a checkpoint that does not pair with a complete generation", func(fsys *simfs.FS) {
 			offs := writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
-			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 4, seg: 1, off: offs[2],
+			setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 4, seg: 1, off: segOff(offs[2]),
 				recCRC: crcAt(t, fsys, g21, offs[2]) + 1}, uv(1, 0, 0, 0)))
 		}, "checkpoint", -1, fmt.Sprintf("the log does not have sequence 4 at %s offset %d", simPath(g21),
 			lost+frameLen(len(endF(nil))))},

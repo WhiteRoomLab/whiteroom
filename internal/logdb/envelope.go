@@ -35,21 +35,21 @@ func sealValue(key []byte, keyID uint64, plain []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ad := binary.AppendUvarint([]byte{envSealed}, keyID)
+	ad := binary.AppendUvarint([]byte{byte(envSealed)}, keyID)
 	nonce := make([]byte, gcmNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
 	n := len(plain) + aead.Overhead()
 	v := make([]byte, 0, len(ad)+gcmNonceSize+binary.MaxVarintLen64+n)
-	v = binary.AppendUvarint(append(append(v, ad...), nonce...), uint64(n))
+	v = binary.AppendUvarint(append(append(v, ad...), nonce...), fromInt(n))
 	return aead.Seal(v, nonce, plain, ad), nil
 }
 
 // openValue opens v, a value of envelope 1, with the key that keys returns for its key ID.
 func openValue(keys func(keyID uint64) ([]byte, bool), v []byte) ([]byte, error) {
 	d := &decoder{b: v, short: errNotSealed.Error()}
-	if d.u8() != envSealed {
+	if envKind(d.u8()) != envSealed {
 		return nil, errNotSealed
 	}
 	keyID := d.uvarint()

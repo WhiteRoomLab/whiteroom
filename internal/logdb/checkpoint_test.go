@@ -77,7 +77,7 @@ func uv(vs ...uint64) []byte {
 
 // kv returns a key and a plain value as a checkpoint body has them.
 func kv(k, v string) []byte {
-	return slices.Concat(uv(uint64(len(k))), []byte(k), []byte{envPlain}, uv(uint64(len(v))), []byte(v))
+	return slices.Concat(uv(uint64(len(k))), []byte(k), []byte{byte(envPlain)}, uv(uint64(len(v))), []byte(v))
 }
 
 func ckpTemps(fsys *simfs.FS) []string {
@@ -130,8 +130,8 @@ func TestCheckpointLayout(t *testing.T) {
 	}
 	ih, fh := sha256.Sum256(inline), sha256.Sum256(file)
 	objs := [][]byte{
-		slices.Concat(ih[:], []byte{placeInline}, uv(1, uint64(inlineOff(db, ih)), 10)),
-		slices.Concat(fh[:], []byte{placeFile}, uv(200)),
+		slices.Concat(ih[:], []byte{byte(placeInline)}, uv(1, uint64(inlineOff(db, ih)), 10)),
+		slices.Concat(fh[:], []byte{byte(placeFile)}, uv(200)),
 	}
 	if bytes.Compare(fh[:], ih[:]) < 0 {
 		objs[0], objs[1] = objs[1], objs[0]
@@ -154,7 +154,7 @@ func TestCheckpointUsed(t *testing.T) {
 	}
 	st := db.cur.Load()
 	if h := ckpOf(t, fsys); h.gen != 1 || h.seq != 6 || h.seg != st.seg || h.off != st.off ||
-		h.recCRC != crcAt(t, fsys, segName(1, st.seg), st.off) || st.seg < 2 {
+		h.recCRC != crcAt(t, fsys, segName(1, st.seg), int64(st.off)) || st.seg < 2 {
 		t.Errorf("checkpoint %+v of the state at %d of segment %d", h, st.off, st.seg)
 	}
 	for i := 6; i < 9; i++ {
@@ -241,22 +241,22 @@ func TestCheckpointDamaged(t *testing.T) {
 			`keys out of order: "a" after "b"`},
 		{"a key too long", rawCkp(h, slices.Concat(uv(1, 0, 1, 1, 1), kv(strings.Repeat("k", MaxKey+1), ""))),
 			"key too long: 4097 bytes (max 4096)"},
-		{"a sealed value", rawCkp(h, slices.Concat(uv(1, 0, 1, 1, 1, 1), []byte("k"), []byte{envSealed}, uv(0))),
+		{"a sealed value", rawCkp(h, slices.Concat(uv(1, 0, 1, 1, 1, 1), []byte("k"), []byte{byte(envSealed)}, uv(0))),
 			"sealed values are not supported by this version"},
 		{"an unknown envelope", rawCkp(h, slices.Concat(uv(1, 0, 1, 1, 1, 1), []byte("k"), []byte{2}, uv(0))),
 			"unknown value envelope 2"},
-		{"objects out of order", rawCkp(h, slices.Concat(uv(1, 0, 0, 2), hash(2), []byte{placeFile}, uv(1), hash(1),
-			[]byte{placeFile}, uv(1))), fmt.Sprintf("object %x out of order", hash(1))},
+		{"objects out of order", rawCkp(h, slices.Concat(uv(1, 0, 0, 2), hash(2), []byte{byte(placeFile)}, uv(1), hash(1),
+			[]byte{byte(placeFile)}, uv(1))), fmt.Sprintf("object %x out of order", hash(1))},
 		{"an unknown placement", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{3})), "unknown placement 3"},
-		{"an object in segment 0", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{placeInline}, uv(0, 100, 1))),
+		{"an object in segment 0", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(0, 100, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object after the segment of the checkpoint", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1),
-			[]byte{placeInline}, uv(h.seg+1, 100, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
-		{"an object in a header", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{placeInline}, uv(1, 71, 1))),
+			[]byte{byte(placeInline)}, uv(uint64(h.seg)+1, 100, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
+		{"an object in a header", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(1, 71, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
-		{"an object beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{placeInline},
+		{"an object beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
 			uv(1, 100, math.MaxInt64-99))), fmt.Sprintf("bad location of object %x", hash(1))},
-		{"a file object too large", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{placeFile},
+		{"a file object too large", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeFile)},
 			uv(math.MaxInt64+1))), fmt.Sprintf("bad object size %d", uint64(math.MaxInt64+1))},
 		{"next event 0", rawCkp(h, uv(0, 0, 0, 0)), "bad event counts: 0 events, next event 0"},
 		{"more events than numbers", rawCkp(h, uv(3, 3, 0, 0)), "bad event counts: 3 events, next event 3"},
@@ -414,8 +414,8 @@ func TestCheckpointRecordMismatch(t *testing.T) {
 	}{
 		{"another CRC", func(fsys *simfs.FS) { setCkpHeader(t, fsys, func(h *ckpHeader) { h.recCRC++ }) }, h},
 		{"the offset of another record", func(fsys *simfs.FS) {
-			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off = offs[1] })
-		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: offs[1]}},
+			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off = segOff(offs[1]) })
+		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: segOff(offs[1])}},
 		{"an offset in a record", func(fsys *simfs.FS) {
 			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off += 8 })
 		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: h.off + 8}},
@@ -530,7 +530,7 @@ func TestAutoCheckpoint(t *testing.T) {
 		var fsys *simfs.FS
 		o := Options{CheckpointBytes: 200, SyncCheckpoints: true, Hook: func(p string) error {
 			if p == "checkpoint:done" {
-				seqs = append(seqs, ckpOf(t, fsys).seq)
+				seqs = append(seqs, uint64(ckpOf(t, fsys).seq))
 			}
 			return nil
 		}}

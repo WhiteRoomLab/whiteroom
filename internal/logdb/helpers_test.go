@@ -268,7 +268,7 @@ func frames(t *testing.T, fsys vfs.FS, name string) (segHeader, []int64) {
 }
 
 // commitFrame returns the frame of a commit that puts key in table, for a segment with salt.
-func commitFrame(salt, seq uint64, table uint32, key, value string) []byte {
+func commitFrame(salt uint64, seq seqNum, table uint32, key, value string) []byte {
 	return appendFrame(nil, salt, appendCommit(nil, seq, []op{{code: opPut, table: table, key: key, value: []byte(value)}}))
 }
 

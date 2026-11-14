@@ -96,7 +96,7 @@ func (db *DB) commit(tx *Tx) error {
 		return err
 	}
 	n := int64(frameLen(len(body)))
-	if db.seg.records > 0 && db.seg.end+n > db.o.SegmentBytes {
+	if db.seg.records > 0 && int64(db.seg.end)+n > db.o.SegmentBytes {
 		if err := db.rollover(seq); err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func (db *DB) commit(tx *Tx) error {
 	}
 	// The commit point: from here on nothing fails, and the hooks can only block.
 	_ = db.hook("update:synced")
-	seg.end += n
+	seg.end += segOff(n)
 	seg.records++
 	db.logBytes += n
 	db.cur.Store(st)
@@ -130,16 +130,16 @@ func (db *DB) commit(tx *Tx) error {
 func (db *DB) next(tx *Tx, seg *segment, frame []byte) *state {
 	base := tx.st
 	n := int64(len(frame))
-	st := &state{gen: base.gen, seq: base.seq + 1, seg: seg.index, off: seg.end, end: seg.end + n,
+	st := &state{gen: base.gen, seq: base.seq + 1, seg: seg.index, off: seg.end, end: seg.end + segOff(n),
 		lastCRC: binary.LittleEndian.Uint32(frame[4:]), tables: tx.tables, objects: base.objects,
-		nextEvent: base.nextEvent, events: base.events, logBytes: db.logBytes + n, segments: int(seg.index)}
+		nextEvent: base.nextEvent, events: base.events, logBytes: db.logBytes + n, segments: seg.index.count()}
 	if st.tables == nil {
 		st.tables = base.tables
 	}
 	for i := range tx.ops {
 		switch p := &tx.ops[i]; p.code {
 		case opPut, opDelete: // in tx.tables already
-		default:
+		case opInline, opFile, opEvent:
 			if reason := st.applyOp(tx.owner, p, st.seq, seg.index, seg.end); reason != "" {
 				panic(fmt.Sprintf("logdb: a commit that recovery would refuse: %s", reason))
 			}
@@ -221,7 +221,7 @@ func (db *DB) writeObjectFile(name string, data []byte) error {
 
 // rollover goes on in a new segment, whose first record has the sequence number first. Its header and its name are
 // durable before a record goes in it. The file of the old segment stays open for reads.
-func (db *DB) rollover(first uint64) error {
+func (db *DB) rollover(first seqNum) error {
 	seg, err := createSegment(db.fsys, db.seg.gen, db.seg.index+1, first)
 	if err != nil {
 		return err

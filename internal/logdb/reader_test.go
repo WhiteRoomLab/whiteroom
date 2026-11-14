@@ -524,7 +524,7 @@ func TestReaderHead(t *testing.T) {
 	h, _ := frames(t, fsys, seg1)
 	frame := commitFrame(h.salt, 3, 1, "c", "3")
 	appendRaw(t, fsys, seg1, frame)
-	st3 := headSlot{gen: 1, seg: 1, end: st2.end + int64(len(frame)), seq: 3, crc: crcAt(t, fsys, seg1, st2.end)}
+	st3 := headSlot{gen: 1, seg: 1, end: st2.end + segOff(len(frame)), seq: 3, crc: crcAt(t, fsys, seg1, int64(st2.end))}
 	checkDump(t, rd, "1/a=1\n1/b=2") // head does not name it yet
 	cases := []struct {
 		name string
@@ -584,7 +584,7 @@ func TestReaderHead(t *testing.T) {
 	checkDump(t, late, "1/a=1\n1/b=2\n1/c=3")
 	frame4 := commitFrame(h.salt, 4, 1, "d", "4")
 	appendRaw(t, fsys, seg1, frame4)
-	st4 := headSlot{gen: 1, seg: 1, end: st3.end + int64(len(frame4)), seq: 4, crc: crcAt(t, fsys, seg1, st3.end)}
+	st4 := headSlot{gen: 1, seg: 1, end: st3.end + segOff(len(frame4)), seq: 4, crc: crcAt(t, fsys, seg1, int64(st3.end))}
 	for _, c := range []struct {
 		name string
 		s    headSlot
@@ -688,7 +688,7 @@ func TestReaderHeadInBase(t *testing.T) {
 	name := segName(2, 1)
 	_, offs := frames(t, fsys, name)
 	lockFile(t, fsys, "lock/writer", vfs.Exclusive)
-	setFile(t, fsys, "head", headFile(headSlot{gen: 2, seg: 1, end: offs[1], seq: 4, crc: crcAt(t, fsys, name, offs[0])}))
+	setFile(t, fsys, "head", headFile(headSlot{gen: 2, seg: 1, end: segOff(offs[1]), seq: 4, crc: crcAt(t, fsys, name, offs[0])}))
 	if _, err := OpenReader(fsys, Options{}); err == nil || err.Error() != simDir+"/head: corrupt: the log does not match head" {
 		t.Errorf("OpenReader: %v", err)
 	}

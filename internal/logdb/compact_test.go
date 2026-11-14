@@ -34,8 +34,8 @@ func gensOf(t *testing.T, fsys vfs.FS) []uint64 {
 	t.Helper()
 	var gens []uint64
 	for _, name := range logNames(t, fsys) {
-		gen, _, _ := parseSegName(path.Base(name))
-		if len(gens) == 0 || gens[len(gens)-1] != gen {
+		g, _, _ := parseSegName(path.Base(name))
+		if gen := uint64(g); len(gens) == 0 || gens[len(gens)-1] != gen {
 			gens = append(gens, gen)
 		}
 	}
@@ -69,7 +69,7 @@ func baseRecords(t *testing.T, fsys vfs.FS) int {
 		b := fileData(t, fsys, name)
 		_, offs := frames(t, fsys, name)
 		for _, off := range offs {
-			if b[off+8] == recBase {
+			if recType(b[off+8]) == recBase {
 				n++
 			}
 		}
@@ -161,12 +161,12 @@ func TestCompactKeepsState(t *testing.T) {
 			for _, name := range names {
 				size += fileSize(t, fsys, name)
 			}
-			if h, st := readHeadFile(t, fsys), db.cur.Load(); h.gen != 2 || h.seq != seq || h.seg != st.seg || h.end != st.end ||
+			if h, st := readHeadFile(t, fsys), db.cur.Load(); h.gen != 2 || uint64(h.seq) != seq || h.seg != st.seg || h.end != st.end ||
 				h.crc != st.lastCRC {
 				t.Errorf("head after the compaction: %+v", h)
 			}
 			s := db.Stats()
-			if st := db.cur.Load(); st.gen != 2 || st.seq != seq || s.LogBytes != size || s.Segments != len(names) {
+			if st := db.cur.Load(); st.gen != 2 || uint64(st.seq) != seq || s.LogBytes != size || s.Segments != len(names) {
 				t.Errorf("generation %d, seq %d, Stats %+v", st.gen, st.seq, s)
 			}
 			s.LogBytes, s.Segments = stats.LogBytes, stats.Segments
@@ -178,7 +178,7 @@ func TestCompactKeepsState(t *testing.T) {
 			b := fileData(t, fsys, segName(2, h.seg))
 			sh, _ := frames(t, fsys, segName(2, h.seg))
 			body, _, reason := parseFrame(b[h.off:], sh.salt)
-			if rec, _ := parseBody(body); h.gen != 2 || h.seq != seq || reason != "" || rec.typ != recBaseEnd {
+			if rec, _ := parseBody(body); h.gen != 2 || uint64(h.seq) != seq || reason != "" || rec.typ != recBaseEnd {
 				t.Errorf("checkpoint %+v of a record of type %d", h, rec.typ)
 			}
 			// Commits go on at S+1.
@@ -562,10 +562,10 @@ func TestCompactFaults(t *testing.T) {
 			} else if !errors.Is(err, cause) || errors.Is(err, ErrFailed) {
 				t.Fatalf("compact: %v", err)
 			}
-			if h := readHeadFile(t, fsys); !c.failed && h.gen != c.gen {
+			if h := readHeadFile(t, fsys); !c.failed && uint64(h.gen) != c.gen {
 				t.Errorf("head of generation %d", h.gen)
 			}
-			if st := db.cur.Load(); st.gen != c.gen || c.gen == 1 && stateOf(t, db) != before ||
+			if st := db.cur.Load(); uint64(st.gen) != c.gen || c.gen == 1 && stateOf(t, db) != before ||
 				c.gen == 2 && hasTable(dump(t, db), 2) {
 				t.Errorf("generation %d:\n%s", st.gen, stateOf(t, db))
 			}

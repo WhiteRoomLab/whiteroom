@@ -117,18 +117,18 @@ func TestValues(t *testing.T) {
 		{"maxBody", maxBody, 1 << 28},
 		{"MaxKey", MaxKey, 4096},
 		{"minBody", minBody, 9},
-		{"recCommit", recCommit, 1},
-		{"recBase", recBase, 2},
-		{"recBaseEnd", recBaseEnd, 3},
-		{"opPut", opPut, 1},
-		{"opDelete", opDelete, 2},
-		{"opInline", opInline, 3},
-		{"opFile", opFile, 4},
-		{"opEvent", opEvent, 5},
-		{"envPlain", envPlain, 0},
-		{"envSealed", envSealed, 1},
-		{"placeInline", placeInline, 1},
-		{"placeFile", placeFile, 2},
+		{"recCommit", int(recCommit), 1},
+		{"recBase", int(recBase), 2},
+		{"recBaseEnd", int(recBaseEnd), 3},
+		{"opPut", int(opPut), 1},
+		{"opDelete", int(opDelete), 2},
+		{"opInline", int(opInline), 3},
+		{"opFile", int(opFile), 4},
+		{"opEvent", int(opEvent), 5},
+		{"envPlain", int(envPlain), 0},
+		{"envSealed", int(envSealed), 1},
+		{"placeInline", int(placeInline), 1},
+		{"placeFile", int(placeFile), 2},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
@@ -319,6 +319,14 @@ func TestFrame(t *testing.T) {
 	}
 }
 
+// setU64 returns a copy of b, a header of 64 bytes, with v at off and the CRC of that.
+func setU64(b []byte, off int, v uint64) []byte {
+	c := slices.Clone(b)
+	binary.LittleEndian.PutUint64(c[off:], v)
+	binary.LittleEndian.PutUint32(c[60:], crc32c(c[:60]))
+	return c
+}
+
 func headBytes(s0, s1 headSlot) []byte {
 	return appendHeadSlot(appendHeadSlot(nil, s0), s1)
 }
@@ -399,11 +407,14 @@ func TestHead(t *testing.T) {
 		{"segment 0", headSlot{counter: 0, gen: 1, seg: 0, end: 64}, 0},
 		{"end in the header", headSlot{counter: 0, gen: 1, seg: 1, end: 56}, 0},
 		{"end not aligned", headSlot{counter: 0, gen: 1, seg: 1, end: 68}, 0},
-		{"end beyond int64", headSlot{counter: 0, gen: 1, seg: 1, end: -8}, 0},
 	} {
 		_, err := parseHeadSlot(headPath, appendHeadSlot(nil, c.s), c.i)
 		checkCorrupt(t, err, headPath, -1, "bad slot fields")
 	}
+	// appendHeadSlot does not write an end beyond int64.
+	beyond := setU64(appendHeadSlot(nil, headSlot{counter: 0, gen: 1, seg: 1, end: 64}), 40, math.MaxUint64-7)
+	_, err = parseHeadSlot(headPath, beyond, 0)
+	checkCorrupt(t, err, headPath, -1, "bad slot fields")
 	c := appendHeadSlot(nil, headSlot{counter: 0, gen: 1, seg: 1, end: 64})
 	c[12] = 1
 	binary.LittleEndian.PutUint32(c[60:], crc32c(c[:60]))
@@ -503,11 +514,15 @@ func TestCheckpoint(t *testing.T) {
 		{"segment 0", ckpHeader{gen: 1, seq: 1, seg: 0, off: 64}},
 		{"offset in the header", ckpHeader{gen: 1, seq: 1, seg: 1, off: 56}},
 		{"offset not aligned", ckpHeader{gen: 1, seq: 1, seg: 1, off: 68}},
-		{"offset beyond int64", ckpHeader{gen: 1, seq: 1, seg: 1, off: -8}},
 		{"body too long", ckpHeader{gen: 1, seq: 1, seg: 1, off: 64, bodyLen: math.MaxInt64 - 63}},
-		{"body beyond int64", ckpHeader{gen: 1, seq: 1, seg: 1, off: 64, bodyLen: -1}},
 	} {
 		_, err := parseCkpHeader(ckpPath, appendCkpHeader(nil, c.h))
+		checkCorrupt(t, err, ckpPath, -1, "bad header fields")
+	}
+	// appendCkpHeader does not write an offset or a length beyond int64.
+	valid := appendCkpHeader(nil, ckpHeader{gen: 1, seq: 1, seg: 1, off: 64})
+	for _, c := range [][]byte{setU64(valid, 40, math.MaxUint64-7), setU64(valid, 48, math.MaxUint64)} {
+		_, err := parseCkpHeader(ckpPath, c)
 		checkCorrupt(t, err, ckpPath, -1, "bad header fields")
 	}
 	longest := ckpHeader{gen: 1, seq: 1, seg: 1, off: 64, bodyLen: math.MaxInt64 - 64}
@@ -525,6 +540,32 @@ func TestCheckpoint(t *testing.T) {
 	if _, _, err := parseCheckpoint(ckpPath, slices.Concat([]byte("whrm-log"), file[8:])); err == nil ||
 		!strings.HasSuffix(err.Error(), ": corrupt: not a checkpoint of whiteroom's log") {
 		t.Errorf("magic: %v", err)
+	}
+}
+
+// TestNegativePanics: a negative offset, length or slot number is a bug of the caller, not a value to write.
+func TestNegativePanics(t *testing.T) {
+	slot := appendHeadSlot(nil, headSlot{gen: 1, seg: 1, end: 64})
+	for _, c := range []struct {
+		name string
+		f    func()
+		want string
+	}{
+		{"end of a slot", func() { appendHeadSlot(nil, headSlot{gen: 1, seg: 1, end: -8}) }, "logdb: negative number -8"},
+		{"offset of a checkpoint", func() { appendCkpHeader(nil, ckpHeader{gen: 1, seq: 1, seg: 1, off: -8}) },
+			"logdb: negative number -8"},
+		{"body of a checkpoint", func() { appendCkpHeader(nil, ckpHeader{gen: 1, seq: 1, seg: 1, off: 64, bodyLen: -1}) },
+			"logdb: negative number -1"},
+		{"slot -1", func() { _, _ = parseHeadSlot(headPath, slot, -1) }, "logdb: negative number -1"},
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != c.want {
+					t.Errorf("%s: %v, want %q", c.name, r, c.want)
+				}
+			}()
+			c.f()
+		}()
 	}
 }
 

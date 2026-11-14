@@ -16,7 +16,10 @@ import (
 )
 
 // ckpMark names the state of a checkpoint: its generation and the sequence number of its record.
-type ckpMark struct{ gen, seq uint64 }
+type ckpMark struct {
+	gen genNum
+	seq seqNum
+}
 
 func (m ckpMark) before(st *state) bool {
 	return m.gen < st.gen || m.gen == st.gen && m.seq < st.seq
@@ -112,7 +115,7 @@ func decodeCheckpoint(h ckpHeader, body []byte, own *owner) (*state, string) {
 
 // left returns how many bytes d has not read.
 func (d *decoder) left() uint64 {
-	return uint64(len(d.b) - d.i)
+	return uint64(len(d.b[d.i:]))
 }
 
 // ckpTable reads the keys of the table id in a checkpoint body.
@@ -154,21 +157,19 @@ func (d *decoder) ckpObjects(h ckpHeader, own *owner) pmap[objLoc] {
 		if k := string(hash[:]); d.reason == "" && len(keys) > 0 && k <= keys[len(keys)-1] {
 			d.fail(fmt.Sprintf("object %x out of order", hash[:]))
 		}
-		loc := objLoc{placement: d.u8()}
+		loc := objLoc{placement: objPlace(d.u8())}
 		switch loc.placement {
 		case placeInline:
-			seg, off, size := d.uvarint(), d.uvarint(), d.uvarint()
-			if d.reason == "" && (seg == 0 || seg > h.seg || off < segHeaderSize+8 || off > math.MaxInt64 ||
+			seg := d.uvarint()
+			off, okOff := toInt64(d.uvarint())
+			size, okSize := toInt64(d.uvarint())
+			if d.reason == "" && (seg == 0 || seg > uint64(h.seg) || !okOff || off < segHeaderSize+8 || !okSize ||
 				size > math.MaxInt64-off) {
 				d.fail(fmt.Sprintf("bad location of object %x", hash[:]))
 			}
-			loc.seg, loc.off, loc.size = seg, int64(off), int64(size)
+			loc.seg, loc.off, loc.size = segNum(seg), segOff(off), size
 		case placeFile:
-			size := d.uvarint()
-			if d.reason == "" && size > math.MaxInt64 {
-				d.fail(fmt.Sprintf("bad object size %d", size))
-			}
-			loc.size = int64(size)
+			loc.size = d.size()
 		default:
 			d.fail(fmt.Sprintf("unknown placement %d", loc.placement))
 		}
@@ -286,25 +287,25 @@ func writeCheckpoint(f vfs.File, st *state) error {
 	for _, id := range slices.Sorted(maps.Keys(st.tables)) {
 		m := st.tables[id]
 		w.uvarint(uint64(id))
-		w.uvarint(uint64(m.Len()))
+		w.uvarint(fromInt(m.Len()))
 		m.Ascend("", func(k string, v []byte) bool {
 			w.uvarint(uint64(len(k)))
 			w.str(k)
-			w.u8(envPlain)
+			w.u8(byte(envPlain))
 			w.uvarint(uint64(len(v)))
 			w.write(v)
 			return true
 		})
 	}
-	w.uvarint(uint64(st.objects.Len()))
+	w.uvarint(fromInt(st.objects.Len()))
 	st.objects.Ascend("", func(k string, loc objLoc) bool {
 		w.str(k)
-		w.u8(loc.placement)
+		w.u8(byte(loc.placement))
 		if loc.placement == placeInline {
-			w.uvarint(loc.seg)
-			w.uvarint(uint64(loc.off))
+			w.uvarint(uint64(loc.seg))
+			w.uvarint(fromInt64(int64(loc.off)))
 		}
-		w.uvarint(uint64(loc.size))
+		w.uvarint(fromInt64(loc.size))
 		return true
 	})
 	if err := w.w.Flush(); err != nil {

@@ -10,9 +10,10 @@ import (
 // the base-end have the sequence number of the last commit before it. A published state never changes: an Update
 // makes a new one.
 type state struct {
-	gen, seq  uint64
-	seg       uint64
-	off, end  int64
+	gen       genNum
+	seq       seqNum
+	seg       segNum
+	off, end  segOff
 	lastCRC   uint32 // the CRC of the frame of the record seq, or 0
 	tables    tableMap
 	objects   pmap[objLoc] // by the 32 bytes of their SHA-256
@@ -24,9 +25,10 @@ type state struct {
 
 // objLoc is where an object is: in a file of objects/, or at off in the segment seg of the generation, in a record.
 type objLoc struct {
-	placement byte // placeInline or placeFile
-	seg       uint64
-	off, size int64
+	placement objPlace
+	seg       segNum
+	off       segOff
+	size      int64
 }
 
 // tableMap holds tables by their IDs. A table without keys is not in it.
@@ -49,8 +51,10 @@ func (t tableMap) del(o *owner, table uint32, key string) {
 
 // applyRecord applies rec, a record of the generation of s whose frame is at off in the segment seg, to s, which is
 // not published yet, with nodes of o, or says why it cannot. The order of the records is for the caller to check.
-func (s *state) applyRecord(o *owner, rec *record, seg uint64, off int64) string {
+func (s *state) applyRecord(o *owner, rec *record, seg segNum, off segOff) string {
 	switch rec.typ {
+	case recCommit:
+		return s.apply(o, rec.ops, rec.seq, seg, off)
 	case recBase:
 		for i := range rec.ops {
 			if reason := s.applyBaseOp(o, &rec.ops[i], rec.seq, seg, off); reason != "" {
@@ -61,12 +65,12 @@ func (s *state) applyRecord(o *owner, rec *record, seg uint64, off int64) string
 	case recBaseEnd:
 		return s.endBase(rec.end)
 	}
-	return s.apply(o, rec.ops, rec.seq, seg, off)
+	return fmt.Sprintf("unknown record type %d", rec.typ)
 }
 
 // apply applies ops, those of the commit seq whose frame is at off in the segment seg, to s, which is not published
 // yet, with nodes of o, or says why it cannot.
-func (s *state) apply(o *owner, ops []op, seq, seg uint64, off int64) string {
+func (s *state) apply(o *owner, ops []op, seq seqNum, seg segNum, off segOff) string {
 	for i := range ops {
 		if reason := s.applyOp(o, &ops[i], seq, seg, off); reason != "" {
 			return reason
@@ -75,7 +79,7 @@ func (s *state) apply(o *owner, ops []op, seq, seg uint64, off int64) string {
 	return ""
 }
 
-func (s *state) applyOp(o *owner, p *op, seq, seg uint64, off int64) string {
+func (s *state) applyOp(o *owner, p *op, seq seqNum, seg segNum, off segOff) string {
 	switch p.code {
 	case opPut:
 		s.tables.put(o, p.table, p.key, clone(p.value))
@@ -88,7 +92,7 @@ func (s *state) applyOp(o *owner, p *op, seq, seg uint64, off int64) string {
 		}
 		loc := objLoc{placement: placeFile, size: p.size}
 		if p.code == opInline {
-			loc = objLoc{placement: placeInline, seg: seg, off: off + 8 + int64(p.valueOff), size: int64(len(p.value))}
+			loc = objLoc{placement: placeInline, seg: seg, off: off + 8 + segOff(p.valueOff), size: int64(len(p.value))}
 		}
 		s.objects = s.objects.Put(o, key, loc)
 	case opEvent:
@@ -109,10 +113,11 @@ func (s *state) applyOp(o *owner, p *op, seq, seg uint64, off int64) string {
 // applyBaseOp applies p, an op of a base record with the sequence number seq: a put or an object as in a commit, or
 // an event, which keeps its number and the sequence number of its commit. The numbers increase, with gaps where a
 // compaction dropped events.
-func (s *state) applyBaseOp(o *owner, p *op, seq, seg uint64, off int64) string {
+func (s *state) applyBaseOp(o *owner, p *op, seq seqNum, seg segNum, off segOff) string {
 	switch p.code {
 	case opPut, opInline, opFile:
 		return s.applyOp(o, p, seq, seg, off)
+	case opDelete: // refused below
 	case opEvent:
 		switch {
 		case p.number < s.nextEvent || p.number == math.MaxUint64:
@@ -133,7 +138,7 @@ func (s *state) endBase(e baseEnd) string {
 	for _, m := range s.tables {
 		keys += m.Len()
 	}
-	if e.keys != uint64(keys) || e.objects != uint64(s.objects.Len()) || e.events != s.events || e.nextEvent < s.nextEvent {
+	if e.keys != fromInt(keys) || e.objects != fromInt(s.objects.Len()) || e.events != s.events || e.nextEvent < s.nextEvent {
 		return fmt.Sprintf("the base of generation %d does not match its end record", s.gen)
 	}
 	s.nextEvent = e.nextEvent

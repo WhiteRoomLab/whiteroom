@@ -32,9 +32,9 @@ func (db *DB) Verify(ctx context.Context) error {
 	own := new(owner)
 	err := readLog(ctx, db.handles, st, func(r logRecord) (bool, error) {
 		if reason := log.applyRecord(own, &r.rec, r.seg, r.off); reason != "" {
-			return false, &CorruptError{Path: r.p, Offset: r.off, Reason: reason}
+			return false, &CorruptError{Path: r.p, Offset: int64(r.off), Reason: reason}
 		}
-		log.seq, log.seg, log.off, log.end, log.lastCRC = r.rec.seq, r.seg, r.off, r.off+r.n, r.crc
+		log.seq, log.seg, log.off, log.end, log.lastCRC = r.rec.seq, r.seg, r.off, r.off+segOff(r.n), r.crc
 		return true, nil
 	})
 	if err != nil {

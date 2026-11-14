@@ -122,7 +122,7 @@ func objName(hash [32]byte) string {
 }
 
 // readObject reads the data of the object hash of the generation gen, which is at loc.
-func (db *DB) readObject(gen uint64, hash [32]byte, loc objLoc) ([]byte, error) {
+func (db *DB) readObject(gen genNum, hash [32]byte, loc objLoc) ([]byte, error) {
 	if loc.placement != placeInline {
 		return db.readObjectFile(hash, loc.size)
 	}
@@ -141,7 +141,7 @@ func (db *DB) readObjectFile(hash [32]byte, size int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if want := uint64(size) + objHeaderSize; uint64(info.Size()) != want {
+	if want := fromInt64(size) + objHeaderSize; fromInt64(info.Size()) != want {
 		return nil, corruptFile(p, fmt.Sprintf("has %d bytes, want %d", info.Size(), want))
 	}
 	if info.Size() > math.MaxInt {

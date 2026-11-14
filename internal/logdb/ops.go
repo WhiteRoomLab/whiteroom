@@ -3,21 +3,20 @@ package logdb
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 )
 
 // op is a change in a record. Its code says which fields it uses: put table, key and value; delete table and key;
 // inline object hash and value; file object hash and size; event number, seq and value. valueOff is the offset of
 // value in the record body, set by the encoders and by decodeOps.
 type op struct {
-	code     byte
+	code     opCode
 	table    uint32
 	key      string
 	value    []byte
 	hash     [32]byte
 	size     int64
 	number   uint64
-	seq      uint64
+	seq      seqNum
 	valueOff int
 }
 
@@ -29,28 +28,28 @@ type baseEnd struct {
 
 // record is a decoded record body.
 type record struct {
-	typ  byte
-	seq  uint64
+	typ  recType
+	seq  seqNum
 	part uint64  // base
 	ops  []op    // commit, base
 	end  baseEnd // base-end
 }
 
-func appendBodyStart(dst []byte, typ byte, seq uint64) []byte {
-	return binary.LittleEndian.AppendUint64(append(dst, typ), seq)
+func appendBodyStart(dst []byte, typ recType, seq seqNum) []byte {
+	return binary.LittleEndian.AppendUint64(append(dst, byte(typ)), uint64(seq))
 }
 
-func appendCommit(dst []byte, seq uint64, ops []op) []byte {
+func appendCommit(dst []byte, seq seqNum, ops []op) []byte {
 	start := len(dst)
 	return appendOps(appendBodyStart(dst, recCommit, seq), start, ops)
 }
 
-func appendBase(dst []byte, seq, part uint64, ops []op) []byte {
+func appendBase(dst []byte, seq seqNum, part uint64, ops []op) []byte {
 	start := len(dst)
 	return appendOps(binary.AppendUvarint(appendBodyStart(dst, recBase, seq), part), start, ops)
 }
 
-func appendBaseEnd(dst []byte, seq uint64, e baseEnd) []byte {
+func appendBaseEnd(dst []byte, seq seqNum, e baseEnd) []byte {
 	dst = appendBodyStart(dst, recBaseEnd, seq)
 	for _, v := range [...]uint64{e.parts, e.keys, e.objects, e.events, e.nextEvent} {
 		dst = binary.AppendUvarint(dst, v)
@@ -65,7 +64,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 	for i := range ops {
 		o := &ops[i]
 		o.valueOff = 0
-		dst = append(dst, o.code)
+		dst = append(dst, byte(o.code))
 		switch o.code {
 		case opPut, opDelete:
 			if o.table == 0 || len(o.key) > MaxKey {
@@ -85,7 +84,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 			}
 			dst = binary.AppendUvarint(append(dst, o.hash[:]...), uint64(o.size))
 		case opEvent:
-			dst = binary.AppendUvarint(binary.AppendUvarint(dst, o.number), o.seq)
+			dst = binary.AppendUvarint(binary.AppendUvarint(dst, o.number), uint64(o.seq))
 			dst = appendValue(dst, start, o)
 		default:
 			panic(fmt.Sprintf("logdb: unknown op %d", o.code))
@@ -95,7 +94,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 }
 
 func appendValue(dst []byte, start int, o *op) []byte {
-	dst = binary.AppendUvarint(append(dst, envPlain), uint64(len(o.value)))
+	dst = binary.AppendUvarint(append(dst, byte(envPlain)), uint64(len(o.value)))
 	o.valueOff = len(dst) - start
 	return append(dst, o.value...)
 }
@@ -156,20 +155,22 @@ func (d *decoder) bytes(n uint64) []byte {
 	if d.reason != "" {
 		return nil
 	}
-	if n > uint64(len(d.b)-d.i) {
+	k, ok := toInt(n)
+	if !ok || k > len(d.b)-d.i {
 		d.fail(d.short)
 		return nil
 	}
-	d.i += int(n)
-	return d.b[d.i-int(n) : d.i]
+	d.i += k
+	return d.b[d.i-k : d.i]
 }
 
 func (d *decoder) table() uint32 {
 	t := d.uvarint()
-	if d.reason == "" && (t == 0 || t > math.MaxUint32) {
+	id, ok := toUint32(t)
+	if d.reason == "" && (!ok || id == 0) {
 		d.fail(fmt.Sprintf("invalid table %d", t))
 	}
-	return uint32(t)
+	return id
 }
 
 func (d *decoder) key() string {
@@ -182,12 +183,22 @@ func (d *decoder) key() string {
 
 // value reads a value and returns it with its offset in the body, which starts base bytes before d.b.
 func (d *decoder) value(base int) ([]byte, int) {
-	if r := envelopeReason(d.u8()); r != "" {
+	if r := envelopeReason(envKind(d.u8())); r != "" {
 		d.fail(r)
 	}
 	n := d.uvarint()
 	off := base + d.i
 	return d.bytes(n), off
+}
+
+// size reads the size of an object.
+func (d *decoder) size() int64 {
+	v := d.uvarint()
+	size, ok := toInt64(v)
+	if d.reason == "" && !ok {
+		d.fail(fmt.Sprintf("bad object size %d", v))
+	}
+	return size
 }
 
 func (d *decoder) hash() (h [32]byte) {
@@ -205,7 +216,7 @@ func decodeOps(p []byte, base int) ([]op, string) {
 		if d.reason != "" {
 			break
 		}
-		o := op{code: d.u8()}
+		o := op{code: opCode(d.u8())}
 		switch o.code {
 		case opPut, opDelete:
 			o.table = d.table()
@@ -218,14 +229,10 @@ func decodeOps(p []byte, base int) ([]op, string) {
 			o.value, o.valueOff = d.value(base)
 		case opFile:
 			o.hash = d.hash()
-			size := d.uvarint()
-			if d.reason == "" && size > math.MaxInt64 {
-				d.fail(fmt.Sprintf("bad object size %d", size))
-			}
-			o.size = int64(size)
+			o.size = d.size()
 		case opEvent:
 			o.number = d.uvarint()
-			o.seq = d.uvarint()
+			o.seq = seqNum(d.uvarint())
 			o.value, o.valueOff = d.value(base)
 		default:
 			d.fail(fmt.Sprintf("unknown op %d", o.code))
@@ -247,7 +254,7 @@ func parseBody(b []byte) (record, string) {
 	if len(b) < minBody {
 		return record{}, "truncated body"
 	}
-	r := record{typ: b[0], seq: binary.LittleEndian.Uint64(b[1:])}
+	r := record{typ: recType(b[0]), seq: seqNum(binary.LittleEndian.Uint64(b[1:]))}
 	d := &decoder{b: b, i: minBody, short: "truncated body"}
 	switch r.typ {
 	case recCommit:

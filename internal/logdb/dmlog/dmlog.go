@@ -136,7 +136,7 @@ func parseEntry(r io.ReaderAt, size, ss, off int64) (Entry, int64, error) {
 	case e.Flags&^knownFlags != 0:
 		return e, 0, fmt.Errorf("unknown flags %#x", e.Flags&^knownFlags)
 	case e.Flags&FlagMark != 0:
-		if e.DataLen > uint64(ss-entrySize) {
+		if e.DataLen > uint64(ss-entrySize) { //nolint:gosec // G115: ss is a sector size, at least 512
 			return e, 0, fmt.Errorf("a mark of %d bytes, longer than the %d bytes of its sector after the entry",
 				e.DataLen, ss-entrySize)
 		}
@@ -151,12 +151,13 @@ func parseEntry(r io.ReaderAt, size, ss, off int64) (Entry, int64, error) {
 	case e.DataLen != 0:
 		return e, 0, fmt.Errorf("data_len %d in an entry that is not a mark", e.DataLen)
 	case e.Flags&FlagDiscard == 0 && e.Sectors > 0:
-		if e.Sectors > uint64((size-next)/ss) {
+		if e.Sectors > uint64((size-next)/ss) { //nolint:gosec // G115: next is at most size, checked at the start
 			return e, 0, errors.New("the log ends inside the data of the entry")
 		}
 		e.Data = next
-		next += int64(e.Sectors) * ss
+		next += int64(e.Sectors) * ss //nolint:gosec // G115: at most (size-next)/ss, checked above
 	}
+	//nolint:gosec // G115: ss is positive
 	if limit := uint64(math.MaxInt64 / ss); e.Sector > limit || e.Sectors > limit-e.Sector {
 		return e, 0, fmt.Errorf("the sectors %d+%d end past the largest device", e.Sector, e.Sectors)
 	}
@@ -183,7 +184,7 @@ func (l *Log) Range(i int) (off, n int64) {
 		return 0, 0
 	}
 	ss := int64(l.Super.SectorSize)
-	return int64(e.Sector) * ss, int64(e.Sectors) * ss
+	return int64(e.Sector) * ss, int64(e.Sectors) * ss //nolint:gosec // G115: Parse refuses sectors that end past MaxInt64
 }
 
 // maxChunk is the most that Replay reads or writes at once.
