@@ -24,7 +24,7 @@ const (
 
 func mustLoad(t *testing.T, src Source) *builder {
 	t.Helper()
-	b, err := load(src)
+	b, err := load(src, "")
 	if err != nil {
 		t.Fatalf("load() error:\n%v", err)
 	}
@@ -285,7 +285,7 @@ func TestLoadErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			src := testSource(t)
 			tt.change(t, src)
-			b, err := load(src)
+			b, err := load(src, "")
 			if b != nil {
 				t.Errorf("load() = %+v with an error", b)
 			}
@@ -363,7 +363,7 @@ func TestLoadSourceErrors(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			src := testSource(t)
 			src.fail = map[string]error{method: errBoom}
-			b, err := load(src)
+			b, err := load(src, "")
 			if b != nil || !errors.Is(err, errBoom) || err.Error() != errBoom.Error() {
 				t.Errorf("load() = %+v, %v; want nil, %v", b, err, errBoom)
 			}

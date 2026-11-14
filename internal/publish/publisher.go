@@ -34,10 +34,12 @@ type Options struct {
 	Store  *store.Store     // the store to publish, which the Publisher does not close
 	Schema content.SiteFile // the schema file of the site, named as in a site directory (site/schema.yaml)
 	Theme  fs.FS            // the files of the theme, which every build reads again
-	// Out, CacheDir, Memory and Workers are those of build.Options.
+	// Out, CacheDir, Memory, Workers and URL are those of build.Options. URL is also the Editor's (Editor.SetURL), and New
+	// checks it.
 	Out, CacheDir string
 	Memory        int64
 	Workers       int
+	URL           string
 	Now           func() time.Time // the clock of the Publisher and of its Editor, for several goroutines; nil is time.Now
 	// Retry is the wait before a scheduled publish that has failed is tried again; 0 is one minute.
 	Retry time.Duration
@@ -138,7 +140,8 @@ type Publisher struct {
 
 // New returns a Publisher of o.Store that has not started: it wants a build and a step of the scheduler, which Run makes.
 // It loads the theme for the Editor, and fails if it does not load, or if the store, the output directory, the cache
-// directory or the theme is missing, or Memory, Workers or Retry is negative.
+// directory or the theme is missing, or Memory, Workers or Retry is negative, or URL is not "" and not a URL of the site
+// (content.CheckSiteURL).
 func New(o Options) (*Publisher, error) {
 	switch {
 	case o.Store == nil:
@@ -156,6 +159,11 @@ func New(o Options) (*Publisher, error) {
 	case o.Retry < 0:
 		return nil, fmt.Errorf("retry %v is out of range (0 or more)", o.Retry)
 	}
+	if o.URL != "" {
+		if err := content.CheckSiteURL(o.URL); err != nil {
+			return nil, fmt.Errorf("invalid site URL: %w", err)
+		}
+	}
 	th, err := theme.Load(o.Theme)
 	if err != nil {
 		return nil, themeErrors(err)
@@ -171,6 +179,7 @@ func New(o Options) (*Publisher, error) {
 	}
 	p.ed = edit.New(o.Store, o.Schema, th)
 	p.ed.SetClock(p.now)
+	p.ed.SetURL(o.URL)
 	p.ed.Notify(p.notify)
 	p.request(reasonStart, edit.Result{}, true)
 	return p, nil
@@ -292,7 +301,9 @@ func (p *Publisher) build(ctx context.Context) (*build.Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the store: %w", err)
 	}
-	opts := build.Options{Source: src, Out: p.o.Out, CacheDir: p.o.CacheDir, Memory: p.o.Memory, Workers: p.o.Workers}
+	opts := build.Options{
+		Source: src, Out: p.o.Out, CacheDir: p.o.CacheDir, Memory: p.o.Memory, Workers: p.o.Workers, URL: p.o.URL,
+	}
 	if p.beforeBuild != nil {
 		p.beforeBuild(opts)
 	}

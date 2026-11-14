@@ -489,7 +489,7 @@ func (r *run) checkSettingsChange(site, old *content.Site) (content.Errors, erro
 // savedSite loads data, the settings document that the store had, with the schema file as r.site does: nil if it does not
 // load.
 func (r *run) savedSite(data []byte) (*content.Site, error) {
-	site, err := content.LoadSite(content.SiteFile{Name: settingsName, Data: data}, r.e.schema, r.lookup)
+	site, err := r.e.loadSite(content.SiteFile{Name: settingsName, Data: data}, r.lookup)
 	switch {
 	case r.err != nil:
 		return nil, r.err

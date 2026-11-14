@@ -36,7 +36,19 @@ var importKinds = []content.RefKind{
 
 var errNotEmpty = errors.New("the store is not empty: Import needs a store without documents")
 
-// Import imports the site that src reads into s, which must have no documents, as the user by: the settings, every
+// ImportOptions are the options of ImportWith.
+type ImportOptions struct {
+	// URL is the URL of the site that replaces that of the settings in the checks, which ImportWith checks as the settings
+	// do; "" keeps it.
+	URL string
+}
+
+// Import is ImportWith without options.
+func Import(ctx context.Context, s *store.Store, src Source, by string) (content.Errors, error) {
+	return ImportWith(ctx, s, src, by, ImportOptions{})
+}
+
+// ImportWith imports the site that src reads into s, which must have no documents, as the user by: the settings, every
 // document, the revisions that its entries publish or schedule and the original of every medium, with the IDs and the
 // numbers that its files have. The revisions that no entry publishes or schedules are not read, and the theme and
 // the schema file are read only to validate the site.
@@ -52,18 +64,27 @@ var errNotEmpty = errors.New("the store is not empty: Import needs a store witho
 // The problems are the error, content.Errors with the files, lines and columns of the files that the source gave. Where
 // the build finds the same problem in a stage that Import has too, they are the build's lines; the exceptions are the
 // texts about the hash and the format of the original of an image, and the duplicates of output paths that need the files of
-// the release, which only the build finds. A failed Import stores no document, but it may leave originals, which nothing
+// the release, which only the build finds. A failed import stores no document, but it may leave originals, which nothing
 // uses. One Update stores everything, so the engine's limit of a transaction bounds the size of the site (item 136 of
 // 6.12). On success, the warnings are those of the redirects.
-func Import(ctx context.Context, s *store.Store, src Source, by string) (content.Errors, error) {
+//
+// opts.URL replaces the URL of the site after the settings have loaded, in every check of the import, as build.Options.URL
+// does for a build; the settings are stored as the source has them. A URL that does not pass is an error before anything
+// is read, and the error does not have it in it.
+func ImportWith(ctx context.Context, s *store.Store, src Source, by string, opts ImportOptions) (content.Errors, error) {
 	if err := checkOp(Op{By: by}); err != nil {
 		return nil, err
+	}
+	if opts.URL != "" {
+		if err := content.CheckSiteURL(opts.URL); err != nil {
+			return nil, fmt.Errorf("invalid site URL: %w", err)
+		}
 	}
 	// Before anything is read or saved, so that the originals of a site do not go into a store that has documents.
 	if err := s.View(ctx, checkEmpty); err != nil {
 		return nil, err
 	}
-	im := &importer{ctx: ctx, store: s, src: src, by: by}
+	im := &importer{ctx: ctx, store: s, src: src, by: by, url: opts.URL}
 	if err := im.read(); err != nil {
 		return nil, err
 	}
@@ -107,6 +128,7 @@ type importer struct {
 	store *store.Store
 	src   Source
 	by    string
+	url   string // ImportOptions.URL
 
 	settings, schema content.SiteFile
 	files            map[content.RefKind]map[string]content.SiteFile
@@ -232,9 +254,13 @@ func (im *importer) loadSite() (content.Errors, error) {
 		}
 		return errs, nil
 	}
+	if im.url != "" {
+		site.URL = im.url
+	}
 	im.site = site
 	im.sp.Site, im.sp.Theme = site, th
 	im.ed = New(im.store, im.schema, th)
+	im.ed.SetURL(im.url) // write checks on im.site, but whatever im.ed loads from the settings must agree with it
 	return nil, nil
 }
 

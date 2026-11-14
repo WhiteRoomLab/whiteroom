@@ -43,6 +43,7 @@ type Editor struct {
 	schema content.SiteFile
 	theme  *theme.Theme
 	now    func() time.Time
+	url    string // replaces the URL of the site that the operations load from the settings; "" for none
 	ids    *content.IDSource
 	notify func(Result)
 	wrap   func(reader) reader // nil outside the tests, which make the reads of the index fail
@@ -75,6 +76,11 @@ func (e *Editor) Notify(f func(Result)) { e.notify = f }
 // entry and the date of a post that is published without one) and the time part of the IDs that they make; the IDs keep
 // growing whatever the clock does. SetClock must be called before the Editor is used.
 func (e *Editor) SetClock(now func() time.Time) { e.now = now }
+
+// SetURL replaces the URL of the site that the operations check against, which they otherwise take from the settings, with
+// u, as build.Options.URL does for a build; "" is no replacement. The settings document is validated and saved as it is
+// written. The caller checks u (content.CheckSiteURL). SetURL must be called before the Editor is used.
+func (e *Editor) SetURL(u string) { e.url = u }
 
 // Schema returns the schema file that New was given. The caller must not change its Data.
 func (e *Editor) Schema() content.SiteFile { return e.schema }

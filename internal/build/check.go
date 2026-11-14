@@ -8,15 +8,21 @@ import "context"
 // duplicates. It returns nil if Build would get past all that, the warnings aside, which Check does not return; else
 // the errors that Build returns, content.Errors in the same order, or an error of src as it is, or ctx.Err().
 //
+// url is Options.URL: it replaces the URL of the site as Build does, so that the same src and url give the same errors; a
+// url that does not pass is an error before anything is read.
+//
 // It does not open the originals of the media, so it does not find what Build finds in them (originals that are
 // missing or of another size, images that cannot be read, the paths of the media files that clash with others). It
 // does not render the pages either, so it does not find a template that cannot be executed. It needs neither an output
 // directory nor a cache directory.
-func Check(ctx context.Context, src Source) error {
+func Check(ctx context.Context, src Source, url string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	b, err := load(src)
+	if err := checkURL(url); err != nil {
+		return err
+	}
+	b, err := load(src, url)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package content
 
 import (
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -487,7 +488,53 @@ func TestCheckSiteURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertErrorMsg(t, checkSiteURL(tt.in), tt.msg)
+			assertErrorMsg(t, CheckSiteURL(tt.in), tt.msg)
 		})
+	}
+}
+
+// TestCheckSiteURLLikeValidate checks that CheckSiteURL says of a URL what Site.Validate says of it at /url, which is the
+// rule that the override of the URL of the site has too.
+func TestCheckSiteURLLikeValidate(t *testing.T) {
+	for _, in := range []string{
+		"https://example.com", "https://example.com/blog", "http://localhost:8080",
+		"https://example.com/", "https://Example.com", "https://example.com:443", "https://example.com?x=1", "ftp://example.com",
+		"example.com", "https://user:pass@example.com",
+	} {
+		t.Run(in, func(t *testing.T) {
+			site := testSite()
+			site.URL = in
+			var want []string
+			if err := site.Validate(nil); err != nil {
+				var es Errors
+				if !errors.As(err, &es) {
+					t.Fatalf("Validate() = %v, want Errors", err)
+				}
+				for _, e := range es {
+					if e.Path == "/url" {
+						want = append(want, e.Msg)
+					}
+				}
+			}
+			got := CheckSiteURL(in)
+			switch {
+			case len(want) == 0 && got != nil:
+				t.Errorf("CheckSiteURL() = %v, want nil: Validate() has no problem at /url", got)
+			case len(want) == 1 && (got == nil || got.Error() != want[0]):
+				t.Errorf("CheckSiteURL() = %v, want %q", got, want[0])
+			case len(want) > 1:
+				t.Fatalf("Validate() has %d problems at /url", len(want))
+			}
+		})
+	}
+
+	site := testSite()
+	site.URL = ""
+	if err := site.Validate(nil); err == nil || !strings.Contains(err.Error(), "/url: missing url") {
+		t.Errorf("Validate() of a site without a URL = %v, want missing url", err)
+	}
+	if err := CheckSiteURL(""); err == nil {
+		t.Error(`CheckSiteURL("") = nil, want an error`)
 	}
 }
 

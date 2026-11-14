@@ -37,6 +37,9 @@ type Options struct {
 	// Workers is the most goroutines that render the pages, publish the media or read the files of the release at once;
 	// 0 is runtime.GOMAXPROCS(0).
 	Workers int
+	// URL is the URL of the site that replaces the url of the settings, which Build checks as the settings do; "" keeps it.
+	// The documents of the Source stay as they are.
+	URL string
 }
 
 // Result is what Build has published.
@@ -60,6 +63,8 @@ type Result struct {
 // with the releases; and current. Build keeps the release that current pointed to before, for Rollback, and removes
 // the older ones; it removes none if the release is that of current. It also removes what builds that did not end
 // left: releases/.tmp-* and current.tmp-*. Anything else in Out is an error, and Build never removes it.
+//
+// opts.URL that does not pass content.CheckSiteURL is an error before Build makes anything.
 //
 // If Build fails, Out stays as it was: Build removes the temporary directory of the release, and makes only Out, .lock
 // and releases if they are missing. The error is then content.Errors, sorted by file, line, column and pointer, if the
@@ -86,6 +91,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	workers := cmp.Or(opts.Workers, runtime.GOMAXPROCS(0))
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := checkURL(opts.URL); err != nil {
 		return nil, err
 	}
 	if err := checkDirs(opts.Out, opts.CacheDir); err != nil {
@@ -117,7 +125,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	b, err := load(opts.Source)
+	b, err := load(opts.Source, opts.URL)
 	if err != nil {
 		return nil, err
 	}

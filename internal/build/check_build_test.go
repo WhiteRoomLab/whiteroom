@@ -86,7 +86,7 @@ func TestCheckLikeBuild(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			src := buildSource(t)
 			tt.change(t, src)
-			checkErr := Check(t.Context(), src)
+			checkErr := Check(t.Context(), src, "")
 			_, buildErr := Build(t.Context(), buildOptions(src, t.TempDir(), t.TempDir(), 2))
 			if checkErr == nil || buildErr == nil {
 				t.Fatalf("Check() = %v and Build() = %v, want errors", checkErr, buildErr)
@@ -107,7 +107,7 @@ func TestCheckLikeBuild(t *testing.T) {
 			if err != nil || len(res.Warnings) == 0 {
 				t.Fatalf("Build() of %s = %+v, %v, want a release and warnings", name, res, err)
 			}
-			if err := Check(t.Context(), src); err != nil {
+			if err := Check(t.Context(), src, ""); err != nil {
 				t.Errorf("Check() of %s = %v, want nil, though Build has the warnings %v", name, err, res.Warnings)
 			}
 		}
@@ -154,7 +154,7 @@ func TestCheckLeavesTheRest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			src := buildSource(t)
 			tt.change(t, src)
-			if err := Check(t.Context(), src); err != nil {
+			if err := Check(t.Context(), src, ""); err != nil {
 				t.Errorf("Check() = %v, want nil", err)
 			}
 			if res, err := Build(t.Context(), buildOptions(src, t.TempDir(), t.TempDir(), 2)); err == nil {
@@ -162,4 +162,71 @@ func TestCheckLeavesTheRest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckURLLikeBuild checks that Check and Build with the same URL that replaces that of the site find the same
+// problems, and that both refuse a URL that does not pass in the same words.
+func TestCheckURLLikeBuild(t *testing.T) {
+	rdr := func(n int) string { return fileOf(content.RefRedirect, newID("rdr", n)) }
+	loop := strings.Join([]string{newID("rdr", 1), newID("rdr", 2), newID("rdr", 1)}, " -> ")
+	tests := []struct {
+		name   string
+		change func(t *testing.T, s *memSource)
+		want   []string // under stagingURL
+	}{
+		{
+			name: "a redirect to itself",
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/staging-only", stagingURL+"/staging-only")
+			},
+			want: []string{rdr(1) + ":5:3: /to: redirects to itself"},
+		},
+		{
+			name: "a loop of redirects",
+			change: func(t *testing.T, s *memSource) {
+				s.addRedirect(t, 1, "/loop-a", stagingURL+"/loop-b")
+				s.addRedirect(t, 2, "/loop-b", stagingURL+"/loop-a")
+			},
+			want: []string{rdr(1) + ":5:3: /to: redirect loop: " + loop, rdr(2) + ":5:3: /to: redirect loop: " + loop},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := buildSource(t)
+			tt.change(t, src)
+			if err := Check(t.Context(), src, ""); err != nil {
+				t.Errorf("Check() = %v, want nil", err)
+			}
+			if _, err := Build(t.Context(), buildOptions(src, t.TempDir(), t.TempDir(), 2)); err != nil {
+				t.Errorf("Build() = %v, want a release", err)
+			}
+			opts := buildOptions(src, t.TempDir(), t.TempDir(), 2)
+			opts.URL = stagingURL
+			checkErr := Check(t.Context(), src, stagingURL)
+			_, buildErr := Build(t.Context(), opts)
+			if checkErr == nil || buildErr == nil {
+				t.Fatalf("Check() = %v and Build() = %v, want errors", checkErr, buildErr)
+			}
+			got, want := errorTexts(t, checkErr), errorTexts(t, buildErr)
+			if !slices.Equal(got, want) || !slices.Equal(got, tt.want) {
+				t.Errorf("Check() errors:\n%s\nBuild() errors:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"),
+					strings.Join(tt.want, "\n"))
+			}
+		})
+	}
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		src := buildSource(t)
+		for _, bad := range badSiteURLs {
+			checkErr := Check(t.Context(), src, bad)
+			opts := buildOptions(src, t.TempDir(), t.TempDir(), 2)
+			opts.URL = bad
+			_, buildErr := Build(t.Context(), opts)
+			checkBadURL(t, "Check()", checkErr, bad)
+			checkBadURL(t, "Build()", buildErr, bad)
+			if checkErr != nil && buildErr != nil && checkErr.Error() != buildErr.Error() {
+				t.Errorf("Check() = %q and Build() = %q with the same URL that does not pass, want the same words", checkErr, buildErr)
+			}
+		}
+	})
 }

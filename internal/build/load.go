@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"path"
@@ -29,6 +30,7 @@ type entryDoc struct {
 // builder holds what the build has read of a site and found out about it. The documents are by ID.
 type builder struct {
 	src              Source
+	url              string // the URL that replaces that of the settings, once they have loaded; "" keeps it
 	settings, schema content.SiteFile
 	site             *content.Site
 	theme            *theme.Theme
@@ -74,8 +76,9 @@ var kinds = []content.RefKind{
 // load reads the site in src and checks what is published, in stages that each stop at their errors: decoding the
 // documents of every kind; reading the site settings and the theme; validating what is published; checking across
 // the documents; planning the pages and the other outputs. The error is content.Errors, or an error of src as it is.
-func load(src Source) (*builder, error) {
-	b := &builder{src: src}
+// url, which the caller has checked (checkURL), replaces the URL of the site once the settings have loaded; "" keeps it.
+func load(src Source, url string) (*builder, error) {
+	b := &builder{src: src, url: url}
 	b.warnings.read = b.revisionData
 	var err error
 	if b.settings, b.schema, err = src.Settings(); err != nil {
@@ -173,12 +176,28 @@ func decodeFile(p *problems, f content.SiteFile, decode func([]byte) error) bool
 	return err == nil
 }
 
+// checkURL checks url, which Options.URL and Check give, as the settings check theirs; "" is fine. The error does not
+// have url in it.
+func checkURL(url string) error {
+	if url == "" {
+		return nil
+	}
+	if err := content.CheckSiteURL(url); err != nil {
+		return fmt.Errorf("invalid site URL: %w", err)
+	}
+	return nil
+}
+
 // loadSite reads the site settings with b.ref, which finds drafts too, and the theme in fsys. The errors are those of
-// content.LoadSite and then those of theme.Load, in their orders, with the files of the theme in theme/.
+// content.LoadSite and then those of theme.Load, in their orders, with the files of the theme in theme/. It replaces the
+// URL of the site with b.url after the settings have been validated as they are written.
 func (b *builder) loadSite(fsys fs.FS) error {
 	site, siteErr := content.LoadSite(b.settings, b.schema, b.ref)
 	th, themeErr := theme.Load(fsys)
 	if siteErr == nil && themeErr == nil {
+		if b.url != "" {
+			site.URL = b.url
+		}
 		b.site, b.theme = site, th
 		b.sp.Site, b.sp.Theme = site, th
 		return nil

@@ -116,6 +116,16 @@ func (r *run) settings() (content.SiteFile, error) {
 	return content.SiteFile{Name: settingsName, Data: d.Data}, nil
 }
 
+// loadSite is content.LoadSite of the settings file with the schema file of e, with the URL of the site replaced by that of
+// SetURL after the settings have loaded.
+func (e *Editor) loadSite(settings content.SiteFile, lookup func(kind content.RefKind, id string) (content.Ref, bool)) (*content.Site, error) {
+	site, err := content.LoadSite(settings, e.schema, lookup)
+	if err == nil && e.url != "" {
+		site.URL = e.url
+	}
+	return site, err
+}
+
 // site loads the settings that the store has with the schema file, as the build does, and returns the site and the
 // settings document. Their problems, located in them, are the error.
 func (r *run) site() (*content.Site, content.SiteFile, error) {
@@ -123,7 +133,7 @@ func (r *run) site() (*content.Site, content.SiteFile, error) {
 	if err != nil {
 		return nil, content.SiteFile{}, err
 	}
-	site, err := content.LoadSite(settings, r.e.schema, r.lookup)
+	site, err := r.e.loadSite(settings, r.lookup)
 	switch {
 	case r.err != nil:
 		return nil, content.SiteFile{}, r.err

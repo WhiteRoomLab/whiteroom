@@ -480,7 +480,7 @@ func (e *Editor) SaveSettings(ctx context.Context, op Op, base int64, data []byt
 			return Result{}, err
 		}
 		file := content.SiteFile{Name: settingsName, Data: stored}
-		site, err := content.LoadSite(file, e.schema, r.lookup)
+		site, err := e.loadSite(file, r.lookup)
 		switch {
 		case r.err != nil:
 			return Result{}, r.err

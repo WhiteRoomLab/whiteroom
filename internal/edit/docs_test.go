@@ -1030,3 +1030,116 @@ func TestDanglingReferences(t *testing.T) {
 		})
 	}
 }
+
+// TestSetURL checks that an Editor whose URL is set checks the documents against it, not against that of the settings
+// document, which stays as it is written: of the redirects, those that lead back to themselves, or loop, are those of the
+// URL that was set.
+func TestSetURL(t *testing.T) {
+	const staging = "https://staging.example.com"
+	op := Op{By: userID}
+	itself := redirectJSON("/staging-only", staging+"/staging-only")
+	toSettings := redirectJSON("/staging-only", "https://example.com/staging-only")
+	loopA, loopB := redirectJSON("/loop-a", staging+"/loop-b"), redirectJSON("/loop-b", staging+"/loop-a")
+	// newEditor returns an Editor of s whose URL is set to url, with the IDs of an Editor of newSample.
+	newEditor := func(t *testing.T, s *store.Store, url string) *Editor {
+		t.Helper()
+		ed := testEditor(t, s)
+		ed.SetURL(url)
+		return ed
+	}
+	// created returns the error of the creation of a redirect with data in a new store of the sample site, by an Editor
+	// whose URL is set to url.
+	created := func(t *testing.T, url, data string) error {
+		t.Helper()
+		_, s := newSample(t)
+		_, err := newEditor(t, s, url).Create(t.Context(), op, content.RefRedirect, []byte(data))
+		return err
+	}
+	redirectsToItself := func(t *testing.T, data string) string {
+		t.Helper()
+		return where(t, docName(content.RefRedirect, predictIDs(t, content.RefRedirect)[0]), data, `"to"`) + "/to: redirects to itself"
+	}
+
+	t.Run("a redirect to itself", func(t *testing.T) {
+		if err := created(t, "", itself); err != nil {
+			t.Errorf("Create() without a URL set = %v, want a redirect that goes out of the site", err)
+		}
+		if err := created(t, "https://example.com", itself); err != nil {
+			t.Errorf("Create() with the URL of the settings set = %v, want a redirect that goes out of the site", err)
+		}
+		if err, want := created(t, staging, itself), redirectsToItself(t, itself); err == nil || err.Error() != want {
+			t.Errorf("Create() with the URL %s set = %v, want the error %q", staging, err, want)
+		}
+	})
+
+	t.Run("a redirect to the URL of the settings", func(t *testing.T) {
+		if err, want := created(t, "", toSettings), redirectsToItself(t, toSettings); err == nil || err.Error() != want {
+			t.Errorf("Create() without a URL set = %v, want the error %q", err, want)
+		}
+		if err := created(t, staging, toSettings); err != nil {
+			t.Errorf("Create() with the URL %s set = %v, want a redirect that goes out of the site", staging, err)
+		}
+	})
+
+	t.Run("a loop of redirects", func(t *testing.T) {
+		for _, url := range []string{"", staging} {
+			_, s := newSample(t)
+			ed := newEditor(t, s, url)
+			first, err := ed.Create(t.Context(), op, content.RefRedirect, []byte(loopA))
+			if err != nil {
+				t.Fatalf("Create() of the first redirect with the URL %q set = %v", url, err)
+			}
+			_, err = ed.Create(t.Context(), op, content.RefRedirect, []byte(loopB))
+			switch {
+			case url == "" && err != nil:
+				t.Errorf("Create() of the second redirect without a URL set = %v, want a redirect that goes out of the site", err)
+			case url != "" && (err == nil || !strings.Contains(err.Error(), "/to: redirect loop: "+first.ID+" -> ")):
+				t.Errorf("Create() of the second redirect with the URL %s set = %v, want the problem of the loop with %s", url, err, first.ID)
+			}
+		}
+	})
+
+	// The store's own API saves what the Editor would refuse. The redirects that go back to themselves are problems that
+	// are there before and after a change of the settings, under the URL that is set; they are none under the other URL,
+	// which the settings document has, so SaveSettings, which changes neither URL, finds no new problem only if it checks
+	// the settings that it replaces and the settings that it saves under the one URL.
+	t.Run("the settings", func(t *testing.T) {
+		orig := string(sampleFile(t, settingsName))
+		changed := replaceOnce(t, orig, "Webサイトの企画と制作", "Webサイトの企画・制作・運用")
+		for _, tt := range []struct {
+			name, from, to string
+		}{
+			{"a redirect to itself under the URL", "/staging-only", staging + "/staging-only"},
+			{"a redirect to itself under the URL of the settings", "/production-only", "https://example.com/production-only"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				_, s := newSample(t)
+				id := testID(content.RefRedirect, 1)
+				put(t, s, content.RefRedirect, id, indentRedirect(t, id, tt.from, tt.to))
+				ed := newEditor(t, s, staging)
+				res, err := ed.SaveSettings(t.Context(), op, read(t, s, store.SettingsKind, "").Seq, []byte(changed))
+				if err != nil || len(res.Warnings) != 0 {
+					t.Fatalf("SaveSettings() with the URL %s set = %+v, %v; want a success without warnings", staging, res, err)
+				}
+				if got := read(t, s, store.SettingsKind, ""); string(got.Data) != changed {
+					t.Errorf("SaveSettings() with the URL %s set saved %q, want the bytes that it was given", staging, got.Data)
+				}
+				// The URL is still the one that was set, not that of the settings.
+				_, err = ed.Create(t.Context(), op, content.RefRedirect, []byte(redirectJSON("/other", staging+"/other")))
+				if err == nil || !strings.HasSuffix(err.Error(), "/to: redirects to itself") {
+					t.Errorf("Create() of a redirect to itself under the URL %s after SaveSettings = %v, want the problem", staging, err)
+				}
+			})
+		}
+	})
+}
+
+// indentRedirect returns the JSON of a redirect with the ID id, as MarshalJSON writes it.
+func indentRedirect(t *testing.T, id, from, to string) string {
+	t.Helper()
+	data, err := (content.Redirect{ID: id, From: from, To: to, Status: 301}).MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

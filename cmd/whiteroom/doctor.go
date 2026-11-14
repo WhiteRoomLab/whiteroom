@@ -192,7 +192,7 @@ func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, th
 		return nil
 	}
 	var es content.Errors
-	switch err := build.Check(ctx, src); {
+	switch err := build.Check(ctx, src, ""); {
 	case err == nil:
 	case errors.As(err, &es):
 		for _, e := range es {
