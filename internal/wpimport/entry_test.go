@@ -1486,6 +1486,52 @@ func TestEntriesTidy(t *testing.T) {
 			t.Errorf("status %q, revision %+v, want a draft with an empty revision", ei.status, ei.rev)
 		}
 	})
+	t.Run("a unit that is wrong again after it was taken out", func(t *testing.T) {
+		imp, c, ei := newTidy(t, in)
+		asked := 0
+		// A clearUnit that says it took the unit out and does not: tidy must end, and say what it lost.
+		c.takeOutUnit = func(*content.Revision, string) bool { asked++; return true }
+		ei.status = content.StatusDraft
+		ei.rev = content.Revision{Title: "a\nb", Slug: "t", Excerpt: "e"}
+		c.tidy(ei)
+		checkReport(imp, ei,
+			"skipped: the title is not imported: contains a line break or tab -> {R}#/title",
+			"skipped: the content of the entry is not imported: /title: contains a line break or tab -> {R}",
+		)
+		if asked != 1 {
+			t.Errorf("tidy asked to take the unit out %d times, want 1", asked)
+		}
+		if !reflect.DeepEqual(ei.rev, content.Revision{}) || ei.status != content.StatusDraft {
+			t.Errorf("status %q, revision %+v, want a draft with an empty revision", ei.status, ei.rev)
+		}
+	})
+	t.Run("a unit that stays wrong after others were taken out", func(t *testing.T) {
+		imp, c, ei := newTidy(t, in)
+		var units []string
+		c.takeOutUnit = func(rev *content.Revision, unit string) bool {
+			units = append(units, unit)
+			if unit == "/slug" {
+				return true
+			}
+			return clearUnit(rev, unit)
+		}
+		ei.status = content.StatusPublished
+		ei.rev = content.Revision{Title: "a\nb", Slug: "a b", Date: entryTime}
+		c.tidy(ei)
+		const slugProblem = `character ' ' is not allowed in slugs: use lower case letters, digits, "-" and "_" in ASCII`
+		checkReport(imp, ei,
+			"skipped: the title is not imported: contains a line break or tab -> {R}#/title",
+			"skipped: the slug is not imported: "+slugProblem+" -> {R}#/slug",
+			"skipped: the content of the entry is not imported: /slug: "+slugProblem+" -> {R}",
+			"review: the entry cannot be published: /title: missing title; /slug: missing slug; /date: missing date; it is a draft here -> {E}#/status",
+		)
+		if want := []string{"/title", "/slug"}; !slices.Equal(units, want) {
+			t.Errorf("tidy asked to take out %v, want %v", units, want)
+		}
+		if !reflect.DeepEqual(ei.rev, content.Revision{}) || ei.status != content.StatusDraft {
+			t.Errorf("status %q, revision %+v, want a draft with an empty revision", ei.status, ei.rev)
+		}
+	})
 	t.Run("a draft is not checked for what a publication needs", func(t *testing.T) {
 		imp, c, ei := newTidy(t, in)
 		ei.status = content.StatusDraft
@@ -1589,9 +1635,15 @@ func TestEntriesRevisionUnit(t *testing.T) {
 
 func TestEntriesClearUnit(t *testing.T) {
 	full := func() content.Revision {
-		return content.Revision{Title: "T", Slug: "s", Excerpt: "e", Date: entryTime, Parent: "p"}
+		return content.Revision{
+			Title: "T", Slug: "s", Excerpt: "e", Date: entryTime, Author: "a", FeaturedImage: "f", Sticky: true, Order: 3, Template: "t",
+			Parent: "p", Terms: content.Terms{"category": {"c1", "c2"}, "tag": {"t1"}, "genre": {"g1"}},
+		}
 	}
-	for _, unit := range []string{"/title", "/slug", "/excerpt", "/date"} {
+	for _, unit := range []string{
+		"/title", "/slug", "/excerpt", "/date", "/author", "/featuredImage", "/sticky", "/order", "/template",
+		"/terms/category", "/terms/tag", "/terms/genre",
+	} {
 		rev := full()
 		if !clearUnit(&rev, unit) {
 			t.Errorf("clearUnit(%s) = false", unit)
@@ -1606,6 +1658,18 @@ func TestEntriesClearUnit(t *testing.T) {
 			want.Excerpt = ""
 		case "/date":
 			want.Date = ""
+		case "/author":
+			want.Author = ""
+		case "/featuredImage":
+			want.FeaturedImage = ""
+		case "/sticky":
+			want.Sticky = false
+		case "/order":
+			want.Order = 0
+		case "/template":
+			want.Template = ""
+		default:
+			delete(want.Terms, strings.TrimPrefix(unit, "/terms/"))
 		}
 		if !reflect.DeepEqual(rev, want) {
 			t.Errorf("clearUnit(%s) left %+v, want %+v", unit, rev, want)
@@ -1614,10 +1678,29 @@ func TestEntriesClearUnit(t *testing.T) {
 			t.Errorf("clearUnit(%s) of what is empty = true", unit)
 		}
 	}
-	for _, unit := range []string{"", "/parent", "/unknown", "/terms/category"} {
+	for _, unit := range []string{"", "/parent", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo/title", "/fields/x", "/body"} {
 		rev := full()
 		if clearUnit(&rev, unit) || !reflect.DeepEqual(rev, full()) {
 			t.Errorf("clearUnit(%q) took something out of the revision: %+v", unit, rev)
 		}
 	}
+
+	t.Run("the last taxonomy leaves no terms", func(t *testing.T) {
+		rev := content.Revision{Terms: content.Terms{"category": {"c1"}}}
+		if !clearUnit(&rev, "/terms/category") || rev.Terms != nil {
+			t.Errorf("clearUnit left the terms %#v, want nil", rev.Terms)
+		}
+		if clearUnit(&rev, "/terms/category") {
+			t.Error("clearUnit of no terms = true")
+		}
+	})
+	t.Run("the name of a taxonomy is a JSON Pointer segment", func(t *testing.T) {
+		rev := content.Revision{Terms: content.Terms{"a/b": {"x"}, "c~d": {"y"}}}
+		if !clearUnit(&rev, "/terms/a~1b") || !reflect.DeepEqual(rev.Terms, content.Terms{"c~d": {"y"}}) {
+			t.Errorf("after /terms/a~1b the terms are %#v", rev.Terms)
+		}
+		if !clearUnit(&rev, "/terms/c~0d") || rev.Terms != nil {
+			t.Errorf("after /terms/c~0d the terms are %#v", rev.Terms)
+		}
+	})
 }

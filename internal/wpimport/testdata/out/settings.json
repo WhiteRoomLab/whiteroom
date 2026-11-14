@@ -30,6 +30,7 @@
     }
   },
   "defaultCategory": "",
+  "pageTemplates": {},
   "blocks": {
     "presets": {
       "color": {},

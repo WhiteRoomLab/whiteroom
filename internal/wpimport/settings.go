@@ -29,8 +29,13 @@ type Settings struct {
 	URLs URLSettings  `json:"urls"`
 	// DefaultCategory is the slug, decoded, of the category that %category% takes for a post without one: "" if the
 	// permalink structure of the posts has no such tag.
-	DefaultCategory string        `json:"defaultCategory"`
-	Blocks          BlockSettings `json:"blocks"`
+	DefaultCategory string `json:"defaultCategory"`
+	// PageTemplates tells how the page templates of the old site are named in the theme of the site (5.4.2): the keys are
+	// the page templates of WordPress (the values of _wp_page_template, such as "templates/full-width.php") and the values
+	// the names in the theme. A page whose template is not a key gets the name that templateName makes of it, and a value of
+	// "" leaves the template out.
+	PageTemplates map[string]string `json:"pageTemplates"`
+	Blocks        BlockSettings     `json:"blocks"`
 }
 
 // SiteSettings are the general settings of the site, in its language.
@@ -272,8 +277,8 @@ func (imp *Import) postSource(id int64) Source {
 // ProposeSettings guesses the settings of the site (6.10.1, 6.10.4) from the channel of the WXR, from the REST API in
 // imp.REST if there is one, and from the links of the old site, and records the grounds of the guess and the values to
 // check or to enter in the report. The names that the bodies use (presets, block styles, image sizes, and the classes of
-// inline elements) are listed in Blocks, for the person who imports to map them (6.10.5). defs is the schema file of the
-// developer, as UnmarshalSchema reads it, or nil. The
+// inline elements) are listed in Blocks, and the page templates that the pages use in PageTemplates, for the person who
+// imports to map them (6.10.5). defs is the schema file of the developer, as UnmarshalSchema reads it, or nil. The
 // URL rules in it are kept; the others are guessed. It is an error, and nothing is recorded, if the REST API is not that
 // of the site of the WXR, or does not say whose it is.
 func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
@@ -287,7 +292,11 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 		defs = &content.Site{}
 	}
 	ch := &imp.WXR.Channel
-	s := &Settings{URLs: URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}}, Blocks: emptyBlockSettings()}
+	s := &Settings{
+		URLs:          URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}},
+		PageTemplates: map[string]string{},
+		Blocks:        emptyBlockSettings(),
+	}
 	st := &s.Site
 	st.Name, st.Tagline = ch.Title, ch.Description
 	if st.Name == "" {
@@ -307,8 +316,53 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 	}
 	imp.reportSkippedTypes(defs)
 	imp.proposeBlocks(s, defs)
+	imp.proposePageTemplates(s)
 	imp.reportSkippedTaxonomies(defs)
 	return s, nil
+}
+
+// proposePageTemplates counts the page templates that the pages use, and puts them in s.PageTemplates for the person who
+// imports to map them to those of the theme of the site (6.10.5): each maps to the name that templateName makes of it, or
+// to nothing. They are recorded once for review. It reads the pages that are imported: those that are not in the trash nor
+// an automatic draft.
+func (imp *Import) proposePageTemplates(s *Settings) {
+	counts := make(map[string]int)
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		if it.Type != "page" || discardedStatus(it.Status) != "" {
+			continue
+		}
+		if file := pageTemplateOf(it); file != "" {
+			counts[file]++
+		}
+	}
+	for file := range counts {
+		s.PageTemplates[file] = templateName(file)
+	}
+	if n := len(counts); n > 0 {
+		imp.channelEntry(Review, Target{}, "the pages use %s of WordPress: %s; pageTemplates maps them to the page templates of the theme of the site",
+			plural(n, "page template", "page templates"), usedNames(counts))
+	}
+}
+
+// pageTemplateOf returns the page template of the item it in WordPress: the first _wp_page_template without the white space
+// around it, or "" if there is none, as WordPress takes an empty value and "default" for no template.
+func pageTemplateOf(it *wxr.Item) string {
+	file, _ := it.Meta.Get("_wp_page_template")
+	if file = strings.TrimSpace(file); file == "default" {
+		return ""
+	}
+	return file
+}
+
+// templateName returns the name that the theme of the site gives the page template file of WordPress, if it is the name
+// of the file: what follows the last "/", without ".php". It returns "" if that is not a name that whiteroom accepts.
+func templateName(file string) string {
+	name := strings.TrimSuffix(file[strings.LastIndexByte(file, '/')+1:], ".php")
+	if content.CheckName(name) != nil {
+		return ""
+	}
+	return name
 }
 
 // checkREST checks that imp.REST, if there is one, is the REST API of the site of the WXR: its home has the same host
@@ -788,6 +842,7 @@ func (imp *Import) Site(s *Settings, defs *content.Site) (*content.Site, error) 
 	site.AuthorURL = s.URLs.Author
 	setSchemaURLs(site, s, fail)
 	checkBlockNames(&s.Blocks, fail)
+	checkPageTemplates(s.PageTemplates, fail)
 
 	site.NormalizeSettings()
 	if err := site.Validate(imp.Ref); err != nil {
@@ -881,6 +936,17 @@ func checkBlockNames(b *BlockSettings, fail func(pointer, format string, args ..
 				if err := content.CheckName(name); err != nil {
 					fail(m.pointer+pointerEscaper.Replace(key), "%s", err.Error())
 				}
+			}
+		}
+	}
+}
+
+// checkPageTemplates fails for each value of names that is neither empty nor a name that whiteroom accepts.
+func checkPageTemplates(names map[string]string, fail func(pointer, format string, args ...any)) {
+	for _, key := range slices.Sorted(maps.Keys(names)) {
+		if name := names[key]; name != "" {
+			if err := content.CheckName(name); err != nil {
+				fail("/pageTemplates/"+pointerEscaper.Replace(key), "%s", err.Error())
 			}
 		}
 	}

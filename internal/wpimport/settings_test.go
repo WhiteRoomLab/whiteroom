@@ -839,6 +839,7 @@ func TestSettingsWriteJSON(t *testing.T) {
     "types": {}
   },
   "defaultCategory": "",
+  "pageTemplates": {},
   "blocks": {
     "presets": {
       "color": {},
@@ -868,6 +869,7 @@ func TestSettingsWriteJSON(t *testing.T) {
 			Types:      map[string]TypeURLs{"works": {URL: "/w/{slug}/", Archive: "/w/"}, "book": {}},
 		},
 		DefaultCategory: "お知らせ",
+		PageTemplates:   map[string]string{"templates/full-width.php": "full-width", "a~b/c.php": "", "page-lp.php": "lp"},
 		Blocks: BlockSettings{
 			Presets: PresetSettings{
 				Color:      map[string]string{"vivid-red": "accent", "pale-pink": ""},
@@ -921,6 +923,11 @@ func TestSettingsWriteJSON(t *testing.T) {
     }
   },
   "defaultCategory": "お知らせ",
+  "pageTemplates": {
+    "a~b/c.php": "",
+    "page-lp.php": "lp",
+    "templates/full-width.php": "full-width"
+  },
   "blocks": {
     "presets": {
       "color": {
@@ -1023,6 +1030,223 @@ func TestReadSettingsBlocks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(s.Blocks, want) || !s.Site.AllowHTML {
 		t.Errorf("ReadSettings has the blocks %+v and allowHtml %v, want %+v and true", s.Blocks, s.Site.AllowHTML, want)
+	}
+}
+
+func TestReadSettingsPageTemplates(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"pageTemplates": {"templates/full-width.php": "full-width", "page-lp.php": ""}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"templates/full-width.php": "full-width", "page-lp.php": ""}
+	if !reflect.DeepEqual(s.PageTemplates, want) {
+		t.Errorf("ReadSettings has the page templates %#v, want %#v", s.PageTemplates, want)
+	}
+	// A file without the key has none, and one with no names has an empty map.
+	for in, wantNil := range map[string]bool{`{}`: true, `{"site": {}}`: true, `{"pageTemplates": {}}`: false} {
+		s, err := ReadSettings("settings.json", []byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (s.PageTemplates == nil) != wantNil || len(s.PageTemplates) != 0 {
+			t.Errorf("ReadSettings(%s) has the page templates %#v, want nil: %v", in, s.PageTemplates, wantNil)
+		}
+	}
+}
+
+func TestTemplateName(t *testing.T) {
+	long := strings.Repeat("a", content.MaxTextBytes+1)
+	for _, tt := range []struct{ file, want string }{
+		{"templates/full-width.php", "full-width"},
+		{"page-lp.php", "page-lp"},
+		{"a/b/c/Landing_2.php", "Landing_2"},
+		{"full-width", "full-width"},
+		{"template.PHP", ""},
+		{"x.php.php", ""},
+		{".php", ""},
+		{"", ""},
+		{"templates/", ""},
+		{"templates/.php", ""},
+		{"my page.php", ""},
+		{"page-ünï.php", ""},
+		{"templates/full width.php", ""},
+		{"a.b.php", ""},
+		{"1.php", "1"},
+		{"-.php", "-"},
+		{"templates/" + long + ".php", ""},
+		{`dir\file.php`, ""},
+	} {
+		if got := templateName(tt.file); got != tt.want {
+			t.Errorf("templateName(%.40q) = %.40q, want %.40q", tt.file, got, tt.want)
+		}
+	}
+}
+
+// pageTemplateEntries lists the entries of the report about the page templates, as "kind: message", with " -> pointer" if
+// there is a place in the settings.
+func pageTemplateEntries(rep *Report) []string {
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the pages use") {
+			line := string(e.Kind) + ": " + e.Message
+			if e.Target != (Target{}) {
+				line += " -> " + e.Target.File + "#" + e.Target.Pointer
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestProposePageTemplates(t *testing.T) {
+	const tail = "; pageTemplates maps them to the page templates of the theme of the site"
+	page := func(id int, status, typ string, templates ...string) bodyXML {
+		x := bodyXML{id: id, typ: typ, status: status}
+		for _, v := range templates {
+			x.meta = append(x.meta, [2]string{"_wp_page_template", v})
+		}
+		return x
+	}
+	t.Run("the templates of the pages that are imported", func(t *testing.T) {
+		in := bodiesWXR(
+			page(1, "publish", "page", "templates/full-width.php"),
+			page(2, "draft", "page", "templates/full-width.php"),
+			page(3, "private", "page", " \ttemplates/full-width.php\n"),
+			page(4, "publish", "page", "page-lp.php"),
+			page(5, "publish", "page", "default"),
+			page(6, "publish", "page", ""),
+			page(7, "publish", "page", "  \n"),
+			page(8, "trash", "page", "templates/trashed.php"),
+			page(9, "auto-draft", "page", "templates/auto.php"),
+			page(10, "publish", "post", "templates/post.php"),
+			page(11, "publish", "page", "Landing Page.php"),
+			page(12, "pending", "page", "page-lp.php", "templates/second.php"),
+			page(13, "publish", "page", " default "),
+			page(14, "publish", "page", "Default"),
+			page(15, "publish", "page"),
+			page(16, "publish", "works", "templates/works.php"),
+			page(17, "future", "page", "templates/ü.php"),
+		)
+		s, imp := proposeFrom(t, in, nil, nil)
+		want := map[string]string{
+			"templates/full-width.php": "full-width", "page-lp.php": "page-lp", "Landing Page.php": "", "Default": "Default",
+			"templates/ü.php": "",
+		}
+		if !reflect.DeepEqual(s.PageTemplates, want) {
+			t.Errorf("PageTemplates = %#v, want %#v", s.PageTemplates, want)
+		}
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 5 page templates of WordPress: "templates/full-width.php" (3 times), "page-lp.php" (2 times), "Default" (1 time), ` +
+				`"Landing Page.php" (1 time), "templates/ü.php" (1 time)` + tail,
+		})
+		for _, e := range imp.Report.Entries() {
+			if strings.HasPrefix(e.Message, "the pages use") && (e.Source.Record != recordChannel || e.Target != (Target{})) {
+				t.Errorf("the entry %+v is not about the channel, with no place in the settings", e)
+			}
+		}
+	})
+	t.Run("one template", func(t *testing.T) {
+		s, imp := proposeFrom(t, bodiesWXR(page(1, "publish", "page", "tpl-a.php")), nil, nil)
+		if want := map[string]string{"tpl-a.php": "tpl-a"}; !reflect.DeepEqual(s.PageTemplates, want) {
+			t.Errorf("PageTemplates = %#v, want %#v", s.PageTemplates, want)
+		}
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 1 page template of WordPress: "tpl-a.php" (1 time)` + tail,
+		})
+	})
+	t.Run("the names that are counted most are first, and then by name", func(t *testing.T) {
+		in := bodiesWXR(
+			page(1, "publish", "page", "b.php"), page(2, "publish", "page", "a.php"),
+			page(3, "publish", "page", "c.php"), page(4, "publish", "page", "c.php"),
+		)
+		_, imp := proposeFrom(t, in, nil, nil)
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 3 page templates of WordPress: "c.php" (2 times), "a.php" (1 time), "b.php" (1 time)` + tail,
+		})
+	})
+	t.Run("no template", func(t *testing.T) {
+		in := bodiesWXR(page(1, "publish", "page"), page(2, "publish", "page", "default"), page(3, "trash", "page", "x.php"),
+			page(4, "publish", "post", "y.php"))
+		s, imp := proposeFrom(t, in, nil, nil)
+		if s.PageTemplates == nil || len(s.PageTemplates) != 0 {
+			t.Errorf("PageTemplates = %#v, want an empty map that is not nil", s.PageTemplates)
+		}
+		if got := pageTemplateEntries(imp.Report); len(got) != 0 {
+			t.Errorf("the entries are %q, want none", got)
+		}
+		_, imp = proposeFrom(t, siteWXR("https://example.com", "ja"), nil, nil)
+		if got := pageTemplateEntries(imp.Report); len(got) != 0 {
+			t.Errorf("the entries of a site without pages are %q, want none", got)
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, bodiesWXR(page(1, "publish", "page", "templates/full-width.php"), page(2, "publish", "page", "A B.php")), nil, nil)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := `  "pageTemplates": {
+    "A B.php": "",
+    "templates/full-width.php": "full-width"
+  },
+`; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the page templates\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+}
+
+func TestSitePageTemplates(t *testing.T) {
+	imp, defs := siteImport(t)
+	// Names that the theme can have, and the empty name, which leaves the template out, are all right, with any key.
+	s := sampleSettings()
+	s.PageTemplates = map[string]string{"templates/full-width.php": "full-width", "a b.php": "", "": "x_1", "Y-2": "Y-2"}
+	if _, err := imp.Site(s, defs); err != nil {
+		t.Fatalf("Site with names that are right = %v", err)
+	}
+
+	// The keys are in order, and the pointer has the key escaped.
+	s = sampleSettings()
+	s.PageTemplates = map[string]string{"templates/b.php": "a b", "a~c.php": "ü", "ok.php": "fine", "z.php": "1+1"}
+	site, err := imp.Site(s, defs)
+	if site != nil {
+		t.Errorf("Site = %+v, want none", site)
+	}
+	const invalid = `invalid name %q: use ASCII letters, digits, "-" and "_"`
+	sameStrings(t, "the errors", errorLines(t, err), []string{
+		"/pageTemplates/a~0c.php: " + fmt.Sprintf(invalid, "ü"),
+		"/pageTemplates/templates~1b.php: " + fmt.Sprintf(invalid, "a b"),
+		"/pageTemplates/z.php: " + fmt.Sprintf(invalid, "1+1"),
+	})
+	var errs content.Errors
+	_ = errors.As(err, &errs)
+	for _, e := range errs {
+		if e.File != "" || e.Line != 0 || e.Column != 0 {
+			t.Errorf("the error %+v has a place", *e)
+		}
+	}
+
+	// A name that is too long is an error too, and the others are not hidden by it.
+	s = sampleSettings()
+	s.Site.URL = ""
+	s.PageTemplates = map[string]string{"long.php": strings.Repeat("a", content.MaxTextBytes+1)}
+	_, err = imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || got[0] != fmt.Sprintf("/pageTemplates/long.php: too long: %d bytes (max %d)", content.MaxTextBytes+1, content.MaxTextBytes) ||
+		!strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %.300q, want one at /pageTemplates/long.php and one at /site/url", got)
+	}
+
+	// Settings without the table are all right.
+	s = sampleSettings()
+	if s.PageTemplates != nil {
+		t.Fatal("the settings of the test have page templates")
+	}
+	if _, err := imp.Site(s, defs); err != nil {
+		t.Errorf("Site without page templates = %v", err)
 	}
 }
 
@@ -1142,6 +1366,16 @@ func TestReadSettingsErrors(t *testing.T) {
 			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "expected boolean, got string"}}},
 		{"allowHtml as null", `{"site": {"allowHtml": null}}`,
 			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "null is not allowed; omit the key"}}},
+		{"a number as a page template", `{"pageTemplates": {"a.php": 5}}`,
+			[]settingsProblem{{at: `"a.php"`, pointer: "/pageTemplates/a.php", msg: "expected string, got number"}}},
+		{"null as a page template", `{"pageTemplates": {"templates/a.php": null}}`,
+			[]settingsProblem{{at: `"templates/a.php"`, pointer: "/pageTemplates/templates~1a.php", msg: "null is not allowed; omit the key"}}},
+		{"null as the page templates", `{"pageTemplates": null}`,
+			[]settingsProblem{{at: `"pageTemplates"`, pointer: "/pageTemplates", msg: "null is not allowed; omit the key"}}},
+		{"an array where the page templates are", `{"pageTemplates": []}`,
+			[]settingsProblem{{at: `"pageTemplates"`, pointer: "/pageTemplates", msg: "expected object, got array"}}},
+		{"the same page template twice", `{"pageTemplates": {"a.php": "a", "a.php": "b"}}`,
+			[]settingsProblem{{at: `"a.php"`, nth: 2, pointer: "/pageTemplates/a.php", msg: "duplicate key"}}},
 	} {
 		s, err := ReadSettings(file, []byte(tt.in))
 		if err == nil || s != nil {

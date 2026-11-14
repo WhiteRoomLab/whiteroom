@@ -94,6 +94,7 @@ func (imp *Import) Terms(site *content.Site) ([]content.Term, error) {
 	var terms []content.Term
 	for _, it := range items {
 		terms = append(terms, it.term)
+		imp.setPath(it.id, content.PathRef{Slug: it.term.Slug, Parent: it.term.Parent})
 	}
 	return terms, nil
 }

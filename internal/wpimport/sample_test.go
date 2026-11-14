@@ -392,7 +392,8 @@ func TestImportWithoutREST(t *testing.T) {
 			Taxonomies: map[string]string{"category": "/category/{path}/", "genre": "/genre/{slug}/", "tag": "/tag/{slug}/"},
 			Types:      map[string]TypeURLs{"works": {URL: "/works/{slug}/"}},
 		},
-		Blocks: emptyBlockSettings(),
+		PageTemplates: map[string]string{},
+		Blocks:        emptyBlockSettings(),
 	}
 	if !reflect.DeepEqual(*proposed, want) {
 		t.Errorf("ProposeSettings = %+v, want %+v", *proposed, want)

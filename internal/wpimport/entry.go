@@ -124,6 +124,7 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 	for _, ei := range live {
 		c.convert(ei)
 	}
+	c.reportGroups()
 	for _, ei := range live {
 		c.tidy(ei)
 	}
@@ -136,6 +137,17 @@ type entryConv struct {
 	site *content.Site
 	opts EntryOptions
 	zone *time.Location // the time zone of the site
+	// takeOutUnit is what tidy takes a unit out of a revision with: nil for clearUnit, which a test replaces.
+	takeOutUnit func(rev *content.Revision, unit string) bool
+
+	// groups are the items that something is not imported of, counted by the steps of convert and recorded after them.
+	groups    map[groupKey]*itemGroup
+	groupKeys []groupKey // in the order of the first item of each
+	// defaultCat is the default category of the settings, which defaultCategory finds when it is first needed.
+	defaultCat struct {
+		done, ok bool
+		pick     termPick
+	}
 }
 
 // entryItem is an item of the WXR that is being made into an entry.
@@ -251,6 +263,12 @@ func (c *entryConv) convert(ei *entryItem) {
 	c.setTitle(ei)
 	c.setSlug(ei)
 	c.setExcerpt(ei)
+	c.setTerms(ei)
+	c.setAuthor(ei)
+	c.setFeaturedImage(ei)
+	c.setSticky(ei)
+	c.setOrder(ei)
+	c.setTemplate(ei)
 }
 
 // setStatus decides the status of ei from wp:status and wp:post_password: a private or protected item is always a draft.
@@ -379,7 +397,13 @@ func (c *entryConv) revisionOptions(entry *content.Entry, publish bool) content.
 // the entry a draft if the revision does not pass as one to publish.
 func (c *entryConv) tidy(ei *entryItem) {
 	ei.rev.Normalize(c.site.Type(ei.entry.Type))
-	// Nothing that convert makes should fail: this only guards the documents.
+	takeOut := clearUnit
+	if c.takeOutUnit != nil {
+		takeOut = c.takeOutUnit
+	}
+	// Nothing that convert makes should fail: this only guards the documents. A unit that is wrong again after it was taken
+	// out ends the loop as one that cannot be taken out does.
+	taken := make(map[string]bool)
 	for {
 		err := ei.rev.Validate(c.revisionOptions(&ei.entry, false))
 		if err == nil {
@@ -387,11 +411,12 @@ func (c *entryConv) tidy(ei *entryItem) {
 		}
 		first := firstError(err)
 		unit := revisionUnit(first.Path)
-		if !clearUnit(&ei.rev, unit) {
+		if taken[unit] || !takeOut(&ei.rev, unit) {
 			ei.rev = content.Revision{}
 			c.revisionNote(Skipped, ei, "", "the content of the entry is not imported: %s", first.Error())
 			break
 		}
+		taken[unit] = true
 		c.revisionNote(Skipped, ei, unit, "the %s is not imported: %s", strings.TrimPrefix(unit, "/"), first.Msg)
 	}
 	if !publishing(ei.status) {
@@ -447,8 +472,34 @@ func clearUnit(rev *content.Revision, unit string) bool {
 		s = &rev.Excerpt
 	case "/date":
 		s = &rev.Date
+	case "/author":
+		s = &rev.Author
+	case "/featuredImage":
+		s = &rev.FeaturedImage
+	case "/template":
+		s = &rev.Template
+	case "/sticky":
+		was := rev.Sticky
+		rev.Sticky = false
+		return was
+	case "/order":
+		was := rev.Order != 0
+		rev.Order = 0
+		return was
 	default:
-		return false
+		taxonomy, ok := strings.CutPrefix(unit, "/terms/")
+		if !ok {
+			return false
+		}
+		taxonomy = pointerUnescaper.Replace(taxonomy)
+		if _, ok := rev.Terms[taxonomy]; !ok {
+			return false
+		}
+		delete(rev.Terms, taxonomy)
+		if len(rev.Terms) == 0 {
+			rev.Terms = nil
+		}
+		return true
 	}
 	if *s == "" {
 		return false
