@@ -1,6 +1,7 @@
 // Package dmlog reads and replays the logs of dm-log-writes, the target of the device mapper of Linux that copies every
-// write to a block device into a log, for the check of internal/store on ext4 (3.5): record.sh records a workload
-// through the target, as root, and the tests of internal/store replay its log, without root.
+// write to a block device into a log, for the check of internal/store on ext4, xfs and btrfs (3.5): record.sh records
+// a workload through the target, as root, and the tests of internal/store replay its log; vm.nix runs both in virtual
+// machines, without root.
 //
 // The format is that of Linux v6.18: drivers/md/dm-log-writes.c (struct log_write_super, struct log_write_entry,
 // log_one_block, log_writes_kthread) and Documentation/admin-guide/device-mapper/log-writes.rst. The integers are
@@ -231,6 +232,33 @@ func (l *Log) Points() []int {
 		}
 	}
 	return points
+}
+
+// Unordered returns the indexes of two entries of l whose order on the device the log does not tell, if there are
+// such: a write with FUA, and after it, before the next flush, a write without FUA or a discard of sectors that it
+// wrote. The target logs the first when it completes, and the second, which may have completed before it, with the
+// flush: replaying them in the order of the log may leave the older data. These are all such pairs only in the log
+// of a device without FUA of its own, as the loop devices of record.sh: there, a write with FUA ends with a flush of
+// the block layer, after the flushes that were issued before it, so that no flush is between the two in the log.
+func (l *Log) Unordered() (fua, other int, ok bool) {
+	var group []int // the writes with FUA since the last flush
+	for i, e := range l.Entries {
+		off, n := l.Range(i)
+		switch {
+		case e.Flags&FlagFlush != 0:
+			group = group[:0]
+		case n == 0:
+		case e.Flags&FlagFUA != 0:
+			group = append(group, i)
+		default:
+			for _, j := range group {
+				if o, m := l.Range(j); off < o+m && o < off+n {
+					return j, i, true
+				}
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 var flagNames = []struct {

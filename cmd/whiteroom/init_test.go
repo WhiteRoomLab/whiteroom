@@ -564,8 +564,8 @@ func TestInitErrors(t *testing.T) {
 }
 
 // TestInitFailures checks the failures that the arguments do not cause: a parent that is a file, a context that is done,
-// before the password and once the store is made, an error of the accounts, and a directory that cannot be written. The
-// last three leave no more than the directory that was there.
+// before the password and once the store is made, an error of the accounts, a directory that cannot be written, and a
+// data directory whose name cannot be synced. All but the first leave no more than the directory that was there.
 func TestInitFailures(t *testing.T) {
 	// A parent of the data directory that is a file.
 	parent := filepath.Join(t.TempDir(), "parent")
@@ -662,6 +662,24 @@ func TestInitFailures(t *testing.T) {
 	if after := snapshot(t, locked); after != before {
 		t.Errorf("a directory that cannot be written: it changed:\n%s\nwas:\n%s", after, before)
 	}
+
+	// A data directory in a directory that can be written but not read: init makes it, cannot open the directory to
+	// sync its name, and removes it.
+	unread, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unread, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unread, 0o700) })
+	data = filepath.Join(unread, "data")
+	code, stdout, stderr = runWith(t.Context(), cheap, adminFlags("-data", data)...)
+	if want := "whiteroom init: open " + unread + ": permission denied\n"; code != 1 || stdout != "" || stderr != want {
+		t.Errorf("a name that cannot be synced: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code,
+			stdout, stderr, want)
+	}
+	checkMissing(t, "a name that cannot be synced", data)
 }
 
 // actingReader is a standard input that runs act when it is first read, as another process does while the password is
