@@ -337,6 +337,57 @@ func TestPoints(t *testing.T) {
 	}
 }
 
+// TestUnordered checks which logs tell the order of their entries on the device: not one with a write with FUA and,
+// before the next flush, a write without FUA or a discard of a sector of it.
+func TestUnordered(t *testing.T) {
+	const fua, flush, discard = "fua", "flush", "discard"
+	for _, c := range []struct {
+		name    string
+		entries []any // a kind, and for a write or a discard, its first sector and its number of sectors
+		a, b    int   // the entries, or -1
+	}{
+		{"no entry", nil, -1, -1},
+		{"writes of the same sectors", []any{"", 0, 4, "", 2, 4, flush, fua, 0, 4, fua, 2, 2}, -1, -1},
+		{"a write after a write with FUA", []any{fua, 8, 4, "", 12, 4, "", 4, 4, "", 11, 1}, 0, 3},
+		{"a discard after a write with FUA", []any{"", 0, 8, fua, 8, 4, discard, 0, 16}, 1, 2},
+		{"a write of the first sector", []any{fua, 8, 4, fua, 16, 2, "", 0, 9}, 0, 2},
+		{"a write after a later one with FUA", []any{fua, 8, 4, fua, 16, 2, "", 17, 9}, 1, 2},
+		{"a flush between them", []any{fua, 8, 4, flush, "", 8, 4, "mark", "", 8, 4}, -1, -1},
+		{"a mark between them", []any{fua, 8, 4, "mark", "", 8, 4}, 0, 2},
+		{"a write with FUA after a write", []any{"", 8, 4, fua, 8, 4, flush}, -1, -1},
+	} {
+		b := newBuilder(512)
+		for i := 0; i < len(c.entries); i++ {
+			kind := c.entries[i].(string)
+			if kind == flush || kind == "mark" {
+				if kind == flush {
+					b.entry(0, 0, FlagFlush, 0, "", nil)
+				} else {
+					b.mark("ack-1")
+				}
+				continue
+			}
+			sector, n := uint64(c.entries[i+1].(int)), c.entries[i+2].(int)
+			i += 2
+			switch kind {
+			case discard:
+				b.entry(sector, uint64(n), FlagDiscard, 0, "", nil)
+			case fua:
+				b.write(sector, FlagFUA, string(make([]byte, n)))
+			default:
+				b.write(sector, 0, string(make([]byte, n)))
+			}
+		}
+		x, y, ok := parse(t, b.bytes()).Unordered()
+		if want := c.a >= 0; ok != want || ok && (x != c.a || y != c.b) {
+			t.Errorf("%s: Unordered() = %d, %d, %v; want %d, %d", c.name, x, y, ok, c.a, c.b)
+		}
+	}
+	if x, y, ok := parse(t, sample(512)).Unordered(); ok {
+		t.Errorf("Unordered() of the sample = %d, %d", x, y)
+	}
+}
+
 // TestReplay checks the device at each point of the sample, replayed from the start and from the point before.
 func TestReplay(t *testing.T) {
 	for _, ss := range []int{512, 4096} {

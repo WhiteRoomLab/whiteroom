@@ -1,19 +1,22 @@
 #!/bin/sh
-# Records the workload of internal/store (TestDMLogWorkload) on ext4 through the dm-log-writes target of Linux, for
-# TestDMLogCheck (docs 3.5). It needs root, and has not been run yet (6.12, item 130).
+# Records the workload of internal/store (TestDMLogWorkload) on a file system through the dm-log-writes target of
+# Linux, for TestDMLogCheck (docs 3.5). It needs root; vm.nix runs it in a virtual machine, which needs none.
 #
-#	usage: record.sh <output dir> <test binary of internal/store>
+#	usage: record.sh <output dir> <test binary of internal/store> [ext4|xfs|btrfs [<mount options>]]
 #
-# Make the test binary in the dev shell with: go test -c -o <file> ./internal/store
+# Make the test binary in the dev shell with: CGO_ENABLED=0 go test -c -o <file> ./internal/store
 # The output dir, missing or empty, gets log.img (the log), data.img (the device at the end), data-size (its size in
-# bytes), workload.txt (the output of the workload) and env.txt (the environment). Check it as any user, in the dev
-# shell: WHITEROOM_DMLOG=<output dir> go test -count=1 -v -run '^TestDMLogCheck$' ./internal/store
+# bytes), workload.txt (the output of the workload) and env.txt (the environment). Check a recording of ext4 as any
+# user, in the dev shell: WHITEROOM_DMLOG=<output dir> go test -count=1 -v -run '^TestDMLogCheck$' ./internal/store
+# The environment goes to the workload: with WHITEROOM_DMLOG_LOOSE=files or dirs, its store drops those syncs, and
+# the check must find problems.
 set -eu
 LC_ALL=C
 export LC_ALL
 
 name=whiteroom-dmlog
-data_size=256M
+# mkfs.xfs makes nothing smaller than 300M.
+data_size=512M
 log_size=1G
 
 die() {
@@ -21,14 +24,22 @@ die() {
 	exit 1
 }
 
-if [ $# -ne 2 ]; then
-	echo "usage: record.sh <output dir> <test binary of internal/store>" >&2
+if [ $# -lt 2 ] || [ $# -gt 4 ]; then
+	echo "usage: record.sh <output dir> <test binary of internal/store> [ext4|xfs|btrfs [<mount options>]]" >&2
 	exit 2
 fi
 out=$1
 bin=$2
+fs=${3:-ext4}
+options=${4:-}
+case $fs in
+ext4) info=dumpe2fs ;;
+xfs) info=xfs_info ;;
+btrfs) info=btrfs ;;
+*) die "$fs: not ext4, xfs or btrfs" ;;
+esac
 [ "$(id -u)" -eq 0 ] || die "needs root"
-for tool in blockdev dmsetup dumpe2fs losetup mkfifo mkfs.ext4 mount tr truncate umount; do
+for tool in blockdev dmsetup "$info" losetup mkfifo "mkfs.$fs" mount tr truncate umount; do
 	command -v "$tool" >/dev/null 2>&1 || die "needs $tool"
 done
 [ -f "$bin" ] && [ -x "$bin" ] || die "$bin: not an executable file"
@@ -51,6 +62,8 @@ pid=
 cleanup() {
 	status=$?
 	trap - EXIT
+	# A process of the workload that waits for a reply ends without one, and the workload ends its process on TERM.
+	exec 3>&-
 	if [ -n "$pid" ]; then
 		kill "$pid" 2>/dev/null || :
 		wait "$pid" 2>/dev/null || :
@@ -73,30 +86,41 @@ truncate -s "$log_size" "$out/log.img"
 data_dev=$(losetup --find --show "$out/data.img")
 log_dev=$(losetup --find --show "$out/log.img")
 size=$(blockdev --getsize64 "$data_dev")
+# The check tells the order of the writes by this (Log.Unordered of dmlog.go).
+fua=$(cat "/sys/block/${data_dev#/dev/}/queue/fua")
+[ "$fua" = 0 ] || die "$data_dev has FUA of its own: the log would not tell the order of its writes"
 dmsetup create "$name" --table "0 $(blockdev --getsz "$data_dev") log-writes $data_dev $log_dev"
 created=1
 dev=/dev/mapper/$name
-# Everything of mkfs before the mark, and no discards.
-mkfs.ext4 -q -F -T default -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 "$dev"
+# Everything of mkfs before the mark, and no discard of the device, which the log would have as one entry.
+case $fs in
+ext4) mkfs.ext4 -q -F -T default -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 "$dev" ;;
+xfs) mkfs.xfs -q -f -K "$dev" ;;
+btrfs) mkfs.btrfs -q -f -K "$dev" ;;
+esac
 dmsetup message "$name" 0 mark mkfs
 mkdir "$out/mnt"
-mount -t ext4 "$dev" "$out/mnt"
+mount -t "$fs" ${options:+-o "$options"} "$dev" "$out/mnt"
 mounted=1
 {
 	echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	echo "kernel: $(uname -srvm)"
 	echo "target: $(dmsetup targets | grep '^log-writes' || :)"
-	echo "data: $data_dev, $size bytes, logical sectors of $(blockdev --getss "$data_dev") bytes"
+	echo "data: $data_dev, $size bytes, logical sectors of $(blockdev --getss "$data_dev") bytes, without FUA"
 	echo "log: $log_dev"
 	echo "mount: $(grep " $out/mnt " /proc/mounts || :)"
-	echo "workload: $bin"
-	mkfs.ext4 -V 2>&1
-	dumpe2fs -h "$dev" 2>&1
+	echo "workload: $bin${WHITEROOM_DMLOG_LOOSE:+, without the syncs of $WHITEROOM_DMLOG_LOOSE}"
+	"mkfs.$fs" -V 2>&1
+	case $fs in
+	ext4) dumpe2fs -h "$dev" 2>&1 ;;
+	xfs) xfs_info "$out/mnt" 2>&1 ;;
+	btrfs) btrfs filesystem show "$dev" 2>&1 ;;
+	esac
 } >"$out/env.txt"
 
 # The workload prints "dmlog: <text>" for a mark, and waits for "go" until the mark is in the log.
 mkfifo "$out/workload.in" "$out/workload.out"
-WHITEROOM_DMLOG_WORKLOAD=$out/mnt/store "$bin" -test.run '^TestDMLogWorkload$' -test.count=1 -test.v \
+WHITEROOM_DMLOG_WORKLOAD=$out/mnt "$bin" -test.run '^TestDMLogWorkload$' -test.count=1 -test.v \
 	<"$out/workload.in" >"$out/workload.out" 2>&1 &
 pid=$!
 exec 3>"$out/workload.in"
