@@ -189,7 +189,7 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 	t.Helper()
 	given := make(map[int64]*EntryDoc, len(docs))
 	revisions, groups := make(map[string]int64), make(map[string]int64)
-	entryFiles, revisionFiles := make(map[string]bool), make(map[string]bool)
+	entryFiles, revisionFiles := make(map[string]bool), make(map[string]*EntryDoc)
 	var out bytes.Buffer
 	last := -1
 	position := make(map[int64]int, len(imp.WXR.Items))
@@ -253,7 +253,7 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 			t.Errorf("the entry of item %d is archived", d.Post)
 		}
 		entryFiles["entries/"+e.ID+".json"] = true
-		revisionFiles["revisions/"+d.RevisionID+".json"] = true
+		revisionFiles["revisions/"+d.RevisionID+".json"] = d
 
 		eb, err := e.MarshalJSON()
 		if err != nil {
@@ -311,8 +311,14 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 	for _, e := range imp.Report.Entries() {
 		file := e.Target.File
 		switch {
-		case strings.HasPrefix(file, "entries/") && !entryFiles[file], strings.HasPrefix(file, "revisions/") && !revisionFiles[file]:
+		case strings.HasPrefix(file, "entries/") && !entryFiles[file], strings.HasPrefix(file, "revisions/") && revisionFiles[file] == nil:
 			t.Errorf("an entry of the report is about %s, which was not given: %s", file, e.Message)
+		}
+		// What is said of a block is said of one that is in the body that was given.
+		if d := revisionFiles[file]; d != nil && (e.Target.Pointer == "/body" || strings.HasPrefix(e.Target.Pointer, "/body/")) {
+			if !pointsIntoBlocks(d.Revision.Body, strings.TrimPrefix(e.Target.Pointer, "/body")) {
+				t.Errorf("the entry of the report %q is about %s#%s, which is not in the body that was given", e.Message, file, e.Target.Pointer)
+			}
 		}
 		if p := e.Target.Pointer; p != "" && !strings.HasPrefix(p, "/") {
 			t.Errorf("the pointer %q of the entry %q is not a JSON Pointer", p, e.Message)

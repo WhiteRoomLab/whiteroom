@@ -72,6 +72,11 @@ func discardedStatus(wp string) string {
 // them to emit one at a time, in the order of the WXR, so that the caller can write each and let it go. The type and the
 // language of an entry are those that PlanEntries recorded. What it leaves out or changes is recorded in the report.
 //
+// What is given is the caller's: Entries keeps nothing of it after emit returns. The body of an entry is converted by Body
+// (6.10.2) just before the entry is given, so that what Entries holds is the WXR, the table, a little of each entry, and one
+// body. If the entry has no excerpt, the text before the read more tag is its excerpt. The blocks that would make the JSON of
+// the revision larger than content.MaxDocumentBytes, from the first that does not fit, are left out.
+//
 // An item that cannot be published, such as a post with no title, becomes a draft (6.10.1), as does every private item
 // and every item with a password. An item in the trash and an automatic draft, and one whose date and whose modification
 // time cannot be read, are not imported: they are taken out of the table and the references. site is the one that Site
@@ -521,7 +526,7 @@ func clearUnit(rev *content.Revision, unit string) bool {
 	return true
 }
 
-// emitAll gives the entries of items to emit, in their order, each after it passed the validation.
+// emitAll gives the entries of items to emit, in their order, each after its body is made and it passed the validation.
 func (c *entryConv) emitAll(ctx context.Context, items []*entryItem, emit func(*EntryDoc) error) error {
 	for _, ei := range items {
 		if err := ctx.Err(); err != nil {
@@ -539,13 +544,17 @@ func (c *entryConv) emitAll(ctx context.Context, items []*entryItem, emit func(*
 		if err := entry.Validate(c.site); err != nil {
 			return fmt.Errorf("the entry of item %d does not pass validation: %s", ei.it.ID, errorText(err))
 		}
-		if err := ei.rev.Validate(c.revisionOptions(&entry, publishing(ei.status))); err != nil {
-			return fmt.Errorf("the entry of item %d does not pass validation: %s", ei.it.ID, errorText(err))
+		made, err := c.setBody(ei)
+		if err != nil {
+			return err
+		}
+		if err := c.checkRevision(ei, &entry, made); err != nil {
+			return err
 		}
 		if err := emit(&EntryDoc{Post: ei.it.ID, Entry: entry, RevisionID: ei.revID, Revision: ei.rev}); err != nil {
 			return err
 		}
-		// What is given away is the caller's: the conversion does not hold on to it.
+		// What is given away is the caller's, the body most of all: the conversion does not hold on to it.
 		ei.rev = content.Revision{}
 	}
 	return nil
