@@ -2,11 +2,13 @@ package store
 
 import (
 	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // testBackend is a backend that the tests run on: the engine of internal/logdb with *log.
@@ -98,6 +100,48 @@ func reopen(t *testing.T, tb testBackend, dir string) *Store {
 	checkIntegrity(t, s)
 	checkConsistent(t, s)
 	return s
+}
+
+// benchStore opens the store of tb in the data directory dir, or makes it there if fresh is true. It uses dir through a
+// vfs.Counter, which it returns too.
+func benchStore(t *testing.T, tb testBackend, dir string, fresh bool) (*Store, *vfs.Counter) {
+	t.Helper()
+	if fresh {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := vfs.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vfs.Count(root)
+	var s *Store
+	if fresh {
+		s, err = create(dir, options{log: tb.log, fs: c})
+	} else {
+		s, err = open(dir, options{log: tb.log, fs: c})
+	}
+	if err != nil {
+		_ = c.Close()
+		t.Fatal(err)
+	}
+	return s, c
+}
+
+// benchClose closes s and c, which benchStore has returned, and returns how long Close of s has taken.
+func benchClose(t *testing.T, s *Store, c *vfs.Counter) int64 {
+	t.Helper()
+	start := time.Now()
+	err := s.Close()
+	d := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return int64(d)
 }
 
 // dataLayout is what a backend keeps in a data directory: the mode of each file and directory in it, by its path in
