@@ -87,6 +87,10 @@ func discardedStatus(wp string) string {
 // has no setting for, by key, once each, at the channel. If the site had Yoast SEO, its primary category is the first
 // category of an entry that has more, where the link of the item does not tell it.
 //
+// The fields of the revision are made of the custom fields of the item: the postmeta whose keys the settings map to the
+// fields of the type, or that are called as a field is (the table fields of the settings says it for each type). The report
+// counts the other custom fields by key, once for each post type, at its first item.
+//
 // What the build checks across entries (6.7) is made to hold: a published page has a published parent, and a scheduled
 // page a published or scheduled one, or else it is a draft with its parent; the published and scheduled entries of a
 // language and a type (and under a parent, for pages) have different slugs; and the front page and the posts page of
@@ -143,6 +147,7 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 	c.setParents(live)
 	c.reportGroups()
 	c.reportSEO()
+	c.reportFields()
 	for _, ei := range live {
 		c.tidy(ei)
 	}
@@ -168,6 +173,9 @@ type entryConv struct {
 	// seoSkips counts the items that have each postmeta of the SEO plugin that is not imported, in the order of the plugin's
 	// table; reportSEO records them. It is nil until an item has one.
 	seoSkips []int
+	// fields is what setFields keeps between the items: the keys of the custom fields of each post type, and the custom fields
+	// that are not imported, which reportFields records.
+	fields fieldState
 	// defaultCat is the default category of the settings, which defaultCategory finds when it is first needed.
 	defaultCat struct {
 		done, ok bool
@@ -295,6 +303,7 @@ func (c *entryConv) convert(ei *entryItem) {
 	c.setOrder(ei)
 	c.setTemplate(ei)
 	c.setSEO(ei)
+	c.setFields(ei)
 }
 
 // setStatus decides the status of ei from wp:status and wp:post_password: a private or protected item is always a draft.
@@ -419,10 +428,11 @@ func (c *entryConv) revisionOptions(entry *content.Entry, publish bool) content.
 	return content.RevisionOptions{Site: c.site, Entry: entry, Publish: publish, Import: true, Lookup: c.imp.Ref}
 }
 
-// tidy makes the revision of ei pass the validation: it normalizes it, takes out what does not pass as a draft, and makes
-// the entry a draft if the revision does not pass as one to publish.
+// tidy makes the revision of ei pass the validation: it normalizes it, leaves the fields out if they make it too large, takes out
+// what does not pass as a draft, and makes the entry a draft if the revision does not pass as one to publish.
 func (c *entryConv) tidy(ei *entryItem) {
 	ei.rev.Normalize(c.site.Type(ei.entry.Type))
+	c.fitFields(ei)
 	takeOut := clearUnit
 	if c.takeOutUnit != nil {
 		takeOut = c.takeOutUnit
@@ -494,10 +504,16 @@ var unitNames = map[string]string{
 	"/seo/ogImage":     "image for sharing",
 }
 
+// fieldUnit is the unit of the field called name, which is taken out whole.
+const fieldUnit = "/fields/"
+
 // unitName returns the name of a unit of the revision for the report: that of its key, if it has no other.
 func unitName(unit string) string {
 	if name, ok := unitNames[unit]; ok {
 		return name
+	}
+	if name, ok := strings.CutPrefix(unit, fieldUnit); ok {
+		return fmt.Sprintf("custom field %q", pointerUnescaper.Replace(name))
 	}
 	return strings.TrimPrefix(unit, "/")
 }
@@ -539,6 +555,17 @@ func clearUnit(rev *content.Revision, unit string) bool {
 		rev.Order = 0
 		return was
 	default:
+		if name, ok := strings.CutPrefix(unit, fieldUnit); ok {
+			name = pointerUnescaper.Replace(name)
+			if _, ok := rev.Fields[name]; !ok {
+				return false
+			}
+			delete(rev.Fields, name)
+			if len(rev.Fields) == 0 {
+				rev.Fields = nil
+			}
+			return true
+		}
 		taxonomy, ok := strings.CutPrefix(unit, "/terms/")
 		if !ok {
 			return false

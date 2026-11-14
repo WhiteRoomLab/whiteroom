@@ -106,6 +106,11 @@ func TestTypeName(t *testing.T) {
 		{"wp_navigation", site, ""},
 		{"wp_font_family", site, ""},
 		{"wp_font_face", site, ""},
+		// ACF keeps the definitions of its fields and types in these.
+		{"acf-field-group", site, ""},
+		{"acf-field", site, ""},
+		{"acf-post-type", site, ""},
+		{"acf-taxonomy", site, ""},
 	} {
 		if got := typeName(tt.wp, tt.site); got != tt.want {
 			t.Errorf("typeName(%q, site %v) = %q, want %q", tt.wp, tt.site != nil, got, tt.want)

@@ -393,6 +393,7 @@ func TestImportWithoutREST(t *testing.T) {
 			Types:      map[string]TypeURLs{"works": {URL: "/works/{slug}/"}},
 		},
 		PageTemplates: map[string]string{},
+		Fields:        map[string]map[string]string{},
 		Blocks:        emptyBlockSettings(),
 	}
 	if !reflect.DeepEqual(*proposed, want) {

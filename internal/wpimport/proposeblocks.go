@@ -118,16 +118,21 @@ func plural(n int, one, many string) string {
 // usedNames lists the names with their counts, the most used first, and then in the order of the names: the first
 // maxLostShown, and the number of the others.
 func usedNames(counts map[string]int) string {
+	return usedNamesOf(counts, "time", "times")
+}
+
+// usedNamesOf is usedNames with the noun that the counts are of, such as "time" and "times".
+func usedNamesOf(counts map[string]int, one, many string) string {
 	names := slices.Sorted(maps.Keys(counts))
 	slices.SortStableFunc(names, func(a, b string) int { return cmp.Compare(counts[b], counts[a]) })
 	shown := names[:min(len(names), maxLostShown)]
 	parts := make([]string, len(shown))
 	for i, name := range shown {
-		times := "times"
+		noun := many
 		if counts[name] == 1 {
-			times = "time"
+			noun = one
 		}
-		parts[i] = fmt.Sprintf("%q (%d %s)", name, counts[name], times)
+		parts[i] = fmt.Sprintf("%q (%d %s)", name, counts[name], noun)
 	}
 	s := strings.Join(parts, ", ")
 	if more := len(names) - len(shown); more > 0 {

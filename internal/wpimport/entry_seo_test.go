@@ -38,7 +38,7 @@ func TestSEOPluginTable(t *testing.T) {
 		{"tsf", "The SEO Framework", []string{
 			"_genesis_title", "_genesis_description", "_genesis_canonical_uri", "_genesis_noindex", "_social_image_id",
 			"_social_image_url", "_open_graph_title", "_open_graph_description", "_twitter_title", "_twitter_description",
-			"_genesis_nofollow", "_genesis_noarchive", "redirect", "_tsf_title_no_blogname",
+			"_genesis_nofollow", "_genesis_noarchive", "redirect", "exclude_local_search", "exclude_from_archive", "_tsf_title_no_blogname",
 		}},
 		{"ssp", "SEO SIMPLE PACK", []string{
 			"ssp_meta_title", "ssp_meta_description", "ssp_meta_canonical", "ssp_meta_robots", "ssp_meta_image",
@@ -73,29 +73,6 @@ func TestSEOPluginTable(t *testing.T) {
 	for _, name := range []string{"", "Yoast", "yoast ", "none"} {
 		if p := seoPluginNamed(name); p != nil {
 			t.Errorf("seoPluginNamed(%q) = %q, want none", name, p.name)
-		}
-	}
-	// The keys that are not custom fields: those of every plugin, and one that the import knows and does not read.
-	n := 1
-	for _, w := range want {
-		n += len(w.keys)
-		for _, k := range w.keys {
-			if !isSEOKey(k) {
-				t.Errorf("isSEOKey(%q) = false", k)
-			}
-		}
-	}
-	for _, k := range []string{"_yoast_wpseo_primary_category", "rank_math_advanced_robots"} {
-		if !isSEOKey(k) {
-			t.Errorf("isSEOKey(%q) = false", k)
-		}
-	}
-	if len(seoKeys) != n {
-		t.Errorf("%d keys, want %d", len(seoKeys), n)
-	}
-	for _, k := range []string{"", "_thumbnail_id", "_yoast_wpseo_focuskw", "_yoast_wpseo_linkdex", "_wp_page_template", "_yoast_wpseo_title "} {
-		if isSEOKey(k) {
-			t.Errorf("isSEOKey(%q) = true", k)
 		}
 	}
 }
@@ -1456,6 +1433,7 @@ func TestUnitName(t *testing.T) {
 		"/title": "title", "/featuredImage": "featuredImage", "/terms/category": "terms/category", "": "",
 		"/seo/title": "title for search engines", "/seo/description": "description for search engines",
 		"/seo/canonical": "canonical URL", "/seo/ogImage": "image for sharing", "/seo/noindex": "seo/noindex",
+		"/fields/client": `custom field "client"`, "/fields/a~1b": `custom field "a/b"`, "/fields/": `custom field ""`,
 	} {
 		if got := unitName(unit); got != want {
 			t.Errorf("unitName(%q) = %q, want %q", unit, got, want)

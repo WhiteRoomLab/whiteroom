@@ -773,6 +773,11 @@ func TestProposeSkippedTypes(t *testing.T) {
 		{id: 10, typ: "page", link: "https://example.com/b/"},
 		{id: 11, typ: "product", status: "trash", link: "https://example.com/?p=11"},
 		{id: 12, typ: "book", link: "https://example.com/book/a/"},
+		// ACF keeps its definitions in these, which are no content and are not reported.
+		{id: 13, typ: "acf-field-group", link: "https://example.com/?p=13"},
+		{id: 14, typ: "acf-field", link: "https://example.com/?p=14"},
+		{id: 15, typ: "acf-post-type", link: "https://example.com/?p=15"},
+		{id: 16, typ: "acf-taxonomy", link: "https://example.com/?p=16"},
 	}
 	in := siteWXR("https://example.com", "ja", items...)
 	defs := new(content.Site)
@@ -843,6 +848,7 @@ func TestSettingsWriteJSON(t *testing.T) {
   "seo": {
     "plugin": ""
   },
+  "fields": {},
   "blocks": {
     "presets": {
       "color": {},
@@ -874,6 +880,9 @@ func TestSettingsWriteJSON(t *testing.T) {
 		DefaultCategory: "お知らせ",
 		PageTemplates:   map[string]string{"templates/full-width.php": "full-width", "a~b/c.php": "", "page-lp.php": "lp"},
 		SEO:             SEOSettings{Plugin: "yoast"},
+		Fields: map[string]map[string]string{
+			"works": {"client": "client", "old~key": "", "a/b": "memo"}, "post": {"subtitle": "subtitle"}, "a~b": {},
+		},
 		Blocks: BlockSettings{
 			Presets: PresetSettings{
 				Color:      map[string]string{"vivid-red": "accent", "pale-pink": ""},
@@ -934,6 +943,17 @@ func TestSettingsWriteJSON(t *testing.T) {
   },
   "seo": {
     "plugin": "yoast"
+  },
+  "fields": {
+    "a~b": {},
+    "post": {
+      "subtitle": "subtitle"
+    },
+    "works": {
+      "a/b": "memo",
+      "client": "client",
+      "old~key": ""
+    }
   },
   "blocks": {
     "presets": {
@@ -1254,6 +1274,265 @@ func TestSitePageTemplates(t *testing.T) {
 	}
 	if _, err := imp.Site(s, defs); err != nil {
 		t.Errorf("Site without page templates = %v", err)
+	}
+}
+
+// fieldProposals lists the entries of the report about the custom fields of the items, as "kind: message", which are at the
+// channel and have no place in the settings.
+func fieldProposals(t *testing.T, rep *Report) []string {
+	t.Helper()
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the items of the post type") {
+			if e.Source.Record != recordChannel || e.Target != (Target{}) {
+				t.Errorf("the entry %+v is not about the channel, with no place in the settings", e)
+			}
+			out = append(out, string(e.Kind)+": "+e.Message)
+		}
+	}
+	return out
+}
+
+func TestProposeFields(t *testing.T) {
+	defs := fieldsDefs(t)
+	item := func(id int, typ, status string, kv ...string) bodyXML {
+		return bodyXML{id: id, typ: typ, status: status, meta: metas(kv...)}
+	}
+	proposal := func(typ string, n int, list string) string {
+		return fmt.Sprintf("review: the items of the post type %[1]s have %[2]s: %[3]s; fields.%[1]s maps them to the fields of %[1]s in the schema file",
+			typ, plural(n, "custom field", "custom fields"), list)
+	}
+	t.Run("the keys of the items of each type", func(t *testing.T) {
+		in := bodiesWXR(
+			item(1, "works", "", "client", "A", "memo", "B", "year", "1", "note", "n"),
+			item(2, "works", "draft", "client", "A2", "note", " \n", "extra", "e"),
+			item(3, "works", "private", "client", "A3", "_edit_lock", "x", "rank_math_title", "x", "ssp_meta_x", "x", "blank", "", "rank_mathx", "x", "ssp_metax", "x"),
+			item(4, "post", "", "subtitle", "s", "extra2", "x"),
+			item(5, "page", "", "pg", "x"),
+			item(6, "product", "", "prod", "x"),
+			item(7, "works", "trash", "trashed", "x"),
+			item(8, "works", "auto-draft", "auto", "x"),
+			item(9, "post", "", "extra2", "y", "extra2", "z"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		want := map[string]map[string]string{
+			"works": {"client": "client", "memo": "memo", "year": "year", "note": "", "extra": "", "rank_mathx": "", "ssp_metax": ""},
+			"post":  {"subtitle": "subtitle", "extra2": ""},
+			"page":  {"pg": ""},
+		}
+		if !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+		sameSet(t, "the entries", fieldProposals(t, imp.Report), []string{
+			proposal("works", 7, `"client" (3 items), "extra" (1 item), "memo" (1 item), "note" (1 item), "rank_mathx" (1 item), "ssp_metax" (1 item), "year" (1 item)`),
+			proposal("post", 2, `"extra2" (2 items), "subtitle" (1 item)`),
+			proposal("page", 1, `"pg" (1 item)`),
+		})
+	})
+	t.Run("the keys of the rows of a list are not counted", func(t *testing.T) {
+		in := bodiesWXR(item(1, "works", "",
+			"items", "2", "items_0_title", "A", "items_1_title", "B", "items_00_x", "c", "orphan_0_x", "d", "a_0_b", "e", "a_0_b_1_c", "f",
+			"blankp", " ", "blankp_0_x", "v", "x_0", "y", "items_0", "z", "n_1_", "w"))
+		s, _ := proposeFrom(t, in, nil, defs)
+		want := map[string]string{"items": "items", "items_00_x": "", "orphan_0_x": "", "a_0_b": "", "x_0": "", "items_0": "", "n_1_": ""}
+		if !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("Fields = %v, want %v", s.Fields["works"], want)
+		}
+	})
+	t.Run("the keys that a group or a list of the type is read from are not counted", func(t *testing.T) {
+		in := bodiesWXR(
+			item(1, "works", "",
+				"address", " ", "address_city", "Tokyo", "address_geo_lat", "35.6", "address_country", "JP", "address_geo", "g", "addressx_city", "x",
+				"items_0_title", "A", "items_0_parts", "1", "items_0_parts_0_name", "x", "items_0_unknown", "u", "itemsx_0_title", "B", "items_00_title", "C"),
+			// The type post has no such group and no such list.
+			item(2, "post", "", "address_city", "Osaka", "items_0_title", "D"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		want := map[string]map[string]string{
+			"works": {"address_country": "", "address_geo": "", "addressx_city": "", "itemsx_0_title": "", "items_00_title": ""},
+			"post":  {"address_city": "", "items_0_title": ""},
+		}
+		if !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+		sameSet(t, "the entries", fieldProposals(t, imp.Report), []string{
+			proposal("works", 5, `"address_country" (1 item), "address_geo" (1 item), "addressx_city" (1 item), "items_00_title" (1 item), "itemsx_0_title" (1 item)`),
+			proposal("post", 2, `"address_city" (1 item), "items_0_title" (1 item)`),
+		})
+		// An item that has only such keys has no custom field to map.
+		s, imp = proposeFrom(t, bodiesWXR(item(1, "works", "", "address_city", "Tokyo", "items_0_title", "A")), nil, defs)
+		if len(s.Fields) != 0 || len(fieldProposals(t, imp.Report)) != 0 {
+			t.Errorf("Fields = %v with the entries %q, want none", s.Fields, fieldProposals(t, imp.Report))
+		}
+	})
+	t.Run("the keys of the SEO plugin are not counted", func(t *testing.T) {
+		// Yoast SEO is the plugin of most items, so redirect, which The SEO Framework keeps, is a custom field.
+		in := bodiesWXR(
+			item(1, "works", "", "_yoast_wpseo_title", "a"), item(2, "works", "", "_yoast_wpseo_title", "b"), item(3, "works", "", "_yoast_wpseo_title", "c"),
+			item(4, "works", "", "redirect", "x", "exclude_local_search", "1"),
+		)
+		s, _ := proposeFrom(t, in, nil, defs)
+		if want := map[string]string{"redirect": "redirect", "exclude_local_search": ""}; s.SEO.Plugin != "yoast" || !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("the plugin is %q and Fields %v, want yoast and %v", s.SEO.Plugin, s.Fields["works"], want)
+		}
+		// The SEO Framework is the plugin of the items, so its keys are not.
+		in = bodiesWXR(
+			item(1, "works", "", "_genesis_title", "a", "redirect", "x", "exclude_local_search", "1", "exclude_from_archive", "1", "foo", "y"),
+			item(2, "works", "", "_genesis_title", "b", "_open_graph_title", "c"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		if want := map[string]string{"foo": ""}; s.SEO.Plugin != "tsf" || !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("the plugin is %q and Fields %v, want tsf and %v", s.SEO.Plugin, s.Fields["works"], want)
+		}
+		sameStrings(t, "the entries", fieldProposals(t, imp.Report), []string{
+			`review: the items of the post type works have 1 custom field: "foo" (1 item); fields.works maps them to the fields of works in the schema file`,
+		})
+	})
+	t.Run("no custom fields", func(t *testing.T) {
+		in := bodiesWXR(item(1, "works", "", "_edit_lock", "x", "blank", " "), item(2, "post", ""), item(3, "works", "trash", "k", "v"))
+		s, imp := proposeFrom(t, in, nil, defs)
+		if s.Fields == nil || len(s.Fields) != 0 {
+			t.Errorf("Fields = %#v, want an empty map that is not nil", s.Fields)
+		}
+		if got := fieldProposals(t, imp.Report); len(got) != 0 {
+			t.Errorf("the entries are %q, want none", got)
+		}
+		_, imp = proposeFrom(t, siteWXR("https://example.com", "ja"), nil, defs)
+		if got := fieldProposals(t, imp.Report); len(got) != 0 {
+			t.Errorf("the entries of a site without items are %q, want none", got)
+		}
+	})
+	t.Run("more than ten keys", func(t *testing.T) {
+		var kv []string
+		for i := 1; i <= 13; i++ {
+			kv = append(kv, fmt.Sprintf("k%02d", i), "x")
+		}
+		in := bodiesWXR(item(1, "works", "", kv...), item(2, "works", "", "k13", "x", "k12", "x", "k12", "y"))
+		_, imp := proposeFrom(t, in, nil, defs)
+		sameStrings(t, "the entries", fieldProposals(t, imp.Report), []string{proposal("works", 13,
+			`"k12" (2 items), "k13" (2 items), "k01" (1 item), "k02" (1 item), "k03" (1 item), "k04" (1 item), "k05" (1 item), "k06" (1 item), "k07" (1 item), "k08" (1 item), and 3 more`)})
+	})
+	t.Run("a type that the schema file does not define", func(t *testing.T) {
+		// The fields of post and page are those of the schema file if it has them, and none otherwise.
+		in := bodiesWXR(item(1, "post", "", "subtitle", "s", "other", "o"), item(2, "works", "", "client", "c"))
+		s, _ := proposeFrom(t, in, nil, nil)
+		if want := map[string]map[string]string{"post": {"subtitle": "", "other": ""}}; !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, bodiesWXR(item(1, "works", "", "client", "A", "a/b", "x", "a~b", "y")), nil, defs)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := "  \"fields\": {\n    \"works\": {\n      \"a/b\": \"\",\n      \"a~b\": \"\",\n      \"client\": \"client\"\n    }\n  },\n"; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the fields\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+}
+
+func TestReadSettingsFields(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"fields": {"works": {"client_name": "client", "old": ""}, "post": {}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]map[string]string{"works": {"client_name": "client", "old": ""}, "post": {}}; !reflect.DeepEqual(s.Fields, want) {
+		t.Errorf("ReadSettings has the fields %#v, want %#v", s.Fields, want)
+	}
+	for in, wantNil := range map[string]bool{`{}`: true, `{"site": {}}`: true, `{"fields": {}}`: false} {
+		s, err := ReadSettings("settings.json", []byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (s.Fields == nil) != wantNil || len(s.Fields) != 0 {
+			t.Errorf("ReadSettings(%s) has the fields %#v, want nil: %v", in, s.Fields, wantNil)
+		}
+	}
+	for _, tt := range []struct{ in, want string }{
+		{`{"fields": {"works": {"a": 5}}}`, "/fields/works/a: expected string, got number"},
+		{`{"fields": {"works": {"a": null}}}`, "/fields/works/a: null is not allowed; omit the key"},
+		{`{"fields": {"works": null}}`, "/fields/works: null is not allowed; omit the key"},
+		{`{"fields": {"works": []}}`, "/fields/works: expected object, got array"},
+		{`{"fields": []}`, "/fields: expected object, got array"},
+		{`{"fields": {"works": {"a": "b", "a": "c"}}}`, "/fields/works/a: duplicate key"},
+	} {
+		_, err := ReadSettings("settings.json", []byte(tt.in))
+		if got := errorLines(t, err); len(got) != 1 || got[0] != tt.want {
+			t.Errorf("ReadSettings(%s) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSiteFields(t *testing.T) {
+	imp, _ := siteImport(t)
+	defs := fieldsDefs(t)
+	settings := func(table map[string]map[string]string) *Settings {
+		s := sampleSettings()
+		s.Fields = table
+		return s
+	}
+	// Fields of the schema file, for any key, in the types of the schema file, and post and page, with or without a definition of them.
+	site, err := imp.Site(settings(map[string]map[string]string{
+		"works": {"client_name": "client", "a/b": "memo", "old": "", "again": ""}, "post": {"sub": "subtitle", "x": ""}, "gear": {}, "page": {"y": ""}, "plain": {"z": ""},
+	}), defs)
+	if err != nil || site == nil {
+		t.Fatalf("Site with fields that are right = %v", err)
+	}
+	// The errors are in the order of the types and of the keys, and each has the pointer with the segments escaped.
+	_, err = imp.Site(settings(map[string]map[string]string{
+		"works":  {"a": "client", "b": "client", "c": "nosuch", "d": "memo", "e": "memo", "f": "client", "g~/": "nosuch"},
+		"nosuch": {"x": "client"}, "a/b": {}, "post": {"s": "nothing", "t": "subtitle", "u": "subtitle"},
+	}), defs)
+	sameStrings(t, "the errors", errorLines(t, err), []string{
+		`/fields/a~1b: type "a/b" is not in the schema file`,
+		`/fields/nosuch: type "nosuch" is not in the schema file`,
+		`/fields/post/s: the type post has no field "nothing"`,
+		`/fields/post/u: the field "subtitle" is also that of "t"`,
+		`/fields/works/b: the field "client" is also that of "a"`,
+		`/fields/works/c: the type works has no field "nosuch"`,
+		`/fields/works/e: the field "memo" is also that of "d"`,
+		`/fields/works/f: the field "client" is also that of "a"`,
+		`/fields/works/g~0~1: the type works has no field "nosuch"`,
+	})
+	var errs content.Errors
+	_ = errors.As(err, &errs)
+	for _, e := range errs {
+		if e.File != "" || e.Line != 0 || e.Column != 0 {
+			t.Errorf("the error %+v has a place", *e)
+		}
+	}
+
+	// A type that the schema file does not define is one that post and page are not.
+	_, err = imp.Site(settings(map[string]map[string]string{"works": {"a": "client"}, "post": {"a": "subtitle"}, "page": {"a": "subtitle"}}), nil)
+	var ofFields []string
+	for _, l := range errorLines(t, err) {
+		if strings.HasPrefix(l, "/fields/") {
+			ofFields = append(ofFields, l)
+		}
+	}
+	sameStrings(t, "the errors without a schema file", ofFields, []string{
+		`/fields/page/a: the type page has no field "subtitle"`,
+		`/fields/post/a: the type post has no field "subtitle"`,
+		`/fields/works: type "works" is not in the schema file`,
+	})
+
+	// The others are not hidden by these.
+	s := settings(map[string]map[string]string{"works": {"a": "nosuch"}})
+	s.Site.URL = ""
+	_, err = imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || got[0] != `/fields/works/a: the type works has no field "nosuch"` || !strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %q, want one at /fields/works/a and one at /site/url", got)
+	}
+
+	// Settings without the table are all right.
+	if _, err := imp.Site(settings(nil), defs); err != nil {
+		t.Errorf("Site without fields = %v", err)
 	}
 }
 

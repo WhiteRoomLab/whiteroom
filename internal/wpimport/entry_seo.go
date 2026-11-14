@@ -19,12 +19,8 @@ const (
 	seoAIOSEO = "aioseo"
 )
 
-// The postmeta of Yoast SEO that names the primary category of a post, and the one of Rank Math that has a value that any post
-// can have, which the import leaves alone.
-const (
-	yoastPrimaryCategory = "_yoast_wpseo_primary_category"
-	rankMathAdvanced     = "rank_math_advanced_robots"
-)
+// yoastPrimaryCategory is the postmeta of Yoast SEO that names the primary category of a post.
+const yoastPrimaryCategory = "_yoast_wpseo_primary_category"
 
 // seoPlugin is an SEO plugin that keeps the settings of each post in its postmeta (6.10.5). A key that is "" is a setting
 // that the plugin does not keep there.
@@ -202,7 +198,7 @@ var seoPlugins = []seoPlugin{
 		notImported: []seoKey{
 			{"_open_graph_title", nil}, {"_open_graph_description", nil}, {"_twitter_title", nil}, {"_twitter_description", nil},
 			{"_genesis_nofollow", isValue("1")}, {"_genesis_noarchive", isValue("1")}, {"redirect", nil},
-			{"_tsf_title_no_blogname", isValue("1")},
+			{"exclude_local_search", isValue("1")}, {"exclude_from_archive", isValue("1")}, {"_tsf_title_no_blogname", isValue("1")},
 		},
 	},
 	{
@@ -269,21 +265,6 @@ func (p *seoPlugin) hasSettings(it *wxr.Item) bool {
 	}
 	return false
 }
-
-// seoKeys are the postmeta keys that the SEO plugins keep their settings in, and that the import reads or counts, with
-// the one that it knows and does not read: they are not custom fields.
-var seoKeys = func() map[string]bool {
-	keys := map[string]bool{rankMathAdvanced: true}
-	for i := range seoPlugins {
-		for _, k := range seoPlugins[i].keys() {
-			keys[k] = true
-		}
-	}
-	return keys
-}()
-
-// isSEOKey reports whether key is a postmeta key of an SEO plugin.
-func isSEOKey(key string) bool { return seoKeys[key] }
 
 // seoMeta returns the first postmeta of the item with the key, with its value without the white space around it. The
 // value is "" if there is none, and for the key "".

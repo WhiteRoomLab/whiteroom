@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1235,6 +1236,11 @@ func TestEntriesNotImported(t *testing.T) {
 		wxrEntry{id: 11, typ: "page", title: "About", name: "about"},
 		wxrEntry{id: 12, title: "Gone", name: "gone", status: "trash"},
 		wxrEntry{id: 13, typ: "page", status: "auto-draft"},
+		// ACF keeps its definitions in these, which are no content and are not reported.
+		wxrEntry{id: 14, typ: "acf-field-group", title: "Group"},
+		wxrEntry{id: 15, typ: "acf-field", title: "Field"},
+		wxrEntry{id: 16, typ: "acf-post-type", title: "Type"},
+		wxrEntry{id: 17, typ: "acf-taxonomy", title: "Taxonomy"},
 	)
 	imp, _, docs := makeEntries(t, nil, nil, in)
 	var posts []int64
@@ -1724,12 +1730,14 @@ func TestEntriesClearUnit(t *testing.T) {
 		return content.Revision{
 			Title: "T", Slug: "s", Excerpt: "e", Date: entryTime, Author: "a", FeaturedImage: "f", Sticky: true, Order: 3, Template: "t",
 			Parent: "p", Terms: content.Terms{"category": {"c1", "c2"}, "tag": {"t1"}, "genre": {"g1"}},
-			SEO: content.SEO{Title: "st", Description: "sd", OGImage: "so", NoIndex: true, Canonical: "/sc/"},
+			SEO:    content.SEO{Title: "st", Description: "sd", OGImage: "so", NoIndex: true, Canonical: "/sc/"},
+			Fields: content.Fields{"a": jsontext.Value("1"), "b": jsontext.Value(`"x"`), "c": jsontext.Value(`{"d":[1,2]}`)},
 		}
 	}
 	for _, unit := range []string{
 		"/title", "/slug", "/excerpt", "/date", "/author", "/featuredImage", "/sticky", "/order", "/template", "/parent",
 		"/terms/category", "/terms/tag", "/terms/genre", "/seo/title", "/seo/description", "/seo/canonical", "/seo/ogImage",
+		"/fields/a", "/fields/b", "/fields/c",
 	} {
 		rev := full()
 		if !clearUnit(&rev, unit) {
@@ -1765,6 +1773,8 @@ func TestEntriesClearUnit(t *testing.T) {
 			want.SEO.Canonical = ""
 		case "/seo/ogImage":
 			want.SEO.OGImage = ""
+		case "/fields/a", "/fields/b", "/fields/c":
+			delete(want.Fields, strings.TrimPrefix(unit, "/fields/"))
 		default:
 			delete(want.Terms, strings.TrimPrefix(unit, "/terms/"))
 		}
@@ -1776,7 +1786,7 @@ func TestEntriesClearUnit(t *testing.T) {
 		}
 	}
 	// /seo/noindex is a flag, which cannot be wrong.
-	for _, unit := range []string{"", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo", "/seo/", "/seo/noindex", "/seo/nosuch", "/fields/x", "/body"} {
+	for _, unit := range []string{"", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo", "/seo/", "/seo/noindex", "/seo/nosuch", "/fields", "/fields/", "/fields/x", "/fields/a/0", "/body"} {
 		rev := full()
 		if clearUnit(&rev, unit) || !reflect.DeepEqual(rev, full()) {
 			t.Errorf("clearUnit(%q) took something out of the revision: %+v", unit, rev)
@@ -1790,6 +1800,24 @@ func TestEntriesClearUnit(t *testing.T) {
 		}
 		if clearUnit(&rev, "/terms/category") {
 			t.Error("clearUnit of no terms = true")
+		}
+	})
+	t.Run("the last field leaves no fields", func(t *testing.T) {
+		rev := content.Revision{Fields: content.Fields{"a": jsontext.Value("1")}}
+		if !clearUnit(&rev, "/fields/a") || rev.Fields != nil {
+			t.Errorf("clearUnit left the fields %#v, want nil", rev.Fields)
+		}
+		if clearUnit(&rev, "/fields/a") {
+			t.Error("clearUnit of no fields = true")
+		}
+	})
+	t.Run("the name of a field is a JSON Pointer segment", func(t *testing.T) {
+		rev := content.Revision{Fields: content.Fields{"a/b": jsontext.Value("1"), "c~d": jsontext.Value("2")}}
+		if !clearUnit(&rev, "/fields/a~1b") || !reflect.DeepEqual(rev.Fields, content.Fields{"c~d": jsontext.Value("2")}) {
+			t.Errorf("after /fields/a~1b the fields are %#v", rev.Fields)
+		}
+		if !clearUnit(&rev, "/fields/c~0d") || rev.Fields != nil {
+			t.Errorf("after /fields/c~0d the fields are %#v", rev.Fields)
 		}
 	})
 	t.Run("the name of a taxonomy is a JSON Pointer segment", func(t *testing.T) {

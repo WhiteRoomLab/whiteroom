@@ -36,8 +36,14 @@ type Settings struct {
 	// "" leaves the template out.
 	PageTemplates map[string]string `json:"pageTemplates"`
 	// SEO tells which SEO plugin's postmeta the SEO settings of the entries are read from (6.10.5).
-	SEO    SEOSettings   `json:"seo"`
-	Blocks BlockSettings `json:"blocks"`
+	SEO SEOSettings `json:"seo"`
+	// Fields tells which field of the schema file each custom field of WordPress (a key of the postmeta) is imported as: by
+	// the name of the post type in whiteroom, and then the key. A key that is not here is imported as the field of the same
+	// name, if the type has one; a value of "" leaves the key out (6.10.5). The keys are those of the fields of the type: a
+	// field in a group, or in a row of a list, is read from the key of the group or the list with _<name>, or
+	// _<number>_<name>, after it, and the table is not asked about that key.
+	Fields map[string]map[string]string `json:"fields"`
+	Blocks BlockSettings                `json:"blocks"`
 }
 
 // SEOSettings tells which SEO plugin the old site used.
@@ -287,7 +293,8 @@ func (imp *Import) postSource(id int64) Source {
 // imp.REST if there is one, and from the links of the old site, and records the grounds of the guess and the values to
 // check or to enter in the report. The names that the bodies use (presets, block styles, image sizes, and the classes of
 // inline elements) are listed in Blocks, and the page templates that the pages use in PageTemplates, for the person who
-// imports to map them (6.10.5). The SEO plugin that most items have postmeta of is SEO.Plugin. defs is the schema file of
+// imports to map them (6.10.5). The SEO plugin that most items have postmeta of is SEO.Plugin, and the custom fields that the
+// items of each post type have are in Fields, for the person to map to the fields of the schema file. defs is the schema file of
 // the developer, as UnmarshalSchema reads it, or nil. The URL rules in it are kept; the others are guessed. It is an error,
 // and nothing is recorded, if the REST API is not that of the site of the WXR, or does not say whose it is.
 func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
@@ -304,6 +311,7 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 	s := &Settings{
 		URLs:          URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}},
 		PageTemplates: map[string]string{},
+		Fields:        map[string]map[string]string{},
 		Blocks:        emptyBlockSettings(),
 	}
 	st := &s.Site
@@ -327,6 +335,7 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 	imp.proposeBlocks(s, defs)
 	imp.proposePageTemplates(s)
 	imp.proposeSEO(s, defs)
+	imp.proposeFields(s, defs)
 	imp.reportSkippedTaxonomies(defs)
 	return s, nil
 }
@@ -411,6 +420,81 @@ func checkSEOPlugin(name string, fail func(pointer, format string, args ...any))
 		names[i] = seoPlugins[i].name
 	}
 	fail("/seo/plugin", "unknown SEO plugin %q: use %s or %s, or leave it empty", name, strings.Join(names[:len(names)-1], ", "), names[len(names)-1])
+}
+
+// proposeFields counts the custom fields of WordPress that the items of each post type have, and puts them in s.Fields for
+// the person who imports to map them to the fields of the schema file (6.10.5): each key maps to the field of the type that is
+// called the same, and to nothing if there is none. The post types that no item has a custom field of have no entry. The keys
+// are counted by the items that have a value for them. Not counted are the keys that WordPress and the plugins keep for
+// themselves, those of the SEO plugin of s.SEO (proposeSEO has put it there), the keys of the rows of a list, and the keys
+// that the groups and the lists of the type are read from, which the table does not map. It reads the items that are
+// imported: those of a type that the site has that are not in the trash nor an automatic draft.
+func (imp *Import) proposeFields(s *Settings, defs *content.Site) {
+	rules := keyRules{plugin: pluginKeys(s.SEO.Plugin)}
+	counts := make(map[string]map[string]int)
+	nested := make(map[string]*nestedKeys)
+	var order []string // the post types, by their first item
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		typ := typeName(it.Type, defs)
+		if typ == "" || discardedStatus(it.Status) != "" {
+			continue
+		}
+		if nested[typ] == nil {
+			nested[typ] = nestedKeysOf(defs.Type(typ))
+		}
+		keys := slices.DeleteFunc(rules.candidates(it, nil, &metaIndex{metas: it.Meta}), nested[typ].has)
+		if len(keys) == 0 {
+			continue
+		}
+		if counts[typ] == nil {
+			counts[typ] = make(map[string]int)
+			order = append(order, typ)
+		}
+		for _, key := range keys {
+			counts[typ][key]++
+		}
+	}
+	for _, typ := range order {
+		def := defs.Type(typ)
+		table := make(map[string]string, len(counts[typ]))
+		for key := range counts[typ] {
+			table[key] = ""
+			if def != nil && slices.ContainsFunc(def.Fields, func(f content.FieldDef) bool { return f.Name == key }) {
+				table[key] = key
+			}
+		}
+		s.Fields[typ] = table
+		imp.channelEntry(Review, Target{}, "the items of the post type %s have %s: %s; fields.%s maps them to the fields of %s in the schema file",
+			typeText(typ), plural(len(table), "custom field", "custom fields"), usedNamesOf(counts[typ], "item", "items"), typeText(typ), typeText(typ))
+	}
+}
+
+// checkFieldTable fails for each post type of table that site does not have, each key whose field its type does not have,
+// and each key after the first that names a field that another key names.
+func checkFieldTable(site *content.Site, table map[string]map[string]string, fail func(pointer, format string, args ...any)) {
+	for _, typ := range slices.Sorted(maps.Keys(table)) {
+		pointer := "/fields/" + pointerEscaper.Replace(typ)
+		def := site.Type(typ)
+		if def == nil {
+			fail(pointer, "type %q is not in the schema file", typ)
+			continue
+		}
+		keyOf := make(map[string]string)
+		for _, key := range slices.Sorted(maps.Keys(table[typ])) {
+			name := table[typ][key]
+			prev, taken := keyOf[name]
+			switch {
+			case name == "":
+			case !slices.ContainsFunc(def.Fields, func(f content.FieldDef) bool { return f.Name == name }):
+				fail(pointer+"/"+pointerEscaper.Replace(key), "the type %s has no field %q", typeText(typ), name)
+			case taken:
+				fail(pointer+"/"+pointerEscaper.Replace(key), "the field %q is also that of %q", name, prev)
+			default:
+				keyOf[name] = key
+			}
+		}
+	}
 }
 
 // pageTemplateOf returns the page template of the item it in WordPress: the first _wp_page_template without the white space
@@ -912,6 +996,7 @@ func (imp *Import) Site(s *Settings, defs *content.Site) (*content.Site, error) 
 	checkBlockNames(&s.Blocks, fail)
 	checkPageTemplates(s.PageTemplates, fail)
 	checkSEOPlugin(s.SEO.Plugin, fail)
+	checkFieldTable(site, s.Fields, fail)
 
 	site.NormalizeSettings()
 	if err := site.Validate(imp.Ref); err != nil {

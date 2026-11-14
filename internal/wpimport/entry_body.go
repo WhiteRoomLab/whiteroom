@@ -51,6 +51,19 @@ func (c *entryConv) setBody(ei *entryItem) (bodyMade, error) {
 	return made, nil
 }
 
+// fitFields leaves the fields out of the revision of ei if the JSON of the revision is larger than maxRevisionBytes without its
+// body, which the fields are the only part of that can make it. tidy calls it, so that an entry that lost a field that publishing
+// needs is a draft, and the check of the body has only the body and the excerpt that are made of it to take back.
+func (c *entryConv) fitFields(ei *entryItem) {
+	if len(ei.rev.Fields) == 0 {
+		return
+	}
+	if rest, _ := revisionBound(&ei.rev); rest > maxRevisionBytes {
+		ei.rev.Fields = nil
+		c.revisionNote(Skipped, ei, "/fields", "the custom fields are not imported: the revision would be larger than %d bytes as JSON", maxRevisionBytes)
+	}
+}
+
 // setMoreExcerpt makes the excerpt of ei from bs, the blocks before the read more tag, and reports whether it made one.
 func (c *entryConv) setMoreExcerpt(ei *entryItem, bs content.Blocks) bool {
 	var lines excerptLines
