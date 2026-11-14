@@ -20,14 +20,20 @@ const usage = `Usage:
         site in the directory SITE if given
   whiteroom build [flags] [SITE]
         build the site in the directory SITE (default ".") and publish it
+  whiteroom build -data DIR [flags] [SITE]
+        the same, but from the data directory DIR, of which SITE gives only the
+        schema file and the theme
+  whiteroom rollback OUT [RELEASE]
+        publish a release that the output directory OUT still holds, instead of
+        the published one
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
         serve the admin API of the data directory, and build the site from it
         into the output directory
 
-Run "whiteroom init -h", "whiteroom build -h", "whiteroom serve public -h" or
-"whiteroom serve admin -h" for the flags.
+Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
+"whiteroom serve public -h" or "whiteroom serve admin -h" for the flags.
 `
 
 func main() {
@@ -70,6 +76,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runInit(ctx, args[1:], e)
 	case "build":
 		return runBuild(ctx, args[1:], e.stdout, e.stderr)
+	case "rollback":
+		return runRollback(ctx, args[1:], e)
 	case "serve":
 		return runServe(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":

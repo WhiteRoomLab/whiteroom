@@ -390,7 +390,6 @@ func TestBuildConfig(t *testing.T) {
 	t.Run("items that the build does not use", func(t *testing.T) {
 		root := sampleRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", `# the settings of every command
-data: ../data
 site: ../site
 theme: ../theme
 out: ../out
@@ -409,9 +408,7 @@ memory: 256
 		code, stdout, stderr := runCmd(t, "build", "-config", file)
 		published(t, "items that the build does not use", code, stdout, stderr, filepath.Join(root, "out"), warnings)
 		checkEmpty(t, "items that the build does not use", cwd)
-		for _, name := range []string{"data", "run"} {
-			checkMissing(t, "items that the build does not use", filepath.Join(root, name))
-		}
+		checkMissing(t, "items that the build does not use", filepath.Join(root, "run"))
 	})
 
 	t.Run("the defaults from the site", func(t *testing.T) {

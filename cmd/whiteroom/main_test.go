@@ -51,7 +51,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom build -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			help)
 	}
-	for _, name := range []string{"-cache DIR", "-config FILE", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
+	for _, name := range []string{"-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
 		if !strings.Contains(help, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
@@ -83,6 +83,17 @@ func TestRun(t *testing.T) {
 		t.Errorf("the list of the commands has no whiteroom serve admin:\n%s", usage)
 	}
 
+	code, stdout, rollbackHelp := runCmd(t, "rollback", "-h")
+	if code != 0 || stdout != "" || rollbackHelp != rollbackUsage {
+		t.Fatalf("whiteroom rollback -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			rollbackHelp)
+	}
+	for _, line := range []string{"whiteroom rollback OUT [RELEASE]", "whiteroom build -data DIR [flags] [SITE]"} {
+		if !strings.Contains(usage, "\n  "+line+"\n") {
+			t.Errorf("the list of the commands has no %s:\n%s", line, usage)
+		}
+	}
+
 	code, stdout, initHelp := runCmd(t, "init", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
@@ -105,6 +116,7 @@ func TestRun(t *testing.T) {
 	tooManyInit := initUsageErr("too many arguments: give at most one SITE, after the flags")
 	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
 	adminErr := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + adminHelp }
+	rollbackErr := func(msg string) string { return "whiteroom rollback: " + msg + "\n" + rollbackHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -132,6 +144,9 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-memory", "-1"}, 2, "", memory("-1")},
 		{[]string{"build", "-memory", "8796093022208"}, 2, "", memory("8796093022208")},
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"build", "-data", "d", "-workers", "-1"}, 2, "",
+			"whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
+		{[]string{"build", "-data", "d", "a", "b"}, 2, "", tooMany},
 		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
 		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"init", "-x"}, 2, "", "flag provided but not defined: -x\n" + initHelp},
@@ -145,6 +160,11 @@ func TestRun(t *testing.T) {
 			initUsageErr("-theme is for SITE: give the directory SITE of the site to import")},
 		{withAdmin("-config", missing), 2, "", "whiteroom init: " + openErr.Error() + "\n"},
 		{withAdmin("-config", broken), 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"rollback"}, 2, "", rollbackErr("no output directory: give OUT")},
+		{[]string{"rollback", "a", "b", "c"}, 2, "", rollbackErr("too many arguments: give OUT and at most one RELEASE")},
+		{[]string{"rollback", "-x"}, 2, "", "flag provided but not defined: -x\n" + rollbackHelp},
+		{[]string{"rollback", "-config", "c.yaml", "a"}, 2, "", "flag provided but not defined: -config\n" + rollbackHelp},
+		{[]string{"rollback", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + rollbackHelp},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
@@ -194,13 +214,57 @@ func TestPrintError(t *testing.T) {
 		{File: "themes/a.json", Msg: "not the theme"},
 		{Path: "/url", Msg: "no file"},
 	}
+	storedProblems := content.Errors{
+		missingTitle,
+		{File: "site/schema.yaml", Line: 1, Column: 2, Msg: "not YAML"},
+		{File: "site", Msg: "missing directory"},
+		{File: "site/settings.json", Msg: "not found"},
+		{File: "theme", Msg: "no translation"},
+		{File: "theme/templates/entry.html", Line: 2, Column: 3, Msg: "unexpected EOF"},
+		{File: "themes/a.json", Msg: "not the theme"},
+		{Path: "/url", Msg: "no file"},
+	}
 	for _, tt := range []struct {
-		what  string
-		ctx   context.Context
-		theme string
-		err   error
-		want  []string
+		what   string
+		ctx    context.Context
+		theme  string
+		stored bool
+		err    error
+		want   []string
 	}{
+		{
+			what:   "problems of a data directory",
+			ctx:    t.Context(),
+			stored: true,
+			err:    storedProblems,
+			want: []string{
+				missingTitle.File + ":1:1: /title: missing title",
+				in("site", "site/schema.yaml") + ":1:2: not YAML",
+				in("site", "site") + ": missing directory",
+				"site/settings.json: not found",
+				in("site", "theme") + ": no translation",
+				in("site", "theme/templates/entry.html") + ":2:3: unexpected EOF",
+				"themes/a.json: not the theme",
+				"/url: no file",
+			},
+		},
+		{
+			what:   "problems of a data directory with -theme",
+			ctx:    t.Context(),
+			theme:  "../example",
+			stored: true,
+			err:    storedProblems,
+			want: []string{
+				missingTitle.File + ":1:1: /title: missing title",
+				in("site", "site/schema.yaml") + ":1:2: not YAML",
+				in("site", "site") + ": missing directory",
+				"site/settings.json: not found",
+				in("../example", "") + ": no translation",
+				in("../example", "templates/entry.html") + ":2:3: unexpected EOF",
+				"themes/a.json: not the theme",
+				"/url: no file",
+			},
+		},
 		{
 			what: "problems",
 			ctx:  t.Context(),
@@ -261,7 +325,7 @@ func TestPrintError(t *testing.T) {
 		},
 	} {
 		var b strings.Builder
-		errorPrinter{w: &b, command: "whiteroom build", site: "site", theme: tt.theme}.printError(tt.ctx, tt.err)
+		errorPrinter{w: &b, command: "whiteroom build", site: "site", theme: tt.theme, stored: tt.stored}.printError(tt.ctx, tt.err)
 		if want := strings.Join(tt.want, "\n") + "\n"; b.String() != want {
 			t.Errorf("%s: printed:\n%s\nwant:\n%s", tt.what, b.String(), want)
 		}

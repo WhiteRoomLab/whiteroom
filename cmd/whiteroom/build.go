@@ -23,8 +23,16 @@ const buildUsage = `Usage: whiteroom build [flags] [SITE]
 Build the site in the directory SITE (default ".") into a new release in the
 output directory, and publish it.
 
-With -config, the items site, theme, out, cache, workers and memory of the YAML
-file give what the flags and SITE leave out. Without it, no config file is read.
+With -data, or data in the config file, the documents and the originals of the
+media are those of the data directory, which the build opens as a process that
+reads it and does not write it: a whiteroom serve admin may serve it at the same
+time, if the build has other -out and -cache directories. From SITE it reads only
+the schema file site/schema.yaml and the theme. Without -data and data, the whole
+site is read from SITE.
+
+With -config, the items data, site, theme, out, cache, workers and memory of the
+YAML file give what the flags and SITE leave out. Without it, no config file is
+read.
 
 Flags:
 `
@@ -45,6 +53,7 @@ type buildFlags struct {
 	config, out, cache, theme string
 	workers                   int
 	memory                    int64
+	dataDir                   string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
 }
 
 // newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
@@ -55,7 +64,10 @@ func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 		printf(flags.Output(), "%s", buildUsage)
 		flags.PrintDefaults()
 	}
-	return flags, addBuildFlags(flags)
+	f := addBuildFlags(flags)
+	flags.StringVar(&f.dataDir, "data", "", "read the documents and the originals from the data directory `DIR` instead of SITE "+
+		"(default data of the config file)")
+	return flags, f
 }
 
 // addBuildFlags adds to flags the flags that whiteroom build and whiteroom serve admin share, and returns where they put
@@ -127,24 +139,31 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	s := f.settings(flags, cfg)
-	site, out, cache, theme := s.site, s.out, s.cache, s.theme
-	p := errorPrinter{w: stderr, command: flags.Name(), site: site, theme: theme}
+	p := errorPrinter{w: stderr, command: flags.Name(), site: s.site, theme: s.theme}
+	if data := cmp.Or(f.dataDir, cfg.data); data != "" {
+		return buildFromStore(ctx, stdout, p, data, s)
+	}
 
-	src, closeSite, err := openSite(site, theme)
+	src, closeSite, err := openSite(s.site, s.theme)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
 	}
 	defer closeSite()
+	return buildAndReport(ctx, stdout, p, src, s)
+}
 
+// buildAndReport builds src as s says, and prints the warnings and the error, if any, with p, and the summary on stdout. It
+// returns the exit code.
+func buildAndReport(ctx context.Context, stdout io.Writer, p errorPrinter, src build.Source, s buildSettings) int {
 	res, err := build.Build(ctx, build.Options{
-		Source: src, Out: out, CacheDir: cache, Memory: s.memory << 20, Workers: s.workers,
+		Source: src, Out: s.out, CacheDir: s.cache, Memory: s.memory << 20, Workers: s.workers,
 	})
 	if res != nil {
 		for _, w := range res.Warnings {
 			p.printProblem(w)
 		}
-		printf(stdout, "%s\n", summary(res, out))
+		printf(stdout, "%s\n", summary(res, s.out))
 	}
 	if err != nil {
 		p.printError(ctx, err)
@@ -211,10 +230,12 @@ func count(n int, noun string) string {
 }
 
 // errorPrinter prints on w the problems and the errors of command, such as "whiteroom build", on the site in the
-// directory site, with the theme in the directory theme if it is not "".
+// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of a
+// data directory, which have no files in site: only the schema file and the theme are there.
 type errorPrinter struct {
 	w                    io.Writer
 	command, site, theme string
+	stored               bool
 }
 
 // printProblem prints e, a problem in a file of the site, with the path of the file from the working directory.
@@ -226,12 +247,15 @@ func (p errorPrinter) printProblem(e *content.Error) {
 	printf(p.w, "%s\n", c.Error())
 }
 
-// path returns the path from the working directory of file, a path with "/" in the site directory.
+// path returns the path from the working directory of file, a path with "/" in the site directory; for a data directory,
+// the name of the document in it, which is not a path of the site directory, is the same.
 func (p errorPrinter) path(file string) string {
-	if p.theme != "" {
-		if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+	if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		if p.theme != "" {
 			return filepath.Join(p.theme, filepath.FromSlash(rest))
 		}
+	} else if p.stored && file != "site" && file != "site/schema.yaml" {
+		return file
 	}
 	return filepath.Join(p.site, filepath.FromSlash(file))
 }
