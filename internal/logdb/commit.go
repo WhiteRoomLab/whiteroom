@@ -86,7 +86,7 @@ func (db *DB) commit(tx *Tx) error {
 		}
 	}
 	body := appendCommit(nil, seq, tx.ops)
-	if len(body) > maxBody {
+	if len(body) > maxCommit() {
 		return tooLarge(len(body))
 	}
 	if err := db.writeObjects(tx); err != nil {

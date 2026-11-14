@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -627,13 +628,92 @@ func TestCompactFaults(t *testing.T) {
 		defer func(n int) { maxBody = n }(maxBody)
 		maxBody = 400
 		_, db := newSim(t, Options{})
-		putKey(t, db, 1, "k", strings.Repeat("v", 380)) // a commit of 397 bytes, whose base record has 402
-		err := compactDB(db, Rewrite{Value: func(_ uint32, _, v []byte) ([]byte, bool) { return append(v, "more"...), true }})
+		putKey(t, db, 1, "k", strings.Repeat("v", 373)) // a commit of 390 bytes, whose base record has 401
+		err := compactDB(db, Rewrite{Value: func(_ uint32, _, v []byte) ([]byte, bool) { return append(v, "ten bytes!"...), true }})
 		if err == nil || !strings.HasPrefix(err.Error(), "a base record is too large: ") {
 			t.Errorf("compact: %v", err)
 		}
 		putKey(t, db, 1, "after", "v")
 	})
+}
+
+// TestCompactLargestCommit checks that a compaction writes again the largest change that commits, of each kind. Its
+// base record is longer than its commit record by the number of its part, which here has two bytes.
+func TestCompactLargestCommit(t *testing.T) {
+	defer func(n int) { maxBody = n }(maxBody)
+	maxBody = 400
+	withBaseBytes(t, 100) // a base record for each key
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		put  func(tx *Tx, data []byte) error
+	}{
+		{"a value", func(tx *Tx, data []byte) error { return tx.Put(1, []byte("z"), data) }},
+		{"an object", func(tx *Tx, data []byte) error { _, err := tx.PutObject(data); return err }},
+		{"an event", func(tx *Tx, data []byte) error { return tx.AppendEvent(data) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, db := newSim(t, Options{})
+			for i := range 130 {
+				putKey(t, db, 1, fmt.Sprintf("k%03d", i), "v")
+			}
+			update := func(size int) error {
+				return db.Update(ctx, func(tx *Tx) error { return c.put(tx, objData(1, size)) })
+			}
+			// The error says how many bytes the body has, and so how many are too many.
+			var n int
+			err := update(maxBody)
+			if _, serr := fmt.Sscanf(fmt.Sprint(err), "the transaction is too large: %d bytes", &n); serr != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			size := maxBody - (n - maxCommit())
+			if err := update(size + 1); err == nil || err.Error() != tooLarge(maxCommit()+1).Error() {
+				t.Fatalf("Update with a byte more than the largest: %v", err)
+			}
+			if err := update(size); err != nil {
+				t.Fatal(err)
+			}
+			before := stateOf(t, db)
+			if err := compactDB(db, Rewrite{}); err != nil {
+				t.Fatalf("compact: %v", err)
+			}
+			if got := stateOf(t, db); got != before {
+				t.Errorf("state:\n%s\nwant:\n%s", got, before)
+			}
+			var part uint64
+			err = readLog(ctx, db.handles, db.cur.Load(), func(r logRecord) (bool, error) {
+				if r.rec.typ == recBase {
+					part = r.rec.part
+				}
+				return true, nil
+			})
+			if err != nil || part < 128 {
+				t.Errorf("the last base record is part %d, %v: want a number of two bytes", part, err)
+			}
+		})
+	}
+}
+
+// TestMaxCommit checks that the bound of a commit leaves room in a base record for the largest number of a part, and
+// no more.
+func TestMaxCommit(t *testing.T) {
+	defer func(n int) { maxBody = n }(maxBody)
+	maxBody = 1000
+	for _, o := range []op{
+		{code: opPut, table: 1, key: "k"},
+		{code: opInline},
+		{code: opEvent, number: 1, seq: 1},
+	} {
+		ops := []op{o}
+		for len(appendCommit(nil, 1, ops)) < maxCommit() {
+			ops[0].value = append(ops[0].value, 'v')
+		}
+		commit, base := len(appendCommit(nil, 1, ops)), len(appendBase(nil, 1, math.MaxUint64, ops))
+		if commit != maxCommit() || base != maxBody {
+			t.Errorf("op %d: a commit of %d bytes, a base record of %d bytes; want %d and %d", o.code, commit, base,
+				maxCommit(), maxBody)
+		}
+	}
 }
 
 // TestCrashDuringCompaction crashes after each operation of a compaction, and checks the crash models that simfs.Models

@@ -42,5 +42,5 @@ var (
 )
 
 func tooLarge(n int) error {
-	return fmt.Errorf("the transaction is too large: %d bytes (max %d)", n, maxBody)
+	return fmt.Errorf("the transaction is too large: %d bytes (max %d)", n, maxCommit())
 }

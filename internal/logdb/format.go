@@ -26,8 +26,14 @@ const (
 // MaxKey is the largest key, in bytes.
 const MaxKey = 4096
 
-// maxBody bounds the body of a record, and so a transaction. It is a var so that tests can lower it.
+// maxBody bounds the body of a record. It is a var so that tests can lower it.
 var maxBody = 1 << 28
+
+// maxCommit returns the bound of the body of a commit record, and so of a transaction. A compaction writes each op
+// again in a base record, whose body also has the number of its part.
+func maxCommit() int {
+	return maxBody - binary.MaxVarintLen64
+}
 
 // minBody is the length of a body without payload: its type and sequence number.
 const minBody = 9

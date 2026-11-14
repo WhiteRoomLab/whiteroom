@@ -774,13 +774,18 @@ func TestTooLarge(t *testing.T) {
 	value := bytes.Repeat([]byte("v"), 300)
 	n := len(appendCommit(nil, 1, []op{{code: opPut, table: 1, key: "k", value: value}}))
 	err := db.Update(context.Background(), func(tx *Tx) error { return tx.Put(1, []byte("k"), value) })
-	if want := fmt.Sprintf("the transaction is too large: %d bytes (max 200)", n); err == nil || err.Error() != want {
+	if want := fmt.Sprintf("the transaction is too large: %d bytes (max 190)", n); err == nil || err.Error() != want {
 		t.Errorf("Update: %v, want %s", err, want)
+	}
+	largest := strings.Repeat("v", 173) // a commit of 190 bytes
+	err = db.Update(context.Background(), putF(1, "k", largest+"v"))
+	if err == nil || err.Error() != "the transaction is too large: 191 bytes (max 190)" {
+		t.Errorf("Update with a byte more than the largest: %v", err)
 	}
 	if fsys.Counted() != counted || dump(t, db) != "" {
 		t.Error("a transaction that is too large wrote")
 	}
-	putKey(t, db, 1, "k", strings.Repeat("v", 150))
+	putKey(t, db, 1, "k", largest)
 	if seqOf(t, db) != 1 {
 		t.Errorf("seq %d", seqOf(t, db))
 	}
