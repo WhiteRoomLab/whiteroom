@@ -254,8 +254,10 @@ func TestCheckpointDamaged(t *testing.T) {
 			[]byte{byte(placeInline)}, uv(uint64(h.seg)+1, 100, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object in a header", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(1, 71, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
-		{"an object beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
+		{"an object that ends beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
 			uv(1, math.MaxInt64, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
+		{"an object size beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
+			uv(1, 100, math.MaxInt64+1))), fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object larger than a body", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
 			uv(1, 100, uint64(maxBody)+1))), fmt.Sprintf("bad location of object %x", hash(1))},
 		{"a file object too large", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeFile)},
@@ -304,11 +306,12 @@ func setCkpObject(t *testing.T, fsys vfs.FS, hash [32]byte, fn func(loc *objLoc)
 	}
 }
 
-// TestCheckpointObjectSize changes the size of an object in a record, in a checkpoint with valid CRCs, which Open
-// uses without reading the object. What reads the object refuses a size that the segment does not have.
+// TestCheckpointObjectSize changes the size of an object in a record, in a checkpoint with valid CRCs, which Open and
+// OpenReader use without reading the segment of the object. What reads the object refuses a size that the segment
+// does not have.
 func TestCheckpointObjectSize(t *testing.T) {
 	ctx := context.Background()
-	o := Options{Placement: Hybrid, Threshold: 100}
+	o := Options{Placement: Hybrid, Threshold: 100, SegmentBytes: 300}
 	base, db := newSim(t, o)
 	for i := range 5 {
 		change(t, db, i)
@@ -317,6 +320,14 @@ func TestCheckpointObjectSize(t *testing.T) {
 	hash := sha256.Sum256(objData(0, 50))
 	var loc objLoc
 	setCkpObject(t, base, hash, func(l *objLoc) { loc = *l })
+	if h := ckpOf(t, base); loc.seg >= h.seg {
+		t.Fatalf("the object is in segment %d, the record of the checkpoint in segment %d", loc.seg, h.seg)
+	}
+	// A file may hold an object that is larger than a body.
+	inFile := slices.Concat(uv(1, 0, 0, 1), hash[:], []byte{byte(placeFile)}, uv(uint64(maxBody)+1))
+	if _, reason := decodeCheckpoint(ckpOf(t, base), inFile, new(owner)); reason != "" {
+		t.Errorf("an object in a file that is larger than a body: %s", reason)
+	}
 	seg := segName(1, loc.seg)
 	rest := fileSize(t, base, seg) - int64(loc.off)
 	for _, c := range []struct {
@@ -331,28 +342,29 @@ func TestCheckpointObjectSize(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			fsys := copyFS(base)
 			setCkpObject(t, fsys, hash, func(l *objLoc) { l.size = c.size })
-			db := reopen(t, fsys, o)
-			if info := db.Recovery(); info.Checkpoint != "used" {
-				t.Fatalf("Recovery: %+v, want the checkpoint used", info)
-			}
-			var data []byte
-			err := db.View(ctx, func(tx *Tx) (err error) {
-				data, err = tx.Object(hash)
-				return err
-			})
-			if c.ok {
-				if err != nil || int64(len(data)) != c.size {
-					t.Errorf("Object: %d bytes, %v, want %d bytes", len(data), err, c.size)
-				}
-				return
-			}
 			want := fmt.Sprintf("%s: corrupt: has %d bytes, too few for an object of %d bytes at offset %d", simPath(seg),
 				fileSize(t, base, seg), c.size, loc.off)
-			if err == nil || err.Error() != want {
-				t.Errorf("Object: %v, want %s", err, want)
+			for _, open := range []struct {
+				name string
+				open func(*testing.T, vfs.FS, Options) *DB
+			}{{"Open", reopen}, {"OpenReader", openReader}} {
+				db := open.open(t, fsys, o)
+				if info := db.Recovery(); info.Checkpoint != "used" {
+					t.Fatalf("%s: Recovery: %+v, want the checkpoint used", open.name, info)
+				}
+				data, err := readObject(db, hash)
+				switch {
+				case c.ok && (err != nil || int64(len(data)) != c.size):
+					t.Errorf("%s: Object: %d bytes, %v, want %d bytes", open.name, len(data), err, c.size)
+				case !c.ok && (err == nil || err.Error() != want):
+					t.Errorf("%s: Object: %v, want %s", open.name, err, want)
+				}
+				closeDB(t, db)
 			}
-			closeDB(t, db)
-			err = Maintain(ctx, fsys, o, func(m *Maintenance) error { return m.Compact(ctx, Rewrite{}) })
+			if c.ok {
+				return
+			}
+			err := Maintain(ctx, fsys, o, func(m *Maintenance) error { return m.Compact(ctx, Rewrite{}) })
 			if err == nil || err.Error() != want {
 				t.Errorf("Compact: %v, want %s", err, want)
 			}

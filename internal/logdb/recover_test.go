@@ -925,6 +925,7 @@ func TestReadFrom(t *testing.T) {
 		{off: 12, end: -1},
 		{off: 4, end: 8, want: "4567"},
 		{off: 4, end: 3},
+		{off: 12, end: 11},
 		{off: 4, end: 10, want: "456789"},
 		{off: 4, end: 11, eof: true},
 		{off: 4, end: 11, short: true, want: "456789"},
@@ -933,8 +934,8 @@ func TestReadFrom(t *testing.T) {
 		{off: 12, end: 1 << 50, short: true},
 	} {
 		b, err := readFrom(f, "f", c.off, c.end, c.short)
-		if string(b) != c.want || errors.Is(err, io.ErrUnexpectedEOF) != c.eof || err != nil && !c.eof {
-			t.Errorf("readFrom(%d, %d, %v): %q, %v", c.off, c.end, c.short, b, err)
+		if string(b) != c.want || cap(b) != len(c.want) || errors.Is(err, io.ErrUnexpectedEOF) != c.eof || err != nil && !c.eof {
+			t.Errorf("readFrom(%d, %d, %v): %q with capacity %d, %v", c.off, c.end, c.short, b, cap(b), err)
 		}
 	}
 }

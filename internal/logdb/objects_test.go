@@ -722,10 +722,15 @@ func TestObjectsAcrossSegments(t *testing.T) {
 }
 
 // TestSegmentSizeRemembered checks that reading objects in records asks the size of their segment only when the
-// segment has grown past the size that the handles know, not at each read.
+// segment has grown past the size that the handles know, not at each read, and that an error of asking is not damage.
 func TestSegmentSizeRemembered(t *testing.T) {
 	fsys, db := newSim(t, Options{})
 	hashes := putObjects(t, db, objData(0, 100), objData(1, 100))
+	fsys.Inject(simfs.Fault{Match: on(simfs.OpLstat, seg1), Err: syscall.EIO, Times: 1})
+	var ce *CorruptError
+	if _, err := readObject(db, hashes[0]); !errors.Is(err, syscall.EIO) || errors.As(err, &ce) {
+		t.Errorf("Object with a stat error: %v", err)
+	}
 	ops := recordOps(fsys)
 	read := func(stats int) {
 		t.Helper()
