@@ -721,6 +721,30 @@ func TestObjectsAcrossSegments(t *testing.T) {
 	}
 }
 
+// TestSegmentSizeRemembered checks that reading objects in records asks the size of their segment only when the
+// segment has grown past the size that the handles know, not at each read.
+func TestSegmentSizeRemembered(t *testing.T) {
+	fsys, db := newSim(t, Options{})
+	hashes := putObjects(t, db, objData(0, 100), objData(1, 100))
+	ops := recordOps(fsys)
+	read := func(stats int) {
+		t.Helper()
+		for range 2 {
+			for i, h := range hashes {
+				if got, err := readObject(db, h); err != nil || !bytes.Equal(got, objData(i, 100)) {
+					t.Errorf("object %d: %v", i, err)
+				}
+			}
+		}
+		if n := countOps(ops(), on(simfs.OpLstat, seg1)); n != stats {
+			t.Errorf("%d stats of the segment, want %d", n, stats)
+		}
+	}
+	read(1)
+	hashes = append(hashes, putObjects(t, db, objData(2, 100))...)
+	read(2)
+}
+
 // TestCloseReleasesFiles checks that Close closes every file that the engine has opened, also those that a View
 // opened after Close was called.
 func TestCloseReleasesFiles(t *testing.T) {

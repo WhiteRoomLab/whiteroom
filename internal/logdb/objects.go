@@ -126,11 +126,7 @@ func (db *DB) readObject(gen genNum, hash [32]byte, loc objLoc) ([]byte, error) 
 	if loc.placement != placeInline {
 		return db.readObjectFile(hash, loc.size)
 	}
-	b := make([]byte, loc.size)
-	if err := db.handles.readAt(gen, loc.seg, b, loc.off); err != nil {
-		return nil, err
-	}
-	return b, nil
+	return db.handles.read(gen, loc.seg, loc.off, loc.size)
 }
 
 // readObjectFile reads the file of the object hash, which must have a valid header and size bytes after it.

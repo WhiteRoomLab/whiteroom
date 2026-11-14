@@ -255,7 +255,9 @@ func TestCheckpointDamaged(t *testing.T) {
 		{"an object in a header", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(1, 71, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
-			uv(1, 100, math.MaxInt64-99))), fmt.Sprintf("bad location of object %x", hash(1))},
+			uv(1, math.MaxInt64, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
+		{"an object larger than a body", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
+			uv(1, 100, uint64(maxBody)+1))), fmt.Sprintf("bad location of object %x", hash(1))},
 		{"a file object too large", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeFile)},
 			uv(math.MaxInt64+1))), fmt.Sprintf("bad object size %d", uint64(math.MaxInt64+1))},
 		{"next event 0", rawCkp(h, uv(0, 0, 0, 0)), "bad event counts: 0 events, next event 0"},
@@ -270,6 +272,89 @@ func TestCheckpointDamaged(t *testing.T) {
 			}
 			if got := stateOf(t, db); got != want {
 				t.Errorf("state:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// setCkpObject changes the location of the object hash in the checkpoint of fsys with fn, and keeps its CRCs valid.
+func setCkpObject(t *testing.T, fsys vfs.FS, hash [32]byte, fn func(loc *objLoc)) {
+	t.Helper()
+	h, body, err := parseCheckpoint(path.Join(fsys.Name(), "checkpoint"), fileData(t, fsys, "checkpoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := new(owner)
+	st, reason := decodeCheckpoint(h, body, own)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	loc, ok := st.objects.Get(string(hash[:]))
+	if !ok {
+		t.Fatalf("the checkpoint does not have the object %x", hash[:])
+	}
+	fn(&loc)
+	st.objects = st.objects.Put(own, string(hash[:]), loc)
+	f, err := fsys.OpenFile("checkpoint", os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(writeCheckpoint(f, st), f.Close()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCheckpointObjectSize changes the size of an object in a record, in a checkpoint with valid CRCs, which Open
+// uses without reading the object. What reads the object refuses a size that the segment does not have.
+func TestCheckpointObjectSize(t *testing.T) {
+	ctx := context.Background()
+	o := Options{Placement: Hybrid, Threshold: 100}
+	base, db := newSim(t, o)
+	for i := range 5 {
+		change(t, db, i)
+	}
+	closeDB(t, db)
+	hash := sha256.Sum256(objData(0, 50))
+	var loc objLoc
+	setCkpObject(t, base, hash, func(l *objLoc) { loc = *l })
+	seg := segName(1, loc.seg)
+	rest := fileSize(t, base, seg) - int64(loc.off)
+	for _, c := range []struct {
+		name string
+		size int64
+		ok   bool
+	}{
+		{"to the end of the segment", rest, true},
+		{"a byte after the end of the segment", rest + 1, false},
+		{"the largest body", int64(maxBody), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fsys := copyFS(base)
+			setCkpObject(t, fsys, hash, func(l *objLoc) { l.size = c.size })
+			db := reopen(t, fsys, o)
+			if info := db.Recovery(); info.Checkpoint != "used" {
+				t.Fatalf("Recovery: %+v, want the checkpoint used", info)
+			}
+			var data []byte
+			err := db.View(ctx, func(tx *Tx) (err error) {
+				data, err = tx.Object(hash)
+				return err
+			})
+			if c.ok {
+				if err != nil || int64(len(data)) != c.size {
+					t.Errorf("Object: %d bytes, %v, want %d bytes", len(data), err, c.size)
+				}
+				return
+			}
+			want := fmt.Sprintf("%s: corrupt: has %d bytes, too few for an object of %d bytes at offset %d", simPath(seg),
+				fileSize(t, base, seg), c.size, loc.off)
+			if err == nil || err.Error() != want {
+				t.Errorf("Object: %v, want %s", err, want)
+			}
+			closeDB(t, db)
+			err = Maintain(ctx, fsys, o, func(m *Maintenance) error { return m.Compact(ctx, Rewrite{}) })
+			if err == nil || err.Error() != want {
+				t.Errorf("Compact: %v, want %s", err, want)
 			}
 		})
 	}
