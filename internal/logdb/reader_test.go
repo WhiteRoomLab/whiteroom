@@ -535,6 +535,7 @@ func TestReaderHead(t *testing.T) {
 		{"an end inside the record", func(s *headSlot) { s.end -= 8 }},
 		{"an end before that of the reader", func(s *headSlot) { s.end = st2.end - 8 }},
 		{"an end after the file", func(s *headSlot) { s.end += 8 }},
+		{"an end that no file has", func(s *headSlot) { s.end = 1 << 50 }},
 		{"a later segment", func(s *headSlot) { s.seg++ }},
 		{"a later generation", func(s *headSlot) { s.gen++ }},
 	}
