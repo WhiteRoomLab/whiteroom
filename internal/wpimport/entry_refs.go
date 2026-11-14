@@ -163,8 +163,9 @@ func (c *entryConv) setTerms(ei *entryItem) {
 
 // firstCategory returns cats with first the category that WordPress used for the address of the item: the first by
 // wp:term_id (those without one, as in WXR 1.0, after them) whose path by the URL rule of the type is the path of the
-// link of the item, or if there is none, or the link or the path cannot be told, the one with the lowest wp:term_id. The
-// others keep their order.
+// link of the item, or if there is none, or the link or the path cannot be told, the one with the lowest wp:term_id. If that
+// is the lowest, and the site had Yoast SEO, the primary category of the item is the first, as the link does not show it.
+// The others keep their order.
 func (c *entryConv) firstCategory(ei *entryItem, cats []termPick) []termPick {
 	if len(cats) == 1 {
 		return cats
@@ -190,6 +191,11 @@ func (c *entryConv) firstCategory(ei *entryItem, cats []termPick) []termPick {
 				first = cand
 				break
 			}
+		}
+	}
+	if first.id == byID[0].id {
+		if primary, ok := c.primaryCategory(ei, cats); ok {
+			first = primary
 		}
 	}
 	out := []termPick{first}
@@ -259,16 +265,24 @@ func (c *entryConv) setFeaturedImage(ei *entryItem) {
 		skip("the featured image %q is not the ID of an attachment", value)
 		return
 	}
-	id, ok := c.lookup(Object{Kind: ObjectPost, ID: n}, content.RefMedia)
-	if !ok {
-		skip("the featured image, attachment %d, is not imported", n)
-		return
-	}
-	if ref, _ := c.imp.Ref(content.RefMedia, id); ref.Type != content.MediaImage {
-		skip("the featured image, attachment %d, is not an image", n)
+	id, why := c.imageOf(n)
+	if why != "" {
+		skip("the featured image, attachment %d, %s", n, why)
 		return
 	}
 	ei.rev.FeaturedImage = id
+}
+
+// imageOf returns the ID of the medium that the attachment n of WordPress became, or why it is not an image that is imported.
+func (c *entryConv) imageOf(n int64) (id, why string) {
+	id, ok := c.lookup(Object{Kind: ObjectPost, ID: n}, content.RefMedia)
+	if !ok {
+		return "", "is not imported"
+	}
+	if ref, _ := c.imp.Ref(content.RefMedia, id); ref.Type != content.MediaImage {
+		return "", "is not an image"
+	}
+	return id, ""
 }
 
 // setSticky makes the revision of ei a sticky one if the post was.

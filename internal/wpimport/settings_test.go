@@ -840,6 +840,9 @@ func TestSettingsWriteJSON(t *testing.T) {
   },
   "defaultCategory": "",
   "pageTemplates": {},
+  "seo": {
+    "plugin": ""
+  },
   "blocks": {
     "presets": {
       "color": {},
@@ -870,6 +873,7 @@ func TestSettingsWriteJSON(t *testing.T) {
 		},
 		DefaultCategory: "お知らせ",
 		PageTemplates:   map[string]string{"templates/full-width.php": "full-width", "a~b/c.php": "", "page-lp.php": "lp"},
+		SEO:             SEOSettings{Plugin: "yoast"},
 		Blocks: BlockSettings{
 			Presets: PresetSettings{
 				Color:      map[string]string{"vivid-red": "accent", "pale-pink": ""},
@@ -927,6 +931,9 @@ func TestSettingsWriteJSON(t *testing.T) {
     "a~b/c.php": "",
     "page-lp.php": "lp",
     "templates/full-width.php": "full-width"
+  },
+  "seo": {
+    "plugin": "yoast"
   },
   "blocks": {
     "presets": {
@@ -1247,6 +1254,302 @@ func TestSitePageTemplates(t *testing.T) {
 	}
 	if _, err := imp.Site(s, defs); err != nil {
 		t.Errorf("Site without page templates = %v", err)
+	}
+}
+
+// seoEntries lists the entries of the report about the SEO plugin, as "kind: message", with " -> file#pointer" if there is a
+// place.
+func seoEntries(rep *Report) []string {
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the items have the SEO settings") || strings.HasPrefix(e.Message, "All in One SEO keeps") {
+			line := string(e.Kind) + ": " + e.Message
+			if e.Target != (Target{}) {
+				line += " -> " + e.Target.File + "#" + e.Target.Pointer
+			}
+			if e.Source.Record != recordChannel {
+				line += " (not at the channel)"
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestProposeSEO(t *testing.T) {
+	const tail = ": its titles, descriptions, canonical URLs, noindex and images for sharing are imported; the defaults of the plugin " +
+		"for the site and for each post type are options of WordPress, which the WXR does not have"
+	const aioseoTable = "review: All in One SEO keeps the canonical URL, noindex and the image for sharing in its own table, " +
+		"which the WXR does not have; only its titles and descriptions are imported"
+	item := func(id int, status, typ string, meta ...string) bodyXML {
+		x := bodyXML{id: id, typ: typ, status: status}
+		for i := 0; i+1 < len(meta); i += 2 {
+			x.meta = append(x.meta, [2]string{meta[i], meta[i+1]})
+		}
+		return x
+	}
+	yoast := func(id int) bodyXML { return item(id, "publish", "post", "_yoast_wpseo_title", "A title") }
+	rankmath := func(id int) bodyXML { return item(id, "publish", "post", "rank_math_description", "A description") }
+	seopress := func(id int) bodyXML { return item(id, "publish", "page", "_seopress_titles_title", "A title") }
+	tsf := func(id int) bodyXML { return item(id, "draft", "post", "_genesis_description", "A description") }
+	ssp := func(id int) bodyXML { return item(id, "publish", "post", "ssp_meta_title", "A title") }
+	aioseo := func(id int) bodyXML { return item(id, "publish", "post", "_aioseo_title", "A title") }
+	build := func(groups ...[]bodyXML) string {
+		var all []bodyXML
+		for _, g := range groups {
+			all = append(all, g...)
+		}
+		return bodiesWXR(all...)
+	}
+	many := func(n, first int, f func(int) bodyXML) []bodyXML {
+		var out []bodyXML
+		for i := range n {
+			out = append(out, f(first+i))
+		}
+		return out
+	}
+
+	for _, tt := range []struct {
+		name   string
+		in     string
+		plugin string
+		want   []string
+	}{
+		{
+			name: "the plugin that most items have, and the others that are there", in: build(many(3, 1, yoast), many(1, 10, rankmath)), plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (3 items) and Rank Math (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "the plugin with more items is taken, wherever it is in the WXR", in: build(many(1, 1, yoast), many(2, 10, rankmath)), plugin: "rankmath",
+			want: []string{`review: the items have the SEO settings of Rank Math (2 items) and Yoast SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "one plugin", in: build(many(1, 1, seopress)), plugin: "seopress",
+			want: []string{`review: the items have the SEO settings of SEOPress (1 item); seo.plugin is "seopress"` + tail},
+		},
+		{
+			name: "as many items: the first in the table, which lists them in its order", in: build(many(2, 1, tsf), many(2, 10, seopress), many(2, 20, yoast)),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items), SEOPress (2 items) and The SEO Framework (2 items); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "three plugins by their numbers", in: build(many(2, 1, ssp), many(3, 10, rankmath), many(2, 20, tsf), many(1, 30, aioseo)), plugin: "rankmath",
+			want: []string{`review: the items have the SEO settings of Rank Math (3 items), The SEO Framework (2 items), SEO SIMPLE PACK (2 items) and All in One SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "four plugins at last", in: build(many(1, 1, yoast), many(1, 10, rankmath), many(1, 20, seopress), many(1, 30, tsf), many(1, 40, ssp), many(1, 50, aioseo)),
+			plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (1 item), Rank Math (1 item), SEOPress (1 item), The SEO Framework (1 item), ` +
+				`SEO SIMPLE PACK (1 item) and All in One SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "All in One SEO has a second entry", in: build(many(2, 1, aioseo), many(1, 10, yoast)), plugin: "aioseo",
+			want: []string{
+				`review: the items have the SEO settings of All in One SEO (2 items) and Yoast SEO (1 item); seo.plugin is "aioseo"` + tail,
+				aioseoTable,
+			},
+		},
+		{
+			name: "All in One SEO that is not the one taken has none", in: build(many(1, 1, aioseo), many(2, 10, yoast)), plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (2 items) and All in One SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "the items that are not imported are not counted",
+			in: build(
+				[]bodyXML{
+					item(1, "publish", "post", "_yoast_wpseo_title", "A title"),
+					item(2, "trash", "post", "rank_math_title", "In the trash"),
+					item(3, "trash", "page", "rank_math_title", "In the trash"),
+					item(4, "auto-draft", "post", "rank_math_title", "Automatic"),
+					item(5, "publish", "product", "rank_math_title", "A type that the site does not have"),
+					item(6, "inherit", "attachment", "rank_math_title", "An attachment"),
+					item(7, "publish", "wp_block", "rank_math_title", "A reusable block"),
+				}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "an item that has the settings of two plugins counts for both",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_title", "A", "rank_math_title", "B"),
+				item(2, "publish", "post", "_yoast_wpseo_title", "A", "rank_math_title", "B", "ssp_meta_title", "C"),
+				item(3, "publish", "post", "rank_math_title", "B"),
+			}),
+			plugin: "rankmath",
+			want:   []string{`review: the items have the SEO settings of Rank Math (3 items), Yoast SEO (2 items) and SEO SIMPLE PACK (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "a draft, a private and a scheduled item are counted",
+			in: build([]bodyXML{
+				item(1, "draft", "post", "ssp_meta_title", "A"), item(2, "private", "post", "ssp_meta_title", "B"),
+				item(3, "future", "page", "ssp_meta_title", "C"), item(4, "pending", "post", "ssp_meta_title", "D"),
+				item(5, "publish", "post", "_yoast_wpseo_title", "A title"),
+			}),
+			plugin: "ssp",
+			want:   []string{`review: the items have the SEO settings of SEO SIMPLE PACK (4 items) and Yoast SEO (1 item); seo.plugin is "ssp"` + tail},
+		},
+		{
+			name: "a custom type that the schema file has",
+			in: build([]bodyXML{item(1, "publish", "works", "_aioseo_description", "A description"), item(2, "publish", "post", "rank_math_title", "A title")},
+				[]bodyXML{item(3, "publish", "works", "rank_math_title", "Another")}),
+			plugin: "rankmath",
+			want:   []string{`review: the items have the SEO settings of Rank Math (2 items) and All in One SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "a postmeta that is only recorded counts, and one that is read counts for each of its keys once",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_opengraph-title", "Shared"),
+				item(2, "publish", "post", "_yoast_wpseo_title", "A", "_yoast_wpseo_metadesc", "B", "_yoast_wpseo_canonical", "https://example.org/"),
+				item(3, "publish", "post", "rank_math_breadcrumb_title", "Crumb"),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items) and Rank Math (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			// Without it, a site that wrote no SEO settings by hand would lose the primary categories from its addresses.
+			name: "the primary category of Yoast SEO alone tells that the site had it",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_primary_category", "4"), item(2, "publish", "post"),
+				item(3, "publish", "post", "_yoast_wpseo_primary_category", ""),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "values that are empty, white space or only in a later postmeta do not count",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_title", ""),
+				item(2, "publish", "post", "_yoast_wpseo_title", " \t\n "),
+				item(3, "publish", "post", "_yoast_wpseo_title", "", "_yoast_wpseo_title", "A later one"),
+				item(4, "publish", "post", "_yoast_wpseo_focuskw", "keyword", "_yoast_wpseo_linkdex", "30"),
+				item(5, "publish", "post", "rank_math_advanced_robots", "a:1:{s:6:\"max-snippet\";i:-1;}", "rank_math_focus_keyword", "x"),
+				item(6, "publish", "post", "Yoast_wpseo_title", "wrong case"),
+			}),
+			plugin: "", want: nil,
+		},
+		{name: "no postmeta of a plugin", in: build([]bodyXML{item(1, "publish", "post")}), plugin: "", want: nil},
+		{name: "no items", in: siteWXR("https://example.com", "ja"), plugin: "", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			defs := &content.Site{Types: []content.TypeDef{{Name: "works", Label: "Works", Body: true}}}
+			s, imp := proposeFrom(t, tt.in, nil, defs)
+			if s.SEO.Plugin != tt.plugin {
+				t.Errorf("SEO.Plugin = %q, want %q", s.SEO.Plugin, tt.plugin)
+			}
+			sameSet(t, "the entries", seoEntries(imp.Report), tt.want)
+		})
+	}
+
+	t.Run("every key of a plugin counts, one item for each", func(t *testing.T) {
+		for _, p := range seoPlugins {
+			var items []bodyXML
+			for i, k := range p.keys() {
+				items = append(items, item(i+1, "publish", "post", k, "x"))
+			}
+			s, imp := proposeFrom(t, bodiesWXR(items...), nil, nil)
+			if s.SEO.Plugin != p.name {
+				t.Errorf("the plugin of the items with the keys of %s is %q", p.name, s.SEO.Plugin)
+			}
+			want := fmt.Sprintf(`review: the items have the SEO settings of %s (%d items); seo.plugin is %q`, p.label, len(items), p.name)
+			if got := seoEntries(imp.Report); !slices.ContainsFunc(got, func(l string) bool { return strings.HasPrefix(l, want) }) {
+				t.Errorf("the entries about %s are %q, want one that starts with %q", p.name, got, want)
+			}
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, build(many(1, 1, rankmath)), nil, nil)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := "  \"seo\": {\n    \"plugin\": \"rankmath\"\n  },\n"; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the SEO settings\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+	t.Run("the proposal is the same each time", func(t *testing.T) {
+		in := build(many(2, 1, ssp), many(2, 10, yoast))
+		first, imp := proposeFrom(t, in, nil, nil)
+		want := seoEntries(imp.Report)
+		for range 20 {
+			again, imp := proposeFrom(t, in, nil, nil)
+			if again.SEO != first.SEO {
+				t.Fatalf("SEO = %+v, want %+v", again.SEO, first.SEO)
+			}
+			sameStrings(t, "the entries", seoEntries(imp.Report), want)
+		}
+	})
+}
+
+func TestReadSettingsSEO(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"seo": {"plugin": "tsf"}}`))
+	if err != nil || s.SEO.Plugin != "tsf" {
+		t.Errorf("ReadSettings = %+v, %v, want the plugin tsf", s, err)
+	}
+	// A file without the key, and one with no plugin, have none.
+	for _, in := range []string{`{}`, `{"seo": {}}`, `{"seo": {"plugin": ""}}`} {
+		if s, err := ReadSettings("settings.json", []byte(in)); err != nil || s.SEO.Plugin != "" {
+			t.Errorf("ReadSettings(%s) = %+v, %v, want no plugin", in, s, err)
+		}
+	}
+	// The name is not checked when the file is read: Site checks it.
+	if s, err := ReadSettings("settings.json", []byte(`{"seo": {"plugin": "nosuch"}}`)); err != nil || s.SEO.Plugin != "nosuch" {
+		t.Errorf("ReadSettings of an unknown plugin = %+v, %v", s, err)
+	}
+	for _, tt := range []struct{ in, want string }{
+		{`{"seo": {"plugin": 5}}`, "/seo/plugin: expected string, got number"},
+		{`{"seo": {"plugin": null}}`, "/seo/plugin: null is not allowed; omit the key"},
+		{`{"seo": {"plugin": "a", "other": 1}}`, "/seo/other: unknown key"},
+		{`{"seo": "yoast"}`, "/seo: expected object, got string"},
+	} {
+		_, err := ReadSettings("settings.json", []byte(tt.in))
+		if err == nil {
+			t.Errorf("ReadSettings(%s) = nil", tt.in)
+			continue
+		}
+		if got := errorLines(t, err); len(got) != 1 || got[0] != tt.want {
+			t.Errorf("ReadSettings(%s) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSiteSEOPlugin(t *testing.T) {
+	imp, defs := siteImport(t)
+	for _, name := range []string{"", "yoast", "rankmath", "seopress", "tsf", "ssp", "aioseo"} {
+		s := sampleSettings()
+		s.SEO.Plugin = name
+		if _, err := imp.Site(s, defs); err != nil {
+			t.Errorf("Site with the plugin %q = %v", name, err)
+		}
+	}
+	for _, name := range []string{"Yoast", "yoast ", "wordpress-seo", "all-in-one-seo", "x"} {
+		s := sampleSettings()
+		s.SEO.Plugin = name
+		site, err := imp.Site(s, defs)
+		if site != nil {
+			t.Errorf("Site with the plugin %q = %+v, want none", name, site)
+		}
+		want := fmt.Sprintf(`/seo/plugin: unknown SEO plugin %q: use yoast, rankmath, seopress, tsf, ssp or aioseo, or leave it empty`, name)
+		sameStrings(t, "the errors", errorLines(t, err), []string{want})
+		var errs content.Errors
+		_ = errors.As(err, &errs)
+		for _, e := range errs {
+			if e.File != "" || e.Line != 0 || e.Column != 0 {
+				t.Errorf("the error %+v has a place", *e)
+			}
+		}
+	}
+	// The others are not hidden by it.
+	s := sampleSettings()
+	s.SEO.Plugin = "x"
+	s.Site.URL = ""
+	_, err := imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || !strings.HasPrefix(got[0], "/seo/plugin: ") || !strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %q, want one at /seo/plugin and one at /site/url", got)
 	}
 }
 

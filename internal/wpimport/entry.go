@@ -17,8 +17,8 @@ import (
 type EntryOptions struct {
 	// Site is the one that Site returned, and that Terms, Authors and Media were given.
 	Site *content.Site
-	// Settings is the settings that the person who imports corrected, or nil: then there is no table of the page templates
-	// and no default category.
+	// Settings is the settings that the person who imports corrected, or nil: then there is no table of the page templates,
+	// no default category and no SEO plugin.
 	Settings *Settings
 	// By is the ID of the account that creates the entries.
 	By string
@@ -82,6 +82,11 @@ func discardedStatus(wp string) string {
 // time cannot be read, are not imported: they are taken out of the table and the references. site is the one that Site
 // returned.
 //
+// If the settings name an SEO plugin, the entry has the SEO settings of that plugin's postmeta: the title, the description,
+// the canonical URL, noindex and the image for sharing. The report counts the other postmeta of the plugin, which whiteroom
+// has no setting for, by key, once each, at the channel. If the site had Yoast SEO, its primary category is the first
+// category of an entry that has more, where the link of the item does not tell it.
+//
 // What the build checks across entries (6.7) is made to hold: a published page has a published parent, and a scheduled
 // page a published or scheduled one, or else it is a draft with its parent; the published and scheduled entries of a
 // language and a type (and under a parent, for pages) have different slugs; and the front page and the posts page of
@@ -137,6 +142,7 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 	}
 	c.setParents(live)
 	c.reportGroups()
+	c.reportSEO()
 	for _, ei := range live {
 		c.tidy(ei)
 	}
@@ -159,6 +165,9 @@ type entryConv struct {
 	// groups are the items that something is not imported of, counted by the steps of convert and recorded after them.
 	groups    map[groupKey]*itemGroup
 	groupKeys []groupKey // in the order of the first item of each
+	// seoSkips counts the items that have each postmeta of the SEO plugin that is not imported, in the order of the plugin's
+	// table; reportSEO records them. It is nil until an item has one.
+	seoSkips []int
 	// defaultCat is the default category of the settings, which defaultCategory finds when it is first needed.
 	defaultCat struct {
 		done, ok bool
@@ -285,6 +294,7 @@ func (c *entryConv) convert(ei *entryItem) {
 	c.setSticky(ei)
 	c.setOrder(ei)
 	c.setTemplate(ei)
+	c.setSEO(ei)
 }
 
 // setStatus decides the status of ei from wp:status and wp:post_password: a private or protected item is always a draft.
@@ -433,7 +443,7 @@ func (c *entryConv) tidy(ei *entryItem) {
 			break
 		}
 		taken[unit] = true
-		c.revisionNote(Skipped, ei, unit, "the %s is not imported: %s", strings.TrimPrefix(unit, "/"), first.Msg)
+		c.revisionNote(Skipped, ei, unit, "the %s is not imported: %s", unitName(unit), first.Msg)
 	}
 	if !publishing(ei.status) {
 		return
@@ -476,6 +486,22 @@ func revisionUnit(path string) string {
 	return "/" + parts[0]
 }
 
+// unitNames are the names that the report gives the units whose name is not that of their key.
+var unitNames = map[string]string{
+	"/seo/title":       "title for search engines",
+	"/seo/description": "description for search engines",
+	"/seo/canonical":   "canonical URL",
+	"/seo/ogImage":     "image for sharing",
+}
+
+// unitName returns the name of a unit of the revision for the report: that of its key, if it has no other.
+func unitName(unit string) string {
+	if name, ok := unitNames[unit]; ok {
+		return name
+	}
+	return strings.TrimPrefix(unit, "/")
+}
+
 // clearUnit takes the unit out of rev, and reports whether there was something to take out.
 func clearUnit(rev *content.Revision, unit string) bool {
 	var s *string
@@ -496,6 +522,14 @@ func clearUnit(rev *content.Revision, unit string) bool {
 		s = &rev.Template
 	case "/parent":
 		s = &rev.Parent
+	case "/seo/title":
+		s = &rev.SEO.Title
+	case "/seo/description":
+		s = &rev.SEO.Description
+	case "/seo/canonical":
+		s = &rev.SEO.Canonical
+	case "/seo/ogImage":
+		s = &rev.SEO.OGImage
 	case "/sticky":
 		was := rev.Sticky
 		rev.Sticky = false

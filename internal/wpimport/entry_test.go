@@ -40,7 +40,7 @@ type wxrEntry struct {
 	title, name                          string
 	date, dateGMT, modified, modifiedGMT string
 	password, content, excerpt           string
-	link, creator                        string
+	link, creator, attachmentURL         string
 	parent, menuOrder                    int
 	sticky                               bool
 	terms                                []wxrTermRef
@@ -81,6 +81,9 @@ func (x wxrEntry) xml() string {
 		cdata(d.tag, d.value)
 	}
 	cdata("wp:post_name", x.name)
+	if x.attachmentURL != "" {
+		cdata("wp:attachment_url", x.attachmentURL)
+	}
 	cdata("wp:status", status)
 	fmt.Fprintf(&b, "<wp:post_parent>%d</wp:post_parent><wp:menu_order>%d</wp:menu_order>", x.parent, x.menuOrder)
 	cdata("wp:post_type", typ)
@@ -1721,11 +1724,12 @@ func TestEntriesClearUnit(t *testing.T) {
 		return content.Revision{
 			Title: "T", Slug: "s", Excerpt: "e", Date: entryTime, Author: "a", FeaturedImage: "f", Sticky: true, Order: 3, Template: "t",
 			Parent: "p", Terms: content.Terms{"category": {"c1", "c2"}, "tag": {"t1"}, "genre": {"g1"}},
+			SEO: content.SEO{Title: "st", Description: "sd", OGImage: "so", NoIndex: true, Canonical: "/sc/"},
 		}
 	}
 	for _, unit := range []string{
 		"/title", "/slug", "/excerpt", "/date", "/author", "/featuredImage", "/sticky", "/order", "/template", "/parent",
-		"/terms/category", "/terms/tag", "/terms/genre",
+		"/terms/category", "/terms/tag", "/terms/genre", "/seo/title", "/seo/description", "/seo/canonical", "/seo/ogImage",
 	} {
 		rev := full()
 		if !clearUnit(&rev, unit) {
@@ -1753,6 +1757,14 @@ func TestEntriesClearUnit(t *testing.T) {
 			want.Template = ""
 		case "/parent":
 			want.Parent = ""
+		case "/seo/title":
+			want.SEO.Title = ""
+		case "/seo/description":
+			want.SEO.Description = ""
+		case "/seo/canonical":
+			want.SEO.Canonical = ""
+		case "/seo/ogImage":
+			want.SEO.OGImage = ""
 		default:
 			delete(want.Terms, strings.TrimPrefix(unit, "/terms/"))
 		}
@@ -1763,7 +1775,8 @@ func TestEntriesClearUnit(t *testing.T) {
 			t.Errorf("clearUnit(%s) of what is empty = true", unit)
 		}
 	}
-	for _, unit := range []string{"", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo/title", "/fields/x", "/body"} {
+	// /seo/noindex is a flag, which cannot be wrong.
+	for _, unit := range []string{"", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo", "/seo/", "/seo/noindex", "/seo/nosuch", "/fields/x", "/body"} {
 		rev := full()
 		if clearUnit(&rev, unit) || !reflect.DeepEqual(rev, full()) {
 			t.Errorf("clearUnit(%q) took something out of the revision: %+v", unit, rev)
