@@ -296,6 +296,18 @@ func TestRollbackLocked(t *testing.T) {
 	}
 }
 
+// TestRollbackThroughLink rolls back b/out as link/../out, to a release that it does not have: the path of the error
+// keeps link/.., which is b.
+func TestRollbackThroughLink(t *testing.T) {
+	base := makeDir(t, "b/out/releases/"+releaseA+"/public/a", "b/out/current -> releases/"+releaseA, "b/entries/",
+		"link -> b/entries")
+	out := filepath.Join(base, "link") + filepath.FromSlash("/../out")
+	want := out + filepath.FromSlash("/releases/"+releaseB) + ": no such release"
+	if changed, err := Rollback(out, releaseB); changed || err == nil || err.Error() != want {
+		t.Errorf("Rollback(%q) = %v, %v, want the error %q", out, changed, err, want)
+	}
+}
+
 // TestRollbackRecheck checks the part of Rollback that runs under the lock, which checks the output directory again: a
 // build that has ended since the first check may have removed the release, and current must not point to a release
 // that is gone.

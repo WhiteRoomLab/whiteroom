@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 )
 
 // Options are the options of New.
@@ -95,7 +96,7 @@ func New(opts Options) (*Images, error) {
 	case opts.Memory < 0:
 		return nil, fmt.Errorf("memory %d is out of range (0 or more)", opts.Memory)
 	}
-	dir, err := filepath.Abs(opts.Dir)
+	dir, err := fspath.Abs(opts.Dir)
 	if err != nil {
 		return nil, err
 	}

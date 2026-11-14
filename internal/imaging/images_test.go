@@ -119,6 +119,21 @@ func TestNew(t *testing.T) {
 	if im = newImages(t, "images", 0); im.dir != dir {
 		t.Errorf("the directory of %q is %q, want %q", "images", im.dir, dir)
 	}
+	// link/.. is the parent of what link points to, not the working directory.
+	linked, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(linked, "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(linked, "entries"), "link"); err != nil {
+		t.Fatal(err)
+	}
+	through := filepath.FromSlash("link/../images")
+	if im = newImages(t, through, 0); im.dir != filepath.Join(linked, "images") {
+		t.Errorf("the directory of %q is %q, want %q", through, im.dir, filepath.Join(linked, "images"))
+	}
 
 	used := t.TempDir()
 	photo := filepath.Join(used, "photo.jpg")

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 )
 
 // Releases is what ListReleases finds in an output directory.
@@ -104,7 +106,7 @@ func checkRelease(root *os.Root, name string) (*layout, error) {
 		return nil, err
 	}
 	if !slices.Contains(l.releases, name) {
-		return nil, noReleaseError{filepath.Join(root.Name(), releasesDir, name)}
+		return nil, noReleaseError{fspath.Join(root.Name(), filepath.Join(releasesDir, name))}
 	}
 	return l, nil
 }

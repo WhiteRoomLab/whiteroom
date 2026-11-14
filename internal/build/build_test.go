@@ -439,6 +439,14 @@ func TestBuildForeign(t *testing.T) {
 	}
 	want = filepath.Join(out, "releases", "README") + ": not made by the build; " + releasesMust
 	failingBuild(t, "a foreign file after a build", t.Context(), buildOptions(src, out, t.TempDir(), 4), want)
+
+	// The path keeps link/.., which is b. Not failingBuild: filepath.WalkDir drops link/...
+	base := makeDir(t, "b/out/index.html", "b/entries/", "link -> b/entries")
+	out = filepath.Join(base, "link") + filepath.FromSlash("/../out")
+	want = out + string(filepath.Separator) + "index.html: not made by the build; " + outMust
+	if res, err := Build(t.Context(), buildOptions(src, out, t.TempDir(), 4)); res != nil || err == nil || err.Error() != want {
+		t.Errorf("a foreign file through a symbolic link: Build() = %+v, %v\nwant the error:\n%s", res, err, want)
+	}
 }
 
 // TestBuildCanceled checks that a build whose context is done before it starts makes nothing, and that one canceled
@@ -822,6 +830,15 @@ func TestBuildOptions(t *testing.T) {
 	if err := os.Symlink("cache", link); err != nil {
 		t.Fatal(err)
 	}
+	// up/.. is sub, not dir.
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(sub, "inner"), filepath.Join(dir, "up")); err != nil {
+		t.Fatal(err)
+	}
+	throughUp := filepath.Join(dir, "up") + filepath.FromSlash("/../out")
 	apart := func(out, cache string) string {
 		return "the output directory " + out + " and the cache directory " + cache +
 			" must not be the same, or one in the other"
@@ -840,12 +857,16 @@ func TestBuildOptions(t *testing.T) {
 		{Options{Source: src, Out: filepath.Join(cache, "out"), CacheDir: cache}, apart(filepath.Join(cache, "out"), cache)},
 		{Options{Source: src, Out: filepath.Join(link, "out"), CacheDir: cache}, apart(filepath.Join(link, "out"), cache)},
 		{Options{Source: src, Out: dir, CacheDir: link}, apart(dir, link)},
+		{Options{Source: src, Out: throughUp, CacheDir: filepath.Join(sub, "out", "cache")},
+			apart(throughUp, filepath.Join(sub, "out", "cache"))},
+		{Options{Source: src, Out: filepath.Join(sub, "out"), CacheDir: throughUp + filepath.FromSlash("/cache")},
+			apart(filepath.Join(sub, "out"), throughUp+filepath.FromSlash("/cache"))},
 	} {
 		if res, err := Build(t.Context(), tt.opts); res != nil || err == nil || err.Error() != tt.want {
 			t.Errorf("Build(%+v) = %+v, %v, want the error %q", tt.opts, res, err, tt.want)
 		}
 	}
-	if got := namesIn(t, dir); !slices.Equal(got, []string{"cache", "link"}) {
+	if got := namesIn(t, dir); !slices.Equal(got, []string{"cache", "link", "sub", "up"}) {
 		t.Errorf("Build() made %q", got)
 	}
 	if got := namesIn(t, cache); len(got) > 0 {

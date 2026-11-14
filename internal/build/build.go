@@ -10,6 +10,7 @@ import (
 	"runtime"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/imaging"
 )
 
@@ -230,11 +231,11 @@ func (b *builder) writeRelease(ctx context.Context, rel *os.Root, workers int, p
 // files of the output directory if it were in the cache directory, and the next build would refuse an output directory
 // that holds the cache directory.
 func checkDirs(out, cache string) error {
-	o, err := realPath(out)
+	o, err := fspath.Resolve(out)
 	if err != nil {
 		return err
 	}
-	c, err := realPath(cache)
+	c, err := fspath.Resolve(cache)
 	if err != nil {
 		return err
 	}
@@ -243,26 +244,6 @@ func checkDirs(out, cache string) error {
 			out, cache)
 	}
 	return nil
-}
-
-// realPath returns the absolute path of name, with the symbolic links resolved in the part of it that exists.
-func realPath(name string) (string, error) {
-	p, err := filepath.Abs(name)
-	if err != nil {
-		return "", err
-	}
-	rest := ""
-	for {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			return filepath.Join(r, rest), nil
-		}
-		dir := filepath.Dir(p)
-		if dir == p {
-			return filepath.Join(p, rest), nil
-		}
-		rest = filepath.Join(filepath.Base(p), rest)
-		p = dir
-	}
 }
 
 // within reports whether the absolute path a is b or in it.

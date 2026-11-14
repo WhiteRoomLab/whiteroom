@@ -167,6 +167,7 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/imaging$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
             - github.com/WhiteRoomLab/whiteroom/internal/webp$
@@ -178,6 +179,7 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/imaging$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
             - github.com/WhiteRoomLab/whiteroom/internal/render$
@@ -225,6 +227,7 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/build$
               desc: serve は build を使わない（build のテストが serve を使うので、循環する）
@@ -389,6 +392,7 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/html$
             - github.com/WhiteRoomLab/whiteroom/internal/imaging$
             - github.com/WhiteRoomLab/whiteroom/internal/mediafile$
@@ -426,6 +430,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/publish$
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
@@ -440,6 +445,9 @@ linters:
         - pattern: ^store\.DropIndexRow$
           pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/store$
           msg: テストだけが使う（わざと索引の行を消す）
+        - pattern: ^filepath\.Abs$
+          pkg: ^path/filepath$
+          msg: fspath.Abs を使う（filepath.Abs は、シンボリックリンクの後ろの .. を、文字の上で消す）
     gomoddirectives:
       toolchain-forbidden: true
       tool-forbidden: true

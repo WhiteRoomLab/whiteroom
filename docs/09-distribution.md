@@ -57,6 +57,7 @@
 - 使い方：引数の無い `whiteroom` は、使い方を標準エラーに、`whiteroom help` は標準出力に示す。サブコマンドの `-h`（`whiteroom build -h`・`whiteroom serve admin -h`・`whiteroom account reset -h` など）は、そのサブコマンドの使い方とフラグを、標準エラーに示して、0で終わる。使い方の文は、各コマンドの `-h` が正で、この節は、その要点と、理由を書く。
 - 知らないもの：知らないコマンドには、`whiteroom: unknown command "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` の後ろには、`public` か `admin` を書く（`help`・`-h`・`-help`・`--help` には `whiteroom help` と同じ使い方を、ほかには `whiteroom serve: unknown server "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` だけなら、使い方を標準エラーに示して、2で終わる）。`whiteroom account` の後ろには、`reset` か `delete` を書く（`help`・`-h`・`-help`・`--help` には、`account` の使い方を標準出力に示して、0で終わる。ほかには `whiteroom account: unknown subcommand "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom account` だけなら、使い方を標準エラーに示して、2で終わる）。
 - 設定ファイル：`-config FILE` を書いたコマンドだけが読む（下記の「設定ファイル」）。`-config` を取るのは、`init`・`build`・`serve admin`・`backup`・`doctor`・`account reset`・`account delete`。`rollback` と `serve public` は、設定ファイルを読まない。
+- パスの `..`：引数・フラグ・設定ファイルのパスの `..` は、OSと同じ順に解く（案）。`link` がシンボリックリンクなら、`link/..` は、`link` の指す先の親で、`link` のあるディレクトリではない。コマンドがパスを繋ぐとき（`SITE` の下の既定の出力先とキャッシュ、設定ファイルのディレクトリからの相対パス、警告とエラーに示すパス）は、ディレクトリでないもの（シンボリックリンクなど）か、見られないものの後の `..` を、その前の要素と一緒に残し、ほかは文字の上で整える（`SITE` が `link/..` なら、出力先は `link/../out` で、結果の行もそう示す。`conf` がディレクトリなら、`conf/whiteroom.yaml` の `data: ../data` は `data`）。絶対パスにするとき（キャッシュのディレクトリ、`serve public` の出力先、出力先とキャッシュの比べ方（4.3））は、`..` があれば、シンボリックリンクを解いた絶対パスにする。
 
 **終了コード**
 
@@ -93,7 +94,7 @@
 | `trustedProxies` | 文字列の並び（IPアドレスか、CIDRの範囲） | `-trusted-proxy`（繰り返す） |
 
 - 値の決め方：フラグか引数を書けば、それ。なければ、設定ファイルの項目。なければ、本体の既定。数は、フラグを書いたかどうかで決める（`-workers 0` も、設定ファイルの `workers` に勝つ）。`-trusted-proxy` を1つでも書くと、`trustedProxies` は使わない。`-addr` と `-socket` は、書いたほうだけで決め、設定ファイルの `addr` と `socket` は見ない（下記の「`whiteroom serve admin`」）。
-- 相対パス：設定ファイルの中のパス（`data`・`site`・`theme`・`out`・`cache`・`socket`）は、そのファイルのディレクトリからのもの（`conf/whiteroom.yaml` の `data: data` は、`conf/data`）。絶対パスは、そのまま。`socket` の、`@` で始まる値も、そのまま（`serve admin` が断る。下記）。フラグと引数の相対パスは、作業ディレクトリからのもの。
+- 相対パス：設定ファイルの中のパス（`data`・`site`・`theme`・`out`・`cache`・`socket`）は、そのファイルのディレクトリからのもの（`conf/whiteroom.yaml` の `data: data` は、`conf/data`。`..` は、上記の「パスの `..`」）。絶対パスは、そのまま。`socket` の、`@` で始まる値も、そのまま（`serve admin` が断る。下記）。フラグと引数の相対パスは、作業ディレクトリからのもの。
 - どのコマンドが、どの項目を使うか（`○` が使う）：
 
 | 項目 | `init` | `build` | `serve admin` | `doctor` | `backup` | `account` |
@@ -206,7 +207,7 @@ whiteroom serve public [-addr ADDR] [OUT]
 
 規則：
 
-- 起動：出力先が無いとき（`whiteroom serve public: open /srv/site: no such file or directory`）、公開中のリリースが無いとき（`whiteroom serve public: no release is published in /srv/site`）、そのリリースが正しくないとき（`current` がリリースを指さない、`server.json` を読めないか正しくないなど。9.5）、待ち受けられないとき（`whiteroom serve public: listen tcp 127.0.0.1:8080: bind: address already in use`）は、配信を始めずに、1で終わる。出力先のエラーでは、出力先を絶対パスで示す。
+- 起動：出力先が無いとき（`whiteroom serve public: open /srv/site: no such file or directory`）、公開中のリリースが無いとき（`whiteroom serve public: no release is published in /srv/site`）、そのリリースが正しくないとき（`current` がリリースを指さない、`server.json` を読めないか正しくないなど。9.5）、待ち受けられないとき（`whiteroom serve public: listen tcp 127.0.0.1:8080: bind: address already in use`）は、配信を始めずに、1で終わる。出力先のエラーでは、出力先を絶対パスで示す（`..` があれば、シンボリックリンクを解いたもの。上記の「パスの `..`」）。
 - URL：待ち受けを始めたら、標準出力に、開くURLを1行で示す（`serving out at http://127.0.0.1:8080/`）。ホストとポートは、待ち受けたもの（ポートの `0` は、決まった番号にする。`0.0.0.0`・`::` は、`localhost` にする）。パスは、公開中のリリースのサイトのURLのパス（`server.json` の `base`。6.6.6）で、`/blog` のサイトでは `http://127.0.0.1:8080/blog/` になる（ASCII以外の文字・空白・制御文字のバイトは、16進の大文字でエンコードする）。示すのは起動のときだけで、後のビルドでサイトのURLのパスが変わっても、示し直さない。
 - 作り直さない：変更を見て、ビルドし直すことはしない。`whiteroom build` で公開し直すと、起動し直さなくても、次のリクエストから、新しいリリースを配信する（9.5）。手元での作業のために、変更を見て作り直すかは6.12の123。
 - 止める：Ctrl-C（SIGINT）か SIGTERM で、待ち受けをやめ、処理中のリクエスト（ダウンロードの途中のものも）が終わるのを10秒まで待って（終わらないものは、接続を閉じる）、何も示さずに、0で終わる。2回目のシグナルでは、すぐに終わる。
