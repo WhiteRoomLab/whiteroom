@@ -46,7 +46,8 @@ func (ls *liveServer) slowPost(t *testing.T, path, token, first string) slowRequ
 	return ls.slowSend(t, http.MethodPost, path, token, first)
 }
 
-// slowSend starts a request of method to path as the account with token, and sends the first part of its body.
+// slowSend starts a request of method to path as the account with token, and sends the first part of its body. It returns
+// when the client has taken that part, so what finish sends comes after it.
 func (ls *liveServer) slowSend(t *testing.T, method, path, token, first string) slowRequest {
 	t.Helper()
 	pr, pw := io.Pipe()
@@ -67,8 +68,9 @@ func (ls *liveServer) slowSend(t *testing.T, method, path, token, first string) 
 		b, err := io.ReadAll(res.Body)
 		return slowResult{status: res.StatusCode, body: string(b), err: err}
 	})
-	go func() { _, _ = io.WriteString(pw, first) }()
 	t.Cleanup(func() { _ = pw.Close() })
+	written := async(func() struct{} { _, _ = io.WriteString(pw, first); return struct{}{} })
+	receive(t, written, "the first part of the body to be taken")
 	return slowRequest{body: pw, result: result}
 }
 
