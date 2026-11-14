@@ -1,7 +1,11 @@
 package build
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -386,4 +390,93 @@ func TestCheckAcross(t *testing.T) {
 			}
 		})
 	}
+}
+
+// cancelingSource is a source that ends the context of its check when the check reads the theme.
+type cancelingSource struct {
+	*memSource
+	cancel context.CancelFunc
+}
+
+func (s cancelingSource) Theme() (fs.FS, error) {
+	s.cancel()
+	return s.memSource.Theme()
+}
+
+// TestCheck checks Check with the fixture: it passes a site that passes, also one that has warnings; it needs no original;
+// it returns the errors of the source as they are, and the end of the context; and it writes nothing.
+func TestCheck(t *testing.T) {
+	failure := errors.New("disk failure")
+
+	t.Run("sites that pass", func(t *testing.T) {
+		src := testSource(t)
+		if err := Check(t.Context(), src); err != nil {
+			t.Errorf("Check() of the fixture = %v", err)
+		}
+		// A redirect to a page that is a draft is left out, with a warning.
+		src.addRedirect(t, 1, "/old-draft/", draftID)
+		b := mustLoad(t, src)
+		mustResolve(t, b)
+		if b.warnings.len() == 0 {
+			t.Fatalf("the redirect to a draft has no warning")
+		}
+		if err := Check(t.Context(), src); err != nil {
+			t.Errorf("Check() of a site with a warning = %v", err)
+		}
+	})
+
+	t.Run("no original is opened", func(t *testing.T) {
+		src := testSource(t)
+		src.addRedirect(t, 1, "/old-logo.png", logoID)
+		src.fail = map[string]error{"OpenMedia": failure}
+		if err := Check(t.Context(), src); err != nil {
+			t.Errorf("Check() of a site with a redirect to a medium and a source that cannot open an original = %v", err)
+		}
+		if len(src.opened) > 0 {
+			t.Errorf("Check() opened the originals %v", src.opened)
+		}
+	})
+
+	t.Run("errors of the source", func(t *testing.T) {
+		for _, method := range []string{"Settings", "Documents", "Theme", "Revision"} {
+			src := testSource(t)
+			src.fail = map[string]error{method: failure}
+			var es content.Errors
+			if err := Check(t.Context(), src); !errors.Is(err, failure) || errors.As(err, &es) {
+				t.Errorf("Check() of a source whose %s fails = %v, want its error as it is", method, err)
+			}
+		}
+	})
+
+	t.Run("a context that is done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		src := testSource(t)
+		if err := Check(ctx, src); !errors.Is(err, context.Canceled) {
+			t.Errorf("Check() with a context that is done = %v, want %v", err, context.Canceled)
+		}
+		if len(src.read) > 0 {
+			t.Errorf("Check() with a context that is done read the revisions %v", src.read)
+		}
+	})
+
+	t.Run("a context that is done during the check", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		if err := Check(ctx, cancelingSource{testSource(t), cancel}); !errors.Is(err, context.Canceled) {
+			t.Errorf("Check() with a context that is done during it = %v, want %v", err, context.Canceled)
+		}
+	})
+
+	t.Run("nothing is written", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		src := testSource(t)
+		src.addRedirect(t, 1, "/about", "/contact/")
+		if err := Check(t.Context(), src); err == nil {
+			t.Fatalf("Check() of a site that has a redirect from the path of a page = nil")
+		}
+		if entries, err := os.ReadDir("."); err != nil || len(entries) > 0 {
+			t.Errorf("Check() made %v in the working directory (%v)", entries, err)
+		}
+	})
 }

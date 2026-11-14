@@ -108,6 +108,20 @@ func TestRun(t *testing.T) {
 		t.Errorf("the list of the commands has no whiteroom backup:\n%s", usage)
 	}
 
+	code, stdout, doctorHelp := runCmd(t, "doctor", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(doctorHelp, doctorUsage) {
+		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			doctorHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR", "-heads FILE", "-theme DIR"} {
+		if !strings.Contains(doctorHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom doctor has no flag %s:\n%s", name, doctorHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom doctor [flags] [SITE]\n") || !strings.Contains(usage, `"whiteroom doctor -h"`) {
+		t.Errorf("the list of the commands has no whiteroom doctor:\n%s", usage)
+	}
+
 	code, stdout, initHelp := runCmd(t, "init", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
@@ -132,6 +146,7 @@ func TestRun(t *testing.T) {
 	adminErr := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + adminHelp }
 	rollbackErr := func(msg string) string { return "whiteroom rollback: " + msg + "\n" + rollbackHelp }
 	backupErr := func(msg string) string { return "whiteroom backup: " + msg + "\n" + backupHelp }
+	doctorErr := func(msg string) string { return "whiteroom doctor: " + msg + "\n" + doctorHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -188,6 +203,16 @@ func TestRun(t *testing.T) {
 		{[]string{"backup", "a", "-data", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
 		{[]string{"backup", "-config", missing, "d"}, 2, "", "whiteroom backup: " + openErr.Error() + "\n"},
 		{[]string{"backup", "-config", broken, "d"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"doctor"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"doctor", "-data", "d", "a", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "a", "-data", "d", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "-data", "d", "-theme", "t"}, 2, "",
+			doctorErr("-theme is for SITE: give the directory SITE of the site to check, or site in the config file")},
+		{[]string{"doctor", "-theme", "t"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"doctor", "-x"}, 2, "", "flag provided but not defined: -x\n" + doctorHelp},
+		{[]string{"doctor", "-heads"}, 2, "", "flag needs an argument: -heads\n" + doctorHelp},
+		{[]string{"doctor", "-config", missing}, 2, "", "whiteroom doctor: " + openErr.Error() + "\n"},
+		{[]string{"doctor", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},

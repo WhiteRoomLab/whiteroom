@@ -28,6 +28,9 @@ const usage = `Usage:
         the published one
   whiteroom backup [flags] DEST
         copy the data directory to DEST, while a whiteroom serve admin may write it
+  whiteroom doctor [flags] [SITE]
+        look for what is wrong in the data directory, and in what it publishes
+        if SITE is given, without changing anything
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
@@ -35,8 +38,8 @@ const usage = `Usage:
         into the output directory
 
 Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
-"whiteroom backup -h", "whiteroom serve public -h" or "whiteroom serve admin -h"
-for the flags.
+"whiteroom backup -h", "whiteroom doctor -h", "whiteroom serve public -h" or
+"whiteroom serve admin -h" for the flags.
 `
 
 func main() {
@@ -83,6 +86,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runRollback(ctx, args[1:], e)
 	case "backup":
 		return runBackup(ctx, args[1:], e)
+	case "doctor":
+		return runDoctor(ctx, args[1:], e)
 	case "serve":
 		return runServe(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
