@@ -86,7 +86,7 @@ func TestErrorTexts(t *testing.T) {
 		{ErrReadOnly, "read-only transaction"},
 		{errEnded, "the transaction has ended"},
 		{errClosed, "the store is closed"},
-		{tooLarge(268435457), "the transaction is too large: 268435457 bytes (max 268435456)"},
+		{tooLarge(268435457), "the transaction is too large: 268435457 bytes (max 268435446)"},
 	} {
 		if got := c.err.Error(); got != c.want {
 			t.Errorf("%q, want %q", got, c.want)
@@ -94,7 +94,7 @@ func TestErrorTexts(t *testing.T) {
 	}
 	defer func(n int) { maxBody = n }(maxBody)
 	maxBody = 100
-	if got, want := tooLarge(101).Error(), "the transaction is too large: 101 bytes (max 100)"; got != want {
+	if got, want := tooLarge(101).Error(), "the transaction is too large: 101 bytes (max 90)"; got != want {
 		t.Errorf("%q, want %q", got, want)
 	}
 }
@@ -115,6 +115,7 @@ func TestValues(t *testing.T) {
 		{"objHeaderSize", objHeaderSize, 16},
 		{"ckpHeaderSize", ckpHeaderSize, 64},
 		{"maxBody", maxBody, 1 << 28},
+		{"maxCommit", maxCommit(), 268435446},
 		{"MaxKey", MaxKey, 4096},
 		{"minBody", minBody, 9},
 		{"recCommit", int(recCommit), 1},
