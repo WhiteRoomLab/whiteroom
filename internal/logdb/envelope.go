@@ -42,7 +42,7 @@ func sealValue(key []byte, keyID uint64, plain []byte) ([]byte, error) {
 	}
 	n := len(plain) + aead.Overhead()
 	v := make([]byte, 0, len(ad)+gcmNonceSize+binary.MaxVarintLen64+n)
-	v = binary.AppendUvarint(append(append(v, ad...), nonce...), uint64(n))
+	v = binary.AppendUvarint(append(append(v, ad...), nonce...), fromInt(n))
 	return aead.Seal(v, nonce, plain, ad), nil
 }
 

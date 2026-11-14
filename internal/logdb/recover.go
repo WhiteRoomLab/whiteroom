@@ -128,6 +128,15 @@ func generations(segs []segFile) []generation {
 	return gens
 }
 
+// at returns where g.segs has the segment index, or false if g does not have it. The segments must be consecutive.
+func (g generation) at(index segNum) (int, bool) {
+	i, ok := toInt(uint64(index))
+	if !ok || i < 1 || i > len(g.segs) {
+		return 0, false
+	}
+	return i - 1, true
+}
+
 // consecutive checks that the segments of g have the indexes 1, 2, ... A compaction removes the segments of a newer
 // generation from the last one, and syncs log/ after each, so that a crash leaves no gap in it either.
 func (g generation) consecutive(fsys vfs.FS) error {
@@ -308,7 +317,7 @@ func decide(fsys vfs.FS, lim *headSlot, read readFunc) (*recovery, error) {
 		r.info.Checkpoint = "used"
 	}
 	slices.Reverse(r.info.IgnoredGenerations)
-	r.st.segments = int(r.seg.index)
+	r.st.segments = r.seg.index.count()
 	r.info.Generation, r.info.Seq = uint64(r.st.gen), uint64(r.st.seq)
 	return r, nil
 }
@@ -353,10 +362,11 @@ func (r *recovery) recover(fsys vfs.FS, g generation, ck *checkpoint) (bool, err
 // read.
 func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bool, error) {
 	h := ck.h
-	if h.seg > segNum(len(g.segs)) {
+	i, ok := g.at(h.seg)
+	if !ok {
 		return false, nil
 	}
-	s := g.segs[h.seg-1]
+	s := g.segs[i]
 	b, err := r.read(s, 0, -1)
 	if err != nil {
 		return false, err
@@ -367,7 +377,7 @@ func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bo
 	}
 	st := ck.st
 	st.end = h.off + segOff(n)
-	for _, prev := range g.segs[:h.seg-1] {
+	for _, prev := range g.segs[:i] {
 		info, err := lstatEntry(fsys, prev.name, false)
 		if err != nil {
 			return false, err
@@ -390,7 +400,7 @@ func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bo
 		r.use(fsys, replayed{complete: true, st: st, seg: seg, cut: -1}, sc)
 		return true, nil
 	}
-	out, err := sc.run(int(h.seg-1), sh, st.end, b[st.end:])
+	out, err := sc.run(i, sh, st.end, b[st.end:])
 	switch {
 	case err != nil:
 		return false, err

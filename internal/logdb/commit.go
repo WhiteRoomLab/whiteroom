@@ -132,7 +132,7 @@ func (db *DB) next(tx *Tx, seg *segment, frame []byte) *state {
 	n := int64(len(frame))
 	st := &state{gen: base.gen, seq: base.seq + 1, seg: seg.index, off: seg.end, end: seg.end + segOff(n),
 		lastCRC: binary.LittleEndian.Uint32(frame[4:]), tables: tx.tables, objects: base.objects,
-		nextEvent: base.nextEvent, events: base.events, logBytes: db.logBytes + n, segments: int(seg.index)}
+		nextEvent: base.nextEvent, events: base.events, logBytes: db.logBytes + n, segments: seg.index.count()}
 	if st.tables == nil {
 		st.tables = base.tables
 	}

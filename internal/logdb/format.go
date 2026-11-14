@@ -200,11 +200,12 @@ func frameCRC(salt uint64, length, body []byte) uint32 {
 
 // appendFrame appends the frame of body for a segment with salt. It panics if the body could not be read again.
 func appendFrame(dst []byte, salt uint64, body []byte) []byte {
-	if len(body) < minBody || len(body) > maxBody {
+	l, ok := toUint32(uint64(len(body)))
+	if len(body) < minBody || len(body) > maxBody || !ok {
 		panic(fmt.Sprintf("logdb: a record body of %d bytes", len(body)))
 	}
 	start := len(dst)
-	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(body)))
+	dst = binary.LittleEndian.AppendUint32(dst, l)
 	dst = binary.LittleEndian.AppendUint32(dst, frameCRC(salt, dst[start:], body))
 	dst = append(dst, body...)
 	return append(dst, make([]byte, frameLen(len(body))-8-len(body))...)
@@ -219,7 +220,7 @@ func parseFrame(b []byte, salt uint64) (body []byte, n int, reason string) {
 		return nil, 0, "truncated record"
 	}
 	l := binary.LittleEndian.Uint32(b)
-	if l < minBody || uint64(l) > uint64(maxBody) {
+	if l < minBody || int64(l) > int64(maxBody) {
 		return nil, 0, fmt.Sprintf("bad record length %d", l)
 	}
 	n = frameLen(int(l))
@@ -255,7 +256,7 @@ func appendHeadSlot(dst []byte, s headSlot) []byte {
 	dst = binary.LittleEndian.AppendUint64(dst, s.counter)
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.gen))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.seg))
-	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.end))
+	dst = binary.LittleEndian.AppendUint64(dst, fromInt64(int64(s.end)))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.seq))
 	dst = binary.LittleEndian.AppendUint32(dst, s.crc)
 	return binary.LittleEndian.AppendUint32(dst, crc32.Checksum(dst[start:], castagnoli))
@@ -280,7 +281,7 @@ func parseHeadSlot(path string, b []byte, i int) (headSlot, error) {
 		crc:     binary.LittleEndian.Uint32(b[56:]),
 	}
 	end := binary.LittleEndian.Uint64(b[40:])
-	if s.counter%2 != uint64(i) || s.gen == 0 || s.seg == 0 || end < segHeaderSize || end%8 != 0 ||
+	if s.counter%2 != fromInt(i) || s.gen == 0 || s.seg == 0 || end < segHeaderSize || end%8 != 0 ||
 		end > math.MaxInt64 {
 		return headSlot{}, corruptFile(path, "bad slot fields")
 	}
@@ -357,8 +358,8 @@ func appendCkpHeader(dst []byte, h ckpHeader) []byte {
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.gen))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.seq))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.seg))
-	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.off))
-	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.bodyLen))
+	dst = binary.LittleEndian.AppendUint64(dst, fromInt64(int64(h.off)))
+	dst = binary.LittleEndian.AppendUint64(dst, fromInt64(h.bodyLen))
 	dst = binary.LittleEndian.AppendUint32(dst, h.bodyCRC)
 	return binary.LittleEndian.AppendUint32(dst, crc32.Checksum(dst[start:], castagnoli))
 }

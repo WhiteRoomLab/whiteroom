@@ -22,6 +22,11 @@ type segment struct {
 	records  int
 }
 
+// count returns i, the index of a segment that exists, as the number of the segments up to it.
+func (i segNum) count() int {
+	return int(i) //nolint:gosec // G115: at most the number of the files in log/, which fits
+}
+
 func segName(gen genNum, index segNum) string {
 	return fmt.Sprintf("log/%016x-%016x.log", gen, index)
 }

@@ -243,7 +243,7 @@ func (rd *reader) scan(db *DB, cur *state, g generation, lim *headSlot) (*state,
 	if err != nil {
 		return nil, out, err
 	}
-	next.segments = int(out.seg.index)
+	next.segments = out.seg.index.count()
 	return &next, out, nil
 }
 

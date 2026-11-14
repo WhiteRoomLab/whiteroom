@@ -179,7 +179,7 @@ func (db *DB) copyObject(dst vfs.FS, name string, size int64) error {
 	if err != nil {
 		return err
 	}
-	if want := uint64(size) + objHeaderSize; uint64(info.Size()) != want {
+	if want := fromInt64(size) + objHeaderSize; fromInt64(info.Size()) != want {
 		return corruptFile(p, fmt.Sprintf("has %d bytes, want %d", info.Size(), want))
 	}
 	f, err := db.fsys.Open(name)

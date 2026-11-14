@@ -454,13 +454,15 @@ linters:
       tool-forbidden: true
       go-version-pattern: ^1\.\d+\.0$
     gosec:
-      # Rules that guard servers, crypto, file walks and fetched input; the others mostly flag deliberate code (G115, G203).
+      # Rules that guard servers, crypto, file walks and fetched input; the others mostly flag deliberate code (G203).
+      # G115 (integer conversions) is for the storage engine only: see the exclusions.
       includes:
         - G107
         - G108
         - G110
         - G112
         - G114
+        - G115
         - G122
         - G305
         - G401
@@ -493,6 +495,15 @@ linters:
         linters:
           - gosec
         text: G122
+      # Integer conversions are checked in the storage engine (docs 3.5), not in its tests.
+      - path-except: internal/logdb/
+        linters:
+          - gosec
+        text: G115
+      - path: internal/logdb/.*_test\.go
+        linters:
+          - gosec
+        text: G115
 
 formatters:
   enable:

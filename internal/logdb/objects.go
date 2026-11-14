@@ -141,7 +141,7 @@ func (db *DB) readObjectFile(hash [32]byte, size int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if want := uint64(size) + objHeaderSize; uint64(info.Size()) != want {
+	if want := fromInt64(size) + objHeaderSize; fromInt64(info.Size()) != want {
 		return nil, corruptFile(p, fmt.Sprintf("has %d bytes, want %d", info.Size(), want))
 	}
 	if info.Size() > math.MaxInt {

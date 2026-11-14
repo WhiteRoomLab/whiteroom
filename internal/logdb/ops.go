@@ -3,7 +3,6 @@ package logdb
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 )
 
 // op is a change in a record. Its code says which fields it uses: put table, key and value; delete table and key;
@@ -156,20 +155,22 @@ func (d *decoder) bytes(n uint64) []byte {
 	if d.reason != "" {
 		return nil
 	}
-	if n > uint64(len(d.b)-d.i) {
+	k, ok := toInt(n)
+	if !ok || k > len(d.b)-d.i {
 		d.fail(d.short)
 		return nil
 	}
-	d.i += int(n)
-	return d.b[d.i-int(n) : d.i]
+	d.i += k
+	return d.b[d.i-k : d.i]
 }
 
 func (d *decoder) table() uint32 {
 	t := d.uvarint()
-	if d.reason == "" && (t == 0 || t > math.MaxUint32) {
+	id, ok := toUint32(t)
+	if d.reason == "" && (!ok || id == 0) {
 		d.fail(fmt.Sprintf("invalid table %d", t))
 	}
-	return uint32(t)
+	return id
 }
 
 func (d *decoder) key() string {
@@ -188,6 +189,16 @@ func (d *decoder) value(base int) ([]byte, int) {
 	n := d.uvarint()
 	off := base + d.i
 	return d.bytes(n), off
+}
+
+// size reads the size of an object.
+func (d *decoder) size() int64 {
+	v := d.uvarint()
+	size, ok := toInt64(v)
+	if d.reason == "" && !ok {
+		d.fail(fmt.Sprintf("bad object size %d", v))
+	}
+	return size
 }
 
 func (d *decoder) hash() (h [32]byte) {
@@ -218,11 +229,7 @@ func decodeOps(p []byte, base int) ([]op, string) {
 			o.value, o.valueOff = d.value(base)
 		case opFile:
 			o.hash = d.hash()
-			size := d.uvarint()
-			if d.reason == "" && size > math.MaxInt64 {
-				d.fail(fmt.Sprintf("bad object size %d", size))
-			}
-			o.size = int64(size)
+			o.size = d.size()
 		case opEvent:
 			o.number = d.uvarint()
 			o.seq = seqNum(d.uvarint())

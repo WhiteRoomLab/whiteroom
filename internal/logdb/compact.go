@@ -236,7 +236,7 @@ func (c *compaction) writeEnd() error {
 	for _, m := range c.st.tables {
 		keys += m.Len()
 	}
-	e := baseEnd{parts: c.part, keys: uint64(keys), objects: uint64(c.st.objects.Len()), events: c.st.events,
+	e := baseEnd{parts: c.part, keys: fromInt(keys), objects: fromInt(c.st.objects.Len()), events: c.st.events,
 		nextEvent: c.old.nextEvent}
 	rec := record{typ: recBaseEnd, seq: c.st.seq, end: e}
 	if err := c.write(appendBaseEnd(nil, c.st.seq, e), &rec, true); err != nil {
@@ -312,7 +312,7 @@ func (c *compaction) durable(seg *segment) error {
 // removes the old generation, unless the checkpoint failed.
 func (c *compaction) finish() error {
 	db, st := c.db, c.st
-	st.segments = int(c.last().index)
+	st.segments = c.last().index.count()
 	for _, s := range c.segs {
 		db.handles.add(s.gen, s.index, s.f)
 	}

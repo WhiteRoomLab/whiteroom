@@ -138,7 +138,7 @@ func (s *state) endBase(e baseEnd) string {
 	for _, m := range s.tables {
 		keys += m.Len()
 	}
-	if e.keys != uint64(keys) || e.objects != uint64(s.objects.Len()) || e.events != s.events || e.nextEvent < s.nextEvent {
+	if e.keys != fromInt(keys) || e.objects != fromInt(s.objects.Len()) || e.events != s.events || e.nextEvent < s.nextEvent {
 		return fmt.Sprintf("the base of generation %d does not match its end record", s.gen)
 	}
 	s.nextEvent = e.nextEvent
