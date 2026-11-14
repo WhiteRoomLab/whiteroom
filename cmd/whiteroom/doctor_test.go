@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -765,4 +766,110 @@ func TestReportLimit(t *testing.T) {
 				stdout.String(), stderr.String(), min(tt.limit, 3), tt.want)
 		}
 	}
+}
+
+// TestDoctorURL checks the published documents with -url and with the item url of a config file: the redirect that leads back
+// to itself under the URL, which a server without it has saved, is a problem of the part site; it is none without the URL,
+// under the URL of the settings, and under another URL. The flag wins over the item. Without SITE, -url is a usage error and
+// the item is not used, and not looked at. A URL that does not pass is a usage error that prints nothing on stdout and does
+// not open the data directory.
+func TestDoctorURL(t *testing.T) {
+	const (
+		staging = "https://staging.example.com"
+		other   = "https://other.example.com"
+	)
+	s := initSample(t)
+	a := startAdmin(t, t.Context(), s.args()...)
+	cookie := a.login(t)
+	a.waitBuilt(t, cookie)
+	if status, answer := a.createRedirect(t, cookie, selfRedirect); status != http.StatusCreated {
+		t.Fatalf("POST /api/redirects = %d, with the body %s, want 201", status, answer)
+	}
+	stopsWith(t, "the server", a)
+
+	// itself checks that whiteroom doctor has found the redirect that leads back to itself, and nothing else.
+	itself := func(what string, code int, stdout, stderr string) {
+		t.Helper()
+		problems := checkProblems(t, what, s.data, code, stdout, stderr, false, "site")
+		if len(problems) == 1 && (!strings.HasPrefix(problems[0], "site: redirects/rdr_") ||
+			!strings.HasSuffix(problems[0], ": /to: redirects to itself")) {
+			t.Errorf("%s: the problem is %q, want the redirect that leads back to itself", what, problems[0])
+		}
+	}
+	clean := func(what string, code int, stdout, stderr string) {
+		t.Helper()
+		checkClean(t, what, s.data, code, stdout, stderr, false)
+	}
+
+	code, stdout, stderr := doctorOn(t, s.data, "", s.site)
+	clean("no URL", code, stdout, stderr)
+	code, stdout, stderr = doctorOn(t, s.data, "", "-url", staging, s.site)
+	itself("-url", code, stdout, stderr)
+	code, stdout, stderr = doctorOn(t, s.data, "", "-url", other, s.site)
+	clean("-url of another site", code, stdout, stderr)
+	code, stdout, stderr = doctorOn(t, s.data, "", "-url", "https://example.com", s.site)
+	clean("-url of the URL of the settings", code, stdout, stderr)
+
+	t.Run("the item of the config file", func(t *testing.T) {
+		code, stdout, stderr := runCmd(t, "doctor", "-config", s.config(t, "url: "+staging))
+		itself("the item", code, stdout, stderr)
+		code, stdout, stderr = runCmd(t, "doctor", "-config", s.config(t, "url: "+other))
+		clean("the item of another site", code, stdout, stderr)
+		code, stdout, stderr = runCmd(t, "doctor", "-config", s.config(t, "url: "+other), "-url", staging)
+		itself("-url over the item", code, stdout, stderr)
+		code, stdout, stderr = runCmd(t, "doctor", "-config", s.config(t, "url: "+staging), "-url", "https://example.com")
+		clean("-url over the item that leads back to itself", code, stdout, stderr)
+		code, stdout, stderr = runCmd(t, "doctor", "-config", s.config(t, "url: "+staging), "-url", "")
+		itself("-url of no text over the item", code, stdout, stderr)
+		// An item that does not pass is not looked at if the flag gives a URL.
+		code, stdout, stderr = runCmd(t, "doctor", "-config", s.config(t, "url: https://example.com/"), "-url", staging)
+		itself("-url over an item that does not pass", code, stdout, stderr)
+	})
+
+	t.Run("no SITE", func(t *testing.T) {
+		wantErr := "whiteroom doctor: -url is for SITE: give the directory SITE of the site to check, or site in the config file\n" +
+			doctorUsageText(t)
+		code, stdout, stderr := doctorOn(t, s.data, "", "-url", staging)
+		if code != 2 || stdout != "" || stderr != wantErr {
+			t.Errorf("whiteroom doctor -url without a SITE = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", code,
+				stdout, stderr, wantErr)
+		}
+		// The item is used with a SITE only, and is not looked at without it, whatever it is.
+		for _, value := range []string{staging, "https://example.com/"} {
+			file := writeConfig(t, t.TempDir(), "whiteroom.yaml", fmt.Sprintf("data: %q\nurl: %q\n", s.data, value))
+			code, stdout, stderr := runCmd(t, "doctor", "-config", file)
+			checkClean(t, "the item "+value+" without a SITE", s.data, code, stdout, stderr, true)
+		}
+	})
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+		for _, tt := range badSiteURLs[:3] {
+			for _, fromItem := range []bool{false, true} {
+				what, args := "-url", []string{"-url", tt.value}
+				if fromItem {
+					what, args = "url of the config file", []string{"-config", s.config(t, "url: "+strconv.Quote(tt.value))}
+				}
+				want := "whiteroom doctor: " + what + " is not a valid site URL: " + tt.reason + "\n"
+				// Also for a data directory that is missing, which it does not come to open.
+				for _, data := range []string{s.data, missing} {
+					code, stdout, stderr := doctorOn(t, data, "", append(args, s.site)...)
+					if code != 2 || stdout != "" || stderr != want {
+						t.Errorf("%s of %q: whiteroom doctor = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", what,
+							tt.value, code, stdout, stderr, want)
+					}
+				}
+			}
+		}
+	})
+}
+
+// doctorUsageText returns the usage that whiteroom doctor -h prints, which the usage errors print too.
+func doctorUsageText(t *testing.T) string {
+	t.Helper()
+	code, stdout, help := runCmd(t, "doctor", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(help, doctorUsage) {
+		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout, help)
+	}
+	return help
 }

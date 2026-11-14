@@ -51,6 +51,11 @@ build from the data directory checks them: from SITE it reads only the schema fi
 site/schema.yaml and the theme. Without SITE, the command says on the standard
 error that it has not checked them.
 
+With -url, or url in the config file, the published documents are checked with URL
+as the url of the site settings, for the site of another environment, such as
+https://staging.example.com; the settings are not changed. URL is checked as the
+url of the settings is, and is used with SITE only.
+
 -heads reads the heads of the audit logs that a whiteroom serve admin has written
 to its standard error, or whiteroom backup to its standard output, which were kept
 outside the data directory: the lines that have "audit head " are used, the others
@@ -58,9 +63,9 @@ skipped, so that a log can be given as it is. Each must be the hash of the recor
 of its number. After a restore, give the heads that whiteroom backup printed, not
 those that the server wrote after the copy was taken.
 
-With -config, the items data, site and theme of the YAML file give what -data,
-SITE and -theme leave out; the other items are checked and not used. Without it,
-no config file is read.
+With -config, the items data, site, theme and url of the YAML file give what
+-data, SITE, -theme and -url leave out; the other items are checked and not used.
+Without it, no config file is read.
 
 Flags:
 `
@@ -87,11 +92,13 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		printf(flags.Output(), "%s", doctorUsage)
 		flags.PrintDefaults()
 	}
-	var configFile, dataDir, headsFile, themeDir string
+	var configFile, dataDir, headsFile, themeDir, urlFlag string
 	flags.StringVar(&configFile, "config", "", "read the settings from the YAML file `FILE`; the flags and SITE override them")
 	flags.StringVar(&dataDir, "data", "", "check the data directory `DIR` (default data of the config file)")
 	flags.StringVar(&headsFile, "heads", "", "compare the audit logs with the heads in the file `FILE`, \"-\" for the standard input")
 	flags.StringVar(&themeDir, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme (default theme of the config file)")
+	flags.StringVar(&urlFlag, "url", "", "check as if the url of the site settings were `URL`, with SITE only (default url of the config "+
+		"file)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -115,9 +122,16 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	if themeDir != "" && site == "" {
 		return usageError(flags, "-theme is for SITE: give the directory SITE of the site to check, or site in the config file")
 	}
-	theme := ""
+	if urlFlag != "" && site == "" {
+		return usageError(flags, "-url is for SITE: give the directory SITE of the site to check, or site in the config file")
+	}
+	theme, override := "", ""
 	if site != "" {
 		theme = cmp.Or(themeDir, cfg.theme)
+		var ok bool
+		if override, ok = siteURLOverride(e.stderr, flags.Name(), urlFlag, cfg); !ok {
+			return 2
+		}
 	}
 	p := errorPrinter{w: e.stderr, command: flags.Name(), site: site, theme: theme, stored: true}
 	fail := func(err error) int {
@@ -172,16 +186,16 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		printf(e.stderr, "%s: note: no SITE, so the published documents are not checked against the schema file and the "+
 			"theme; give SITE, or site in the config file\n", flags.Name())
 	default:
-		if err := checkSite(ctx, st, schema, themeFS, p, rep); err != nil {
+		if err := checkSite(ctx, st, schema, themeFS, override, p, rep); err != nil {
 			return fail(err)
 		}
 	}
 	return rep.finish(data)
 }
 
-// checkSite checks what is published in st, as a build from it does before it writes a release, and reports each problem
-// to rep. The error is that of a check that cannot be made.
-func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, theme fs.FS, p errorPrinter, rep *report) error {
+// checkSite checks what is published in st, as a build from it with the site URL url ("" for that of the settings) does
+// before it writes a release, and reports each problem to rep. The error is that of a check that cannot be made.
+func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, theme fs.FS, url string, p errorPrinter, rep *report) error {
 	src, err := publish.Snapshot(ctx, st, schema, theme)
 	if err != nil {
 		return err
@@ -192,7 +206,7 @@ func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, th
 		return nil
 	}
 	var es content.Errors
-	switch err := build.Check(ctx, src, ""); {
+	switch err := build.Check(ctx, src, url); {
 	case err == nil:
 	case errors.As(err, &es):
 		for _, e := range es {

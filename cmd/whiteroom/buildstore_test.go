@@ -433,3 +433,105 @@ func TestBuildDataErrors(t *testing.T) {
 		}
 	})
 }
+
+// releaseOfSample builds the sample site from its directory, with the example theme and the flags more, into a new output
+// directory and a new cache directory, and returns the name of the release.
+func releaseOfSample(t *testing.T, more ...string) string {
+	t.Helper()
+	out := t.TempDir()
+	args := append([]string{"build", "-theme", exampleTheme, "-out", out, "-cache", t.TempDir()}, more...)
+	if code, _, stderr := runCmd(t, append(args, sampleSite)...); code != 0 {
+		t.Fatalf("whiteroom build %s of the sample site = %d, with stderr:\n%s", strings.Join(more, " "), code, stderr)
+	}
+	return currentOf(t, out)
+}
+
+// TestBuildDataURL builds from a data directory with -url and with the item url of a config file: the release is that of the
+// build of the site directory with the same URL, and another than that of no URL, from the data directory that whiteroom
+// init made without a URL, from the copy that whiteroom backup took, and from a copy of that as the restored data directory.
+// The flag wins over the item. The files and the heads of the audit logs of the data directory are as they were.
+func TestBuildDataURL(t *testing.T) {
+	const (
+		staging = "https://staging.example.com"
+		other   = "https://other.example.com"
+	)
+	plain, changed := releaseOfSample(t), releaseOfSample(t, "-url", staging)
+	if plain == changed {
+		t.Fatalf("the release of the URL %s is %s, that of no URL", staging, plain)
+	}
+
+	s := initSample(t)
+	schemaOnly(t, s.site, true)
+	files, heads := manifestOf(t, s.data), storedHeads(t, s.data)
+	// fromData builds from the data directory data into new directories, with the flags more, and returns the name of the
+	// release.
+	fromData := func(t *testing.T, data string, more ...string) string {
+		t.Helper()
+		out := t.TempDir()
+		args := append([]string{"build", "-data", data, "-out", out, "-cache", t.TempDir()}, more...)
+		code, stdout, stderr := runCmd(t, append(args, s.site)...)
+		if want := storedWarnings(t, s.site, ""); code != 0 || stderr != want {
+			t.Fatalf("whiteroom build -data %s = %d, with stderr:\n%s\nwant 0, and the warnings:\n%s", strings.Join(more, " "), code, stderr, want)
+		}
+		name := currentOf(t, out)
+		if want := "published release " + name + " in " + out + ": "; !strings.HasPrefix(stdout, want) {
+			t.Errorf("whiteroom build -data %s printed %q, want it to start with %q", strings.Join(more, " "), stdout, want)
+		}
+		return name
+	}
+
+	t.Run("the flag", func(t *testing.T) {
+		if got := fromData(t, s.data, "-url", staging); got != changed {
+			t.Errorf("whiteroom build -data -url %s is the release %s, the build of the directory %s", staging, got, changed)
+		}
+		if got := fromData(t, s.data); got != plain {
+			t.Errorf("whiteroom build -data is the release %s after the build with the URL, want %s", got, plain)
+		}
+	})
+
+	t.Run("the item of the config file", func(t *testing.T) {
+		build := func(what, file string, more ...string) string {
+			t.Helper()
+			code, _, stderr := runCmd(t, append([]string{"build", "-config", file}, more...)...)
+			if want := storedWarnings(t, s.site, ""); code != 0 || stderr != want {
+				t.Fatalf("%s: whiteroom build -config = %d, with stderr:\n%s\nwant 0, and the warnings:\n%s", what, code, stderr, want)
+			}
+			return currentOf(t, s.out)
+		}
+		if got := build("the item", s.config(t, "url: "+staging)); got != changed {
+			t.Errorf("the item url of %s is the release %s, the flag %s", staging, got, changed)
+		}
+		if got := build("another item", s.config(t, "url: "+other)); got == plain || got == changed {
+			t.Errorf("the item url of %s is the release %s, which is that of no URL (%s) or of %s (%s)", other, got, plain, staging, changed)
+		}
+		if got := build("the flag over the item", s.config(t, "url: "+other), "-url", staging); got != changed {
+			t.Errorf("-url %s over the item url of %s is the release %s, want %s", staging, other, got, changed)
+		}
+	})
+
+	t.Run("a copy", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "backup")
+		if code, _, stderr := runCmd(t, "backup", "-data", s.data, dest); code != 0 {
+			t.Fatalf("whiteroom backup = %d, with stderr:\n%s", code, stderr)
+		}
+		restored := filepath.Join(t.TempDir(), "restored")
+		if err := os.CopyFS(restored, os.DirFS(dest)); err != nil {
+			t.Fatal(err)
+		}
+		for _, data := range []string{dest, restored} {
+			if got := fromData(t, data, "-url", staging); got != changed {
+				t.Errorf("whiteroom build -data %s -url %s is the release %s, want %s", data, staging, got, changed)
+			}
+			if got := fromData(t, data); got != plain {
+				t.Errorf("whiteroom build -data %s is the release %s, want %s", data, got, plain)
+			}
+		}
+	})
+
+	if got := manifestOf(t, s.data); got != files {
+		t.Errorf("the files of the data directory are changed by the builds:\n%s\nwere:\n%s", got, files)
+	}
+	if got := storedHeads(t, s.data); !maps.Equal(got, heads) {
+		t.Errorf("the heads of the audit logs are changed by the builds: %v, were %v", got, heads)
+	}
+}

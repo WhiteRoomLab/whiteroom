@@ -27,6 +27,7 @@ const maxConfigSize = 1 << 20
 type config struct {
 	data, site, theme, out, cache string
 	addr, socket, origin          string
+	url                           string // as written: the rule of the URL is checked where it is used
 	trustedProxies                []string
 	workers                       int
 	memory                        int64 // MiB
@@ -126,6 +127,8 @@ func (r *configReader) read(data []byte) error {
 			r.cfg.addr, _ = r.text(ptr, raw)
 		case "origin":
 			r.cfg.origin, _ = r.text(ptr, raw)
+		case "url":
+			r.cfg.url, _ = r.text(ptr, raw)
 		case "trustedProxies":
 			r.cfg.trustedProxies = r.texts(ptr, raw)
 		case "workers":
@@ -195,6 +198,25 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 	given := false
 	flags.Visit(func(f *flag.Flag) { given = given || f.Name == name })
 	return given
+}
+
+// siteURLOverride returns the URL that replaces the url of the site settings in the process of command, such as "whiteroom
+// build": flagURL if it is not "", else the url of the config file, else "" for none. If it does not pass the rule of the url
+// of the settings it prints on w one line, which says which of the two is wrong and why and does not have the value, and
+// returns false: a usage error, with no usage text.
+func siteURLOverride(w io.Writer, command, flagURL string, cfg config) (string, bool) {
+	what, u := "-url", flagURL
+	if u == "" {
+		what, u = "url of the config file", cfg.url
+	}
+	if u == "" {
+		return "", true
+	}
+	if err := content.CheckSiteURL(u); err != nil {
+		printf(w, "%s: %s is not a valid site URL: %v\n", command, what, err)
+		return "", false
+	}
+	return u, true
 }
 
 // printConfigError prints on w the error err of loadConfig for command, such as "whiteroom build": a line for each

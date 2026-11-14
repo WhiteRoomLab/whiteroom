@@ -51,7 +51,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom build -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			help)
 	}
-	for _, name := range []string{"-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-out DIR", "-theme DIR", "-workers N"} {
+	for _, name := range []string{"-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-out DIR", "-theme DIR", "-url URL", "-workers N"} {
 		if !strings.Contains(help, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
@@ -71,7 +71,7 @@ func TestRun(t *testing.T) {
 			stdout, adminHelp)
 	}
 	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-origin URL", "-out DIR",
-		"-socket PATH", "-theme DIR", "-trusted-proxy PREFIX", "-workers N"} {
+		"-socket PATH", "-theme DIR", "-trusted-proxy PREFIX", "-url URL", "-workers N"} {
 		if !strings.Contains(adminHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom serve admin has no flag %s:\n%s", name, adminHelp)
 		}
@@ -113,7 +113,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			doctorHelp)
 	}
-	for _, name := range []string{"-config FILE", "-data DIR", "-heads FILE", "-theme DIR"} {
+	for _, name := range []string{"-config FILE", "-data DIR", "-heads FILE", "-theme DIR", "-url URL"} {
 		if !strings.Contains(doctorHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom doctor has no flag %s:\n%s", name, doctorHelp)
 		}
@@ -158,7 +158,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			initHelp)
 	}
-	for _, name := range []string{"-config FILE", "-data DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR"} {
+	for _, name := range []string{"-config FILE", "-data DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR", "-url URL"} {
 		if !strings.Contains(initHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom init has no flag %s:\n%s", name, initHelp)
 		}
@@ -183,6 +183,7 @@ func TestRun(t *testing.T) {
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
+	badURL := "whiteroom %s: -url is not a valid site URL: must not end with \"/\"\n"
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	_, openErr := os.Open(missing)
 	broken := filepath.Join(t.TempDir(), "broken.yaml")
@@ -212,6 +213,8 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-data", "d", "a", "b"}, 2, "", tooMany},
 		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
 		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"build", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "build")},
+		{[]string{"build", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "build")},
 		{[]string{"init", "-x"}, 2, "", "flag provided but not defined: -x\n" + initHelp},
 		{[]string{"init"}, 2, "", initUsageErr("-login is required")},
 		{[]string{"init", "-login", "a"}, 2, "", initUsageErr("-name is required")},
@@ -223,17 +226,23 @@ func TestRun(t *testing.T) {
 			initUsageErr("-theme is for SITE: give the directory SITE of the site to import")},
 		{withAdmin("-config", missing), 2, "", "whiteroom init: " + openErr.Error() + "\n"},
 		{withAdmin("-config", broken), 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{withAdmin("-data", "d", "-url", "https://staging.example.com"), 2, "",
+			initUsageErr("-url is for SITE: give the directory SITE of the site to import")},
+		{withAdmin("-data", "d", "-url", "https://example.com/", "a"), 2, "", fmt.Sprintf(badURL, "init")},
 		{[]string{"rollback"}, 2, "", rollbackErr("no output directory: give OUT")},
 		{[]string{"rollback", "a", "b", "c"}, 2, "", rollbackErr("too many arguments: give OUT and at most one RELEASE")},
 		{[]string{"rollback", "-x"}, 2, "", "flag provided but not defined: -x\n" + rollbackHelp},
 		{[]string{"rollback", "-config", "c.yaml", "a"}, 2, "", "flag provided but not defined: -config\n" + rollbackHelp},
 		{[]string{"rollback", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + rollbackHelp},
+		{[]string{"rollback", "-url", "https://staging.example.com", "a"}, 2, "", "flag provided but not defined: -url\n" + rollbackHelp},
 		{[]string{"backup"}, 2, "", backupErr("no destination: give DEST, after the flags")},
 		{[]string{"backup", "-data", "d"}, 2, "", backupErr("no destination: give DEST, after the flags")},
 		{[]string{"backup", "-x", "d"}, 2, "", "flag provided but not defined: -x\n" + backupHelp},
 		{[]string{"backup", "d"}, 2, "", backupErr("no data directory: give -data DIR, or data in the config file")},
 		{[]string{"backup", "-data", "d", "a", "b"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
 		{[]string{"backup", "a", "-data", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + backupHelp},
 		{[]string{"backup", "-config", missing, "d"}, 2, "", "whiteroom backup: " + openErr.Error() + "\n"},
 		{[]string{"backup", "-config", broken, "d"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"doctor"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
@@ -243,6 +252,9 @@ func TestRun(t *testing.T) {
 			doctorErr("-theme is for SITE: give the directory SITE of the site to check, or site in the config file")},
 		{[]string{"doctor", "-theme", "t"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
 		{[]string{"doctor", "-x"}, 2, "", "flag provided but not defined: -x\n" + doctorHelp},
+		{[]string{"doctor", "-data", "d", "-url", "https://staging.example.com"}, 2, "",
+			doctorErr("-url is for SITE: give the directory SITE of the site to check, or site in the config file")},
+		{[]string{"doctor", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "doctor")},
 		{[]string{"doctor", "-heads"}, 2, "", "flag needs an argument: -heads\n" + doctorHelp},
 		{[]string{"doctor", "-config", missing}, 2, "", "whiteroom doctor: " + openErr.Error() + "\n"},
 		{[]string{"doctor", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
@@ -257,6 +269,8 @@ func TestRun(t *testing.T) {
 		{[]string{"account", "reset", "a", "-data", "d", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
 		{[]string{"account", "reset", "-password", "x", "-data", "d", "a"}, 2, "",
 			"flag provided but not defined: -password\n" + resetHelp},
+		{[]string{"account", "reset", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + resetHelp},
 		{[]string{"account", "reset", "-config", missing, "a"}, 2, "", "whiteroom account reset: " + openErr.Error() + "\n"},
 		{[]string{"account", "reset", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"account", "delete"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
@@ -266,6 +280,8 @@ func TestRun(t *testing.T) {
 		{[]string{"account", "delete", "a", "-data", "d", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
 		{[]string{"account", "delete", "-password", "x", "-data", "d", "a"}, 2, "",
 			"flag provided but not defined: -password\n" + deleteHelp},
+		{[]string{"account", "delete", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -url\n" + deleteHelp},
 		{[]string{"account", "delete", "-config", missing, "a"}, 2, "", "whiteroom account delete: " + openErr.Error() + "\n"},
 		{[]string{"account", "delete", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
@@ -284,9 +300,11 @@ func TestRun(t *testing.T) {
 				"config file")},
 		{[]string{"serve", "admin", "-data", "d", "-socket", "", "-origin", "http://localhost"}, 2, "",
 			adminErr("-socket must not be empty")},
+		{[]string{"serve", "admin", "-data", "d", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "serve admin")},
 		{[]string{"serve", "admin", "-config", missing}, 2, "", "whiteroom serve admin: " + openErr.Error() + "\n"},
 		{[]string{"serve", "admin", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},
+		{[]string{"serve", "public", "-url", "https://staging.example.com"}, 2, "", "flag provided but not defined: -url\n" + serveHelp},
 		{[]string{"serve", "public", "a", "b"}, 2, "", tooManyOuts},
 		{[]string{"serve", "public", "a", "-addr", "b"}, 2, "", tooManyOuts},
 	} {

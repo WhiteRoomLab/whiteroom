@@ -27,16 +27,21 @@ The password of the administrator is read from the standard input only. On a
 terminal, it is asked for twice, without echo; otherwise it is the first line of
 the input, which must not be empty and has at most 8192 bytes.
 
-With -config, the items data and theme of the YAML file give what -data and
--theme leave out; theme is used only with SITE. Without it, no config file is
-read.
+With -url, or url in the config file, the site in SITE is checked with URL as the
+url of its settings, for the site of another environment, such as
+https://staging.example.com. The settings that init stores keep the url that
+they have. URL is checked as the url of the settings is.
+
+With -config, the items data, theme and url of the YAML file give what -data,
+-theme and -url leave out; theme and url are used only with SITE. Without it, no
+config file is read.
 
 Flags:
 `
 
 // initFlags are the values of the flags of whiteroom init.
 type initFlags struct {
-	config, data, login, name, email, theme string
+	config, data, login, name, email, theme, url string
 }
 
 func newInitFlags(stderr io.Writer) (*flag.FlagSet, *initFlags) {
@@ -53,6 +58,8 @@ func newInitFlags(stderr io.Writer) (*flag.FlagSet, *initFlags) {
 	flags.StringVar(&f.name, "name", "", "the name `NAME` of the first administrator, to show (required)")
 	flags.StringVar(&f.email, "email", "", "the email address `ADDRESS` of the first administrator (required)")
 	flags.StringVar(&f.theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme, to check SITE")
+	flags.StringVar(&f.url, "url", "", "check SITE as if the url of its settings were `URL`; they are stored as they are (default "+
+		"url of the config file)")
 	return flags, &f
 }
 
@@ -77,6 +84,9 @@ func runInit(ctx context.Context, args []string, e env) int {
 	if f.theme != "" && !importing {
 		return usageError(flags, "-theme is for SITE: give the directory SITE of the site to import")
 	}
+	if f.url != "" && !importing {
+		return usageError(flags, "-url is for SITE: give the directory SITE of the site to import")
+	}
 	cfg, err := loadConfig(f.config)
 	if err != nil {
 		printConfigError(e.stderr, flags.Name(), err)
@@ -86,9 +96,13 @@ func runInit(ctx context.Context, args []string, e env) int {
 	if data == "" {
 		return usageError(flags, "no data directory: give -data DIR, or data in the config file")
 	}
-	site, theme := flags.Arg(0), ""
+	site, theme, override := flags.Arg(0), "", ""
 	if importing {
 		theme = cmp.Or(f.theme, cfg.theme)
+		var ok bool
+		if override, ok = siteURLOverride(e.stderr, flags.Name(), f.url, cfg); !ok {
+			return 2
+		}
 	}
 	p := errorPrinter{w: e.stderr, command: flags.Name(), site: site, theme: theme}
 
@@ -156,7 +170,7 @@ func runInit(ctx context.Context, args []string, e env) int {
 		return fail(err)
 	}
 	if importing {
-		warnings, err := edit.Import(ctx, s, src, admin.ID)
+		warnings, err := edit.ImportWith(ctx, s, src, admin.ID, edit.ImportOptions{URL: override})
 		for _, w := range warnings {
 			p.printProblem(w)
 		}

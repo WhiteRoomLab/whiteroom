@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -884,4 +885,130 @@ func TestInitConfig(t *testing.T) {
 	if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom init: no data directory") {
 		t.Errorf("no -config: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and no data directory", code, stdout, stderr)
 	}
+}
+
+// TestInitURL imports a site with -url and with the item url of a config file: a redirect that leads back to itself under the
+// URL, which is none under the URL of the settings and under another URL, is a problem of the import, which makes no data
+// directory; the settings that the import stores keep the url that is written in them. The flag wins over the item. Without
+// SITE, -url is a usage error, and the item is not used and not looked at. A URL that does not pass is a usage error that
+// reads no standard input and makes no data directory.
+func TestInitURL(t *testing.T) {
+	const (
+		staging = "https://staging.example.com"
+		other   = "https://other.example.com"
+		id      = "rdr_01JC0000000000000000000009"
+	)
+	// site is a copy of the sample site with a redirect from /staging-only to the same path at the staging URL.
+	site := copySample(t)
+	file := filepath.Join(site, "redirects", id+".json")
+	redirect := "{\n  \"schemaVersion\": 1,\n  \"id\": \"" + id + "\",\n  \"from\": \"/staging-only\",\n  \"to\": \"" + staging +
+		"/staging-only\",\n  \"status\": 301\n}\n"
+	if err := os.WriteFile(file, []byte(redirect), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	problem := file + ":5:3: /to: redirects to itself\n"
+	conf := t.TempDir()
+	files := 0
+	// item returns the path of a config file with the item url u.
+	item := func(u string) string {
+		files++
+		return writeConfig(t, conf, "url-"+strconv.Itoa(files)+".yaml", "url: "+strconv.Quote(u)+"\n")
+	}
+
+	// imports checks that whiteroom init of dir, with the flags more before it, makes a data directory with the site in it,
+	// and returns the data directory.
+	imports := func(what, dir string, more ...string) string {
+		t.Helper()
+		data := filepath.Join(t.TempDir(), "data")
+		args := append(adminFlags("-data", data, "-theme", exampleTheme), more...)
+		code, stdout, stderr := runInitCmd(t, initPassword+"\n", append(args, dir)...)
+		if want := sampleImportWarnings(t, dir); code != 0 || stderr != want || !strings.HasSuffix(stdout, "imported the site "+dir+"\n") {
+			t.Fatalf("%s: whiteroom init = %d, with stdout:\n%s\nand stderr:\n%s\nwant 0, the import, and the warnings:\n%s", what, code, stdout,
+				stderr, want)
+		}
+		if got := inspect(t, data, initPassword); len(got.docs) < 10 {
+			t.Errorf("%s: the store has %d documents, want those of the site", what, len(got.docs))
+		}
+		return data
+	}
+	// refused checks that whiteroom init of the site, with the flags more before it, is refused for the redirect that leads
+	// back to itself, and makes no data directory.
+	refused := func(what string, more ...string) {
+		t.Helper()
+		data := filepath.Join(t.TempDir(), "data")
+		args := append(adminFlags("-data", data, "-theme", exampleTheme), more...)
+		code, stdout, stderr := runInitCmd(t, initPassword+"\n", append(args, site)...)
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, problem) {
+			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and the problem, which is the last line:\n%s", what, code,
+				stdout, stderr, problem)
+		}
+		if s := snapshot(t, data); s != "missing" {
+			t.Errorf("%s: the data directory is made:\n%s", what, s)
+		}
+		checkNoSecret(t, what, initPassword, stdout, stderr, data)
+	}
+
+	imports("no URL", site)
+	refused("-url", "-url", staging)
+	imports("-url of another site", site, "-url", other)
+	imports("-url of the URL of the settings", site, "-url", "https://example.com")
+	refused("the item", "-config", item(staging))
+	imports("the item of another site", site, "-config", item(other))
+	refused("-url over the item", "-config", item(other), "-url", staging)
+	imports("-url over the item that leads back to itself", site, "-config", item(staging), "-url", "https://example.com")
+	refused("-url of no text over the item", "-config", item(staging), "-url", "")
+	imports("-url over an item that does not pass", sampleSite, "-config", item("https://example.com/"), "-url", staging)
+
+	// The settings that are stored have the url that is written in them.
+	data := imports("-url of the sample site", sampleSite, "-url", staging)
+	if dataHas(t, data, "staging.example.com") || !dataHas(t, data, "https://example.com") {
+		t.Errorf("the data directory has the URL of the import (%t), or lacks the url of the settings (%t)",
+			dataHas(t, data, "staging.example.com"), !dataHas(t, data, "https://example.com"))
+	}
+
+	t.Run("no SITE", func(t *testing.T) {
+		data := filepath.Join(t.TempDir(), "data")
+		var o, e bytes.Buffer
+		code := run(t.Context(), append([]string{"init"}, adminFlags("-data", data, "-url", staging)...), testEnv(failingReader{t}, &o, &e))
+		want := "whiteroom init: -url is for SITE: give the directory SITE of the site to import\n" + initHelp(t)
+		if code != 2 || o.Len() != 0 || e.String() != want {
+			t.Errorf("whiteroom init -url without a SITE = %d, with stdout %q and stderr:\n%s\nwant 2, and:\n%s", code, o.String(), e.String(), want)
+		}
+		if s := snapshot(t, data); s != "missing" {
+			t.Errorf("-url without a SITE: the data directory is made:\n%s", s)
+		}
+		// The item is used with a SITE only, and is not looked at without it.
+		for _, value := range []string{staging, "https://example.com/"} {
+			data := filepath.Join(t.TempDir(), "data")
+			code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data, "-config", item(value))...)
+			if code != 0 || stderr != "" || strings.Contains(stdout, "imported") {
+				t.Errorf("the item %s without a SITE: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 0, and no import", value, code,
+					stdout, stderr)
+			}
+			checkAdmin(t, "the item "+value+" without a SITE", inspect(t, data, initPassword))
+		}
+	})
+
+	t.Run("a URL that does not pass", func(t *testing.T) {
+		for _, tt := range badSiteURLs[:3] {
+			for _, fromItem := range []bool{false, true} {
+				what, args := "-url", []string{"-url", tt.value}
+				if fromItem {
+					what, args = "url of the config file", []string{"-config", item(tt.value)}
+				}
+				data := filepath.Join(t.TempDir(), "data")
+				var o, e bytes.Buffer
+				code := run(t.Context(), append(append([]string{"init"}, adminFlags("-data", data)...), append(args, site)...),
+					testEnv(failingReader{t}, &o, &e))
+				want := "whiteroom init: " + what + " is not a valid site URL: " + tt.reason + "\n"
+				if code != 2 || o.Len() != 0 || e.String() != want {
+					t.Errorf("%s of %q: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", what, tt.value, code,
+						o.String(), e.String(), want)
+				}
+				if s := snapshot(t, data); s != "missing" {
+					t.Errorf("%s of %q: the data directory is made:\n%s", what, tt.value, s)
+				}
+			}
+		}
+	})
 }

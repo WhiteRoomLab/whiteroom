@@ -2201,3 +2201,181 @@ func TestServeAdminFirstSettings(t *testing.T) {
 		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
 }
+
+// selfRedirect is the body of the request that makes a redirect from /staging-only to the same path at
+// https://staging.example.com: under that URL it leads back to itself, and under the URL of the sample site, which is
+// https://example.com, it leads to another site.
+const selfRedirect = `{"document":{"schemaVersion":1,"from":"/staging-only","to":"https://staging.example.com/staging-only","status":301}}`
+
+// createRedirect sends the request that makes a redirect from the document in body, for the session of cookie, and returns
+// the status and the body of the answer.
+func (a *adminProc) createRedirect(t *testing.T, cookie, body string) (status int, answer []byte) {
+	t.Helper()
+	return a.exchange(t, http.MethodPost, "/api/redirects", body, "Cookie", cookie)
+}
+
+// readSettings reads GET /api/settings for the session of cookie, and returns the Seq of its version, the document, and the
+// url in it.
+func (a *adminProc) readSettings(t *testing.T, cookie string) (seq int64, document, siteURL string) {
+	t.Helper()
+	status, answer := a.exchange(t, http.MethodGet, "/api/settings", "", "Cookie", cookie)
+	var body struct {
+		Version struct {
+			Seq int64 `json:"seq"`
+		} `json:"version"`
+		Document json.RawMessage `json:"document"`
+	}
+	var doc struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(answer, &body); status != http.StatusOK || err != nil || json.Unmarshal(body.Document, &doc) != nil {
+		t.Fatalf("GET /api/settings = %d (%v), with the body %s", status, err, answer)
+	}
+	return body.Version.Seq, string(body.Document), doc.URL
+}
+
+// TestServeAdminURL starts the server with -url and with the item url of a config file: the start build makes the release
+// of the build of the site directory with that URL, and the page has it; the API shows the url that is written in the
+// settings, and saves the one that it is given, and neither the answers nor the data directory have the URL of the server;
+// a redirect that leads back to itself under that URL is refused with 422, and saved by a server without it. A URL that does
+// not pass is a usage error, before the data directory is opened and the server listens. The flag wins over the item.
+func TestServeAdminURL(t *testing.T) {
+	const (
+		staging    = "https://staging.example.com"
+		production = "https://example.com"
+		www        = "https://www.example.com"
+	)
+	plain, changed := releaseOfSample(t), releaseOfSample(t, "-url", staging)
+	if plain == changed {
+		t.Fatalf("the release of the URL %s is %s, that of no URL", staging, plain)
+	}
+	s := initSample(t)
+
+	// refused checks that the server a refuses the redirect that leads back to itself, and makes none.
+	refused := func(what string, a *adminProc, cookie string) {
+		t.Helper()
+		status, answer := a.createRedirect(t, cookie, selfRedirect)
+		if status != http.StatusUnprocessableEntity || !strings.Contains(string(answer), "redirects to itself") {
+			t.Errorf("%s: POST /api/redirects of a redirect to itself = %d, with the body %s, want 422 and the problem", what, status,
+				answer)
+		}
+	}
+	// built checks that the start build of the server a has made the release want.
+	built := func(what string, a *adminProc, cookie, want string) {
+		t.Helper()
+		if b := a.waitBuilt(t, cookie); failedBuild(b) || b.Last.Release != want {
+			t.Fatalf("%s: the start build has %+v, want the release %s\nstderr:\n%s", what, b.Last, want, a.stderr)
+		}
+		if got := currentOf(t, s.out); got != want {
+			t.Errorf("%s: the server has published the release %s, want %s", what, got, want)
+		}
+	}
+
+	a := startAdmin(t, t.Context(), s.args("-url", staging)...)
+	if strings.Contains(a.line, "staging") {
+		t.Errorf("the first line of the server with -url is %q, which has the URL", a.line)
+	}
+	cookie := a.login(t)
+	built("-url", a, cookie, changed)
+	page, err := os.ReadFile(filepath.Join(s.out, "current", "public", "index.html"))
+	if err != nil || !strings.Contains(string(page), `<link rel="canonical" href="`+staging+`/`) {
+		t.Errorf("index.html of the release of the server with -url is (%v):\n%.600s\nwant the canonical URL under %s", err, page, staging)
+	}
+	seq, document, written := a.readSettings(t, cookie)
+	if written != production {
+		t.Errorf("GET /api/settings of the server with -url has the url %q, want %q, the one that is written in the settings", written, production)
+	}
+	refused("-url", a, cookie)
+
+	// The settings that the API saves are those that it is given, with the url written in them: the server does not put its
+	// URL in them, and does not show it.
+	saved := strings.Replace(document, `"url": "`+production+`"`, `"url": "`+www+`"`, 1)
+	if saved == document {
+		t.Fatalf("the settings have no url %s:\n%s", production, document)
+	}
+	status, answer := a.exchange(t, http.MethodPut, "/api/settings", fmt.Sprintf(`{"base":%d,"document":%s}`, seq, saved), "Cookie", cookie)
+	if status != http.StatusOK || strings.Contains(string(answer), "staging") {
+		t.Errorf("PUT /api/settings = %d, with the body %s, want 200 and no URL of the server", status, answer)
+	}
+	if _, _, written := a.readSettings(t, cookie); written != www {
+		t.Errorf("GET /api/settings after the save has the url %q, want %q, which was saved", written, www)
+	}
+	// The build of the save is under the URL of the server still, and the same release, as nothing else has changed.
+	a.waitFor(t, adminWait, "the build of the settings", func() bool {
+		b := a.builds(t, cookie)
+		return len(b.Running) == 0 && !b.Pending && b.Last != nil && slices.ContainsFunc(b.Last.Requests, func(q buildRequestBody) bool {
+			return q.Reason == "operation" && q.Kind == "settings"
+		})
+	})
+	if b := a.builds(t, cookie); failedBuild(b) || b.Last.Release != changed {
+		t.Errorf("the build of the saved settings has %+v, want the release %s of the URL of the server", b.Last, changed)
+	}
+	stopsWith(t, "-url", a)
+	if dataHas(t, s.data, "staging.example.com") {
+		t.Errorf("the data directory has the URL of the server")
+	}
+	// The scan sees the documents.
+	if !dataHas(t, s.data, "www.example.com") {
+		t.Errorf("the data directory lacks the url that was saved")
+	}
+
+	// The item url of the file, and the flag over the item.
+	for _, tt := range []struct {
+		what string
+		args []string
+	}{
+		{"the item", []string{"-config", s.config(t, "url: "+staging)}},
+		{"-url over the item", []string{"-config", s.config(t, "url: https://other.example.com"), "-url", staging}},
+	} {
+		b := startAdmin(t, t.Context(), tt.args...)
+		cookie := b.login(t)
+		built(tt.what, b, cookie, changed)
+		if _, _, written := b.readSettings(t, cookie); written != www {
+			t.Errorf("%s: GET /api/settings has the url %q, want %q, the one that is saved", tt.what, written, www)
+		}
+		refused(tt.what, b, cookie)
+		stopsWith(t, tt.what, b)
+	}
+
+	// Without a URL the same redirect is saved, in a data directory of its own.
+	r := initSample(t)
+	c := startAdmin(t, t.Context(), r.args()...)
+	cookie = c.login(t)
+	if b := c.waitBuilt(t, cookie); failedBuild(b) || b.Last.Release != plain {
+		t.Fatalf("the start build without a URL has %+v, want the release %s\nstderr:\n%s", b.Last, plain, c.stderr)
+	}
+	if _, _, written := c.readSettings(t, cookie); written != production {
+		t.Errorf("GET /api/settings of the server without a URL has the url %q, want %q", written, production)
+	}
+	if status, answer := c.createRedirect(t, cookie, selfRedirect); status != http.StatusCreated {
+		t.Errorf("POST /api/redirects without a URL = %d, with the body %s, want 201", status, answer)
+	}
+	stopsWith(t, "no URL", c)
+
+	// A URL that does not pass: before the data directory is opened and before the server listens.
+	for _, tt := range badSiteURLs[:3] {
+		fresh := s
+		fresh.out, fresh.cache = filepath.Join(t.TempDir(), "out"), filepath.Join(t.TempDir(), "cache")
+		for _, fromItem := range []bool{false, true} {
+			files := manifestOf(t, s.data)
+			what, args := "-url", fresh.args("-url", tt.value)
+			if fromItem {
+				what, args = "url of the config file", []string{"-config", fresh.config(t, "url: "+strconv.Quote(tt.value))}
+			}
+			want := "whiteroom serve admin: " + what + " is not a valid site URL: " + tt.reason + "\n"
+			code, stdout, stderr := runAdminCmd(t, onSystemPort(args)...)
+			if code != 2 || stdout != "" || stderr != want {
+				t.Errorf("%s of %q: whiteroom serve admin = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", what,
+					tt.value, code, stdout, stderr, want)
+			}
+			for _, dir := range []string{fresh.out, fresh.cache} {
+				checkMissing(t, what+" of "+tt.value, dir)
+			}
+			if got := manifestOf(t, s.data); got != files {
+				t.Errorf("%s of %q: the files of the data directory are changed:\n%s\nwere:\n%s", what, tt.value, got, files)
+			}
+			// After the files are compared: opening the data directory as its writer changes the head of the log.
+			checkUnlocked(t, what+" of "+tt.value, s.data)
+		}
+	}
+}

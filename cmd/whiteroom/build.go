@@ -30,9 +30,15 @@ time, if the build has other -out and -cache directories. From SITE it reads onl
 the schema file site/schema.yaml and the theme. Without -data and data, the whole
 site is read from SITE.
 
-With -config, the items data, site, theme, out, cache, workers and memory of the
-YAML file give what the flags and SITE leave out. Without it, no config file is
-read.
+With -url, or url in the config file, the build takes URL as the url of the site
+settings, for this build only: the settings are not changed, and the same
+documents give another release for another URL. It is for the site of another
+environment, such as https://staging.example.com. URL is checked as the url of
+the settings is.
+
+With -config, the items data, site, theme, out, cache, workers, memory and url of
+the YAML file give what the flags and SITE leave out. Without it, no config file
+is read.
 
 Flags:
 `
@@ -50,10 +56,10 @@ func (s themedSource) Theme() (fs.FS, error) { return s.theme, nil }
 
 // buildFlags are the values of the flags of whiteroom build.
 type buildFlags struct {
-	config, out, cache, theme string
-	workers                   int
-	memory                    int64
-	dataDir                   string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
+	config, out, cache, theme, url string
+	workers                        int
+	memory                         int64
+	dataDir                        string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
 }
 
 // newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
@@ -78,6 +84,8 @@ func addBuildFlags(flags *flag.FlagSet) *buildFlags {
 	flags.StringVar(&f.out, "out", "", "write the releases into the output directory `DIR` (default SITE/out)")
 	flags.StringVar(&f.cache, "cache", "", "cache the files of the images in `DIR` (default SITE/cache)")
 	flags.StringVar(&f.theme, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme")
+	flags.StringVar(&f.url, "url", "", "use `URL` as the url of the site settings, in this process only; the settings are not "+
+		"changed (default url of the config file)")
 	flags.IntVar(&f.workers, "workers", 0, "work on at most `N` pages or files at once (0 means the number of CPUs)")
 	flags.Int64Var(&f.memory, "memory", 0, "make the images in at most about `MiB` mebibytes at once (0 means 1024)")
 	return &f
@@ -98,6 +106,7 @@ func (f *buildFlags) rangeError() string {
 type buildSettings struct {
 	site, out, cache string
 	theme            string // "" for SITE/theme
+	url              string // "" for the url of the site settings
 	workers          int
 	memory           int64 // MiB
 }
@@ -139,6 +148,10 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	s := f.settings(flags, cfg)
+	var ok bool
+	if s.url, ok = siteURLOverride(stderr, flags.Name(), f.url, cfg); !ok {
+		return 2
+	}
 	p := errorPrinter{w: stderr, command: flags.Name(), site: s.site, theme: s.theme}
 	if data := cmp.Or(f.dataDir, cfg.data); data != "" {
 		return buildFromStore(ctx, stdout, p, data, s)
@@ -157,7 +170,7 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 // returns the exit code.
 func buildAndReport(ctx context.Context, stdout io.Writer, p errorPrinter, src build.Source, s buildSettings) int {
 	res, err := build.Build(ctx, build.Options{
-		Source: src, Out: s.out, CacheDir: s.cache, Memory: s.memory << 20, Workers: s.workers,
+		Source: src, Out: s.out, CacheDir: s.cache, Memory: s.memory << 20, Workers: s.workers, URL: s.url,
 	})
 	if res != nil {
 		for _, w := range res.Warnings {

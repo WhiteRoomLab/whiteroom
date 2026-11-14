@@ -47,7 +47,12 @@ It writes the heads of the chains of the audit logs to the standard error, a lin
 each: when it starts, then every minute those that have changed, and when it
 stops, so that the journal keeps them outside the data directory.
 
-With -config, the items data, site, theme, out, cache, workers, memory, addr,
+With -url, or url in the config file, the server takes URL as the url of the site
+settings, for its builds and for the checks of what the API saves, and leaves the
+settings as they are: the API shows and saves the url that is written in them.
+URL is checked as the url of the settings is.
+
+With -config, the items data, site, theme, out, cache, workers, memory, url, addr,
 socket, origin and trustedProxies of the YAML file give what the flags and SITE
 leave out. Without it, no config file is read.
 
@@ -121,6 +126,10 @@ func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Wri
 		usageError(flags, "no data directory: give -data DIR, or data in the config file")
 		return s, false
 	}
+	var ok bool
+	if s.url, ok = siteURLOverride(stderr, flags.Name(), f.url, cfg); !ok {
+		return s, false
+	}
 	choice, err := chooseAdminListen(f.addr, flagGiven(flags, "addr"), f.socket, flagGiven(flags, "socket"), cfg.addr, cfg.socket)
 	switch {
 	case errors.Is(err, errBothFlags):
@@ -153,7 +162,7 @@ func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Wri
 		s.proxies = f.proxies
 		return s, true
 	}
-	ok := true
+	ok = true
 	for i, text := range cfg.trustedProxies {
 		p, err := parseProxy(text)
 		if err != nil {
@@ -383,6 +392,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	}
 	a.publisher, err = publish.New(publish.Options{
 		Store: st, Schema: schema, Theme: themeFS, Out: s.out, CacheDir: s.cache, Memory: s.memory << 20, Workers: s.workers,
+		URL: s.url,
 		OnRecordError: func(action audit.Action, err error) {
 			logger.Printf("the record of %s was not written: %v", action, err)
 		},
