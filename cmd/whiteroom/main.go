@@ -26,6 +26,8 @@ const usage = `Usage:
   whiteroom rollback OUT [RELEASE]
         publish a release that the output directory OUT still holds, instead of
         the published one
+  whiteroom backup [flags] DEST
+        copy the data directory to DEST, while a whiteroom serve admin may write it
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
@@ -33,7 +35,8 @@ const usage = `Usage:
         into the output directory
 
 Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
-"whiteroom serve public -h" or "whiteroom serve admin -h" for the flags.
+"whiteroom backup -h", "whiteroom serve public -h" or "whiteroom serve admin -h"
+for the flags.
 `
 
 func main() {
@@ -78,6 +81,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runBuild(ctx, args[1:], e.stdout, e.stderr)
 	case "rollback":
 		return runRollback(ctx, args[1:], e)
+	case "backup":
+		return runBackup(ctx, args[1:], e)
 	case "serve":
 		return runServe(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":

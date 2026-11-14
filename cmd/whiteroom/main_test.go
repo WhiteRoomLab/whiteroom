@@ -94,6 +94,20 @@ func TestRun(t *testing.T) {
 		}
 	}
 
+	code, stdout, backupHelp := runCmd(t, "backup", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(backupHelp, backupUsage) {
+		t.Fatalf("whiteroom backup -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			backupHelp)
+	}
+	for _, name := range []string{"-config FILE", "-data DIR"} {
+		if !strings.Contains(backupHelp, "\n  "+name+"\n") {
+			t.Errorf("the usage of whiteroom backup has no flag %s:\n%s", name, backupHelp)
+		}
+	}
+	if !strings.Contains(usage, "\n  whiteroom backup [flags] DEST\n") || !strings.Contains(usage, `"whiteroom backup -h"`) {
+		t.Errorf("the list of the commands has no whiteroom backup:\n%s", usage)
+	}
+
 	code, stdout, initHelp := runCmd(t, "init", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
@@ -117,6 +131,7 @@ func TestRun(t *testing.T) {
 	tooManyOuts := "whiteroom serve public: too many arguments: give at most one OUT, after the flags\n" + serveHelp
 	adminErr := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + adminHelp }
 	rollbackErr := func(msg string) string { return "whiteroom rollback: " + msg + "\n" + rollbackHelp }
+	backupErr := func(msg string) string { return "whiteroom backup: " + msg + "\n" + backupHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -165,6 +180,14 @@ func TestRun(t *testing.T) {
 		{[]string{"rollback", "-x"}, 2, "", "flag provided but not defined: -x\n" + rollbackHelp},
 		{[]string{"rollback", "-config", "c.yaml", "a"}, 2, "", "flag provided but not defined: -config\n" + rollbackHelp},
 		{[]string{"rollback", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + rollbackHelp},
+		{[]string{"backup"}, 2, "", backupErr("no destination: give DEST, after the flags")},
+		{[]string{"backup", "-data", "d"}, 2, "", backupErr("no destination: give DEST, after the flags")},
+		{[]string{"backup", "-x", "d"}, 2, "", "flag provided but not defined: -x\n" + backupHelp},
+		{[]string{"backup", "d"}, 2, "", backupErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"backup", "-data", "d", "a", "b"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "a", "-data", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "-config", missing, "d"}, 2, "", "whiteroom backup: " + openErr.Error() + "\n"},
+		{[]string{"backup", "-config", broken, "d"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
