@@ -84,10 +84,11 @@ func (r *passwordReader) terminal() bool { return r.tty != nil }
 // read reads a password. From a terminal, it asks with prompt and then again with "prompt (again)", and returns
 // errMismatch if the two are not the same; the terminal is as it was when read returns, also when ctx is done first.
 // From another input, it reads the first line, without its line break, and does not ask again; the line must not be
-// empty.
+// empty. If ctx is done first, read returns ctx.Err(), and the goroutine that reads stays until the input gives a line or
+// ends.
 func (r *passwordReader) read(ctx context.Context, prompt string) (string, error) {
 	if r.tty == nil {
-		line, err := readLine(r.in, maxPasswordLine, false)
+		line, err := readLineContext(ctx, r.in, maxPasswordLine, false)
 		switch {
 		case errors.Is(err, io.EOF) || err == nil && len(line) == 0:
 			return "", errNoPassword
@@ -130,11 +131,36 @@ func (r *passwordReader) ask(ctx context.Context, prompt string) (string, error)
 	return string(line), nil
 }
 
+// readLineContext is readLine, which returns ctx.Err() as soon as ctx is done, though r gives nothing. The goroutine that
+// reads then stays until r gives a line or ends, and clears what it has read.
+func readLineContext(ctx context.Context, r io.Reader, limit int, drain bool) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type result struct {
+		line []byte
+		err  error
+	}
+	read := make(chan result, 1)
+	go func() {
+		line, err := readLine(r, limit, drain)
+		read <- result{line, err}
+	}()
+	select {
+	case res := <-read:
+		return res.line, res.err
+	case <-ctx.Done():
+		go func() { clear((<-read).line) }()
+		return nil, ctx.Err()
+	}
+}
+
 // readLine reads a line from r, a byte at a time so that it takes nothing after the line, and returns it without its
 // "\n" or "\r\n". The input may end the line instead; if it ends before any byte, the error is io.EOF. A line of more
 // than limit bytes is errTooLong, as soon as it is known, or, if drain is true, after the rest of the line is read.
 func readLine(r io.Reader, limit int, drain bool) ([]byte, error) {
-	var line []byte
+	// The most that the loop appends is limit+1 bytes, so that the buffer never moves: no copy of a prefix of the line is left.
+	line := make([]byte, 0, limit+2)
 	var b [1]byte
 	// tooLong fails; if the line has not ended yet, and drain is true, it reads the rest of the line first.
 	tooLong := func(ended bool) ([]byte, error) {

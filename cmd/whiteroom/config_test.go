@@ -124,6 +124,37 @@ memory: 512
 		}
 	})
 
+	// A socket that starts with @ is kept, for listenSocket to refuse, wherever the file is; and ./ in front of a name that
+	// starts with @ stays, in a file in the working directory, as Join would cut it.
+	t.Run("a socket that starts with @", func(t *testing.T) {
+		at := filepath.Join(root, "at")
+		if err := os.MkdirAll(at, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(at)
+		sep := string(filepath.Separator)
+		for _, tt := range []struct{ what, file, text, want string }{
+			{"./@ of a file in the working directory", "whiteroom.yaml", "socket: ./@admin.sock\n", "." + sep + "@admin.sock"},
+			{"@ of a file in the working directory", "whiteroom.yaml", "socket: \"@admin.sock\"\n", "@admin.sock"},
+			{"@ of a file in another directory", "conf/whiteroom.yaml", "socket: \"@admin.sock\"\n", "@admin.sock"},
+			{"@ of a file with an absolute path", filepath.Join(at, "abs.yaml"), "socket: \"@admin.sock\"\n", "@admin.sock"},
+			{"./@ of a file in another directory", "conf/whiteroom.yaml", "socket: ./@admin.sock\n", "conf" + sep + "@admin.sock"},
+			{"a name of a file in the working directory", "whiteroom.yaml", "socket: admin.sock\n", "admin.sock"},
+			{"a name of a file in another directory", "conf/whiteroom.yaml", "socket: run/admin.sock\n", "conf" + sep + "run" + sep + "admin.sock"},
+			{"an absolute path", "whiteroom.yaml", "socket: /run/admin.sock\n", "/run/admin.sock"},
+		} {
+			file := tt.file
+			if !filepath.IsAbs(file) {
+				file = filepath.FromSlash(file)
+			}
+			writeConfig(t, filepath.Dir(file), filepath.Base(file), tt.text)
+			got, err := loadConfig(file)
+			if err != nil || got.socket != tt.want {
+				t.Errorf("%s: loadConfig = %+v, %v\nwant the socket %q", tt.what, got, err, tt.want)
+			}
+		}
+	})
+
 	t.Run("no file", func(t *testing.T) {
 		writeConfig(t, filepath.Join(root, "none"), "whiteroom.yaml", "data:\t/a\n")
 		writeConfig(t, filepath.Join(root, "none"), "config.yaml", "data:\t/a\n")

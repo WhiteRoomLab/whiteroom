@@ -36,7 +36,7 @@ func TestListenSocketMode(t *testing.T) {
 }
 
 // TestListenSocketLength checks the longest path that a socket can have, which is 107 bytes on Linux: it listens, and one
-// byte more fails, with the reason.
+// byte more is refused, with the limit and the length, before the path is looked at.
 func TestListenSocketLength(t *testing.T) {
 	dir := socketDir(t)
 	path := filepath.Join(dir, strings.Repeat("x", 107-len(dir)-1))
@@ -51,8 +51,9 @@ func TestListenSocketLength(t *testing.T) {
 	_ = l.Close()
 	noFile(t, "after the listener of 107 bytes is closed", path)
 
-	if _, err := listenSocket(path + "x"); err == nil ||
-		!strings.HasSuffix(err.Error(), ": bind: invalid argument (the path of a socket has at most 107 bytes, and this one has 108)") {
-		t.Errorf("listenSocket of a path of 108 bytes = %v, want the failure of bind, and the limit", err)
+	long := path + "x"
+	want := "listen unix " + long + ": the path of a socket has at most 107 bytes, and this one has 108"
+	if _, err := listenSocket(long); err == nil || err.Error() != want {
+		t.Errorf("listenSocket of a path of 108 bytes = %v, want %q", err, want)
 	}
 }

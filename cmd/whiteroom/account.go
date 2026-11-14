@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 
@@ -191,6 +192,21 @@ func accountReset(ctx context.Context, args []string, e env) int {
 	return 1
 }
 
+// shellQuote returns s as one word of a POSIX shell: as it is if it has only letters, digits, the bytes of "_@%+=:,./-" and
+// the path separator of the OS, and else in single quotes, in which each single quote is closed, escaped and opened again.
+func shellQuote(s string) string {
+	plain := s != ""
+	for i := 0; i < len(s) && plain; i++ {
+		c := s[i]
+		plain = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("_@%+=:,./-", c) >= 0 ||
+			os.IsPathSeparator(c)
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // unreadableRow matches the error of an operation on all the accounts that a row that cannot be read fails.
 var unreadableRow = regexp.MustCompile(`^accounts "([^"\\]+)": invalid value$`)
 
@@ -200,7 +216,7 @@ var unreadableRow = regexp.MustCompile(`^accounts "([^"\\]+)": invalid value$`)
 func resetAccount(ctx context.Context, e env, m *account.Manager, t accountTarget) (account.Account, error) {
 	if _, err := m.List(ctx); err != nil {
 		if match := unreadableRow.FindStringSubmatch(err.Error()); match != nil && content.CheckID(content.RefUser, match[1]) == nil {
-			err = errors.Join(err, fmt.Errorf("delete it with: whiteroom account delete -data %s %s", t.data, match[1]))
+			err = errors.Join(err, fmt.Errorf("delete it with: whiteroom account delete -data %s %s", shellQuote(t.data), match[1]))
 		}
 		return account.Account{}, err
 	}

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -26,6 +28,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -858,16 +862,71 @@ func TestServeAdminSocket(t *testing.T) {
 	missing := filepath.Join(socketDir(t), "missing", "s")
 	fail("no directory", missing, "bind: no such file or directory")
 	noFile(t, "no directory", filepath.Dir(missing))
+	tooLong := func(n int) string {
+		return fmt.Sprintf("the path of a socket has at most %d bytes, and this one has %d", maxSocketPath, n)
+	}
 	long := socketDir(t)
 	for _, n := range []int{maxSocketPath + 1, maxSocketPath + 20} {
 		path := filepath.Join(long, strings.Repeat("x", n-len(long)-1))
 		if len(path) != n {
 			t.Fatalf("the path has %d bytes, want %d", len(path), n)
 		}
-		fail(fmt.Sprintf("a path of %d bytes", n), path, fmt.Sprintf("bind: invalid argument (the path of a socket has at most %d bytes, "+
-			"and this one has %d)", maxSocketPath, n))
+		fail(fmt.Sprintf("a path of %d bytes", n), path, tooLong(n))
 		noFile(t, "a path that is too long", path)
 	}
+
+	// A socket file that nobody listens on, at a path that is too long, which a shorter path through a symbolic link has
+	// made: it is not looked at, and is left as it is.
+	deep := filepath.Join(socketDir(t), strings.Repeat("d", maxSocketPath))
+	if err := os.Mkdir(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	short := filepath.Join(socketDir(t), "l")
+	if err := os.Symlink(deep, short); err != nil {
+		t.Fatal(err)
+	}
+	stuck, err := net.Listen("unix", filepath.Join(short, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := stuck.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stuckPath := filepath.Join(deep, "s")
+	fail("a stale socket file at a path that is too long", stuckPath, tooLong(len(stuckPath)))
+	if info, err := os.Lstat(stuckPath); err != nil || info.Mode().Type() != os.ModeSocket {
+		t.Errorf("the socket file at a path that is too long is %v (%v) after the command, want it as it was", info, err)
+	}
+}
+
+// TestServeAdminSocketAt starts the server from a config file that is a relative path in the working directory, as
+// -config whiteroom.yaml is, whose socket is ./@s: the socket is the file @s there. The same file name as the path @s,
+// in any config file, is refused as -socket @s is.
+func TestServeAdminSocketAt(t *testing.T) {
+	s := initEmpty(t)
+	dir := socketDir(t)
+	// The configs are written before the working directory changes: the path of the theme in them is made from it.
+	s.configIn(t, dir, "socket: ./@s", "origin: http://localhost")
+	s.configIn(t, filepath.Join(dir, "sub"), `socket: "@s"`, "origin: http://localhost")
+	t.Chdir(dir)
+
+	a := startAdminArgs(t, t.Context(), "-config", "whiteroom.yaml")
+	if want := "." + string(filepath.Separator) + "@s"; a.network != "unix" || a.addr != want {
+		t.Errorf("the server of the config file with socket ./@s listens on the %s %q, want the socket %s", a.network, a.addr, want)
+	}
+	a.login(t)
+	socketMode(t, "the socket ./@s", filepath.Join(dir, "@s"))
+	stopsWith(t, "the socket ./@s", a)
+	noFile(t, "the socket ./@s, after the stop", filepath.Join(dir, "@s"))
+
+	code, stdout, stderr := runAdminCmd(t, "-config", filepath.Join("sub", "whiteroom.yaml"))
+	want := "whiteroom serve admin: listen unix @s: a path that starts with @ is of an abstract socket, which has no file: start " +
+		"the path of a file with ./\n"
+	if code != 1 || stdout != "" || stderr != want {
+		t.Errorf("the config file with socket @s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr:\n%s", code, stdout, stderr, want)
+	}
+	checkUnlocked(t, "the config file with socket @s", s.data)
 }
 
 // TestServeAdminListen checks where the server listens: the choice among -addr, -socket, addr and socket of the config
@@ -1212,6 +1271,52 @@ func TestServeAdminOrigin(t *testing.T) {
 		t.Errorf("the server listens on %s, want %s, which the command has freed", h.addr, bad)
 	}
 	stopsWith(t, "the socket that a failed command has freed", h)
+}
+
+// TestServeAdminOriginLine checks that the start line tells the origin in the form that the server compares the Origin header
+// with, as -origin, and origin of a config file, may be given in another one: the request that sends the origin of the line,
+// as curl does, passes the check.
+func TestServeAdminOriginLine(t *testing.T) {
+	s := initEmpty(t)
+	for _, tt := range []struct{ what, origin, want string }{
+		{"a trailing slash", "http://localhost:9/", "http://localhost:9"},
+		{"upper case", "HTTPS://Admin.Example.COM", "https://admin.example.com"},
+		{"the default port of https", "https://admin.example.com:443", "https://admin.example.com"},
+		{"the default port of http", "http://localhost:80", "http://localhost"},
+		{"a port with a zero", "https://admin.example.com:08443/", "https://admin.example.com:8443"},
+		{"the form that the server has", "http://localhost:9", "http://localhost:9"},
+	} {
+		for _, fromFile := range []bool{false, true} {
+			what, args := tt.what+", -origin", s.args("-origin", tt.origin)
+			if fromFile {
+				what, args = tt.what+", origin of the config file", []string{"-config", s.config(t, "origin: "+strconv.Quote(tt.origin))}
+			}
+			a := startAdmin(t, t.Context(), args...)
+			if a.origin != tt.want {
+				t.Errorf("%s: the start line tells the origin %q, want %q", what, a.origin, tt.want)
+			}
+			// exchange sends the Origin of the line.
+			if got, _ := a.exchange(t, http.MethodPost, "/api/session", `{"login":"x","password":"y"}`); got != http.StatusUnauthorized {
+				t.Errorf("%s: a login with the Origin of the start line = %d, want 401, as the login is wrong", what, got)
+			}
+			stopsWith(t, what, a)
+		}
+	}
+
+	// -addr 127.0.0.1:80 without -origin: the origin that listenOrigin makes is made so too. Only the opening is run, as the
+	// port 80 is not for a test to listen on.
+	settings := adminSettings{
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
+		addr: "127.0.0.1:0", origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
+	}
+	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.close()
+	if a.origin != "http://127.0.0.1" {
+		t.Errorf("the origin of the server for 127.0.0.1:80 is %q, want http://127.0.0.1", a.origin)
+	}
 }
 
 // TestServeAdminWarning checks the warning that the origin is https while no proxy is trusted.
@@ -1665,6 +1770,108 @@ func TestRunAdminFailure(t *testing.T) {
 	if conn, err := net.DialTimeout("tcp", addr, 2*time.Second); err == nil {
 		_ = conn.Close()
 		t.Errorf("%s accepts a connection after the Publisher has failed", addr)
+	}
+}
+
+// failingListener accepts its first connection, and then fails once release is closed.
+type failingListener struct {
+	net.Listener
+	accepted atomic.Bool
+	release  chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if !l.accepted.Swap(true) {
+		return l.Listener.Accept()
+	}
+	<-l.release
+	return nil, errors.New("accept failed")
+}
+
+// TestRunAdminServeEndsFirst checks that the server, when the HTTP server stops by itself while a request is in progress,
+// lets the request end, as it does when its context is done, before it stops the rest: the request gets its answer, the
+// failure is that of the HTTP server, and the last heads of the audit logs that it writes are those that the data directory
+// has when it returns, with the record of the request.
+func TestRunAdminServeEndsFirst(t *testing.T) {
+	a := openForRun(t, initEmpty(t))
+	var heads, stderr syncBuffer
+	a.heads = &heads
+	addr := a.listener.Addr().String()
+	l := &failingListener{Listener: a.listener, release: make(chan struct{})}
+	a.listener = l
+	release := sync.OnceFunc(func() { close(l.release) })
+	// net/http ends a connection whose request is read after a shutdown has begun: the request is in progress only once it
+	// has come to the handler.
+	arrived, handler := make(chan struct{}), a.http.Handler
+	arrive := sync.OnceFunc(func() { close(arrived) })
+	a.http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrive()
+		handler.ServeHTTP(w, r)
+	})
+
+	ended := make(chan struct{})
+	var code int
+	go func() {
+		code = reportRun(t.Context(), a, errorPrinter{w: &stderr, command: "whiteroom serve admin"})
+		close(ended)
+	}()
+	t.Cleanup(func() {
+		release()
+		<-ended
+	})
+
+	// A login whose body has not arrived in full: the request is in progress.
+	body := `{"login":"` + initLogin + `","password":"` + initPassword + `"}`
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(adminWait))
+	_, err = fmt.Fprintf(conn, "POST /api/session HTTP/1.1\r\nHost: %s\r\nOrigin: %s\r\nContent-Type: application/json\r\n"+
+		"Content-Length: %d\r\n\r\n%s", addr, a.origin, len(body), body[:10])
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-arrived:
+	case <-time.After(adminWait):
+		t.Fatalf("the request has not come to the handler in %v", adminWait)
+	}
+
+	release()
+	select {
+	case <-ended:
+		t.Error("the server has returned while a request is in progress")
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := conn.Write([]byte(body[10:])); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("the response to the request that was in progress: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("the request that was in progress got %d, want 200", res.StatusCode)
+	}
+	select {
+	case <-ended:
+	case <-time.After(adminWait):
+		t.Fatalf("the server has not returned in %v after the request has ended", adminWait)
+	}
+	if want := "whiteroom serve admin: accept failed\n"; code != 1 || stderr.String() != want {
+		t.Errorf("the server = %d, with stderr %q, want 1 and %q", code, stderr.String(), want)
+	}
+
+	exported, _ := headsOf(heads.String())
+	stored, err := a.store.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := lastHeads(exported), lastHeads(stored); !maps.Equal(got, want) {
+		t.Errorf("the last heads that the server wrote are:\n%v\nthe data directory has:\n%v", got, want)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
@@ -628,6 +629,21 @@ func TestInitFailures(t *testing.T) {
 		}
 	}
 
+	// A ".." after a symbolic link: init cleans up what it made in the directory that the kernel means, which is missing, and
+	// leaves the directory beside the link.
+	work, other := linkedDecoy(t)
+	decoy := stateOf(t, filepath.Join(work, "x"))
+	linked := filepath.Join(work, "link") + "/../x"
+	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-data", linked, "-email", "nobody")...)
+	if code != 1 || stdout != "" || stderr != emailLine() {
+		t.Errorf("a .. after a symbolic link: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
+			stderr, emailLine())
+	}
+	if after := stateOf(t, filepath.Join(work, "x")); after != decoy {
+		t.Errorf("a .. after a symbolic link: the directory beside the link is changed:\n%s\nwas:\n%s", after, decoy)
+	}
+	checkMissing(t, "a .. after a symbolic link: the directory that the kernel means", filepath.Join(other, "x"))
+
 	// A directory that cannot be written: the store is not made, and the directory stays as it was.
 	if os.Geteuid() == 0 {
 		t.Log("running as root: a directory that cannot be written is skipped")
@@ -662,6 +678,43 @@ func (r *actingReader) Read(p []byte) (int, error) {
 		r.act()
 	}
 	return r.text.Read(p)
+}
+
+// TestInitInterruptedAtPassword checks that whiteroom init, which waits for the password on an input that gives nothing, as a
+// pipe whose writer is silent, ends when its context is done after it has begun to read: it prints interrupted, returns 1,
+// and has made nothing.
+func TestInitInterruptedAtPassword(t *testing.T) {
+	for _, preexisting := range []bool{false, true} {
+		what, data := "a missing directory", filepath.Join(t.TempDir(), "data")
+		if preexisting {
+			what = "an empty directory"
+			if err := os.Mkdir(data, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := snapshot(t, data)
+		pr, pw := io.Pipe()
+		t.Cleanup(func() { _ = pw.Close() })
+		ctx, cancel := context.WithCancel(t.Context())
+		stdin := &actingReader{act: cancel, text: pr}
+		var stdout, stderr bytes.Buffer
+		done := make(chan int, 1)
+		go func() {
+			done <- run(ctx, append([]string{"init"}, adminFlags("-data", data)...), testEnv(stdin, &stdout, &stderr))
+		}()
+		select {
+		case code := <-done:
+			if want := "whiteroom init: interrupted\n"; code != 1 || stdout.Len() != 0 || stderr.String() != want {
+				t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr %q, want 1, nothing and %q", what, code, stdout.String(),
+					stderr.String(), want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: whiteroom init has not returned in 10 s after its context is done", what)
+		}
+		if after := snapshot(t, data); after != before {
+			t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", what, after, before)
+		}
+	}
 }
 
 // TestInitDataChanged checks whiteroom init when the data directory changes while the password is read: a store that

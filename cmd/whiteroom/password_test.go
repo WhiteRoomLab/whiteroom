@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 // TestReadLine checks the line that readLine reads: the end of the line, the limit with and without the "\r", that
@@ -141,3 +144,67 @@ var errBroken = errors.New("broken input")
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errBroken }
+
+// TestReadLineBuffer checks that readLine reads into a buffer that it does not have to grow, so that no copy of a prefix of
+// the password, which the garbage collector would take uncleared, is left behind.
+func TestReadLineBuffer(t *testing.T) {
+	at := strings.Repeat("a", maxPasswordLine)
+	for _, input := range []string{at + "\n", at + "\r\n", at, at[:maxPasswordLine/2] + "\n", "abc\n", "\n"} {
+		line, err := readLine(iotest.OneByteReader(strings.NewReader(input)), maxPasswordLine, false)
+		if err != nil || cap(line) != maxPasswordLine+2 {
+			t.Errorf("readLine of %d bytes = %d bytes, with the capacity %d, and %v; want the capacity %d", len(input), len(line),
+				cap(line), err, maxPasswordLine+2)
+		}
+	}
+}
+
+// signalReader is an input that tells, by closing started, that it is read, and then reads from r.
+type signalReader struct {
+	r       io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *signalReader) Read(p []byte) (int, error) {
+	s.once.Do(func() { close(s.started) })
+	return s.r.Read(p)
+}
+
+// TestPasswordReaderContext checks that the read of a password from an input that gives nothing, as a pipe whose writer is
+// silent, ends with the error of the context when it is done, also when it is done before the read begins, without a read.
+func TestPasswordReaderContext(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	in := &signalReader{r: pr, started: make(chan struct{})}
+	r := newPasswordReader(in, io.Discard)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.read(ctx, "Password")
+		done <- err
+	}()
+	<-in.started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("read of an input that gives nothing, after its context is done = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read of an input that gives nothing has not ended in 10 s after its context is done")
+	}
+
+	// A context that is done before the read: the input is not read.
+	unread := readerFunc(func([]byte) (int, error) {
+		t.Error("the input is read after the context is done")
+		return 0, io.EOF
+	})
+	if _, err := newPasswordReader(unread, io.Discard).read(ctx, "Password"); !errors.Is(err, context.Canceled) {
+		t.Errorf("read with a context that is done = %v, want %v", err, context.Canceled)
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }

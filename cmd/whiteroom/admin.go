@@ -406,6 +406,8 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The form that the server compares the Origin header with, which the start line tells.
+	a.origin = handler.Origin()
 	a.http = admin.NewHTTPServer(handler, logger)
 	return nil
 }
@@ -422,6 +424,11 @@ func listenSocket(path string) (net.Listener, error) {
 	if strings.HasPrefix(path, "@") {
 		return nil, fmt.Errorf("listen unix %s: a path that starts with @ is of an abstract socket, which has no file: "+
 			"start the path of a file with ./", path)
+	}
+	// Before the path is looked at: a socket file at a path that is too long may be there, and a dial of it fails.
+	if len(path) > maxSocketPath {
+		return nil, fmt.Errorf("listen unix %s: the path of a socket has at most %d bytes, and this one has %d", path, maxSocketPath,
+			len(path))
 	}
 	info, err := os.Lstat(path)
 	switch {
@@ -446,9 +453,6 @@ func listenSocket(path string) (net.Listener, error) {
 	}
 	l, err := net.Listen("unix", path)
 	if err != nil {
-		if len(path) > maxSocketPath {
-			err = fmt.Errorf("%w (the path of a socket has at most %d bytes, and this one has %d)", err, maxSocketPath, len(path))
-		}
 		return nil, err
 	}
 	if err := os.Chmod(path, 0o660); err != nil {
@@ -551,12 +555,13 @@ func runAdmin(ctx context.Context, a *adminServer) error {
 		}
 	case <-ctx.Done():
 	}
+	// Also when Serve has ended by itself: it has closed the listener only, and the requests in progress go on.
+	shutdown, cancel := context.WithTimeout(context.Background(), adminShutdownWait)
+	if err := a.http.Shutdown(shutdown); err != nil {
+		_ = a.http.Close()
+	}
+	cancel()
 	if !servingEnded {
-		shutdown, cancel := context.WithTimeout(context.Background(), adminShutdownWait)
-		if err := a.http.Shutdown(shutdown); err != nil {
-			_ = a.http.Close()
-		}
-		cancel()
 		if err := <-serving; failure == nil && !errors.Is(err, http.ErrServerClosed) {
 			failure = err
 		}

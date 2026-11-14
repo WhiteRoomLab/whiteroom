@@ -324,7 +324,7 @@ func TestAccountResetErrors(t *testing.T) {
 		{"an account that is disabled", clean, unread, "suzuki", []string{command, "suzuki", "is disabled"}, false, ""},
 		{"a row that cannot be read", broken, unread, initLogin,
 			[]string{command + "accounts \"" + badID + "\": invalid value\n",
-				command + "delete it with: whiteroom account delete -data " + broken + " " + badID + "\n"}, false, ""},
+				command + "delete it with: whiteroom account delete -data " + shellQuote(broken) + " " + badID + "\n"}, false, ""},
 		{"a password that is too short", clean, input(briefPassword + "\n"), initLogin,
 			[]string{command + "the password: too short: 6 characters (min 15)\n"}, true, briefPassword},
 		{"the login name as the password", clean, input("a-long-login-name\n"), "a-long-login-name",
@@ -646,7 +646,7 @@ func TestAccountConfig(t *testing.T) {
 	// The advice names the data directory that the file gives, as a path from the working directory.
 	id := unreadableAccount(t, data, 1)
 	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "reset", "-config", file, initLogin)
-	if want := "whiteroom account reset: delete it with: whiteroom account delete -data " + data + " " + id + "\n"; code != 1 ||
+	if want := "whiteroom account reset: delete it with: whiteroom account delete -data " + shellQuote(data) + " " + id + "\n"; code != 1 ||
 		stdout != "" || !strings.Contains(stderr, want) {
 		t.Errorf("whiteroom account reset -config with a row that cannot be read = %d, with stdout %q and stderr:\n%s\nwant 1 and %q in it",
 			code, stdout, stderr, want)
@@ -723,4 +723,51 @@ func TestAccountBesideAdmin(t *testing.T) {
 		t.Error(err)
 	}
 	checkUnlocked(t, "after the server", s.data)
+}
+
+// TestShellQuote checks the words that the advice of whiteroom account reset gives to a shell: a path of letters, digits and
+// the bytes _@%+=:,./- as it is, and any other in single quotes.
+func TestShellQuote(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"/srv/site/data", "/srv/site/data"},
+		{"data", "data"},
+		{"../data-2/a_b.c", "../data-2/a_b.c"},
+		{"/Mix3d/Case_@%+=:,./-", "/Mix3d/Case_@%+=:,./-"},
+		{"", "''"},
+		{"/srv/my site/data", "'/srv/my site/data'"},
+		{"/srv/it's/data", `'/srv/it'\''s/data'`},
+		{"''", `''\'''\'''`},
+		{"$HOME/data", "'$HOME/data'"},
+		{"/srv/`id`/data", "'/srv/`id`/data'"},
+		{"/srv/a;b&c|d", "'/srv/a;b&c|d'"},
+		{"~/data", "'~/data'"},
+		{"data*", "'data*'"},
+		{`a\b`, `'a\b'`},
+		{`a"b`, `'a"b'`},
+		{"a\nb", "'a\nb'"},
+		{"/srv/データ", "'/srv/データ'"},
+	} {
+		if got := shellQuote(tt.in); got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestAccountResetAdviceQuoted checks that the advice for a row that cannot be read names a data directory with a space or
+// a single quote in its path as one word for a shell.
+func TestAccountResetAdviceQuoted(t *testing.T) {
+	for _, tt := range []struct{ what, dir string }{{"a space", "my data"}, {"a single quote", "it's data"}} {
+		data := filepath.Join(t.TempDir(), tt.dir, "data")
+		if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+			t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
+		}
+		id := unreadableAccount(t, data, 1)
+		want := "whiteroom account reset: delete it with: whiteroom account delete -data '" + strings.ReplaceAll(data, "'", `'\''`) +
+			"' " + id + "\n"
+		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-data", data, initLogin)
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, want) {
+			t.Errorf("%s: whiteroom account reset = %d, with stdout %q and stderr:\n%s\nwant 1 and %q at its end", tt.what, code, stdout,
+				stderr, want)
+		}
+	}
 }

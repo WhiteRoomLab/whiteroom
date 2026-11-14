@@ -122,7 +122,7 @@ func (r *configReader) read(data []byte) error {
 		case "cache":
 			r.cfg.cache = r.path(ptr, raw)
 		case "socket":
-			r.cfg.socket = r.path(ptr, raw)
+			r.cfg.socket = r.socketPath(ptr, raw)
 		case "addr":
 			r.cfg.addr, _ = r.text(ptr, raw)
 		case "origin":
@@ -164,6 +164,21 @@ func (r *configReader) path(ptr string, raw json.RawMessage) string {
 		return s
 	}
 	return filepath.Join(filepath.Dir(r.file), s)
+}
+
+// socketPath returns the string raw as the path of a socket: as path does, but a value that starts with @ is kept, whatever
+// the directory of the config file is, for listenSocket to refuse.
+func (r *configReader) socketPath(ptr string, raw json.RawMessage) string {
+	s, ok := r.text(ptr, raw)
+	if !ok || filepath.IsAbs(s) || strings.HasPrefix(s, "@") {
+		return s
+	}
+	p := filepath.Join(filepath.Dir(r.file), s)
+	// Join has cut the "./" that tells a file named @... from an abstract socket.
+	if strings.HasPrefix(p, "@") {
+		p = "." + string(filepath.Separator) + p
+	}
+	return p
 }
 
 // texts returns the list of strings raw, or reports each value that is not a string or is empty, or that raw is not a

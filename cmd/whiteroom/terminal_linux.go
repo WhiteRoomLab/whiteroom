@@ -60,26 +60,10 @@ func readHidden(ctx context.Context, f *os.File, limit int) ([]byte, error) {
 		return nil
 	}
 
-	type result struct {
-		line []byte
-		err  error
+	line, err := readLineContext(ctx, f, limit, true)
+	if restoreErr := restore(); restoreErr != nil {
+		clear(line)
+		return nil, restoreErr
 	}
-	read := make(chan result, 1)
-	go func() {
-		line, err := readLine(f, limit, true)
-		read <- result{line, err}
-	}()
-	select {
-	case r := <-read:
-		if err := restore(); err != nil {
-			clear(r.line)
-			return nil, err
-		}
-		return r.line, r.err
-	case <-ctx.Done():
-		if err := restore(); err != nil {
-			return nil, err
-		}
-		return nil, ctx.Err()
-	}
+	return line, err
 }

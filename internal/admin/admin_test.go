@@ -449,6 +449,7 @@ func TestNewOrigins(t *testing.T) {
 		{"https://admin.example.com", "https://admin.example.com"},
 		{"https://admin.example.com/", "https://admin.example.com"},
 		{"HTTPS://Admin.Example.COM", "https://admin.example.com"},
+		{"HTTPS://Admin.Example.com:443/", "https://admin.example.com"},
 		{"https://admin.example.com:443", "https://admin.example.com"},
 		{"https://admin.example.com:8443", "https://admin.example.com:8443"},
 		{"https://admin.example.com:08443/", "https://admin.example.com:8443"},
@@ -463,6 +464,7 @@ func TestNewOrigins(t *testing.T) {
 		{"http://localhost", "http://localhost"},
 		{"http://localhost:80", "http://localhost"},
 		{"http://LOCALHOST:8081/", "http://localhost:8081"},
+		{"http://LOCALHOST:9/", "http://localhost:9"},
 		{"http://127.0.0.1:8081", "http://127.0.0.1:8081"},
 		{"http://127.255.255.254", "http://127.255.255.254"},
 		{"http://[::1]:8081", "http://[::1]:8081"},
@@ -475,6 +477,9 @@ func TestNewOrigins(t *testing.T) {
 		}
 		if s.origin != tt.want {
 			t.Errorf("New(%q) has the origin %q, want %q", tt.in, s.origin, tt.want)
+		}
+		if got := s.Origin(); got != tt.want {
+			t.Errorf("New(%q).Origin() = %q, want %q", tt.in, got, tt.want)
 		}
 		if https := strings.HasPrefix(tt.want, "https:"); s.https != https {
 			t.Errorf("New(%q) has https %v, want %v", tt.in, s.https, https)

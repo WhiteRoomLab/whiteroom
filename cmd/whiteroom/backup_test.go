@@ -583,3 +583,151 @@ func TestBackupErrors(t *testing.T) {
 		}
 	})
 }
+
+// linkedDecoy makes work/link, a symbolic link to the directory other/sub, and work/x, a data directory that has a file in
+// logdb/ and in files/. The path work/link/../x is for the kernel other/x, which is missing, and not work/x.
+func linkedDecoy(t *testing.T) (work, other string) {
+	t.Helper()
+	work, other = t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(other, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other, "sub"), filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"logdb", "files"} {
+		if err := os.MkdirAll(filepath.Join(work, "x", dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, "x", dir, "keep"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return work, other
+}
+
+// TestBackupResolvedPaths checks whiteroom backup with the paths as the kernel resolves them, which are not those that a
+// clean of the text gives when a ".." follows a symbolic link, or the working directory is entered through one: the cleanup
+// of a backup that fails removes what it made in the directory that DEST is for the kernel, and leaves the directory beside
+// the link; a missing DEST with a trailing separator, and a relative DEST from a working directory that is a link, take the
+// backup; and a DEST that is in the data directory for the kernel is refused, and nothing is made in it.
+func TestBackupResolvedPaths(t *testing.T) {
+	t.Run("the cleanup of a backup that fails", func(t *testing.T) {
+		s := initSample(t)
+		work, other := linkedDecoy(t)
+		decoy := stateOf(t, filepath.Join(work, "x"))
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		dest := filepath.Join(work, "link") + "/../x"
+		if got, want := failingBackup(t, "the cleanup", ctx, "-data", s.data, dest), "whiteroom backup: interrupted\n"; got != want {
+			t.Errorf("whiteroom backup printed %q, want %q", got, want)
+		}
+		if after := stateOf(t, filepath.Join(work, "x")); after != decoy {
+			t.Errorf("the directory beside the link is changed:\n%s\nwas:\n%s", after, decoy)
+		}
+		checkMissing(t, "the directory that DEST is for the kernel", filepath.Join(other, "x"))
+	})
+
+	t.Run("a missing DEST with a trailing separator", func(t *testing.T) {
+		for _, suffix := range []string{"/", "//"} {
+			s := initSample(t)
+			dest := filepath.Join(t.TempDir(), "backup") + suffix
+			code, stdout, stderr := runCmd(t, "backup", "-data", s.data, dest)
+			if code != 0 || stderr != "" {
+				t.Fatalf("whiteroom backup of DEST %q = %d, with stderr:\n%s", dest, code, stderr)
+			}
+			checkCopy(t, "DEST "+dest, dest, printedHeads(t, "DEST "+dest, s.data, dest, stdout))
+		}
+	})
+
+	t.Run("a working directory that is a link", func(t *testing.T) {
+		s := initSample(t)
+		site, releases := t.TempDir(), t.TempDir()
+		for _, name := range []string{"42", "backups"} {
+			if err := os.Mkdir(filepath.Join(releases, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		current := filepath.Join(site, "current")
+		if err := os.Symlink(filepath.Join(releases, "42"), current); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(current)
+		code, stdout, stderr := runCmd(t, "backup", "-data", s.data, "../backups/b1")
+		if code != 0 || stderr != "" {
+			t.Fatalf("whiteroom backup of ../backups/b1 = %d, with stderr:\n%s", code, stderr)
+		}
+		checkCopy(t, "../backups/b1", filepath.Join(releases, "backups", "b1"),
+			printedHeads(t, "../backups/b1", s.data, "../backups/b1", stdout))
+		checkMissing(t, "the directory beside the link", filepath.Join(site, "backups"))
+	})
+
+	t.Run("a DEST in the data directory", func(t *testing.T) {
+		is := func(dest, data string) string {
+			return "whiteroom backup: " + dest + ": DEST is in the data directory " + data + "\n"
+		}
+		// A backup into the data directory that is not refused copies it into itself until the context ends.
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+
+		// .. after a link to a directory of files/: DEST is files/x.
+		s := initSample(t)
+		if err := os.Mkdir(filepath.Join(s.data, "files", "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		before := stateOf(t, s.data)
+		work := t.TempDir()
+		if err := os.Symlink(filepath.Join(s.data, "files", "sub"), filepath.Join(work, "link")); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(work, "link") + "/../x"
+		if got := failingBackup(t, "a link to a directory of files/", ctx, "-data", s.data, dest); got != is(dest, s.data) {
+			t.Errorf("a link to a directory of files/: whiteroom backup printed %q, want %q", got, is(dest, s.data))
+		}
+		if after := stateOf(t, s.data); after != before {
+			t.Errorf("a link to a directory of files/: the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+
+		// From a working directory that is a link, ../data is a link to the data directory, and a directory data is beside
+		// the link.
+		s = initSample(t)
+		before = stateOf(t, s.data)
+		site, releases := t.TempDir(), t.TempDir()
+		for _, dir := range []string{filepath.Join(releases, "42"), filepath.Join(site, "data")} {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Symlink(s.data, filepath.Join(releases, "data")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(releases, "42"), filepath.Join(site, "current")); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(filepath.Join(site, "current"))
+		dest = "../data/b2"
+		if got := failingBackup(t, "a link to the data directory", ctx, "-data", s.data, dest); got != is(dest, s.data) {
+			t.Errorf("a link to the data directory: whiteroom backup printed %q, want %q", got, is(dest, s.data))
+		}
+		if after := stateOf(t, s.data); after != before {
+			t.Errorf("a link to the data directory: the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
+}
+
+// TestCheckDataDirResolvedPath checks that checkDataDir looks in the directory that the kernel takes the path for: the
+// directory beside a link that a ".." follows is not the one that is looked in.
+func TestCheckDataDirResolvedPath(t *testing.T) {
+	work, other := linkedDecoy(t)
+	dest := filepath.Join(work, "link") + "/../x"
+	if err := os.Mkdir(filepath.Join(other, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// work/x is a data directory, other/x, which the path is for, is an empty directory.
+	if err := checkDataDir(dest); err == nil || !strings.HasSuffix(err.Error(), ": missing directory") {
+		t.Errorf("checkDataDir(%s) = %v, want a missing directory", dest, err)
+	}
+	if err := checkDataDir(filepath.Join(work, "x")); err != nil {
+		t.Errorf("checkDataDir of a data directory = %v, want nil", err)
+	}
+}

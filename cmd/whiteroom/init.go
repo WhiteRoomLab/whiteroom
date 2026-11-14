@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
@@ -214,14 +213,23 @@ func checkNewDataDir(dir string) (missing bool, err error) {
 	return false, nil
 }
 
-// cleanupNewDataDir closes the store s, unless it is nil, and removes what init has made in the data directory dir:
-// logdb/ and files/, and dir itself if it was missing. It leaves the parents that making dir has made.
+// cleanupNewDataDir closes the store s, unless it is nil, and removes what init or backup has made in the data directory
+// dir, the directory that the kernel takes the path dir for: logdb/ and files/, and dir itself if it was missing. It leaves
+// the parents that making dir has made.
 func cleanupNewDataDir(s *store.Store, dir string, missing bool) error {
 	var errs []error
 	if s != nil {
 		errs = append(errs, s.Close())
 	}
-	errs = append(errs, os.RemoveAll(filepath.Join(dir, "logdb")), os.RemoveAll(filepath.Join(dir, "files")))
+	// Not filepath.Join(dir, ...): it drops a ".." after a symbolic link, and names another directory than the one that was made.
+	root, err := os.OpenRoot(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		errs = append(errs, err)
+	default:
+		errs = append(errs, root.RemoveAll("logdb"), root.RemoveAll("files"), root.Close())
+	}
 	if missing {
 		if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, err)
