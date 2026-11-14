@@ -31,8 +31,15 @@ const (
 // path, the mode, and the SHA-256 of a file or the target of a link.
 func tree(t *testing.T, dir string) []string {
 	t.Helper()
+	// Not filepath.WalkDir, which joins the names to dir as text and drops "link/..".
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	fsys := root.FS()
 	var lines []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -40,20 +47,16 @@ func tree(t *testing.T, dir string) []string {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		line := filepath.ToSlash(rel) + " " + info.Mode().String()
+		line := p + " " + info.Mode().String()
 		switch {
 		case info.Mode()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(p)
+			target, err := fs.ReadLink(fsys, p)
 			if err != nil {
 				return err
 			}
 			line += " " + target
 		case info.Mode().IsRegular():
-			data, err := os.ReadFile(p)
+			data, err := fs.ReadFile(fsys, p)
 			if err != nil {
 				return err
 			}

@@ -65,6 +65,16 @@ func TestJoin(t *testing.T) {
 			t.Errorf("Join(%q, %q) = %q, want %q", dir, name, got, want)
 		}
 	}
+	for _, c := range []struct{ name, want string }{
+		{"./link//../out/", "link/../out"},
+		{"ROOT/b/x/../out", "ROOT/b/out"},
+		{"./site//", "site"},
+	} {
+		name, want := rooted(root, c.name), rooted(root, c.want)
+		if got := Clean(name); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", name, got, want)
+		}
+	}
 }
 
 // TestAbs works in a and in c of makeTree, with $PWD the path through c.

@@ -303,6 +303,7 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
         store-test:

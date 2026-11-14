@@ -440,13 +440,11 @@ func TestBuildForeign(t *testing.T) {
 	want = filepath.Join(out, "releases", "README") + ": not made by the build; " + releasesMust
 	failingBuild(t, "a foreign file after a build", t.Context(), buildOptions(src, out, t.TempDir(), 4), want)
 
-	// The path keeps link/.., which is b. Not failingBuild: filepath.WalkDir drops link/...
+	// The path keeps link/.., which is b.
 	base := makeDir(t, "b/out/index.html", "b/entries/", "link -> b/entries")
 	out = filepath.Join(base, "link") + filepath.FromSlash("/../out")
 	want = out + string(filepath.Separator) + "index.html: not made by the build; " + outMust
-	if res, err := Build(t.Context(), buildOptions(src, out, t.TempDir(), 4)); res != nil || err == nil || err.Error() != want {
-		t.Errorf("a foreign file through a symbolic link: Build() = %+v, %v\nwant the error:\n%s", res, err, want)
-	}
+	failingBuild(t, "a foreign file through a symbolic link", t.Context(), buildOptions(src, out, t.TempDir(), 4), want)
 }
 
 // TestBuildCanceled checks that a build whose context is done before it starts makes nothing, and that one canceled

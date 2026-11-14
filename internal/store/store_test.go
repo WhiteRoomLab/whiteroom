@@ -342,6 +342,44 @@ func TestOpenErrors(t *testing.T) {
 
 // TestDefaults checks the options of the engine of Create, Open and OpenReader (3.4): objects of 64 KiB or more go in
 // files, and a second Open waits 2 seconds for the writer lock.
+// TestOpenThroughLink opens the data directory data as link/../data, where link is a symbolic link to a directory beside
+// data: the errors name the files of data, those of the store with the path as written, and those of the engine with
+// the resolved path.
+func TestOpenThroughLink(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(base, "data")
+	s, err := Create(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mkdir(t, filepath.Join(base, "beside"))
+	work := t.TempDir()
+	symlink(t, filepath.Join(base, "beside"), filepath.Join(work, "link"))
+	dir := filepath.Join(work, "link") + filepath.FromSlash("/../data")
+
+	remove(t, filepath.Join(data, "logdb", "checkpoint"))
+	segment := filepath.Join(data, "logdb", filepath.FromSlash(firstSegment))
+	if err := os.WriteFile(segment, []byte("SQLite format 3\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil || !strings.HasPrefix(err.Error(), segment+": ") {
+		t.Errorf("Open(%s) of a broken segment = %v, want an error about %s", dir, err, segment)
+	}
+	if err := os.RemoveAll(filepath.Join(data, "logdb")); err != nil {
+		t.Fatal(err)
+	}
+	want := dir + filepath.FromSlash("/logdb") + ": missing directory"
+	if _, err := Open(dir); err == nil || err.Error() != want {
+		t.Errorf("Open(%s) without logdb = %v, want %s", dir, err, want)
+	}
+}
+
 func TestDefaults(t *testing.T) {
 	t.Parallel()
 	// paddedEntry returns the JSON of the entry id with size bytes.
