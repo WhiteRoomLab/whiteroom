@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
 // maxPasswordLine is the most bytes of a password that is read, which is also the most that internal/account takes.
@@ -21,6 +23,44 @@ var (
 	errNoHidden   = errors.New("cannot read a password without echo from a terminal on this OS: " +
 		"give it on the standard input from a pipe or a file")
 )
+
+// maxPasswordAsks is the most times that a command asks for a password, the times that the two entries on a terminal are
+// not the same and the times that the password is refused included.
+const maxPasswordAsks = 3
+
+// errProblemsTold is the error of askPassword for a password that try has refused with problems that asking again does not
+// put right, which askPassword has told already.
+var errProblemsTold = errors.New("the problems with the password are told")
+
+// askPassword reads a password from the standard input of e and gives it to try, until try accepts it by returning nil.
+// try refuses a password with content.Errors: they are printed with the name of command, and on a terminal, if every one
+// of them is about the password, the password is asked for again; else the error is errProblemsTold. Any other error of
+// try ends askPassword as it is. It asks at most maxPasswordAsks times.
+func askPassword(ctx context.Context, e env, command, prompt string, try func(password string) error) error {
+	reader := newPasswordReader(e.stdin, e.stderr)
+	for asks := 0; ; {
+		if asks == maxPasswordAsks {
+			return fmt.Errorf("no password was accepted in %d tries", maxPasswordAsks)
+		}
+		asks++
+		password, err := reader.read(ctx, prompt)
+		if errors.Is(err, errMismatch) {
+			printf(e.stderr, "%s: %v\n", command, err)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var problems content.Errors
+		if err := try(password); !errors.As(err, &problems) {
+			return err
+		}
+		printInitProblems(e.stderr, command, problems)
+		if !reader.terminal() || !onlyPasswordProblems(problems) {
+			return errProblemsTold
+		}
+	}
+}
 
 // passwordReader reads a password from in: from the terminal, twice and without echo, if in is one that can be read
 // so, or else as the first line of in. Nothing that it returns or prints has what it has read.

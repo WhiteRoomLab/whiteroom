@@ -122,6 +122,37 @@ func TestRun(t *testing.T) {
 		t.Errorf("the list of the commands has no whiteroom doctor:\n%s", usage)
 	}
 
+	code, stdout, resetHelp := runCmd(t, "account", "reset", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(resetHelp, accountResetUsage) {
+		t.Fatalf("whiteroom account reset -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			resetHelp)
+	}
+	code, stdout, deleteHelp := runCmd(t, "account", "delete", "-h")
+	if code != 0 || stdout != "" || !strings.HasPrefix(deleteHelp, accountDeleteUsage) {
+		t.Fatalf("whiteroom account delete -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
+			deleteHelp)
+	}
+	for _, help := range []struct{ command, text string }{{"reset", resetHelp}, {"delete", deleteHelp}} {
+		for _, name := range []string{"-config FILE", "-data DIR"} {
+			if !strings.Contains(help.text, "\n  "+name+"\n") {
+				t.Errorf("the usage of whiteroom account %s has no flag %s:\n%s", help.command, name, help.text)
+			}
+		}
+		if strings.Contains(help.text, "-password") {
+			t.Errorf("the usage of whiteroom account %s has a flag for the password:\n%s", help.command, help.text)
+		}
+	}
+	for _, line := range []string{"whiteroom account reset [flags] LOGIN", "whiteroom account delete [flags] ID"} {
+		if !strings.Contains(usage, "\n  "+line+"\n") {
+			t.Errorf("the list of the commands has no %s:\n%s", line, usage)
+		}
+	}
+	for _, name := range []string{`"whiteroom account reset -h"`, `"whiteroom account delete -h"`} {
+		if !strings.Contains(usage, name) {
+			t.Errorf("the list of the commands does not name %s:\n%s", name, usage)
+		}
+	}
+
 	code, stdout, initHelp := runCmd(t, "init", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(initHelp, initUsage) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
@@ -147,6 +178,8 @@ func TestRun(t *testing.T) {
 	rollbackErr := func(msg string) string { return "whiteroom rollback: " + msg + "\n" + rollbackHelp }
 	backupErr := func(msg string) string { return "whiteroom backup: " + msg + "\n" + backupHelp }
 	doctorErr := func(msg string) string { return "whiteroom doctor: " + msg + "\n" + doctorHelp }
+	resetErr := func(msg string) string { return "whiteroom account reset: " + msg + "\n" + resetHelp }
+	deleteErr := func(msg string) string { return "whiteroom account delete: " + msg + "\n" + deleteHelp }
 	memory := func(m string) string {
 		return "whiteroom build: -memory " + m + " is out of range (0 to 8796093022207)\n" + help
 	}
@@ -213,6 +246,28 @@ func TestRun(t *testing.T) {
 		{[]string{"doctor", "-heads"}, 2, "", "flag needs an argument: -heads\n" + doctorHelp},
 		{[]string{"doctor", "-config", missing}, 2, "", "whiteroom doctor: " + openErr.Error() + "\n"},
 		{[]string{"doctor", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"account"}, 2, "", accountUsage},
+		{[]string{"account", "nope"}, 2, "", "whiteroom account: unknown subcommand \"nope\"\nRun \"whiteroom help\" for usage.\n"},
+		{[]string{"account", "-h"}, 0, accountUsage, ""},
+		{[]string{"account", "help"}, 0, accountUsage, ""},
+		{[]string{"account", "reset"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
+		{[]string{"account", "reset", "-data", "d"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
+		{[]string{"account", "reset", "a"}, 2, "", resetErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"account", "reset", "-data", "d", "a", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "a", "-data", "d", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "-password", "x", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -password\n" + resetHelp},
+		{[]string{"account", "reset", "-config", missing, "a"}, 2, "", "whiteroom account reset: " + openErr.Error() + "\n"},
+		{[]string{"account", "reset", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		{[]string{"account", "delete"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
+		{[]string{"account", "delete", "-data", "d"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
+		{[]string{"account", "delete", "a"}, 2, "", deleteErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"account", "delete", "-data", "d", "a", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "a", "-data", "d", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "-password", "x", "-data", "d", "a"}, 2, "",
+			"flag provided but not defined: -password\n" + deleteHelp},
+		{[]string{"account", "delete", "-config", missing, "a"}, 2, "", "whiteroom account delete: " + openErr.Error() + "\n"},
+		{[]string{"account", "delete", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},

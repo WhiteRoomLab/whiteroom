@@ -252,6 +252,52 @@ func TestSetPasswordProblems(t *testing.T) {
 	}
 }
 
+// TestCheckPassword checks that CheckPassword finds, for an account, the problems that SetPassword finds for it, with the
+// same messages, which have nothing of the password, and none for a password that SetPassword takes.
+func TestCheckPassword(t *testing.T) {
+	e := newMgr(t)
+	e.first(t)
+	in := Input{Login: "a-long-login-name", Name: "A Long Display Name", Email: "long.email.address@example.com", Role: RoleEditor}
+	a, token, err := e.m.Invite(t.Context(), System, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := "a good long password"
+	if err := CheckPassword(good, a); err != nil {
+		t.Errorf("CheckPassword(%q) = %v, want nil", good, err)
+	}
+	tests := []struct{ name, password, msg string }{
+		{"short", "fourteen chars", pwShort(14)},
+		{"the login name", "a-long-login-name", pwSame},
+		{"the login name in upper case", "A-LONG-LOGIN-NAME", pwSame},
+		{"the email address", "long.email.address@example.com", pwSame},
+		{"the name", "A Long Display Name", pwSame},
+		{"one character", strings.Repeat("z", 30), pwRepeated},
+		{"a control character", mgrPassword("a") + "\t", pwControl},
+		{"more than 8 KiB", strings.Repeat("ab", 4097), pwBytes(8194)},
+	}
+	for _, tt := range tests {
+		err := CheckPassword(tt.password, a)
+		mgrProblems(t, err, problem{"/password", tt.msg})
+		if strings.Contains(err.Error(), tt.password) {
+			t.Errorf("CheckPassword() with %s has the password in its error: %v", tt.name, err)
+		}
+		_, want := e.m.SetPassword(t.Context(), mgrClient, token, tt.password)
+		if want == nil || err.Error() != want.Error() {
+			t.Errorf("CheckPassword() with %s = %v, want the error of SetPassword, %v", tt.name, err, want)
+		}
+	}
+	// The account of the check is the one that SetPassword sets the password of: the same text is fine for another.
+	other := a
+	other.Login, other.Name, other.Email = "other", "Other", "other@example.com"
+	if err := CheckPassword("a-long-login-name", other); err != nil {
+		t.Errorf("CheckPassword() of the login name of another account = %v, want nil", err)
+	}
+	if _, err := e.m.SetPassword(t.Context(), mgrClient, token, good); err != nil {
+		t.Errorf("SetPassword(%q) = %v, want it to take the password that CheckPassword takes", good, err)
+	}
+}
+
 func TestSetPasswordAfterReset(t *testing.T) {
 	e := newMgr(t)
 	e.first(t)

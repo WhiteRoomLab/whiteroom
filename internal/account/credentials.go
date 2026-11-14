@@ -20,6 +20,12 @@ func passwordErrors(p string, r row) error {
 	return nil
 }
 
+// CheckPassword returns the problems of p as the password of a, as content.Errors at /password, or nil: those that
+// SetPassword finds, for a caller that wants to know before it changes anything.
+func CheckPassword(p string, a Account) error {
+	return passwordErrors(p, row{Login: a.Login, Email: a.Email, Name: a.Name})
+}
+
 // SetPassword uses the token of an invitation or a reset to set the password of the account that it was given to, and
 // returns the account, which is then active. The token cannot be used again, and the account's sessions end in the same
 // Update. The problems of the password are content.Errors at /password, and leave the token as it was. A token that

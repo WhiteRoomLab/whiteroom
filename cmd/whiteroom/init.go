@@ -34,10 +34,6 @@ read.
 Flags:
 `
 
-// maxPasswordAsks is the most times that init asks for the password on a terminal, the times that the two entries are
-// not the same and the times that the password is refused included.
-const maxPasswordAsks = 3
-
 // initFlags are the values of the flags of whiteroom init.
 type initFlags struct {
 	config, data, login, name, email, theme string
@@ -117,70 +113,47 @@ func runInit(ctx context.Context, args []string, e env) int {
 		return 1
 	}
 
-	reader := newPasswordReader(e.stdin, e.stderr)
-	asks := 0
-	ask := func() (string, error) {
-		for {
-			if asks == maxPasswordAsks {
-				return "", fmt.Errorf("no password was accepted in %d tries", maxPasswordAsks)
-			}
-			asks++
-			password, err := reader.read(ctx, "Password")
-			if errors.Is(err, errMismatch) {
-				printf(e.stderr, "%s: %v\n", flags.Name(), err)
-				continue
-			}
-			return password, err
-		}
-	}
-	password, err := ask()
-	if err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-
-	// Again, as another process may have made the directory meanwhile, whose files are not ours to remove.
-	if missing, err = checkNewDataDir(data); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-
 	var s *store.Store
+	made := false // whether there may be something of init's to clean up: store.Create has been called
 	// fail prints err, if there is one, and undoes what init has made, and returns the exit code of a failure.
 	fail := func(err error) int {
 		if err != nil {
 			p.printError(ctx, err)
 		}
-		if err := cleanupNewDataDir(s, data, missing); err != nil {
-			printf(e.stderr, "%s: cleaning up %s: %v\n", flags.Name(), data, err)
+		if made {
+			if err := cleanupNewDataDir(s, data, missing); err != nil {
+				printf(e.stderr, "%s: cleaning up %s: %v\n", flags.Name(), data, err)
+			}
 		}
 		return 1
 	}
-	if s, err = store.Create(data); err != nil {
-		return fail(err)
-	}
-	accounts, err := e.newAccounts(s)
-	if err != nil {
-		return fail(err)
-	}
 	in := account.Input{Login: f.login, Name: f.name, Email: f.email, Role: account.RoleAdmin}
+	var accounts *account.Manager
 	var admin account.Account
-	for {
+	err = askPassword(ctx, e, flags.Name(), "Password", func(password string) error {
+		if accounts == nil {
+			// Again, as another process may have made the directory meanwhile, whose files are not ours to remove.
+			var err error
+			if missing, err = checkNewDataDir(data); err != nil {
+				return err
+			}
+			made = true
+			if s, err = store.Create(data); err != nil {
+				return err
+			}
+			if accounts, err = e.newAccounts(s); err != nil {
+				return err
+			}
+		}
+		var err error
 		admin, err = accounts.CreateFirst(ctx, in, password)
-		if err == nil {
-			break
-		}
-		var problems content.Errors
-		if !errors.As(err, &problems) {
-			return fail(err)
-		}
-		printInitProblems(e.stderr, flags.Name(), problems)
-		if !reader.terminal() || !onlyPasswordProblems(problems) {
-			return fail(nil)
-		}
-		if password, err = ask(); err != nil {
-			return fail(err)
-		}
+		return err
+	})
+	switch {
+	case errors.Is(err, errProblemsTold):
+		return fail(nil)
+	case err != nil:
+		return fail(err)
 	}
 	if importing {
 		warnings, err := edit.Import(ctx, s, src, admin.ID)

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/account"
 )
 
 // pty is a pseudo terminal: a command reads and writes its slave, as it does a terminal, and the test types at its master
@@ -109,10 +111,13 @@ func (p *pty) waitNoEcho() {
 	waitFor(p.t, "the terminal to stop echoing", func() bool { return p.termios().Lflag&syscall.ECHO == 0 })
 }
 
-// ptyInit is a whiteroom init that runs with a pseudo terminal as its standard input, and its prompts and errors on it.
+// ptyInit is a whiteroom init, or another command that asks for a password, that runs with a pseudo terminal as its
+// standard input, and its prompts and errors on it.
 type ptyInit struct {
 	t              *testing.T
 	p              *pty
+	name           string // of the command, such as "whiteroom init"
+	asks           string // what every prompt has, and nothing else that the command prints
 	stdout, stderr *syncBuffer
 	done           chan int
 	cancel         context.CancelFunc
@@ -122,18 +127,25 @@ type ptyInit struct {
 
 func startPTYInit(t *testing.T, p *pty, args ...string) *ptyInit {
 	t.Helper()
+	return startPTYCommand(t, p, "whiteroom init", "Password", append([]string{"init"}, args...)...)
+}
+
+// startPTYCommand runs the command with args, whose name is name and whose prompts have asks.
+func startPTYCommand(t *testing.T, p *pty, name, asks string, args ...string) *ptyInit {
+	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	r := &ptyInit{t: t, p: p, stdout: new(syncBuffer), stderr: new(syncBuffer), done: make(chan int, 1), cancel: cancel}
+	r := &ptyInit{t: t, p: p, name: name, asks: asks, stdout: new(syncBuffer), stderr: new(syncBuffer), done: make(chan int, 1),
+		cancel: cancel}
 	e := testEnv(p.slave, r.stdout, io.MultiWriter(r.stderr, p.slave))
-	go func() { r.done <- run(ctx, append([]string{"init"}, args...), e) }()
+	go func() { r.done <- run(ctx, args, e) }()
 	return r
 }
 
 // prompt waits for the n-th prompt, and for the terminal to be ready for the password, which is to stop echoing.
 func (r *ptyInit) prompt(n int) {
 	r.t.Helper()
-	waitFor(r.t, fmt.Sprintf("prompt %d", n), func() bool { return strings.Count(r.stderr.String(), "Password") >= n })
+	waitFor(r.t, fmt.Sprintf("prompt %d", n), func() bool { return strings.Count(r.stderr.String(), r.asks) >= n })
 	r.p.waitNoEcho()
 }
 
@@ -144,7 +156,7 @@ func (r *ptyInit) answer(n int, text string) {
 	r.p.typeText(text + "\r")
 }
 
-// exit waits for whiteroom init to return, which it must do in 15 s, and returns its exit code.
+// exit waits for the command to return, which it must do in 15 s, and returns its exit code.
 func (r *ptyInit) exit() int {
 	r.t.Helper()
 	if r.exited {
@@ -155,27 +167,27 @@ func (r *ptyInit) exit() int {
 		r.exited = true
 	case <-time.After(15 * time.Second):
 		r.cancel()
-		r.t.Fatalf("whiteroom init has not returned in 15 s, with stderr:\n%s", r.stderr)
+		r.t.Fatalf("%s has not returned in 15 s, with stderr:\n%s", r.name, r.stderr)
 	}
 	return r.code
 }
 
-// finish waits for whiteroom init to return, and checks its exit code, its stdout, its stderr, which the terminal must
+// finish waits for the command to return, and checks its exit code, its stdout, its stderr, which the terminal must
 // have shown, and no more, and that the terminal is as it was before. None of the secrets may be in what the terminal
 // showed, in the output or in the data directory.
 func (r *ptyInit) finish(before syscall.Termios, data string, code int, stdout, stderr string, secrets ...string) {
 	r.t.Helper()
 	if got := r.exit(); got != code {
-		r.t.Errorf("whiteroom init = %d, want %d, with stderr:\n%s", got, code, r.stderr)
+		r.t.Errorf("%s = %d, want %d, with stderr:\n%s", r.name, got, code, r.stderr)
 	}
 	if r.stdout.String() != stdout {
-		r.t.Errorf("whiteroom init printed on stdout:\n%s\nwant:\n%s", r.stdout, stdout)
+		r.t.Errorf("%s printed on stdout:\n%s\nwant:\n%s", r.name, r.stdout, stdout)
 	}
 	if r.stderr.String() != stderr {
-		r.t.Errorf("whiteroom init printed on stderr:\n%s\nwant:\n%s", r.stderr, stderr)
+		r.t.Errorf("%s printed on stderr:\n%s\nwant:\n%s", r.name, r.stderr, stderr)
 	}
 	// Echo comes before the text that follows it, so that the terminal shows exactly this only if nothing was echoed.
-	waitFor(r.t, "the terminal to show what whiteroom init printed", func() bool { return r.p.show() == r.stderr.String() })
+	waitFor(r.t, "the terminal to show what "+r.name+" printed", func() bool { return r.p.show() == r.stderr.String() })
 	if got := r.p.termios(); got != before {
 		r.t.Errorf("the terminal is %+v, want it as it was, %+v", got, before)
 	}
@@ -436,5 +448,90 @@ func TestInitTerminal(t *testing.T) {
 		if s := snapshot(t, data); s != "missing" {
 			t.Errorf("the data directory is made:\n%s", s)
 		}
+	})
+}
+
+const (
+	resetPrompts  = "New password for " + initLogin + ": \nNew password for " + initLogin + " (again): \n"
+	resetTooShort = "whiteroom account reset: the password: too short: 6 characters (min 15)\n"
+	resetNotSame  = "whiteroom account reset: the two passwords are not the same\n"
+)
+
+// TestAccountResetTerminal resets a password typed at a pseudo terminal, which asks twice, without echo, and again if the
+// two are not the same or the password is refused, 3 times at most; after a failure the terminal is as it was and the
+// account is not changed.
+func TestAccountResetTerminal(t *testing.T) {
+	// start makes a data directory with the first administrator, and opens a terminal and a whiteroom account reset for it,
+	// and returns the data directory, the account, the logs as they are, the terminal as it is and the command.
+	start := func(t *testing.T) (data string, admin account.Account, logs logRecords, before syscall.Termios, r *ptyInit) {
+		t.Helper()
+		data = accountData(t)
+		admin = mustFind(t, data, initLogin)
+		logs = logsOf(t, data)
+		p := openPTY(t)
+		before = p.termios()
+		return data, admin, logs, before, startPTYCommand(t, p, "whiteroom account reset", "New password for", "account", "reset",
+			"-data", data, initLogin)
+	}
+	// succeeded checks that the password is reset, and that the terminal and the data directory have none of the secrets.
+	succeeded := func(t *testing.T, r *ptyInit, data string, admin account.Account, before syscall.Termios, stderr string, secrets ...string) {
+		t.Helper()
+		r.exit()
+		r.finish(before, data, 0, "reset the password of "+admin.Login+" ("+admin.ID+")\n", stderr, append(secrets, changedPassword)...)
+		checkLogin(t, "after the command", data, initLogin, changedPassword)
+	}
+	// unchanged checks that a command that failed has left the account and the logs as they were.
+	unchanged := func(t *testing.T, r *ptyInit, data string, logs logRecords, before syscall.Termios, stderr string, secrets ...string) {
+		t.Helper()
+		r.finish(before, data, 1, "", stderr, secrets...)
+		checkLogs(t, "after the command", data, logs)
+		checkLogin(t, "after the command", data, initLogin, initPassword)
+	}
+
+	t.Run("the password twice", func(t *testing.T) {
+		data, admin, _, before, r := start(t)
+		r.answer(1, changedPassword)
+		r.answer(2, changedPassword)
+		succeeded(t, r, data, admin, before, resetPrompts)
+	})
+	t.Run("the two are not the same", func(t *testing.T) {
+		data, admin, _, before, r := start(t)
+		r.answer(1, changedPassword)
+		r.answer(2, otherWord)
+		r.answer(3, changedPassword)
+		r.answer(4, changedPassword)
+		succeeded(t, r, data, admin, before, resetPrompts+resetNotSame+resetPrompts, otherWord)
+	})
+	t.Run("a password that is refused", func(t *testing.T) {
+		data, admin, _, before, r := start(t)
+		r.answer(1, shortWord)
+		r.answer(2, shortWord)
+		r.answer(3, changedPassword)
+		r.answer(4, changedPassword)
+		succeeded(t, r, data, admin, before, resetPrompts+resetTooShort+resetPrompts, shortWord)
+	})
+	t.Run("three passwords that are refused", func(t *testing.T) {
+		data, _, logs, before, r := start(t)
+		for n := 1; n <= 6; n += 2 {
+			r.answer(n, shortWord)
+			r.answer(n+1, shortWord)
+		}
+		unchanged(t, r, data, logs, before, resetPrompts+resetTooShort+resetPrompts+resetTooShort+resetPrompts+resetTooShort+
+			"whiteroom account reset: no password was accepted in 3 tries\n", shortWord)
+	})
+	t.Run("three entries that are not the same", func(t *testing.T) {
+		data, _, logs, before, r := start(t)
+		for n := 1; n <= 6; n += 2 {
+			r.answer(n, changedPassword)
+			r.answer(n+1, otherWord)
+		}
+		unchanged(t, r, data, logs, before, resetPrompts+resetNotSame+resetPrompts+resetNotSame+resetPrompts+resetNotSame+
+			"whiteroom account reset: no password was accepted in 3 tries\n", changedPassword, otherWord)
+	})
+	t.Run("an interrupt at the prompt", func(t *testing.T) {
+		data, _, logs, before, r := start(t)
+		r.prompt(1)
+		r.cancel()
+		unchanged(t, r, data, logs, before, "New password for "+initLogin+": \nwhiteroom account reset: interrupted\n")
 	})
 }

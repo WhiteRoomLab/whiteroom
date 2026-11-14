@@ -31,6 +31,11 @@ const usage = `Usage:
   whiteroom doctor [flags] [SITE]
         look for what is wrong in the data directory, and in what it publishes
         if SITE is given, without changing anything
+  whiteroom account reset [flags] LOGIN
+        set a new password for the account with the login name LOGIN, for an
+        administrator who cannot log in; read from the standard input
+  whiteroom account delete [flags] ID
+        delete the account with the ID, also if its row cannot be read
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
@@ -38,7 +43,8 @@ const usage = `Usage:
         into the output directory
 
 Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
-"whiteroom backup -h", "whiteroom doctor -h", "whiteroom serve public -h" or
+"whiteroom backup -h", "whiteroom doctor -h", "whiteroom account reset -h",
+"whiteroom account delete -h", "whiteroom serve public -h" or
 "whiteroom serve admin -h" for the flags.
 `
 
@@ -88,6 +94,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runBackup(ctx, args[1:], e)
 	case "doctor":
 		return runDoctor(ctx, args[1:], e)
+	case "account":
+		return runAccount(ctx, args[1:], e)
 	case "serve":
 		return runServe(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
