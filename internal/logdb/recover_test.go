@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"slices"
@@ -901,5 +902,40 @@ func TestGenerations(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestReadFrom checks that readFrom allocates only what the file has, whatever end says.
+func TestReadFrom(t *testing.T) {
+	fsys := simfs.New(simDir)
+	setFile(t, fsys, "f", []byte("0123456789"))
+	f, err := fsys.Open("f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, c := range []struct {
+		off, end segOff
+		short    bool
+		want     string
+		eof      bool
+	}{
+		{off: 0, end: -1, want: "0123456789"},
+		{off: 4, end: -1, want: "456789"},
+		{off: 12, end: -1},
+		{off: 4, end: 8, want: "4567"},
+		{off: 4, end: 3},
+		{off: 12, end: 11},
+		{off: 4, end: 10, want: "456789"},
+		{off: 4, end: 11, eof: true},
+		{off: 4, end: 11, short: true, want: "456789"},
+		{off: 4, end: 1 << 50, eof: true},
+		{off: 4, end: 1 << 50, short: true, want: "456789"},
+		{off: 12, end: 1 << 50, short: true},
+	} {
+		b, err := readFrom(f, "f", c.off, c.end, c.short)
+		if string(b) != c.want || cap(b) != len(c.want) || errors.Is(err, io.ErrUnexpectedEOF) != c.eof || err != nil && !c.eof {
+			t.Errorf("readFrom(%d, %d, %v): %q with capacity %d, %v", c.off, c.end, c.short, b, cap(b), err)
+		}
 	}
 }

@@ -163,8 +163,9 @@ func (d *decoder) ckpObjects(h ckpHeader, own *owner) pmap[objLoc] {
 			seg := d.uvarint()
 			off, okOff := toInt64(d.uvarint())
 			size, okSize := toInt64(d.uvarint())
+			// An object in a record is no larger than a body. Open does not read the record to check it.
 			if d.reason == "" && (seg == 0 || seg > uint64(h.seg) || !okOff || off < segHeaderSize+8 || !okSize ||
-				size > math.MaxInt64-off) {
+				size > int64(maxBody) || size > math.MaxInt64-off) {
 				d.fail(fmt.Sprintf("bad location of object %x", hash[:]))
 			}
 			loc.seg, loc.off, loc.size = segNum(seg), segOff(off), size

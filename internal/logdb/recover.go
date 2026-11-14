@@ -725,16 +725,22 @@ func readRange(fsys vfs.FS, name string, off, end segOff, short bool) ([]byte, e
 // readFrom reads the bytes of f, the file at path p, from off up to end, or to its end if end is negative. If short,
 // a file that ends sooner gives the bytes that it has: a writer in another process may cut what it has not committed.
 func readFrom(f vfs.File, p string, off, end segOff, short bool) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := segOff(info.Size())
 	if end < 0 {
-		info, err := f.Stat()
-		if err != nil {
-			return nil, err
-		}
-		end = segOff(info.Size())
+		end = size
 	}
 	if end < off {
 		return nil, nil
 	}
+	// The file bounds what is allocated: head may name an end that the segment does not have.
+	if end > size && !short {
+		return nil, fmt.Errorf("%s: %w", p, io.ErrUnexpectedEOF)
+	}
+	end = max(off, min(end, size))
 	if end-off > math.MaxInt {
 		return nil, fmt.Errorf("%s: too large to read", p)
 	}

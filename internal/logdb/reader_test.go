@@ -535,6 +535,7 @@ func TestReaderHead(t *testing.T) {
 		{"an end inside the record", func(s *headSlot) { s.end -= 8 }},
 		{"an end before that of the reader", func(s *headSlot) { s.end = st2.end - 8 }},
 		{"an end after the file", func(s *headSlot) { s.end += 8 }},
+		{"an end that no file has", func(s *headSlot) { s.end = 1 << 50 }},
 		{"a later segment", func(s *headSlot) { s.seg++ }},
 		{"a later generation", func(s *headSlot) { s.gen++ }},
 	}
@@ -563,6 +564,12 @@ func TestReaderHead(t *testing.T) {
 		}
 	}
 	setHead(st3)
+	// An error of the Stat before the read up to head is not damage.
+	fsys.Inject(simfs.Fault{Match: on(simfs.OpLstat, seg1), Err: syscall.EIO, Times: 1})
+	var ce *CorruptError
+	if _, err := OpenReader(fsys, Options{}); !errors.Is(err, syscall.EIO) || errors.As(err, &ce) {
+		t.Errorf("OpenReader with a stat error: %v", err)
+	}
 	checkDump(t, rd, "1/a=1\n1/b=2\n1/c=3")
 	setFile(t, fsys, "head", make([]byte, headSize))
 	if err := view(); err == nil || err.Error() != simDir+"/head: corrupt: no valid slot" {
