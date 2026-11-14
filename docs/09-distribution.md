@@ -93,7 +93,7 @@
 | `trustedProxies` | 文字列の並び（IPアドレスか、CIDRの範囲） | `-trusted-proxy`（繰り返す） |
 
 - 値の決め方：フラグか引数を書けば、それ。なければ、設定ファイルの項目。なければ、本体の既定。数は、フラグを書いたかどうかで決める（`-workers 0` も、設定ファイルの `workers` に勝つ）。`-trusted-proxy` を1つでも書くと、`trustedProxies` は使わない。`-addr` と `-socket` は、書いたほうだけで決め、設定ファイルの `addr` と `socket` は見ない（下記の「`whiteroom serve admin`」）。
-- 相対パス：設定ファイルの中のパス（`data`・`site`・`theme`・`out`・`cache`・`socket`）は、そのファイルのディレクトリからのもの（`conf/whiteroom.yaml` の `data: data` は、`conf/data`）。絶対パスは、そのまま。フラグと引数の相対パスは、作業ディレクトリからのもの。
+- 相対パス：設定ファイルの中のパス（`data`・`site`・`theme`・`out`・`cache`・`socket`）は、そのファイルのディレクトリからのもの（`conf/whiteroom.yaml` の `data: data` は、`conf/data`）。絶対パスは、そのまま。`socket` の、`@` で始まる値も、そのまま（`serve admin` が断る。下記）。フラグと引数の相対パスは、作業ディレクトリからのもの。
 - どのコマンドが、どの項目を使うか（`○` が使う）：
 
 | 項目 | `init` | `build` | `serve admin` | `doctor` | `backup` | `account` |
@@ -105,7 +105,7 @@
 | `url` | ○（`SITE` があるとき） | ○ | ○ | ○（`SITE` があるとき） | | |
 | `addr`・`socket`・`origin`・`trustedProxies` | | | ○ | | | |
 
-- コマンドが使わない項目は、型だけを確かめる。そのため、1つの設定ファイルを、どのコマンドにも渡せる。
+- コマンドが使わない項目は、型と、値の範囲（文字列が空でないこと、`workers`・`memory` の範囲）だけを確かめる。そのため、1つの設定ファイルを、どのコマンドにも渡せる。
 - 誤り：知らない項目、型の誤り（`workers: many`・文字列でない `addr` など）、範囲の外の値、空の文字列、空のファイル、YAMLの誤り、1MiBを超えるファイル、読めないファイルは、問題を標準エラーに示して、2で終わる（使い方の文は示さず、何も作らない）。問題の行は `FILE:行:列: /項目: 理由` で、値は理由に入れない（`bad.yaml:2:1: /workers: must be an integer of 0 or more`・`bad.yaml:3:1: /colour: unknown item`）。YAMLの誤りは `FILE:行:列: 理由`、読めないファイルは `whiteroom build: open nope.yaml: no such file or directory` の形。`addr` と `trustedProxies` の値の誤りと、`addr` と `socket` の両方は、`serve admin` が使うときに確かめるので、行と列の無い形で、`addr` と `trustedProxies` の誤りの行には、その値が入る（待ち受けのアドレスで、秘密ではない。`badaddr.yaml: /addr: "0.0.0.0:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`・`both.yaml: addr and socket are both given: give one of them, as the server listens on one`）。
 - 書けないもの：実行のたびに変わる値（`-login`・`-name`・`-email`・`DEST`・`RELEASE`・`ID`・`LOGIN`・`-heads`）と、秘密（パスワードとトークン。下記の「秘密」）。秘密を書く項目は無いので、ファイルのモードと持ち主は、確かめない。
 - 設定ファイルに `data` があると、`whiteroom build -config FILE` は、保存先からビルドする（下記の「保存先からの `whiteroom build`」）。サイトのディレクトリからビルドするときは、`-config` を渡さない（項目を消すフラグは無い）。残りの論点（既定の場所・環境変数・版の項目・ファイルのモードなど）は6.12の255。
@@ -122,14 +122,14 @@
 - 確かめ：サイト設定の `url` と同じ規則（6.6.8）で確かめ、正規化はしない。通らなければ、2で終わり、標準エラーに1行だけ示す（使い方の文は示さず、値も入れない）：`whiteroom build: -url is not a valid site URL: must not end with "/"`・`whiteroom <コマンド>: url of the config file is not a valid site URL: <理由>`。ビルドは、出力先とキャッシュを作る前に、`serve admin` は、待ち受ける前に、確かめる。
 - 変わるもの：ビルドが書く絶対URL（`<head>` の正規URL・言語の対応・フィード・サイトマップ・OGP。6.8）、公開するパスの基点（`https://example.com/blog` のサイトなら `/blog`。6.6.8）、リダイレクトの行き先がサイトの中かどうかの判断（自分に戻るもの・ループ。6.6.6・6.6.8）、リリースの名前（4.3）。保存の操作（`serve admin` の API が保存する文書）の検証と、`doctor`・`init` の検証も、上書きしたURLで動く。
 - 変わらないもの：保存してある設定の文書。管理のAPIの `GET /api/settings` は、保存してある `url` を返し、`PUT /api/settings` は、書かれた `url` を保存する。サーバーは、上書きしたURLで、ビルドし続ける。文書の中に書いた絶対URL（リダイレクトの `to`、著者のリンクなど）も変わらない：本番のURLで書いたリダイレクトは、上書きの下では、サイトの外へのリダイレクトになる（ステージングのサイトから、本番へ転送する）。サイトのURLのパスについての警告（NginxとApacheの設定に書けないパス。6.6.6）の場所は、上書きしても、設定の文書の `/url`。
-- `doctor` と `init` は、`SITE` があるときだけ使う（`SITE` なしの `-url` は、使い方の誤り。設定ファイルの `url` は、`SITE` が決まらなければ見ない）。`backup`・`account` は、設定ファイルの `url` を、型だけ確かめる。
+- `doctor` と `init` は、`SITE` があるときだけ使う（`SITE` なしの `-url` は、使い方の誤り。設定ファイルの `url` は、`SITE` が決まらなければ見ない）。`backup`・`account` は、設定ファイルの `url` を、型と、空でないことだけ確かめる。
 - 用途：同じ保存先（か、その写し）から、本番とステージングのサイトを作る（下記の「設定の例」）。同じ文書と同じ上書きなら、同じ名前のリリースができる（写しから戻した保存先でも）。上書きしたURLを、管理のAPIと管理画面で示すことは、まだ無い（6.12の256）。
 
 **パスワードの入力**
 
 - パスワードは、標準入力だけから読む（`init`・`account reset`）。引数・フラグ・環境変数・設定ファイルでは受け取らない（シェルの履歴と `ps` に残るため）。読んだパスワードは、標準出力・標準エラー・ログ・エラーの文に出さない（下記の「秘密」）。パスワードの規則（長さなど）は7.3。
-- 端末（Linux）：促しを標準エラーに書き（`init` は `Password: ` と `Password (again): `。`account reset` は `New password for LOGIN: ` と `New password for LOGIN (again): `）、エコーを止めて読む。2回が合わなければ、聞き直す。パスワードの問題（短すぎるなど）も、聞き直す。聞くのは、合わせて3回まで（`no password was accepted in 3 tries`）。止める合図（Ctrl-C）で、端末の設定を戻して、終わる。端末の設定は、標準ライブラリの `syscall` の `ioctl` で変える（外部のモジュールは使わない。1.2）。
-- パイプとファイル（端末でない標準入力）：最初の1行（行末の `\n` か `\r\n` は除く。8192バイトまで）。空の行は `no password was read from the standard input`、長すぎる行は `the password is longer than 8192 bytes` で、1で終わる。聞き直さず、パスワードの問題は、1行で示して、1で終わる（`whiteroom init: the password: too short: 6 characters (min 15)`）。パスワードは、端末で打つか、権限0600のファイルを標準入力に渡す（`< FILE`）。
+- 端末（Linux）：促しを標準エラーに書き（`init` は `Password: ` と `Password (again): `。`account reset` は `New password for LOGIN: ` と `New password for LOGIN (again): `）、エコーを止めて読む。2回が合わなければ、聞き直す。パスワードの問題（短すぎるなど）も、聞き直す。聞くのは、合わせて3回まで（`no password was accepted in 3 tries`）。止める合図（Ctrl-C）で、端末の設定を戻して、終わる（Ctrl-\・Ctrl-Z では、戻さない。6.12の265）。端末の設定は、標準ライブラリの `syscall` の `ioctl` で変える（外部のモジュールは使わない。1.2）。
+- パイプとファイル（端末でない標準入力）：最初の1行（行末の `\n` か `\r\n` は除く。8192バイトまで）。空の行は `no password was read from the standard input`、長すぎる行は `the password is longer than 8192 bytes` で、1で終わる。聞き直さず、パスワードの問題は、1行で示して、1で終わる（`whiteroom init: the password: too short: 6 characters (min 15)`）。行が来る前に、止める合図（SIGINT・SIGTERM）が来たら、待たずに、`interrupted` を示して、1で終わる。パスワードは、端末で打つか、権限0600のファイルを標準入力に渡す（`< FILE`）。
 - Linuxのほかの OS の端末からは、読まずに断る（`cannot read a password without echo from a terminal on this OS: give it on the standard input from a pipe or a file`）。パイプとファイルは使える（6.12の253）。
 
 **`whiteroom build`**
@@ -235,7 +235,7 @@ whiteroom init [-config FILE] [-data DIR] -login LOGIN -name NAME -email ADDRESS
 - 作るもの：`DATA/logdb/` と `DATA/files/`（ディレクトリ0700。3.4）と、ロールが admin の最初の管理者（パスワードつき。`account.CreateFirst`）。`SITE` があれば、その文書とメディアの原本を、最初の管理者が取り込んだものとして保存する（`edit.ImportWith`。設定の文書も）。作るのは、これだけ：既定のテーマも、スキーマのファイルとテーマの雛形も作らない（6.12の69）。`SITE` を書かなかった保存先は、設定の文書が無いので、管理のAPIで最初の設定を保存する（`PUT /api/settings`。9.7）まで、サイトをビルドできない。
 - 確かめる順（先に確かめるのは、聞いても使えないパスワードを、聞かないため）：(1) フラグと引数（`-login`・`-name`・`-email` のどれかが無い・空、引数が2つ以上、`SITE` の無い `-theme`・`-url`。2）、(2) 設定ファイル（2）、(3) データのディレクトリが決まること（2）と、`-url`（2）、(4) `DATA` が無いか、空のディレクトリであること（1。`whiteroom init: data: not empty; the data directory must be missing or an empty directory`）、(5) `SITE` を開くこと（スキーマのファイル・サイト設定・テーマ。1）、(6) パスワードを読む（上記の「パスワードの入力」）、(7) `DATA` をもう一度見る（その間に、別のプロセスが作っていたら、何も消さずに、1で断る）、(8) 保存先を作り、管理者を作り、`SITE` を取り込み、閉じる。ログイン名・表示名・メールアドレスとパスワードの問題は、管理者を作るときに分かるので、パスワードを読んだ後に、1行ずつ示す（`whiteroom init: -email: …`・`whiteroom init: the password: …`。端末では、パスワードの問題だけのときに、聞き直す。6.12の263）。
 - 標準出力：成功したら、`created the data directory DATA`・`created the administrator LOGIN (ID)`、`SITE` があれば、`imported the site SITE`。標準エラー：取り込みの警告（ビルドの警告と同じ形。ファイルは、作業ディレクトリからのパス）。
-- 失敗したとき：保存先を作った後の失敗（取り込みの問題・取り消し・書き込みの失敗）は、この実行が作った `DATA/logdb/` と `DATA/files/`、と、この実行が作ったものなら `DATA` を消して、1で終わる（作る前に無かった親のディレクトリは、残す。`DATA` の中の、ほかのものは消さない）。
+- 失敗したとき：保存先を作った後の失敗（取り込みの問題・取り消し・書き込みの失敗）は、この実行が作った `DATA/logdb/` と `DATA/files/`、と、この実行が作ったものなら `DATA` を消して、1で終わる（作る前に無かった親のディレクトリは、残す。`DATA` の中の、ほかのものは消さない）。強制終了（SIGKILL・2回目のCtrl-C・電源の断）では、後始末が動かず、`DATA/logdb/` と `DATA/files/` が残る。次の `whiteroom init` は、空でないとして断るので、`DATA` を手で消してから、やり直す（6.12の263）。
 - 記録：保存先を作る `store.create`（`system`）、管理者を作る `account.createFirst`（`system`）、取り込む `site.import`（最初の管理者）（7.4）。
 - 秘密：パスワードは、標準入力だけ。`-login`・`-name`・`-email` は、引数なので、`ps` に見える（秘密ではないが、個人の情報）。
 
@@ -262,17 +262,17 @@ whiteroom serve admin [-config FILE] [-data DIR] [-addr ADDR | -socket PATH] [-o
 
 - 待ち受け：loopbackのTCP（`-addr`）か、Unixドメインソケット（`-socket`）の、どちらか1つ（1つのプロセスは、両方では待ち受けない。6.12の254）。サーバーは、TLSを終えない（9.6）。
   - TCP：`IPアドレス:ポート` で、アドレスは `127.0.0.0/8` か `[::1]` だけ。ホストの名前（`localhost` も。別のアドレスに解決されることがあるため）、空のホスト（`:8081`）、loopbackでないアドレス（`0.0.0.0`・`192.0.2.1`）は、2で断る（`whiteroom serve admin: -addr "0.0.0.0:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`）。平文のhttpを、ネットワークに出さないため。ポートの `0` は、OSが選ぶ。
-  - ソケット：ファイルを、モード0660で作り（作った後に `chmod` する。6.12の254）、止めるときに消す。パスは、Linuxで107バイトまで（長いと、断る文に、そのことを書く）。`@` で始まるパスは断る（Linuxでは、ファイルの無い抽象ソケットになるため。ファイルの名前が `@` で始まるときは、`./` を付ける）。パスにソケットでないものがあれば、そのまま残して、1で断る。ソケットのファイルがあれば、繋いでみて、繋がれば断り（動いているサーバーがある）、`connection refused` なら、止まったプロセスが残した古いものとして、消して作る（ほかのエラーは断る）。`-socket ""` は使い方の誤り。
+  - ソケット：ファイルを、モード0660で作り（作った後に `chmod` する。6.12の254）、止めるときに消す。パスは、Linuxで107バイトまで（長いと、パスにあるものを見る前に、断る：`listen unix PATH: the path of a socket has at most 107 bytes, and this one has 108`）。`@` で始まるパスは断る（Linuxでは、ファイルの無い抽象ソケットになるため。ファイルの名前が `@` で始まるときは、`./` を付ける。設定ファイルの `socket` も同じで、`@` で始まる値は、そのファイルのディレクトリを付けずに、断る）。パスにソケットでないものがあれば、そのまま残して、1で断る。ソケットのファイルがあれば、繋いでみて、繋がれば断り（動いているサーバーがある）、`connection refused` なら、止まったプロセスが残した古いものとして、消して作る（ほかのエラーは断る）。`-socket ""` は使い方の誤り。
   - 決め方：`-addr` と `-socket` の両方を書くのは、使い方の誤り（2）。どちらかを書けば、そのほうだけで決まり、設定ファイルの `addr` と `socket` は見ない。どちらも書かず、設定ファイルに両方あるのは、設定ファイルの誤り（2）。どこにも無ければ、`127.0.0.1:8081`。
 - オリジン：`-origin`、設定ファイルの `origin`、TCPのときだけ `http://` と実際に待ち受けたアドレス（既定なら `http://127.0.0.1:8081`）、の順。ソケットには、オリジンを作れるアドレスが無いので、書かないと、2で終わる。リバースプロキシの背後では、TCPでも、公開する `https` のオリジンを書く。オリジンと待ち受けが合うかは、確かめない。オリジンの形（`https`か、localhostのhttp。9.6）は、起動のときに `internal/admin` が確かめ、断れば1で終わる（`whiteroom serve admin: admin: invalid origin "http://example.com": use https, or http on localhost`）。
 - 信頼するプロキシ：`-trusted-proxy` は省ける。ソケットから来た接続は、いつも、信頼するプロキシとして扱う（9.6）ので、ソケットのときに書くのは、`X-Forwarded-For` の中の、その先のプロキシだけ。TCPで、リバースプロキシの背後なら、そのプロキシのアドレス（同じマシンなら `127.0.0.1`）を書く。書かないと、すべてのクライアントが、プロキシの1つのアドレスとして数えられ、試行の制限とログイン履歴が、クライアントを区別できない（9.6の「設定の責務」）。コマンドは、待ち受けから、信頼するプロキシを足さない。フラグを書くと、設定ファイルの並びは使わない。すべてのアドレスを含む範囲（`0.0.0.0/0`）は、2で断る。
 - 警告：オリジンが `https` で、待ち受けがTCPで、信頼するプロキシが1つも無いと、起動のときに、標準エラーに1行示す（`whiteroom serve admin: warning: the origin is https, but no trusted proxy is given: behind a reverse proxy every client counts as the proxy; give its address with -trusted-proxy, or trustedProxies in the config file`）。ソケットのときは、示さない。
 - 起動の順（失敗したら、そこで止め、開いたものを閉じて、1で終わる。フラグと設定ファイルの誤りは2）：フラグと設定ファイル → `SITE` のスキーマのファイルとテーマ → データのディレクトリ（書き手のロック。別のプロセスが持っていれば、約2秒待って、`whiteroom serve admin: data/logdb: another process holds the writer lock` で失敗する。そのプロセスの待ち受けには、触らない）→ 待ち受け → アカウント → `Publisher` → サーバー。
-- 起動の行：待ち受けを始めたら、標準出力に1行（`serving admin of DATA at ORIGIN (listening on ADDR)`。ソケットは `(listening on socket PATH)`）。`ADDR` は実際に待ち受けたアドレス（ポート `0` は、決まった番号）。`PATH` は、フラグか設定ファイルの値のまま（設定ファイルの相対パスは、そのファイルのディレクトリからのもの）。
+- 起動の行：待ち受けを始めたら、標準出力に1行（`serving admin of DATA at ORIGIN (listening on ADDR)`。ソケットは `(listening on socket PATH)`）。`ORIGIN` は、サーバーが `Origin` ヘッダーと比べる形（ブラウザーが送る形にそろえたもの。9.6）で、書いた値と違うことがある（`-origin HTTPS://Admin.Example.COM/` は `https://admin.example.com`、`-addr 127.0.0.1:80` だけなら `http://127.0.0.1`）。`curl` などの `Origin` には、この行のものを書く。`ADDR` は実際に待ち受けたアドレス（ポート `0` は、決まった番号）。`PATH` は、フラグか設定ファイルの値のまま（設定ファイルの相対パスは、そのファイルのディレクトリからのもの）。
 - 起動のビルド：起動したら、保存先のいまの内容のビルドを始める（4.4）。ビルドの結果は、標準出力に書かない（管理のAPIの `GET /api/builds` で読む。9.7）。`whiteroom build -data` を、動いているサーバーの横で動かすときは、サーバーとは別の `-out` と `-cache` を渡す（6.12の104。下記の「保存先からの `whiteroom build`」）。
 - 標準エラーに書くもの：(1) 上記の警告。(2) エラーのログ（日時つきの行）：サーバーのエラー、信頼しない相手の `X-Forwarded-For`（9.6の「記録」）、`the record of <操作> was not written: …`、`cannot record login.suppressed: …`、`closing the data directory: …`、鎖の頭を読めない・書けない（`cannot read the heads of the audit logs: …`・`cannot write the head of the <ログ> log: …`）。(3) 鎖の頭の行（日時なし。7.4）：`audit head <ログ> <番号> sha256:<16進数>`。起動のとき（記録のあるログのすべて）、1分ごと（変わったものだけ）、止めるときに書く。標準エラーを journald などに残して、保存先の外の頭にする（`whiteroom doctor -heads`で照らす。下記。6.12の236）。起動の頭は、HTTPのサーバーと同時に書き出すので、最初のリクエストの後に書かれることがある。書けなくても、サーバーは止めず、終了コードも変わらない。
 - 1分ごとの仕事：数えただけで、まだ書いていないログインの失敗（7.4の `login.suppressed`。6.12の235）を書き（`FlushSuppressed`）、その後に、鎖の頭を書き出す。止めるときにも、1回ずつ行う。
-- 止める：Ctrl-C（SIGINT）か SIGTERM で、次の順に止める：(1) HTTPのサーバー（待ち受けを閉じる。ソケットのファイルも、ここで消える。処理中のリクエストが終わるのを10秒まで待つ。終わらないものは、接続を閉じる）、(2) `Publisher`（動いているビルドは、取り消す）、(3) 1分ごとの仕事（数えたログインの失敗を、最後に書く。5秒まで）、(4) 鎖の頭の最後の書き出し（5秒まで。すべての記録を含む）、(5) データのディレクトリを閉じる。0で終わる。2回目のシグナルでは、待たずに、すぐに終わる。HTTPのサーバーか `Publisher` が、自分で失敗したときも、同じ順に止めて、エラーを示し、1で終わる。強制終了（SIGKILL・電源の断）では、最後の1分の頭と、数えたログインの失敗を失い、ソケットのファイルが残る（次の起動が、古いものとして置き換える）。
+- 止める：Ctrl-C（SIGINT）か SIGTERM で、次の順に止める：(1) HTTPのサーバー（待ち受けを閉じる。ソケットのファイルも、ここで消える。処理中のリクエストが終わるのを10秒まで待つ。終わらないものは、接続を閉じる）、(2) `Publisher`（動いているビルドは、取り消す）、(3) 1分ごとの仕事（数えたログインの失敗を、最後に書く。5秒まで）、(4) 鎖の頭の最後の書き出し（5秒まで。すべての記録を含む）、(5) データのディレクトリを閉じる。0で終わる。2回目のシグナルでは、待たずに、すぐに終わる。HTTPのサーバーか `Publisher` が、自分で失敗したときも、同じ順に止めて（処理中のリクエストも、同じに待つ）、エラーを示し、1で終わる。強制終了（SIGKILL・電源の断）では、最後の1分の頭と、数えたログインの失敗を失い、ソケットのファイルが残る（次の起動が、古いものとして置き換える）。
 - 同じ `DATA` を開く2つ目のサーバーは、書き手のロックで失敗する（上記）。`whiteroom account reset`・`account delete` も、同じロックで、サーバーが動いている間は動かない。`whiteroom backup`・`doctor`・`build -data` は、読み手なので、動いていてもよい。
 - 記録：書くプロセスとして、管理のAPIの操作（ログイン履歴とアクティビティログ。7.4）と、ビルドの結果を、保存先に足す。コマンド自身は、表の版が古い保存先を開いたときの更新の記録（`store.upgrade`。3.4）のほかは、足さない。
 - 秘密：コマンドは、パスワードもトークンも扱わない（標準入力は読まない）。セッションのトークンは、管理のAPIの `Set-Cookie` だけで渡り、招待と再設定のトークンは、管理のAPIの答えの本文だけにある（9.6・9.7）。標準エラーに書く鎖の頭は、秘密ではない（上記）。
@@ -298,10 +298,10 @@ whiteroom build -data DIR [-config FILE] [-out DIR] [-cache DIR] [-theme DIR] [-
 whiteroom rollback OUT [RELEASE]
 ```
 
-出力先 `OUT` の公開中のリリースを、残っているリリース `RELEASE` に切り替える（`OUT/current` を変える。4.4の「戻す操作」）。`RELEASE` は、`whiteroom build` か `whiteroom serve admin` が作った名前。省くと、公開中でないリリースが、ただ1つのとき、それ（2つ以上あれば、名前を挙げて、`RELEASE` を求め、無ければ、`no release to roll back to: no other release is left`。どちらも1）。ビルドは、置き換えたリリースを残す（4.3）ので、戻した後に、もう一度戻すと、元に戻る。
+出力先 `OUT` の公開中のリリースを、残っているリリース `RELEASE` に切り替える（`OUT/current` を変える。4.4の「戻す操作」）。`RELEASE` は、`whiteroom build` か `whiteroom serve admin` が作った名前。省くと、公開中のリリースがあって、公開中でないリリースが、ただ1つのとき、それ（2つ以上あれば、名前を挙げて、`RELEASE` を求め、無ければ、`no release to roll back to: no other release is left`。公開中のリリースが無いときは、残っているリリースが1つでも、名前を挙げて、`RELEASE` を求める：`no release is published, so there is no release to go back to: give RELEASE, one of …`。どれも1）。ビルドは、置き換えたリリースを残す（4.3）ので、戻した後に、もう一度戻すと、元に戻る。
 
 - データのディレクトリを開かず、設定ファイルを読まない。ビルドも、`Publisher` も通さない：記録（`release.rollback`。7.4）を足さず、動いている `whiteroom serve admin` の自動のビルドも、止めない。そのサーバーは、次のビルドで、戻したリリースを置き換える。止めて戻すのは、管理のAPI（`POST /api/releases/{name}/rollback`。9.7）。コマンドの操作を、記録するか、は6.12の240。
-- 出力：切り替えたら、標準出力に `rolled back to release NAME in OUT (was BEFORE)`（公開中のものが無かったときは、`(was …)` なし）と、標準エラーに、動いているサーバーが置き換えることの警告を1行（`whiteroom rollback: warning: a running whiteroom serve admin replaces this release in its next build; to keep it, roll back through the admin API, POST /api/releases/{name}/rollback, which stops the builds until they are resumed`）。すでに公開中なら、`release NAME in OUT is already published` だけで、0。
+- 出力：切り替えたら、標準出力に `rolled back to release NAME in OUT (was BEFORE)`（公開中のものが無かったときは、`(was …)` なし）と、標準エラーに、動いているサーバーが置き換えることの警告を1行（`whiteroom rollback: warning: a running whiteroom serve admin replaces this release in its next build; to keep it, roll back through the admin API, POST /api/releases/{name}/rollback, which stops the builds until they are resumed`）。すでに公開中なら、`release NAME in OUT is already published` だけで、0。`BEFORE` と、省いた `RELEASE` の選び方は、出力先のロックを取る前に見た一覧によるので、その間に、別のビルドが公開すると、`BEFORE` が、切り替える直前のリリースでないことがある（切り替えは正しい。6.12の264）。
 - 失敗（1）：`OUT` が無い、リリースの名前が正しくない（16桁の16進数でない。`invalid release name "x"`）、そのリリースが `OUT` に残っていない、`OUT` を別のビルドか戻す操作が使っている（待たずに断る）。`OUT` を書かないことと、引数が3つ以上は、使い方の誤り（2）。
 - `whiteroom serve public` が `OUT` を配信していれば、戻した後の最初のリクエストから、戻したリリースを配信する（9.5）。
 
@@ -316,9 +316,9 @@ whiteroom backup [-config FILE] [-data DIR] DEST
 - 動き：データのディレクトリを、読み手として開き、始めたときの、最後の永続的なコミットまでを写す（`store.Backup`。3.4・3.5の「保守モード」）。動いている `whiteroom serve admin` が、その間も書き続けてよく、コマンドは、データのディレクトリに何も書かない。写しは、データのディレクトリと同じ形（`logdb/` と `files/`）で、表の版も、エンジンの形の版も、そのまま（3.4の「表の版」のとおり、同じ版か、後の版の本体で開ける）。写しも1つのデータのディレクトリなので、`whiteroom build -data`・`whiteroom doctor`・`whiteroom serve admin` が、そのまま開ける。
 - 入るもの：文書・履歴・リビジョン・原本・アカウント・セッション・ログイン履歴とアクティビティログ（パスワードのハッシュ、セッションのハッシュ、アドレスとログイン名などの個人の情報も）。入らないもの：出力先・画像のキャッシュ・スキーマのファイルとテーマ（開発者のファイル。Gitなどで持つ。6.6.8）・外に書き出した鎖の頭。そのため、写しは、データのディレクトリと同じに守る（ディレクトリ0700・ファイル0600。3.4）。置き場所・世代・暗号化は、使う人が決める（6.12の258）。
 - 標準出力：`backed up DATA to DEST`、続けて、写しの鎖の頭を、記録のあるログごとに1行（`audit head <ログ> <番号> sha256:<16進数>`。最初の行は頭ではない）。頭は、個人の情報を持たない。写しとは別の場所に残す（戻した後の `whiteroom doctor -heads` に渡す。下記）。標準エラーには、何も書かない。
-- 失敗：`DEST` が、データのディレクトリそのもの・その中・空でないディレクトリ・ディレクトリでないもの、親が無い、データのディレクトリが無い・`logdb/` か `files/` が無い（シンボリックリンクは不可）ときは、何も作らずに、1で終わる（`whiteroom backup: data-e: DEST is the data directory`・`whiteroom backup: backup1: not empty; DEST must be missing or an empty directory`）。`DEST` を作った後の失敗（読めない原本・取り消し）は、この実行が作ったものだけを消して、1で終わる。`DEST` を書かない・2つ以上書く・データのディレクトリを決めないのは、使い方の誤り（2）。
+- 失敗：`DEST` が、データのディレクトリそのもの・その中・空でないディレクトリ・ディレクトリでないもの、親が無い、データのディレクトリが無い・`logdb/` か `files/` が無い（シンボリックリンクは不可）ときは、何も作らずに、1で終わる（`DEST` とデータのディレクトリは、シンボリックリンクと `..` を、OSと同じ順に解いてから比べる。`whiteroom backup: data-e: DEST is the data directory`・`whiteroom backup: backup1: not empty; DEST must be missing or an empty directory`）。`DEST` を作った後の失敗（読めない原本・取り消し）は、この実行が作ったものだけを消して、1で終わる。`DEST` を書かない・2つ以上書く・データのディレクトリを決めないのは、使い方の誤り（2）。
 - 表の版が6より前の保存先は、写せない（監査の記録が無く、写しの頭を読めないため。写しは消えて、1で終わる）。先に、`whiteroom serve admin` で1度開く（開くと、表の版が上がる。3.4）。
-- 記録：保存先にも写しにも、記録（7.4の操作 `backup`）を足さない。読み手のプロセスは、保存先に書けないため（6.12の234）。残りの論点（世代・圧縮・暗号化・`Check` を動かさないこと・親のディレクトリの項目を同期しないこと）は6.12の258。
+- 記録：保存先にも写しにも、記録（7.4の操作 `backup`）を足さない。読み手のプロセスは、保存先に書けないため（6.12の234）。残りの論点（世代・圧縮・暗号化・`Check` を動かさないこと・親のディレクトリの項目を同期しないこと・同じ `DEST` に、同時に書くプロセスがあるときの後始末）は6.12の258。
 - 写しの確かめ：`whiteroom doctor -data DEST`（下記）。`backup` は、写しを確かめない。写しから同じ名前のリリースをビルドできることは、テストが確かめる（`cmd/whiteroom` の `TestBackupBuildsSameRelease`。10章）。
 
 戻す手順（写しから戻すコマンドは無い。写しを、データのディレクトリの場所に置くこと。3.5の「移行・バックアップ・リストアの条件」）：
@@ -328,7 +328,7 @@ whiteroom backup [-config FILE] [-data DIR] DEST
 3. `whiteroom doctor -data data -heads HEADS SITE` で確かめる（`HEADS` は、`backup` が標準出力に書いた頭の行のファイル。それより前に書き出した頭を、足してもよい）。問題が無ければ（0）、次へ進む。
 4. サーバーを起動する。
 
-戻した後に起こること：写しは、取ったときの保存先そのものなので、アカウントとセッションの行も、写しのときに戻る（2026-11-14に、この順で、実際に動かして確かめた）。
+戻した後に起こること：写しは、取ったときの保存先そのものなので、アカウントとセッションの行も、写しのときに戻る（2026-11-14に、この順で、実際に動かして確かめた：ログアウトで終えたセッション、写しの後に作ったセッション、パスワードの変更、無効化。ほかの場合も、同じ理由で、そうなる）。
 
 - 写しの後に終えたセッション（ログアウト・再設定・無効化で終えたもの）は、期限の中なら、また使える。写しの後に作ったセッションは、無い（ログインし直す）。
 - 写しの後に変えたパスワードは、写しのときのものに戻る（新しいパスワードでは、ログインできない）。
@@ -379,7 +379,7 @@ whiteroom account delete [-config FILE] [-data DIR] ID
 
 アカウントの復旧のための、サーバー上のコマンド（7.3。システム `account.System` として動かす）。`-config` と `-data` は、ほかのコマンドと同じ。データのディレクトリを、書くプロセスとして開くので、`whiteroom serve admin` を止めてから動かす。動いていると、約2秒待って、`whiteroom account reset: data/logdb: another process holds the writer lock` と、サーバーを止めることと、管理のAPIで同じことができること（`POST /api/accounts/{id}/reset`・`DELETE /api/accounts/{id}`。別の管理者がログインできるとき）を言う1行を示して、1で終わる。
 
-- `reset LOGIN`：ログイン名が `LOGIN` のアカウントに、新しいパスワードを決める。パスワードは、標準入力だけから読む（上記の「パスワードの入力」。促しは `New password for LOGIN: `）。パスワードは、先に `account.CheckPassword` で確かめる。アカウントを再設定して（パスワードを消し、セッションをすべて終える）、続けて、そのパスワードを設定する（再設定のトークンは、プロセスの中だけで使い、出力しない）。アカウントは、有効になる。最後の有効な管理者・招待されたままで、パスワードの無いアカウント・2つの手順の間で切れたアカウントにも使える。無効のアカウントは断る（`the account X (ID) is disabled: enable it first, with the admin API`）。読めない行が1つでもあれば、その ID を言って、止まる（`delete it with: whiteroom account delete -data DATA ID`）。2つ目の手順に失敗すると、アカウントにパスワードが無いので、もう一度動かす（`the account X has no password now: run the command again`）。成功したら、標準出力に `reset the password of LOGIN (ID)`。記録は、`account.reset`（`system`）と `account.setPassword`（そのアカウント）。終わったセッションは、ログイン履歴の `session.end`（7.4）。
+- `reset LOGIN`：ログイン名が `LOGIN` のアカウントに、新しいパスワードを決める。パスワードは、標準入力だけから読む（上記の「パスワードの入力」。促しは `New password for LOGIN: `）。パスワードは、先に `account.CheckPassword` で確かめる。アカウントを再設定して（パスワードを消し、セッションをすべて終える）、続けて、そのパスワードを設定する（再設定のトークンは、プロセスの中だけで使い、出力しない）。アカウントは、有効になる。最後の有効な管理者・招待されたままで、パスワードの無いアカウント・2つの手順の間で切れたアカウントにも使える。無効のアカウントは断る（`the account X (ID) is disabled: enable it first, with the admin API`）。読めない行が1つでもあれば、その ID を言って、止まる（`delete it with: whiteroom account delete -data DATA ID`。`DATA` は、空白などがあれば、シェルに貼れるように、`'…'` で囲む）。2つ目の手順に失敗すると、アカウントにパスワードが無いので、もう一度動かす（`the account X has no password now: run the command again`）。成功したら、標準出力に `reset the password of LOGIN (ID)`。記録は、`account.reset`（`system`）と `account.setPassword`（そのアカウント）。終わったセッションは、ログイン履歴の `session.end`（7.4）。
 - `delete ID`：IDのアカウントを消す。読めない行（`reset` が名指しする `accounts "usr_…": invalid value`）は、その行だけを先に読み、ほかの行を読まずに消す。ほかのアカウントは、アカウントの規則（7.3の「無効と削除」）のとおり（最後の有効な管理者は消せない）。セッションは終わる。文書は変わらない（作った人・保存した人の記録は残る）。標準入力は読まない。成功したら、標準出力に `deleted account ID (LOGIN)`（読めない行は `deleted account ID (its row could not be read)`）。記録は `account.delete`（`system`）。
 - アカウントの一覧を示すコマンドは無い（ログイン名は、管理のAPIの `GET /api/accounts` で見る。6.12の261）。
 - 失敗（1）：アカウントが無い（`whiteroom account reset: no account has the login name "nobody"`）、書き手のロックを取れない、`delete` の ID が無い（`accounts "usr_…": not found`）。使い方の誤り（2）：`LOGIN`・`ID` が無い・2つ以上、データのディレクトリを決めていない。
@@ -402,7 +402,7 @@ whiteroom account delete [-config FILE] [-data DIR] ID
 
 **設定の例**
 
-設定ファイルと `location` は、2026-11-14に、Linuxで、以下の形のとおり（パスだけを、手元のものに替えて）動かして確かめた（「例」の出力は、そのときのもの）。確かめたNginxは1.30.6（root でないユーザー、127.0.0.1の空いたポート、httpで、`location` だけを置いたもの）。TLS（`listen 443 ssl` と証明書）の設定は、書かない（9.3・9.6）。SSHのポート転送は、書き方をマニュアルで確かめただけで、動かしていない。
+設定ファイルと `location` は、2026-11-14に、Linuxで、以下の形のとおり（パスだけを、手元のものに替えて）動かして確かめた（「例」の出力は、そのときのもの。ステージングの設定ファイルは、`socket` と `origin` を除いた形で、`doctor`・`build` に渡し、その出力先で `rollback` を動かして確かめた。`serve admin` に `url` を渡す形は、テスト `TestServeAdminURL` が確かめる）。確かめたNginxは1.30.6（root でないユーザー、127.0.0.1の空いたポート、httpで、`location` だけを置いたもの）。TLS（`listen 443 ssl` と証明書）の設定は、書かない（9.3・9.6）。SSHのポート転送は、書き方をマニュアルで確かめただけで、動かしていない。
 
 - Unixユーザーと、権限（9.2の分け方のとおり）：管理用のユーザー（例：`whiteroom`）が、`init`・`serve admin`・`backup`・`doctor`・`account`・保存先からの `build` を動かす。データのディレクトリ（ディレクトリ0700・ファイル0600。3.4）は、そのユーザーだけのもの。出力先は、管理用のユーザーが、umask 022 で書き（ディレクトリ0755・ファイル0644。4.3）、公開用のユーザー（`whiteroom serve public` を動かすユーザーか、Nginx のユーザー）が読む。umask が 022 より厳しいと、出力先のモードが狭くなり、公開用のユーザーが読めない。公開用のサーバー（9.5）は、出力先だけを読み、保存先は開かない。
 - 設定ファイル（本番）。`socket` は、管理用のユーザーだけが書けるディレクトリに置く：
@@ -457,10 +457,10 @@ whiteroom account delete [-config FILE] [-data DIR] ID
 
     `trustedProxies` を書かないと、起動のときに警告が出て、すべてのクライアントが、127.0.0.1（Nginx）として数えられる（2026-11-14に確かめた）。
   - どちらを選ぶか：loopbackのポートには、同じマシンのどのユーザーのプロセスも繋げる（ソケットのような、ファイルの権限が無い）。127.0.0.1 を信頼していると、そのプロセスは、`X-Forwarded-For` を偽って、クライアントごとの枠を逃れ、ログイン履歴に、偽ったアドレスを残せる（操作には、ログインが要る。9.6の「設定の責務」）。そのため、ほかのユーザーのいるマシンでは、ソケットを使う。別のマシンやコンテナのリバースプロキシから、TCPで繋ぐことは、できない（loopbackでないアドレスは、断る。6.12の254）。
-  - 確かめたこと（2026-11-14。Nginx 1.30.6。同じマシンで、`curl --interface 127.0.0.2` から）：どちらの形でも、ログインして `GET /api/builds` を読め、ログイン履歴のクライアントは、Nginxから見た相手（127.0.0.2）になり、クライアントが書いた `X-Forwarded-For`（203.0.113.9）は使われない。`Host` の行を書かないと、421になる。オリジンが `https` のとき、Cookieの名前が `__Host-session`（`__Host-` で始まる名前）になり、curl は、この名前のCookieを、httpの接続では保存しないので、ログインの応答のヘッダー（`curl -D FILE`）の `Set-Cookie` の値を、`Cookie` ヘッダーで付け、`Origin` と `Host` のヘッダーも、`https://admin.example.com` に合わせて付ける。
+  - 確かめたこと（2026-11-14。Nginx 1.30.6。同じマシンで、`curl --interface 127.0.0.2` から）：どちらの形でも、ログインして `GET /api/builds` を読め、ログイン履歴のクライアントは、Nginxから見た相手（127.0.0.2）になり、クライアントが書いた `X-Forwarded-For`（203.0.113.9）は使われない。`Host` の行を書かないと、421になる。オリジンが `https` のとき、Cookieの名前が `__Host-session`（`__Host-` で始まる名前）になる。Cookieは、いつも `Secure` つきで、curl は、`Secure` つきのCookieを、httpの接続では、ホストが `localhost`・`127.0.0.1` のときだけ保存する（下記）。ここでは、ホストが `Host` ヘッダーの `admin.example.com` になるので、保存されない。そのため、ログインの応答のヘッダー（`curl -D FILE`）の `Set-Cookie` の値を、`Cookie` ヘッダーで付け、`Origin` と `Host` のヘッダーも、`https://admin.example.com` に合わせて付ける。
 - リバースプロキシを置かず、SSHのポート転送で開く（9.6の経路の2つ目）：サーバーを、既定の `127.0.0.1:8081` で動かし、手元で `ssh -N -L 8081:127.0.0.1:8081 USER@HOST` を動かして、起動の行のオリジン（`http://127.0.0.1:8081`）を開く。`-L [bind_address:]port:host:hostport` と `-N`（コマンドを実行しない）は、OpenSSH 10.5p1 の ssh(1) で、手元の側は、既定では loopback だけで待ち受けること（`GatewayPorts`）は、ssh_config(5) で、2026-11-14に確かめた。ブラウザーの `Host` と `Origin` が、オリジンと同じでないと、421か403になるので、手元のポートを変えるときや、`localhost` と書いて開くときは、`-origin` に、ブラウザーで開くもの（`http://localhost:9000` など）を書く。管理画面は、まだ無いので、開けるのは、APIだけ（9.6）。
 - loopbackでないアドレスでは、待ち受けない（`-addr` が断る）。平文のhttpを、ネットワークに出さないため。
-- 手元で確かめる：TCPなら `curl -H 'Origin: ORIGIN' http://127.0.0.1:8081/api/…`、ソケットなら `curl --unix-socket SOCKET -H 'Origin: ORIGIN' http://localhost/api/…`（`ORIGIN` は、起動の行のオリジンか、`-origin` の値。ホストは、`ORIGIN` のホストに合わせる）。curl 8.22.0 は、`Secure` つきのCookieを、`http://127.0.0.1:<ポート>` と、ソケット越しの `http://localhost` では、`-c`・`-b` のファイルに保存して送る（2026-11-14に確かめた）。ブラウザーが、`http://127.0.0.1:<ポート>` で `Secure` つきのCookieを扱うかは、確かめていない（9.6の「Cookie」）。systemdのユニットと、socket activationの例は、まだ無い（6.12の262）。
+- 手元で確かめる：TCPなら `curl -H 'Origin: ORIGIN' http://127.0.0.1:8081/api/…`、ソケットなら `curl --unix-socket SOCKET -H 'Origin: ORIGIN' http://localhost/api/…`（`ORIGIN` は、起動の行のオリジン。`-origin` に、そろえる前の形で書いたときも、起動の行のものを使う。ホストは、`ORIGIN` のホストに合わせる）。curl 8.22.0 は、`Secure` つきのCookieを、`http://127.0.0.1:<ポート>` と、ソケット越しの `http://localhost` では、`-c`・`-b` のファイルに保存して送る（2026-11-14に確かめた）。ブラウザーが、`http://127.0.0.1:<ポート>` で `Secure` つきのCookieを扱うかは、確かめていない（9.6の「Cookie」）。systemdのユニットと、socket activationの例は、まだ無い（6.12の262）。
 
 **例**
 
