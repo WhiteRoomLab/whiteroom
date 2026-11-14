@@ -155,6 +155,31 @@ memory: 512
 		}
 	})
 
+	// The paths are from the directory that the kernel takes the directory of the file for: link/.. is the parent of what
+	// link points to, not the working directory.
+	t.Run("a file through a symbolic link", func(t *testing.T) {
+		site := filepath.Join(root, "linked", "site")
+		writeConfig(t, site, "whiteroom.yaml", "site: .\nout: out\n")
+		work := filepath.Join(root, "linked", "work")
+		for _, d := range []string{filepath.Join(site, "entries"), work} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Symlink(filepath.Join(site, "entries"), filepath.Join(work, "link")); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(work)
+		got, err := loadConfig(filepath.FromSlash("link/../whiteroom.yaml"))
+		want := config{site: filepath.FromSlash("link/.."), out: filepath.FromSlash("link/../out")}
+		if err != nil || !sameConfig(got, want) {
+			t.Errorf("loadConfig = %+v, %v\nwant %+v", got, err, want)
+		}
+		if resolved, err := filepath.EvalSymlinks(got.site); err != nil || resolved != site {
+			t.Errorf("the site %s is %s, %v; want %s", got.site, resolved, err, site)
+		}
+	})
+
 	t.Run("no file", func(t *testing.T) {
 		writeConfig(t, filepath.Join(root, "none"), "whiteroom.yaml", "data:\t/a\n")
 		writeConfig(t, filepath.Join(root, "none"), "config.yaml", "data:\t/a\n")

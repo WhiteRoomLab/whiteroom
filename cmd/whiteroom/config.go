@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/yaml"
 )
 
@@ -163,7 +164,14 @@ func (r *configReader) path(ptr string, raw json.RawMessage) string {
 	if !ok || filepath.IsAbs(s) {
 		return s
 	}
-	return filepath.Join(filepath.Dir(r.file), s)
+	return r.fromDir(s)
+}
+
+// fromDir returns the path of s, a relative path, from the directory of the config file.
+func (r *configReader) fromDir(s string) string {
+	// Not filepath.Dir: it cleans the path of the file, as filepath.Join does, and drops "link/..".
+	dir, _ := filepath.Split(r.file)
+	return fspath.Join(dir, s)
 }
 
 // socketPath returns the string raw as the path of a socket: as path does, but a value that starts with @ is kept, whatever
@@ -173,8 +181,8 @@ func (r *configReader) socketPath(ptr string, raw json.RawMessage) string {
 	if !ok || filepath.IsAbs(s) || strings.HasPrefix(s, "@") {
 		return s
 	}
-	p := filepath.Join(filepath.Dir(r.file), s)
-	// Join has cut the "./" that tells a file named @... from an abstract socket.
+	p := r.fromDir(s)
+	// fromDir may have cut the "./" that tells a file named @... from an abstract socket.
 	if strings.HasPrefix(p, "@") {
 		p = "." + string(filepath.Separator) + p
 	}

@@ -10,11 +10,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 )
 
@@ -139,7 +139,7 @@ func (o *originals) createTemp() (*os.File, string, error) {
 	for range 10 {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
-		path := filepath.Join(o.dir, tempPrefix+hex.EncodeToString(b[:]))
+		path := fspath.Join(o.dir, tempPrefix+hex.EncodeToString(b[:]))
 		var f *os.File
 		if f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644); !errors.Is(err, fs.ErrExist) {
 			return f, path, err
@@ -154,7 +154,7 @@ func (f *original) keep() error {
 	if f.kept {
 		return nil
 	}
-	path := filepath.Join(f.dir, strings.TrimPrefix(f.hash, "sha256:"))
+	path := fspath.Join(f.dir, strings.TrimPrefix(f.hash, "sha256:"))
 	if err := os.Rename(f.path, path); err != nil {
 		return fmt.Errorf("saving an original in %s: %w", f.dir, err)
 	}

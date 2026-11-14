@@ -158,6 +158,44 @@ func TestBuildDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildDefaultsThroughLink builds a copy of the sample site as link/.., where link is a symbolic link to its entries/:
+// out/ and cache/ are made in the directory that the kernel takes link/.. for, not in the working directory, and the
+// summary and the warnings give the paths as written.
+func TestBuildDefaultsThroughLink(t *testing.T) {
+	dir := copySample(t)
+	work := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "entries"), filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	sep := string(filepath.Separator)
+	site := "link" + sep + ".." // not filepath.Join, which gives "."
+	code, stdout, stderr := runCmd(t, "build", site)
+	if code != 0 {
+		t.Fatalf("whiteroom build %s = %d, with stderr:\n%s", site, code, stderr)
+	}
+	t.Chdir(wd) // for the golden files
+	out := filepath.Join(dir, "out")
+	if want := strings.Replace(sampleSummary(t, out, true), out, site+sep+"out", 1); stdout != want {
+		t.Errorf("whiteroom build %s printed %q, want %q", site, stdout, want)
+	}
+	if want := strings.ReplaceAll(sampleWarnings(t, dir, ""), dir+sep, site+sep); stderr != want {
+		t.Errorf("whiteroom build %s printed the warnings:\n%s\nwant:\n%s", site, stderr, want)
+	}
+	for _, name := range []string{"out/current/public/index.html", "cache/CACHEDIR.TAG"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Errorf("whiteroom build %s: %v", site, err)
+		}
+	}
+	if entries, err := os.ReadDir(work); err != nil || len(entries) != 1 {
+		t.Errorf("whiteroom build %s left in the working directory %v, %v; want only link", site, entries, err)
+	}
+}
+
 // failingBuild runs whiteroom build with args and ctx, and checks that it fails, with the errors want on stderr and
 // nothing on stdout.
 func failingBuild(t *testing.T, what string, ctx context.Context, want string, args ...string) {

@@ -625,6 +625,23 @@ func TestServeRelease(t *testing.T) {
 	get("/", servedPage("A"))
 }
 
+// TestServeThroughLink serves b/out as link/../out, where link is a symbolic link to b/entries: the out next to link is
+// not opened.
+func TestServeThroughLink(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "b", "out")
+	writeRelease(t, out, releaseA, testList(), map[string]string{"index.html": "A"})
+	setCurrent(t, out, "releases/"+releaseA)
+	if err := os.Mkdir(filepath.Join(dir, "b", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "b", "entries"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := newLogged(t, filepath.Join(dir, "link")+filepath.FromSlash("/../out"))
+	check(t, h, http.MethodGet, "/", servedPage("A"))
+}
+
 // TestServeConcurrent sends requests from 4 goroutines, at least 100 each and more until the last switch of current
 // between releases with other bases. It checks that each is served from one release, with its server.json and its
 // files, and that none fails while a rename replaces current, because the handler reads the link itself and opens the

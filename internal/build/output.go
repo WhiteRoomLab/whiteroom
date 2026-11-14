@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 )
 
 // The output directory holds only what the build makes: the lock file; the directory of the releases, each a
@@ -124,7 +126,7 @@ func checkLayout(root *os.Root) (*layout, error) {
 // notMade returns the error about name, a path with "/" in root, an output directory, which the build has not made:
 // it must be as must says.
 func notMade(root *os.Root, name, must string) error {
-	return fmt.Errorf("%s: not made by the build; %s", filepath.Join(root.Name(), filepath.FromSlash(name)), must)
+	return fmt.Errorf("%s: not made by the build; %s", fspath.Join(root.Name(), filepath.FromSlash(name)), must)
 }
 
 // outError returns err, an error about a path in root, with the path of root before it; nil if err is nil.

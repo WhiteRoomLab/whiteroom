@@ -15,6 +15,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 )
 
@@ -115,8 +116,8 @@ type buildSettings struct {
 // defaults. A number of cfg is used unless the command line gives its flag, with any value.
 func (f *buildFlags) settings(flags *flag.FlagSet, cfg config) buildSettings {
 	s := buildSettings{site: cmp.Or(flags.Arg(0), cfg.site, "."), theme: cmp.Or(f.theme, cfg.theme)}
-	s.out = cmp.Or(f.out, cfg.out, filepath.Join(s.site, "out"))
-	s.cache = cmp.Or(f.cache, cfg.cache, filepath.Join(s.site, "cache"))
+	s.out = cmp.Or(f.out, cfg.out, fspath.Join(s.site, "out"))
+	s.cache = cmp.Or(f.cache, cfg.cache, fspath.Join(s.site, "cache"))
 	s.workers, s.memory = cfg.workers, cfg.memory
 	if flagGiven(flags, "workers") {
 		s.workers = f.workers
@@ -265,12 +266,12 @@ func (p errorPrinter) printProblem(e *content.Error) {
 func (p errorPrinter) path(file string) string {
 	if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
 		if p.theme != "" {
-			return filepath.Join(p.theme, filepath.FromSlash(rest))
+			return fspath.Join(p.theme, filepath.FromSlash(rest))
 		}
 	} else if p.stored && file != "site" && file != "site/schema.yaml" {
 		return file
 	}
-	return filepath.Join(p.site, filepath.FromSlash(file))
+	return fspath.Join(p.site, filepath.FromSlash(file))
 }
 
 // printError prints err, an error of the command, a line for each part: each problem of the site as printProblem does,

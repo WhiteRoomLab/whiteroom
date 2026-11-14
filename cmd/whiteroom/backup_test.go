@@ -688,6 +688,26 @@ func TestBackupResolvedPaths(t *testing.T) {
 			t.Errorf("a link to a directory of files/: the data directory is changed:\n%s\nwas:\n%s", after, before)
 		}
 
+		// .. after a link to a directory beside the data directory: -data is the data directory.
+		s = initSample(t)
+		before = stateOf(t, s.data)
+		beside := filepath.Join(filepath.Dir(s.data), "beside")
+		if err := os.Mkdir(beside, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		work = t.TempDir()
+		if err := os.Symlink(beside, filepath.Join(work, "link")); err != nil {
+			t.Fatal(err)
+		}
+		data := filepath.Join(work, "link") + "/../" + filepath.Base(s.data)
+		dest = filepath.Join(s.data, "files", "y")
+		if got := failingBackup(t, "a link beside the data directory", ctx, "-data", data, dest); got != is(dest, data) {
+			t.Errorf("a link beside the data directory: whiteroom backup printed %q, want %q", got, is(dest, data))
+		}
+		if after := stateOf(t, s.data); after != before {
+			t.Errorf("a link beside the data directory: the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+
 		// From a working directory that is a link, ../data is a link to the data directory, and a directory data is beside
 		// the link.
 		s = initSample(t)
@@ -724,8 +744,9 @@ func TestCheckDataDirResolvedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	// work/x is a data directory, other/x, which the path is for, is an empty directory.
-	if err := checkDataDir(dest); err == nil || !strings.HasSuffix(err.Error(), ": missing directory") {
-		t.Errorf("checkDataDir(%s) = %v, want a missing directory", dest, err)
+	want := dest + string(filepath.Separator) + "logdb: missing directory"
+	if err := checkDataDir(dest); err == nil || err.Error() != want {
+		t.Errorf("checkDataDir(%s) = %v, want %s", dest, err, want)
 	}
 	if err := checkDataDir(filepath.Join(work, "x")); err != nil {
 		t.Errorf("checkDataDir of a data directory = %v, want nil", err)

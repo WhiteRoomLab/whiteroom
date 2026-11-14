@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 )
 
 // contentSecurityPolicy is sent with every response. Scripts and styles must be files of the site, so inline ones are
@@ -35,7 +35,7 @@ type Handler struct {
 // New returns a Handler for out, the output directory of builds. It fails if out has no published release. errorLog
 // gets the errors that requests run into, such as an invalid server.json; nil discards them.
 func New(out string, errorLog *log.Logger) (*Handler, error) {
-	abs, err := filepath.Abs(out)
+	abs, err := fspath.Abs(out)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
@@ -123,8 +124,7 @@ func checkDataDir(dir string) error {
 	}
 	defer func() { _ = root.Close() }()
 	for _, name := range []string{"logdb", "files"} {
-		// For the messages only: filepath.Join drops a ".." after a symbolic link.
-		path := filepath.Join(dir, name)
+		path := fspath.Join(dir, name)
 		info, err := root.Lstat(name)
 		var pe *fs.PathError
 		switch {
@@ -155,7 +155,7 @@ func checkBackupDest(data, dest string) (missing bool, err error) {
 	case !info.IsDir():
 		return false, fmt.Errorf("%s: not a directory; DEST must be missing or an empty directory", dest)
 	}
-	inside, err := insideDir(data, dest, missing)
+	inside, err := insideDir(data, dest)
 	switch {
 	case err != nil:
 		return false, err
@@ -177,30 +177,13 @@ func checkBackupDest(data, dest string) (missing bool, err error) {
 }
 
 // insideDir returns "." if dest is the directory dir, and its path from dir if it is in dir, and "" if it is neither, with
-// the paths as the kernel resolves them. dest, if it is missing, has the parent that must exist.
-func insideDir(dir, dest string, destMissing bool) (string, error) {
-	dirPath, err := resolvedPath(dir)
+// the paths as the kernel resolves them.
+func insideDir(dir, dest string) (string, error) {
+	dirPath, err := fspath.Resolve(dir)
 	if err != nil {
 		return "", err
 	}
-	var destPath string
-	if destMissing {
-		// Not filepath.Dir and Base: they clean the path, and take a trailing separator for an element.
-		trimmed := dest
-		for len(trimmed) > 1 && os.IsPathSeparator(trimmed[len(trimmed)-1]) {
-			trimmed = trimmed[:len(trimmed)-1]
-		}
-		parentName, last := filepath.Split(trimmed)
-		if parentName == "" {
-			parentName = "."
-		}
-		var parent string
-		if parent, err = resolvedPath(parentName); err == nil {
-			destPath = filepath.Join(parent, last)
-		}
-	} else {
-		destPath, err = resolvedPath(dest)
-	}
+	destPath, err := fspath.Resolve(dest)
 	if err != nil {
 		return "", err
 	}
@@ -209,24 +192,6 @@ func insideDir(dir, dest string, destMissing bool) (string, error) {
 		return rel, nil
 	}
 	return "", nil
-}
-
-// resolvedPath returns the absolute path of name, which exists, with its symbolic links resolved as the kernel does, also
-// those that a ".." follows: it is not made absolute first, as filepath.Abs cleans the path and drops "link/..".
-func resolvedPath(name string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(name)
-	if err != nil || filepath.IsAbs(resolved) {
-		return resolved, err
-	}
-	// A relative path that is left has no link in it. The working directory may be the path through a link.
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	if wd, err = filepath.EvalSymlinks(wd); err != nil {
-		return "", err
-	}
-	return filepath.Join(wd, resolved), nil
 }
 
 // copiedHeads returns the heads of the audit logs of the data directory dir, which nothing has open, as a process that

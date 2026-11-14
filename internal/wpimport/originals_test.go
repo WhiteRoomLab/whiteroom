@@ -442,6 +442,27 @@ func TestNewOriginals(t *testing.T) {
 	if _, err := newOriginals(filepath.Join(file, "files")); err == nil {
 		t.Error("a directory below a regular file: no error")
 	}
+
+	// link/../files is files next to what link points to, for the temporary file and the kept one.
+	if err := os.MkdirAll(filepath.Join(tmp, "site", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tmp, "site", "entries"), filepath.Join(tmp, "link")); err != nil {
+		t.Fatal(err)
+	}
+	o, err := newOriginals(filepath.Join(tmp, "link") + filepath.FromSlash("/../files"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := testPNG(3, 2, 1)
+	f, err := o.save(context.Background(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.keep(); err != nil {
+		t.Fatal(err)
+	}
+	wantNames(t, filepath.Join(tmp, "site", "files"), strings.TrimPrefix(sha256Hash(data), "sha256:"))
 }
 
 func TestOriginalsDirectoryGone(t *testing.T) {
