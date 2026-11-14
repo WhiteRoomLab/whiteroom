@@ -31,7 +31,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 
 - `WHITEROOM_LONG_TESTS=1`：`internal/logdb` と `internal/store` の、クラッシュ・強制終了・失敗の差し込みの行列と、差分テスト（`TestDifferential`）を長くする。開発のマシン（16の CPU）で、`-race` なしで約5分かかる。
 - `WHITEROOM_BENCH`：保存の層のベンチマーク（開発のマシンで約2時間）。動かし方は、構想書の 3.5 の「ベンチマークの条件」。
-- dm-log-writes：記録（root が要る）と、記録の確かめ（`WHITEROOM_DMLOG`）の動かし方は、構想書の 3.5 の「テスト」。
+- dm-log-writes（電源断の記録）：`nix build -L .#dmlog` で、記録と確かめを、仮想マシンの中で動かす（root は要らず、KVM が要る。開発のマシンで約10分）。実機での記録（root が要る）と、記録の確かめ（`WHITEROOM_DMLOG`）の動かし方は、構想書の 3.5 の「テスト」。
 
 WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「テスト」）も、CI では動かさない。WordPress 7.1.4 のファイルを、リポジトリの外のディレクトリ（`<dir>`）に置いて環境変数で渡し、開発シェルの PHP で動かす。WordPress のファイル（GPL）とその出力は、リポジトリに入れない。
 
