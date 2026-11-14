@@ -15,13 +15,14 @@
           "aarch64-linux"
           "aarch64-darwin"
         ] (system: f nixpkgs.legacyPackages.${system});
+      goOf = pkgs: pkgs.go_1_27;
     in
     {
       devShells = forAllSystems (pkgs: {
         # Not mkShellNoCC: nixpkgs' Go enables cgo, and -race needs it.
         default = pkgs.mkShell {
           packages = [
-            pkgs.go_1_27
+            (goOf pkgs)
             pkgs.gopls
             pkgs.golangci-lint
             pkgs.jq
@@ -43,6 +44,24 @@
           env.GOTOOLCHAIN = "local";
         };
       });
+
+      # The check of internal/store with dm-log-writes (docs 3.5), in virtual machines: `nix build -L .#dmlog`.
+      # It needs KVM, and CI does not build it. Only x86_64-linux has run it.
+      packages.x86_64-linux.dmlog =
+        let
+          pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        in
+        import ./internal/logdb/dmlog/vm.nix {
+          inherit pkgs;
+          go = goOf pkgs;
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./go.mod
+              ./internal
+            ];
+          };
+        };
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
     };
