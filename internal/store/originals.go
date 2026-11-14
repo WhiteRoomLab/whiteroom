@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
@@ -192,14 +193,14 @@ func (t *TempFile) Close() error {
 func (s *Store) removeTemps(dir string) error {
 	entries, err := s.files.ReadDir(".")
 	if err != nil {
-		return readError(filepath.Join(dir, "files"), err)
+		return readError(fspath.Join(dir, "files"), err)
 	}
 	for _, e := range entries {
 		if !isTempName(e.Name()) || !e.Type().IsRegular() {
 			continue
 		}
 		if err := s.files.Remove(e.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			path := filepath.Join(dir, "files", e.Name())
+			path := fspath.Join(dir, filepath.Join("files", e.Name()))
 			var pe *fs.PathError
 			if errors.As(err, &pe) {
 				err = pe.Err

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -126,6 +127,13 @@ func dataRoot(dir string, fsys vfs.FS) (root vfs.FS, done func(), err error) {
 	if fsys != nil {
 		return fsys, func() {}, nil
 	}
+	// logdb joins the names of its files to the name of the root as text, which drops a ".." after a symbolic link:
+	// such a root is opened by its resolved path.
+	if fspath.Clean(dir) != filepath.Clean(dir) {
+		if dir, err = fspath.Resolve(dir); err != nil {
+			return nil, nil, err
+		}
+	}
 	if root, err = vfs.OpenRoot(dir); err != nil {
 		return nil, nil, err
 	}
@@ -193,7 +201,7 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 		}
 	}
 	s := &Store{now: o.clock(), readOnly: reader}
-	logName := filepath.Join(dir, "logdb")
+	logName := fspath.Join(dir, "logdb")
 	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(logName)), reader)
 	if err != nil {
 		return nil, err
@@ -218,7 +226,7 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 
 // checkDir checks that name in root, the data directory dir, is a directory, without following a symbolic link.
 func checkDir(root vfs.FS, dir, name string) error {
-	path := filepath.Join(dir, name)
+	path := fspath.Join(dir, name)
 	info, err := root.Lstat(name)
 	var pe *fs.PathError
 	switch {

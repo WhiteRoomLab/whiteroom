@@ -28,6 +28,14 @@ func Join(dir, name string) string {
 	return filepath.Join(dir, name)
 }
 
+// Clean returns filepath.Clean(name), but for a ".." after a symbolic link, which it keeps, with the link, as Join does.
+func Clean(name string) string {
+	if _, afterName := dotDots(name); afterName {
+		return clean(name)
+	}
+	return filepath.Clean(name)
+}
+
 // Abs returns an absolute path of name. It is filepath.Abs(name) if name has no "..", and Resolve(name) if it has one:
 // filepath.Abs drops a ".." with the element before it, also with the last element of the working directory.
 func Abs(name string) (string, error) {
