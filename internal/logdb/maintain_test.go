@@ -77,9 +77,9 @@ func TestMaintainWaits(t *testing.T) {
 		})
 	}
 	short := func() error {
+		start := time.Now() // before the deadline is set
 		c, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		defer cancel()
-		start := time.Now()
 		err := Maintain(c, fsys, Options{}, f)
 		if d := time.Since(start); d < 100*time.Millisecond {
 			t.Errorf("Maintain waited %v", d)
