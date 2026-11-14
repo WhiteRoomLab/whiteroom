@@ -10,7 +10,7 @@ import (
 // inline object hash and value; file object hash and size; event number, seq and value. valueOff is the offset of
 // value in the record body, set by the encoders and by decodeOps.
 type op struct {
-	code     byte
+	code     opCode
 	table    uint32
 	key      string
 	value    []byte
@@ -29,15 +29,15 @@ type baseEnd struct {
 
 // record is a decoded record body.
 type record struct {
-	typ  byte
+	typ  recType
 	seq  uint64
 	part uint64  // base
 	ops  []op    // commit, base
 	end  baseEnd // base-end
 }
 
-func appendBodyStart(dst []byte, typ byte, seq uint64) []byte {
-	return binary.LittleEndian.AppendUint64(append(dst, typ), seq)
+func appendBodyStart(dst []byte, typ recType, seq uint64) []byte {
+	return binary.LittleEndian.AppendUint64(append(dst, byte(typ)), seq)
 }
 
 func appendCommit(dst []byte, seq uint64, ops []op) []byte {
@@ -65,7 +65,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 	for i := range ops {
 		o := &ops[i]
 		o.valueOff = 0
-		dst = append(dst, o.code)
+		dst = append(dst, byte(o.code))
 		switch o.code {
 		case opPut, opDelete:
 			if o.table == 0 || len(o.key) > MaxKey {
@@ -95,7 +95,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 }
 
 func appendValue(dst []byte, start int, o *op) []byte {
-	dst = binary.AppendUvarint(append(dst, envPlain), uint64(len(o.value)))
+	dst = binary.AppendUvarint(append(dst, byte(envPlain)), uint64(len(o.value)))
 	o.valueOff = len(dst) - start
 	return append(dst, o.value...)
 }
@@ -182,7 +182,7 @@ func (d *decoder) key() string {
 
 // value reads a value and returns it with its offset in the body, which starts base bytes before d.b.
 func (d *decoder) value(base int) ([]byte, int) {
-	if r := envelopeReason(d.u8()); r != "" {
+	if r := envelopeReason(envKind(d.u8())); r != "" {
 		d.fail(r)
 	}
 	n := d.uvarint()
@@ -205,7 +205,7 @@ func decodeOps(p []byte, base int) ([]op, string) {
 		if d.reason != "" {
 			break
 		}
-		o := op{code: d.u8()}
+		o := op{code: opCode(d.u8())}
 		switch o.code {
 		case opPut, opDelete:
 			o.table = d.table()
@@ -247,7 +247,7 @@ func parseBody(b []byte) (record, string) {
 	if len(b) < minBody {
 		return record{}, "truncated body"
 	}
-	r := record{typ: b[0], seq: binary.LittleEndian.Uint64(b[1:])}
+	r := record{typ: recType(b[0]), seq: binary.LittleEndian.Uint64(b[1:])}
 	d := &decoder{b: b, i: minBody, short: "truncated body"}
 	switch r.typ {
 	case recCommit:

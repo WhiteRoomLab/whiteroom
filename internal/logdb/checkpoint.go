@@ -154,7 +154,7 @@ func (d *decoder) ckpObjects(h ckpHeader, own *owner) pmap[objLoc] {
 		if k := string(hash[:]); d.reason == "" && len(keys) > 0 && k <= keys[len(keys)-1] {
 			d.fail(fmt.Sprintf("object %x out of order", hash[:]))
 		}
-		loc := objLoc{placement: d.u8()}
+		loc := objLoc{placement: objPlace(d.u8())}
 		switch loc.placement {
 		case placeInline:
 			seg, off, size := d.uvarint(), d.uvarint(), d.uvarint()
@@ -290,7 +290,7 @@ func writeCheckpoint(f vfs.File, st *state) error {
 		m.Ascend("", func(k string, v []byte) bool {
 			w.uvarint(uint64(len(k)))
 			w.str(k)
-			w.u8(envPlain)
+			w.u8(byte(envPlain))
 			w.uvarint(uint64(len(v)))
 			w.write(v)
 			return true
@@ -299,7 +299,7 @@ func writeCheckpoint(f vfs.File, st *state) error {
 	w.uvarint(uint64(st.objects.Len()))
 	st.objects.Ascend("", func(k string, loc objLoc) bool {
 		w.str(k)
-		w.u8(loc.placement)
+		w.u8(byte(loc.placement))
 		if loc.placement == placeInline {
 			w.uvarint(loc.seg)
 			w.uvarint(uint64(loc.off))

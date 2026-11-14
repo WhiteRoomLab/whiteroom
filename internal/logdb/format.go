@@ -32,32 +32,40 @@ var maxBody = 1 << 28
 // minBody is the length of a body without payload: its type and sequence number.
 const minBody = 9
 
-// Record types.
+// recType is the type of a record.
+type recType byte
+
 const (
-	recCommit  = 1
-	recBase    = 2
-	recBaseEnd = 3
+	recCommit  recType = 1
+	recBase    recType = 2
+	recBaseEnd recType = 3
 )
 
-// Op codes.
+// opCode is the code of an op.
+type opCode byte
+
 const (
-	opPut    = 1
-	opDelete = 2
-	opInline = 3 // an object in the record
-	opFile   = 4 // an object in a file of objects/
-	opEvent  = 5
+	opPut    opCode = 1
+	opDelete opCode = 2
+	opInline opCode = 3 // an object in the record
+	opFile   opCode = 4 // an object in a file of objects/
+	opEvent  opCode = 5
 )
 
-// Value envelopes.
+// envKind is the envelope of a value.
+type envKind byte
+
 const (
-	envPlain  = 0
-	envSealed = 1
+	envPlain  envKind = 0
+	envSealed envKind = 1
 )
 
-// Placements of objects in a checkpoint.
+// objPlace is the placement of an object in a checkpoint.
+type objPlace byte
+
 const (
-	placeInline = 1
-	placeFile   = 2
+	placeInline objPlace = 1
+	placeFile   objPlace = 2
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
@@ -108,7 +116,7 @@ func checkCRC(b []byte) bool {
 }
 
 // envelopeReason says why a value of envelope env cannot be read, or returns "".
-func envelopeReason(env byte) string {
+func envelopeReason(env envKind) string {
 	switch env {
 	case envPlain:
 		return ""
@@ -298,7 +306,7 @@ func parseHead(path string, b []byte) (headSlot, error) {
 func appendObjHeader(dst []byte) []byte {
 	dst = append(dst, objMagic...)
 	dst = binary.LittleEndian.AppendUint32(dst, formatVersion)
-	return append(dst, envPlain, 0, 0, 0)
+	return append(dst, byte(envPlain), 0, 0, 0)
 }
 
 // parseObjHeader checks the header at the start of b, the content of the object file at path. The size is for the
@@ -307,7 +315,7 @@ func parseObjHeader(path string, b []byte) error {
 	if err := checkStart(path, b, objHeaderSize, objMagic, "an object"); err != nil {
 		return err
 	}
-	if r := envelopeReason(b[12]); r != "" {
+	if r := envelopeReason(envKind(b[12])); r != "" {
 		return corruptFile(path, r)
 	}
 	if !allZero(b[13:16]) {

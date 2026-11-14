@@ -139,7 +139,7 @@ func (db *DB) next(tx *Tx, seg *segment, frame []byte) *state {
 	for i := range tx.ops {
 		switch p := &tx.ops[i]; p.code {
 		case opPut, opDelete: // in tx.tables already
-		default:
+		case opInline, opFile, opEvent:
 			if reason := st.applyOp(tx.owner, p, st.seq, seg.index, seg.end); reason != "" {
 				panic(fmt.Sprintf("logdb: a commit that recovery would refuse: %s", reason))
 			}

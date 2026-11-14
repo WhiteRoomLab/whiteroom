@@ -23,7 +23,7 @@ func TestSealedValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(v) != 1+1+12+1+len(plain)+16 || v[0] != envSealed || v[1] != 7 || int(v[14]) != len(plain)+16 {
+	if len(v) != 1+1+12+1+len(plain)+16 || envKind(v[0]) != envSealed || v[1] != 7 || int(v[14]) != len(plain)+16 {
 		t.Fatalf("layout of %d bytes: %x", len(v), v)
 	}
 	if bytes.Contains(v, []byte("Hanako")) || bytes.Contains(v, []byte("example")) {
@@ -88,7 +88,7 @@ func TestSealedValue(t *testing.T) {
 		err.Error() != "the key has 24 bytes, want 32" {
 		t.Errorf("AES-192 key: %v", err)
 	}
-	if _, err := openValue(lookup, append([]byte{envPlain}, v[1:]...)); !errors.Is(err, errNotSealed) {
+	if _, err := openValue(lookup, append([]byte{byte(envPlain)}, v[1:]...)); !errors.Is(err, errNotSealed) {
 		t.Errorf("plain envelope: %v", err)
 	}
 }

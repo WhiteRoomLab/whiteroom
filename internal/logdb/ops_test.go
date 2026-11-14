@@ -86,7 +86,7 @@ func checkValues(t *testing.T, body []byte, ops []op) {
 			if got := body[o.valueOff : o.valueOff+len(o.value)]; !bytes.Equal(got, o.value) {
 				t.Fatalf("op %d: value at %d is %q, want %q", i, o.valueOff, got, o.value)
 			}
-		default:
+		case opDelete, opFile:
 			if o.valueOff != 0 {
 				t.Fatalf("op %d of code %d: valueOff %d", i, o.code, o.valueOff)
 			}
@@ -147,7 +147,7 @@ func TestOpsRoundTrip(t *testing.T) {
 		}},
 		{"many", randomOps(rng, 1000)},
 	} {
-		for _, typ := range []byte{recCommit, recBase} {
+		for _, typ := range []recType{recCommit, recBase} {
 			ops := slices.Clone(c.ops)
 			r := record{typ: typ, seq: 42, part: 0, ops: ops}
 			if typ == recBase {
@@ -220,6 +220,7 @@ func TestBodyTruncated(t *testing.T) {
 		}
 		opsAt := minBody
 		switch r.typ {
+		case recCommit:
 		case recBase:
 			opsAt += len(binary.AppendUvarint(nil, r.part))
 		case recBaseEnd:
@@ -237,8 +238,8 @@ func TestBodyTruncated(t *testing.T) {
 	}
 }
 
-func rawBody(typ byte, payload ...[]byte) []byte {
-	return append(binary.LittleEndian.AppendUint64([]byte{typ}, 7), slices.Concat(payload...)...)
+func rawBody(typ recType, payload ...[]byte) []byte {
+	return append(binary.LittleEndian.AppendUint64([]byte{byte(typ)}, 7), slices.Concat(payload...)...)
 }
 
 func TestBodyErrors(t *testing.T) {
@@ -261,31 +262,31 @@ func TestBodyErrors(t *testing.T) {
 		{"trailing bytes after the ops", rawBody(recCommit, b(0, 0)), "trailing bytes"},
 		{"trailing bytes after a base", rawBody(recBase, b(0, 0, 1)), "trailing bytes"},
 		{"trailing bytes after a base-end", rawBody(recBaseEnd, b(1, 2, 3, 4, 5, 6)), "trailing bytes"},
-		{"trailing bytes after an op", rawBody(recCommit, b(1, opDelete, 1, 0, 0)), "trailing bytes"},
+		{"trailing bytes after an op", rawBody(recCommit, b(1, byte(opDelete), 1, 0, 0)), "trailing bytes"},
 		{"unknown op 0", rawBody(recCommit, b(1, 0)), "unknown op 0"},
 		{"unknown op 6", rawBody(recCommit, b(1, 6, 0, 0)), "unknown op 6"},
-		{"unknown op 255", rawBody(recCommit, b(2, opDelete, 1, 0, 255)), "unknown op 255"},
-		{"table 0 of a put", rawBody(recCommit, b(1, opPut, 0, 0, 0, 0)), "invalid table 0"},
-		{"table 0 of a delete", rawBody(recCommit, b(1, opDelete, 0, 0)), "invalid table 0"},
-		{"table 2^32", rawBody(recCommit, b(1, opDelete), uv(1<<32), b(0)), "invalid table 4294967296"},
-		{"largest table", rawBody(recCommit, b(1, opDelete), uv(math.MaxUint32), b(0)), ""},
-		{"key too long", rawBody(recCommit, b(1, opDelete, 1), uv(MaxKey+1), make([]byte, MaxKey+1)),
+		{"unknown op 255", rawBody(recCommit, b(2, byte(opDelete), 1, 0, 255)), "unknown op 255"},
+		{"table 0 of a put", rawBody(recCommit, b(1, byte(opPut), 0, 0, 0, 0)), "invalid table 0"},
+		{"table 0 of a delete", rawBody(recCommit, b(1, byte(opDelete), 0, 0)), "invalid table 0"},
+		{"table 2^32", rawBody(recCommit, b(1, byte(opDelete)), uv(1<<32), b(0)), "invalid table 4294967296"},
+		{"largest table", rawBody(recCommit, b(1, byte(opDelete)), uv(math.MaxUint32), b(0)), ""},
+		{"key too long", rawBody(recCommit, b(1, byte(opDelete), 1), uv(MaxKey+1), make([]byte, MaxKey+1)),
 			"key too long: 4097 bytes (max 4096)"},
-		{"longest key", rawBody(recCommit, b(1, opDelete, 1), uv(MaxKey), make([]byte, MaxKey)), ""},
-		{"huge key length", rawBody(recCommit, b(1, opDelete, 1), uv(math.MaxUint64)),
+		{"longest key", rawBody(recCommit, b(1, byte(opDelete), 1), uv(MaxKey), make([]byte, MaxKey)), ""},
+		{"huge key length", rawBody(recCommit, b(1, byte(opDelete), 1), uv(math.MaxUint64)),
 			"key too long: 18446744073709551615 bytes (max 4096)"},
-		{"sealed put", rawBody(recCommit, b(1, opPut, 1, 1, 'k'), sealed), "sealed values are not supported by this version"},
-		{"sealed object", rawBody(recCommit, b(1, opInline), h[:], sealed), "sealed values are not supported by this version"},
-		{"sealed event", rawBody(recCommit, b(1, opEvent, 1, 7), sealed), "sealed values are not supported by this version"},
-		{"envelope 7", rawBody(recCommit, b(1, opPut, 1, 1, 'k', 7, 0)), "unknown value envelope 7"},
-		{"envelope 255", rawBody(recCommit, b(1, opInline), h[:], b(255, 0)), "unknown value envelope 255"},
-		{"object size 2^63", rawBody(recCommit, b(1, opFile), h[:], uv(1<<63)), "bad object size 9223372036854775808"},
-		{"value past the end", rawBody(recCommit, b(1, opPut, 1, 1, 'k', 0, 2, 'v')), "truncated op"},
-		{"hash past the end", rawBody(recCommit, b(1, opFile), h[:31]), "truncated op"},
-		{"second op missing", rawBody(recCommit, b(2, opDelete, 1, 0)), "truncated op"},
-		{"huge count", rawBody(recCommit, uv(1<<62), b(opDelete, 1, 0)), "truncated op"},
+		{"sealed put", rawBody(recCommit, b(1, byte(opPut), 1, 1, 'k'), sealed), "sealed values are not supported by this version"},
+		{"sealed object", rawBody(recCommit, b(1, byte(opInline)), h[:], sealed), "sealed values are not supported by this version"},
+		{"sealed event", rawBody(recCommit, b(1, byte(opEvent), 1, 7), sealed), "sealed values are not supported by this version"},
+		{"envelope 7", rawBody(recCommit, b(1, byte(opPut), 1, 1, 'k', 7, 0)), "unknown value envelope 7"},
+		{"envelope 255", rawBody(recCommit, b(1, byte(opInline)), h[:], b(255, 0)), "unknown value envelope 255"},
+		{"object size 2^63", rawBody(recCommit, b(1, byte(opFile)), h[:], uv(1<<63)), "bad object size 9223372036854775808"},
+		{"value past the end", rawBody(recCommit, b(1, byte(opPut), 1, 1, 'k', 0, 2, 'v')), "truncated op"},
+		{"hash past the end", rawBody(recCommit, b(1, byte(opFile)), h[:31]), "truncated op"},
+		{"second op missing", rawBody(recCommit, b(2, byte(opDelete), 1, 0)), "truncated op"},
+		{"huge count", rawBody(recCommit, uv(1<<62), b(byte(opDelete), 1, 0)), "truncated op"},
 		{"count longer than needed", rawBody(recCommit, b(0x80, 0)), "bad uvarint"},
-		{"table longer than needed", rawBody(recCommit, b(1, opDelete, 0x81, 0, 0)), "bad uvarint"},
+		{"table longer than needed", rawBody(recCommit, b(1, byte(opDelete), 0x81, 0, 0)), "bad uvarint"},
 		{"part longer than needed", rawBody(recBase, b(0x80, 0, 0)), "bad uvarint"},
 		{"count over 64 bits", rawBody(recCommit, bytes.Repeat(b(0xff), 9), b(2)), "bad uvarint"},
 		{"count of 11 bytes", rawBody(recCommit, bytes.Repeat(b(0xff), 10), b(1)), "bad uvarint"},

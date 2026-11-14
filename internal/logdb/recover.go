@@ -202,7 +202,7 @@ func (q *sequence) advance(rec *record) {
 		q.part++
 	case recBaseEnd:
 		q.base = false
-	default:
+	case recCommit:
 		q.seq = rec.seq
 	}
 }
@@ -210,7 +210,7 @@ func (q *sequence) advance(rec *record) {
 // follows reports whether a record of the type typ with the sequence number seq, after an invalid frame, shows that
 // the frame is not a torn tail: a commit after the last one, or, in the base, which is synced before its base-end is
 // written, a record that is not a base record.
-func (q *sequence) follows(typ byte, seq uint64) bool {
+func (q *sequence) follows(typ recType, seq uint64) bool {
 	if q.base {
 		return typ != recBase
 	}
@@ -598,12 +598,12 @@ func mayBeTorn(reason string) bool {
 
 // findRecord returns the first offset after off in b, a segment with salt, of a frame whose CRC verifies and whose
 // record follows accepts by its type and sequence number, or -1.
-func findRecord(b []byte, off int64, salt uint64, follows func(typ byte, seq uint64) bool) int64 {
+func findRecord(b []byte, off int64, salt uint64, follows func(typ recType, seq uint64) bool) int64 {
 	for at := off + 8; at+8 <= int64(len(b)); at += 8 {
 		if _, _, reason := parseFrame(b[at:], salt); reason != "" && mayBeTorn(reason) {
 			continue
 		}
-		if follows(b[at+8], binary.LittleEndian.Uint64(b[at+9:])) { // the frame is complete: its body has type and seq
+		if follows(recType(b[at+8]), binary.LittleEndian.Uint64(b[at+9:])) { // the frame is complete: its body has type and seq
 			return at
 		}
 	}

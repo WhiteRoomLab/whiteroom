@@ -726,7 +726,7 @@ func TestGenerations(t *testing.T) {
 	t.Run("a checkpoint of the base-end", func(t *testing.T) {
 		fsys := copyFS(base)
 		offs := writeSeg(t, fsys, 2, 1, 3, part0, endF(nil), commit4)
-		loc := slices.Concat(oh[:], []byte{placeInline}, uv(1, uint64(segHeaderSize+8+puts[3].valueOff), uint64(len(object))))
+		loc := slices.Concat(oh[:], []byte{byte(placeInline)}, uv(1, uint64(segHeaderSize+8+puts[3].valueOff), uint64(len(object))))
 		body := slices.Concat(uv(5, 1, 1, 1, 3), kv("k1", "value 1."), kv("k2", "value 2."), kv("k3", "value 3."), uv(1), loc)
 		setFile(t, fsys, "checkpoint", rawCkp(ckpHeader{gen: 2, seq: 3, seg: 1, off: offs[1],
 			recCRC: crcAt(t, fsys, g21, offs[1])}, body))

@@ -69,7 +69,7 @@ func baseRecords(t *testing.T, fsys vfs.FS) int {
 		b := fileData(t, fsys, name)
 		_, offs := frames(t, fsys, name)
 		for _, off := range offs {
-			if b[off+8] == recBase {
+			if recType(b[off+8]) == recBase {
 				n++
 			}
 		}

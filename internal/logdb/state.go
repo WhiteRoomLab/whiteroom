@@ -24,7 +24,7 @@ type state struct {
 
 // objLoc is where an object is: in a file of objects/, or at off in the segment seg of the generation, in a record.
 type objLoc struct {
-	placement byte // placeInline or placeFile
+	placement objPlace
 	seg       uint64
 	off, size int64
 }
@@ -51,6 +51,8 @@ func (t tableMap) del(o *owner, table uint32, key string) {
 // not published yet, with nodes of o, or says why it cannot. The order of the records is for the caller to check.
 func (s *state) applyRecord(o *owner, rec *record, seg uint64, off int64) string {
 	switch rec.typ {
+	case recCommit:
+		return s.apply(o, rec.ops, rec.seq, seg, off)
 	case recBase:
 		for i := range rec.ops {
 			if reason := s.applyBaseOp(o, &rec.ops[i], rec.seq, seg, off); reason != "" {
@@ -61,7 +63,7 @@ func (s *state) applyRecord(o *owner, rec *record, seg uint64, off int64) string
 	case recBaseEnd:
 		return s.endBase(rec.end)
 	}
-	return s.apply(o, rec.ops, rec.seq, seg, off)
+	return fmt.Sprintf("unknown record type %d", rec.typ)
 }
 
 // apply applies ops, those of the commit seq whose frame is at off in the segment seg, to s, which is not published
@@ -113,6 +115,7 @@ func (s *state) applyBaseOp(o *owner, p *op, seq, seg uint64, off int64) string 
 	switch p.code {
 	case opPut, opInline, opFile:
 		return s.applyOp(o, p, seq, seg, off)
+	case opDelete: // refused below
 	case opEvent:
 		switch {
 		case p.number < s.nextEvent || p.number == math.MaxUint64:
