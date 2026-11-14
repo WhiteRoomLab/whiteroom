@@ -77,6 +77,12 @@ func discardedStatus(wp string) string {
 // time cannot be read, are not imported: they are taken out of the table and the references. site is the one that Site
 // returned.
 //
+// What the build checks across entries (6.7) is made to hold: a published page has a published parent, and a scheduled
+// page a published or scheduled one, or else it is a draft with its parent; the published and scheduled entries of a
+// language and a type (and under a parent, for pages) have different slugs; and the front page and the posts page of
+// opts.Site are taken out of it, as Media does the logo and the icon, if they are not published entries. PathRef gives
+// the slug and the parent of the pages that are published or scheduled.
+//
 // Call it once, after PlanEntries, Site, Terms, Authors and Media: it adds to the report each time. The error is for an
 // argument that is wrong, an item that was not planned, a conversion that fails, ctx that is done, and an error of emit,
 // which stops it. The report and the table are not changed by what is wrong with an argument or the plan.
@@ -124,10 +130,15 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 	for _, ei := range live {
 		c.convert(ei)
 	}
+	c.setParents(live)
 	c.reportGroups()
 	for _, ei := range live {
 		c.tidy(ei)
 	}
+	c.draftUnderUnpublished(live)
+	c.uniqueSlugs(live)
+	c.leaveOutFrontPages(live)
+	c.recordPaths(live)
 	return c.emitAll(ctx, live, emit)
 }
 
@@ -478,6 +489,8 @@ func clearUnit(rev *content.Revision, unit string) bool {
 		s = &rev.FeaturedImage
 	case "/template":
 		s = &rev.Template
+	case "/parent":
+		s = &rev.Parent
 	case "/sticky":
 		was := rev.Sticky
 		rev.Sticky = false

@@ -192,10 +192,14 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 	entryFiles, revisionFiles := make(map[string]bool), make(map[string]bool)
 	var out bytes.Buffer
 	last := -1
+	position := make(map[int64]int, len(imp.WXR.Items))
+	for i := range imp.WXR.Items {
+		position[imp.WXR.Items[i].ID] = i
+	}
 	for _, d := range docs {
 		given[d.Post] = d
-		pos := slices.IndexFunc(imp.WXR.Items, func(x wxr.Item) bool { return x.ID == d.Post })
-		if pos < 0 {
+		pos, ok := position[d.Post]
+		if !ok {
 			t.Errorf("an entry is given for the item %d, which the WXR does not have", d.Post)
 			continue
 		}
@@ -271,6 +275,8 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 		out.Write(rb)
 	}
 
+	checkAcrossEntries(t, imp, site, docs)
+
 	inTable := 0
 	for i := range imp.WXR.Items {
 		it := &imp.WXR.Items[i]
@@ -311,6 +317,76 @@ func checkEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDo
 		if p := e.Target.Pointer; p != "" && !strings.HasPrefix(p, "/") {
 			t.Errorf("the pointer %q of the entry %q is not a JSON Pointer", p, e.Message)
 		}
+	}
+}
+
+// checkAcrossEntries checks what the build checks across entities (6.7) of the entries that were given: a published page
+// has a published parent, and a scheduled one a published or scheduled one; the parents make no cycle; the published and
+// scheduled entries of a language and a type, and under a parent for a page, have different slugs; and the front page and
+// the posts page of the site are published, so the site is valid with the records of the import.
+func checkAcrossEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDoc) {
+	t.Helper()
+	byID := make(map[string]*EntryDoc, len(docs))
+	for _, d := range docs {
+		byID[d.Entry.ID] = d
+	}
+	type slugKey struct{ language, typ, parent, slug string }
+	slugs := make(map[slugKey]int64)
+	for _, d := range docs {
+		e, rev := d.Entry, d.Revision
+		if rev.Parent != "" {
+			switch p := byID[rev.Parent]; {
+			case p == nil:
+				t.Errorf("the parent of item %d is not an entry that was given", d.Post)
+			case p.Entry.Type != content.TypePage || e.Type != content.TypePage:
+				t.Errorf("item %d (%s) has the parent %d (%s)", d.Post, e.Type, p.Post, p.Entry.Type)
+			case e.Status == content.StatusPublished && p.Entry.Status != content.StatusPublished:
+				t.Errorf("the published page %d has the parent %d, which is %s", d.Post, p.Post, p.Entry.Status)
+			case e.Status == content.StatusScheduled && p.Entry.Status != content.StatusPublished && p.Entry.Status != content.StatusScheduled:
+				t.Errorf("the scheduled page %d has the parent %d, which is %s", d.Post, p.Post, p.Entry.Status)
+			}
+		}
+		if e.Status != content.StatusPublished && e.Status != content.StatusScheduled {
+			continue
+		}
+		k := slugKey{language: e.Language, typ: e.Type, slug: rev.Slug}
+		if e.Type == content.TypePage {
+			k.parent = rev.Parent
+		}
+		if other, ok := slugs[k]; ok {
+			t.Errorf("the items %d and %d are published or scheduled, in the same language, type and parent, with the slug %q", other, d.Post, rev.Slug)
+		}
+		slugs[k] = d.Post
+	}
+
+	// Each page is on a path of parents that ends, which one walk finds for all of them.
+	const onPath, done = 1, 2
+	state := make(map[string]int, len(docs))
+	for _, d := range docs {
+		var path []string
+		cur := d
+		for cur != nil && state[cur.Entry.ID] == 0 {
+			state[cur.Entry.ID] = onPath
+			path = append(path, cur.Entry.ID)
+			cur = byID[cur.Revision.Parent]
+		}
+		if cur != nil && state[cur.Entry.ID] == onPath {
+			t.Errorf("the parents of item %d make a cycle", cur.Post)
+		}
+		for _, id := range path {
+			state[id] = done
+		}
+	}
+
+	for _, l := range site.Languages {
+		for pointer, ids := range map[string]content.Localized{"frontPage": site.FrontPage, "postsPage": site.PostsPage} {
+			if id := ids[l]; id != "" && (byID[id] == nil || byID[id].Entry.Status != content.StatusPublished) {
+				t.Errorf("the %s of the site in %s is the entry %q, which is not a published entry that was given", pointer, l, id)
+			}
+		}
+	}
+	if err := site.Validate(imp.Ref); err != nil {
+		t.Errorf("the site after the entries: %v", err)
 	}
 }
 
@@ -1474,6 +1550,7 @@ func TestEntriesTidy(t *testing.T) {
 	})
 	t.Run("an item that cannot be taken out", func(t *testing.T) {
 		imp, c, ei := newTidy(t, in)
+		c.takeOutUnit = func(*content.Revision, string) bool { return false }
 		ei.status = content.StatusScheduled
 		ei.scheduledAt = entryTime
 		ei.rev = content.Revision{Title: "T", Slug: "t", Date: entryTime, Parent: "x"}
@@ -1641,7 +1718,7 @@ func TestEntriesClearUnit(t *testing.T) {
 		}
 	}
 	for _, unit := range []string{
-		"/title", "/slug", "/excerpt", "/date", "/author", "/featuredImage", "/sticky", "/order", "/template",
+		"/title", "/slug", "/excerpt", "/date", "/author", "/featuredImage", "/sticky", "/order", "/template", "/parent",
 		"/terms/category", "/terms/tag", "/terms/genre",
 	} {
 		rev := full()
@@ -1668,6 +1745,8 @@ func TestEntriesClearUnit(t *testing.T) {
 			want.Order = 0
 		case "/template":
 			want.Template = ""
+		case "/parent":
+			want.Parent = ""
 		default:
 			delete(want.Terms, strings.TrimPrefix(unit, "/terms/"))
 		}
@@ -1678,7 +1757,7 @@ func TestEntriesClearUnit(t *testing.T) {
 			t.Errorf("clearUnit(%s) of what is empty = true", unit)
 		}
 	}
-	for _, unit := range []string{"", "/parent", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo/title", "/fields/x", "/body"} {
+	for _, unit := range []string{"", "/unknown", "/terms", "/terms/", "/terms/nosuch", "/seo/title", "/fields/x", "/body"} {
 		rev := full()
 		if clearUnit(&rev, unit) || !reflect.DeepEqual(rev, full()) {
 			t.Errorf("clearUnit(%q) took something out of the revision: %+v", unit, rev)

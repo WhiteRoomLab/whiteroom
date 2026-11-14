@@ -104,7 +104,7 @@ func postIDOf(t *testing.T, imp *Import, post int64) string {
 	return id
 }
 
-var refsGroupLine = regexp.MustCompile(`: skipped: item \([a-z_]+\): the (terms of the taxonomy|menu order|templates) `)
+var refsGroupLine = regexp.MustCompile(`: skipped: item \([a-z_]+\): the (terms of the taxonomy|menu order|templates|parents) `)
 
 // refsGroupLines lists the lines of the report that are about the groups of items.
 func refsGroupLines(t *testing.T, imp *Import) []string {
@@ -265,8 +265,10 @@ func TestEntriesCategoryOrder(t *testing.T) {
 		{id: 5, taxonomy: "post_tag", slug: "go", name: "Go"},
 	}
 	cats := func(slugs ...string) []wxrTermRef { return termRefs("category", slugs...) }
+	// Published posts have different slugs, as in WordPress: "hello" in a link is "hello-<id>" here.
 	item := func(id int, status, link string, refs ...wxrTermRef) wxrEntry {
-		return wxrEntry{id: id, status: status, title: fmt.Sprintf("Post %d", id), name: "hello", link: link, terms: refs}
+		name := fmt.Sprintf("hello-%d", id)
+		return wxrEntry{id: id, status: status, title: fmt.Sprintf("Post %d", id), name: name, link: strings.Replace(link, "/hello", "/"+name, 1), terms: refs}
 	}
 	const home = "https://example.com"
 	s := refsSettings(rule)
@@ -323,6 +325,7 @@ func TestEntriesCategoryOrder(t *testing.T) {
 		7: "/ニュース/hello/", 9: "/tech/hello/", 10: "/tech/hello/",
 	} {
 		d := docOf(docs, post)
+		want = strings.Replace(want, "/hello", fmt.Sprintf("/hello-%d", post), 1)
 		if got, err := site.EntryPath(&d.Entry, &d.Revision, imp.PathRef); err != nil || got != want {
 			t.Errorf("the path of item %d is %q, %v, want %q", post, got, err, want)
 		}
@@ -935,6 +938,14 @@ func TestEntriesTidyReferences(t *testing.T) {
 		{
 			name: "a template of a post", rev: with(post, func(r *content.Revision) { r.Template = "x" }), want: post,
 			lines: []string{fmt.Sprintf(notAllowed, "template", "post")},
+		},
+		{
+			name: "a parent that is wrong", typ: "page", rev: with(page, func(r *content.Revision) { r.Parent = "bad" }), want: page,
+			lines: []string{"skipped: the parent is not imported: " + bad(content.RefEntry) + " -> {R}#/parent"},
+		},
+		{
+			name: "a parent of a post", rev: with(post, func(r *content.Revision) { r.Parent = "bad" }), want: post,
+			lines: []string{fmt.Sprintf(notAllowed, "parent", "post")},
 		},
 		{
 			name: "a template that is not a name", typ: "page", rev: with(page, func(r *content.Revision) { r.Template = "a b" }), want: page,

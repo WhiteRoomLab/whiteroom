@@ -46,6 +46,7 @@ const (
 	groupTerms groupKind = iota
 	groupOrder
 	groupTemplate
+	groupParent
 )
 
 // groupKey is a group: the kind, the type of the entries and, for the terms, the taxonomy.
@@ -90,6 +91,8 @@ func (c *entryConv) reportGroups() {
 			msg = fmt.Sprintf("the menu order of %s of the post type %s is not imported; only pages have an order", items, typ)
 		case groupTemplate:
 			msg = fmt.Sprintf("the templates of %s of the post type %s are not imported; only pages have templates", items, typ)
+		case groupParent:
+			msg = fmt.Sprintf("the parents of %s of the post type %s are not imported; only pages have parents", items, typ)
 		}
 		c.imp.Report.Add(Entry{Kind: Skipped, Source: src, Message: msg})
 	}
