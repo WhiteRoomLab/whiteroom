@@ -282,6 +282,7 @@ func TestBodyErrors(t *testing.T) {
 		{"envelope 255", rawBody(recCommit, b(1, byte(opInline)), h[:], b(255, 0)), "unknown value envelope 255"},
 		{"object size 2^63", rawBody(recCommit, b(1, byte(opFile)), h[:], uv(1<<63)), "bad object size 9223372036854775808"},
 		{"value past the end", rawBody(recCommit, b(1, byte(opPut), 1, 1, 'k', 0, 2, 'v')), "truncated op"},
+		{"value length beyond int", rawBody(recCommit, b(1, byte(opPut), 1, 1, 'k', 0), uv(math.MaxUint64)), "truncated op"},
 		{"hash past the end", rawBody(recCommit, b(1, byte(opFile)), h[:31]), "truncated op"},
 		{"second op missing", rawBody(recCommit, b(2, byte(opDelete), 1, 0)), "truncated op"},
 		{"huge count", rawBody(recCommit, uv(1<<62), b(byte(opDelete), 1, 0)), "truncated op"},

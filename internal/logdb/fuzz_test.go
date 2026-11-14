@@ -372,7 +372,7 @@ func FuzzOpen(f *testing.F) {
 			t.Fatalf("the reader sees\n%s\nwant\n%s", got, want)
 		}
 		closeDB(t, rd)
-		// Open does not read the segments before the record of a checkpoint, nor the files of the objects: Verify does.
+		// Open does not check the records before that of a checkpoint, nor the files of the objects: Verify does.
 		if err := db.Verify(context.Background()); err == nil {
 			if got, err := events(db); err != nil || got != base.events[info.Seq] {
 				t.Fatalf("after Verify, the events are\n%s\n%v, want\n%s", got, err, base.events[info.Seq])

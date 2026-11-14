@@ -543,6 +543,32 @@ func TestCheckpoint(t *testing.T) {
 	}
 }
 
+// TestNegativePanics: a negative offset, length or slot number is a bug of the caller, not a value to write.
+func TestNegativePanics(t *testing.T) {
+	slot := appendHeadSlot(nil, headSlot{gen: 1, seg: 1, end: 64})
+	for _, c := range []struct {
+		name string
+		f    func()
+		want string
+	}{
+		{"end of a slot", func() { appendHeadSlot(nil, headSlot{gen: 1, seg: 1, end: -8}) }, "logdb: negative number -8"},
+		{"offset of a checkpoint", func() { appendCkpHeader(nil, ckpHeader{gen: 1, seq: 1, seg: 1, off: -8}) },
+			"logdb: negative number -8"},
+		{"body of a checkpoint", func() { appendCkpHeader(nil, ckpHeader{gen: 1, seq: 1, seg: 1, off: 64, bodyLen: -1}) },
+			"logdb: negative number -1"},
+		{"slot -1", func() { _, _ = parseHeadSlot(headPath, slot, -1) }, "logdb: negative number -1"},
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != c.want {
+					t.Errorf("%s: %v, want %q", c.name, r, c.want)
+				}
+			}()
+			c.f()
+		}()
+	}
+}
+
 // TestNewerVersion checks that a file of a newer version is refused as such whatever its size and CRC, which that
 // version may have changed.
 func TestNewerVersion(t *testing.T) {
