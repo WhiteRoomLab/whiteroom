@@ -8,3 +8,5 @@ site.xml:33:2: changed: term 3 (category "お知らせ"): kept only the text of 
 site.xml:47:2: skipped: term 5 (post_tag "WordPress"): termmeta "accent_color" is not imported; whiteroom terms have no custom fields -> terms/trm_0000000000GRH3X0TGVE4SNRZK.json
 site.xml:81:2: skipped: term (series): 1 term of the taxonomy series is not imported; define series in the schema file to import it
 site.xml:88:2: skipped: term (post_format): 1 term of the taxonomy post_format is not imported; whiteroom does not use it
+site.xml:212:2: skipped: item 23 (post "削除した記事"): the entry is not imported: it is in the trash
+site.xml:467:2: skipped: item (product): 1 item of the post type product is not imported; define product in the schema file to import it

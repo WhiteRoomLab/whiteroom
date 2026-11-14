@@ -465,7 +465,11 @@ func (imp *Import) proposeFields(s *Settings, defs *content.Site) {
 			}
 		}
 		s.Fields[typ] = table
-		imp.channelEntry(Review, Target{}, "the items of the post type %s have %s: %s; fields.%s maps them to the fields of %s in the schema file",
+		format := "the items of the post type %s have %s: %s; fields.%s maps them to the fields of %s in the schema file"
+		if len(table) == 1 {
+			format = "the items of the post type %s have %s: %s; fields.%s maps it to a field of %s in the schema file"
+		}
+		imp.channelEntry(Review, Target{}, format,
 			typeText(typ), plural(len(table), "custom field", "custom fields"), usedNamesOf(counts[typ], "item", "items"), typeText(typ), typeText(typ))
 	}
 }

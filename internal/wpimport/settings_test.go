@@ -1299,8 +1299,11 @@ func TestProposeFields(t *testing.T) {
 		return bodyXML{id: id, typ: typ, status: status, meta: metas(kv...)}
 	}
 	proposal := func(typ string, n int, list string) string {
-		return fmt.Sprintf("review: the items of the post type %[1]s have %[2]s: %[3]s; fields.%[1]s maps them to the fields of %[1]s in the schema file",
-			typ, plural(n, "custom field", "custom fields"), list)
+		if n == 1 {
+			return fmt.Sprintf("review: the items of the post type %[1]s have 1 custom field: %[2]s; fields.%[1]s maps it to a field of %[1]s in the schema file", typ, list)
+		}
+		return fmt.Sprintf("review: the items of the post type %[1]s have %[2]d custom fields: %[3]s; fields.%[1]s maps them to the fields of %[1]s in the schema file",
+			typ, n, list)
 	}
 	t.Run("the keys of the items of each type", func(t *testing.T) {
 		in := bodiesWXR(
@@ -1385,7 +1388,7 @@ func TestProposeFields(t *testing.T) {
 			t.Errorf("the plugin is %q and Fields %v, want tsf and %v", s.SEO.Plugin, s.Fields["works"], want)
 		}
 		sameStrings(t, "the entries", fieldProposals(t, imp.Report), []string{
-			`review: the items of the post type works have 1 custom field: "foo" (1 item); fields.works maps them to the fields of works in the schema file`,
+			`review: the items of the post type works have 1 custom field: "foo" (1 item); fields.works maps it to a field of works in the schema file`,
 		})
 	})
 	t.Run("no custom fields", func(t *testing.T) {
@@ -2031,13 +2034,18 @@ func TestOffsetPlace(t *testing.T) {
 	}
 }
 
-// siteImport returns the import of the sample WXR with the front page, the page of the posts, the logo and the icon of
-// the sample converted, and the schema file of the sample.
+// siteImport returns the import of the sample WXR after the plan of the entries and the media, which gives the front page,
+// the page of the posts, the logo and the icon of the sample their IDs, and the schema file of the sample.
 func siteImport(t *testing.T) (*Import, *content.Site) {
 	t.Helper()
-	imp := sampleImport(t, false)
-	assignSample(t, imp)
-	return imp, sampleDefs(t)
+	imp, defs := sampleImport(t, false), sampleDefs(t)
+	if err := imp.PlanEntries(sampleSettings(), defs); err != nil {
+		t.Fatal(err)
+	}
+	if err := imp.PlanMedia(); err != nil {
+		t.Fatal(err)
+	}
+	return imp, defs
 }
 
 // sampleSettings is a corrected set of the settings of the sample site.

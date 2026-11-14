@@ -1,0 +1,33 @@
+entries.xml:13:1: skipped: channel: the postmeta "_yoast_wpseo_opengraph-title" of 2 items is not imported; whiteroom has no setting for it
+entries.xml:13:1: skipped: channel: the postmeta "_yoast_wpseo_twitter-title" of 1 item is not imported; whiteroom has no setting for it
+entries.xml:13:1: skipped: channel: the titles of 3 attachments are not imported; whiteroom media have no titles
+entries.xml:23:2: review: author "editor": the slug "editor" is made from the login, as the REST API did not give it; the author page of WordPress may have had another URL -> authors/aut_0000000000CP3ZAKM54NT8FZDT.json#/slug
+entries.xml:24:2: review: author "writer": the slug "writer" is made from the login, as the REST API did not give it; the author page of WordPress may have had another URL -> authors/aut_0000000000XCC758X7YMPSJ3AK.json#/slug
+entries.xml:315:3: skipped: item 14 (page "地図") postmeta "_wp_page_template": the page template "templates/retired.php" is not imported; pageTemplates of the settings maps it to a page template of the theme of the site -> revisions/rev_0000000000WZESGVDT74XYGZ0V.json#/template
+entries.xml:398:2: review: item 18 (page "準備中のページの子"): the parent, page 17, is not published here; the page is a draft here -> entries/ent_0000000000SJ4RZ9MRFCM0C7NT.json#/status
+entries.xml:424:2: review: item 19 (page "社内向けのページ"): the entry was private and protected by a password; it is a draft here, and the password is not imported -> entries/ent_0000000000NKVHPDS69M9NGDZZ.json#/status
+entries.xml:531:3: review: item 102 (post "秋のイベント案内") postmeta "_yoast_wpseo_title": the title for search engines "%%title%% %%primary_category%% %%sitename%%" is not imported: the import does not replace %%primary_category%% -> revisions/rev_0000000000XMFM39HD0M0CASFG.json#/seo/title
+entries.xml:595:2: changed: item 105 (post "カテゴリーの無い投稿"): the entry has no category; it has the default category "uncategorized" here, which {category} needs -> revisions/rev_00000000001ECGDVBRSV0ADXDN.json#/terms/category
+entries.xml:621:2: changed: item 106 (post "ガーデニング入門"): kept only the text of the HTML; lost <strong> -> revisions/rev_0000000000Z1CZFWWG6YTGN2TV.json#/excerpt
+entries.xml:769:2: changed: item 110 (post "Q&amp;A：<em>よくある質問</em>と &lt;初心者向け&gt;"): kept only the text of the HTML; lost <em> -> revisions/rev_00000000001FFGE6T21C7S8TJ1.json#/title
+entries.xml:796:2: review: item 111 (post): the entry cannot be published: /title: missing title; it is a draft here -> entries/ent_0000000000XB45MP1DSP1J5SJW.json#/status
+entries.xml:850:2: changed: item 113 (post "日付を決めた下書き"): the entry has no category; it has the default category "uncategorized" here, which {category} needs -> revisions/rev_0000000000TH3PF13CBEJXQX9K.json#/terms/category
+entries.xml:876:2: changed: item 114 (post "レビュー待ちの記事"): the entry has no category; it has the default category "uncategorized" here, which {category} needs -> revisions/rev_0000000000KHSXPYZE8RSGFDBP.json#/terms/category
+entries.xml:876:2: changed: item 114 (post "レビュー待ちの記事"): the status "pending" is a draft here -> entries/ent_0000000000MMY0KVMZRZEQGNC1.json#/status
+entries.xml:902:2: review: item 115 (post "非公開のお知らせ"): the entry was private; it is a draft here -> entries/ent_0000000000NN16ES4ZBG45ZM3F.json#/status
+entries.xml:929:2: review: item 116 (post "会員向けの記事"): the entry was protected by a password; it is a draft here, and the password is not imported -> entries/ent_0000000000B7W82R0TGGD0FB22.json#/status
+entries.xml:956:2: review: item 117 (post "予約の会員向けの記事"): the entry was protected by a password; it is a draft here, and the password is not imported -> entries/ent_0000000000VWW5CCF72ZTW1ZR2.json#/status
+entries.xml:1010:2: skipped: item 119 (post "削除した記事"): the entry is not imported: it is in the trash
+entries.xml:1069:2: skipped: item (works): the custom field "internal_memo" (2 items) of the post type works is not imported; fields.works of the settings maps it to a field of the schema file
+entries.xml:1108:3: changed: item 201 (works "駅前の再開発プロジェクト") postmeta "client": line breaks and tabs in the custom field "client" are spaces here -> revisions/rev_0000000000JBX8DDKTWX9BVJWQ.json#/fields/client
+entries.xml:1157:3: skipped: item 201 (works "駅前の再開発プロジェクト") postmeta "website": the title "プロジェクトの公式サイト" of the link of the custom field "website" is not imported -> revisions/rev_0000000000JBX8DDKTWX9BVJWQ.json#/fields/website
+entries.xml:1189:3: skipped: item 201 (works "駅前の再開発プロジェクト") postmeta "items_3_note": the sub field "note" of the custom field "items" is not imported; the field has no such field in the schema file -> revisions/rev_0000000000JBX8DDKTWX9BVJWQ.json#/fields/items
+entries.xml:1201:3: skipped: item 201 (works "駅前の再開発プロジェクト") postmeta "intro": the custom field "intro" is not imported: the import does not convert HTML into richText and blocks fields -> revisions/rev_0000000000JBX8DDKTWX9BVJWQ.json#/fields/intro
+entries.xml:1206:2: skipped: item 202 (works "空き地の活用計画"): the custom field "colors" is not imported: "gold" is not an option -> revisions/rev_00000000009PD3RCM9HT4ZVBMZ.json#/fields/colors
+entries.xml:1206:2: changed: item 202 (works "空き地の活用計画"): the slug "station-project" is also that of another entry of the type works; it is "station-project-2" here -> revisions/rev_00000000009PD3RCM9HT4ZVBMZ.json#/slug
+entries.xml:1240:3: skipped: item 202 (works "空き地の活用計画") postmeta "onsale": the custom field "onsale" is not imported: it is not a boolean -> revisions/rev_00000000009PD3RCM9HT4ZVBMZ.json#/fields/onsale
+entries.xml:1244:3: skipped: item 202 (works "空き地の活用計画") postmeta "cover": the custom field "cover" is not imported: attachment 7 is pdf, which the field does not accept (accept: image) -> revisions/rev_00000000009PD3RCM9HT4ZVBMZ.json#/fields/cover
+entries.xml:1253:2: skipped: item 211 (staff "山田 花子"): the content is not imported; the type staff has no body -> revisions/rev_0000000000NVQF2VV9W4CFRR7K.json
+entries.xml:1287:2: skipped: item 212 (staff "佐藤 次郎"): the content is not imported; the type staff has no body -> revisions/rev_0000000000GBA9YSC50VZ3ANNQ.json
+entries.xml:1287:2: review: item 212 (staff "佐藤 次郎"): the entry cannot be published: /fields/role: missing role; it is a draft here -> entries/ent_00000000004KR7QQV0N3V1Y90N.json#/status
+entries.xml:1317:2: skipped: item (product): 1 item of the post type product is not imported; define product in the schema file to import it

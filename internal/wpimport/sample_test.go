@@ -26,11 +26,12 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/wprest"
 )
 
-var update = flag.Bool("update", false, "rewrite the golden files in testdata/out, testdata/out-blocks and testdata/out-classic")
+var update = flag.Bool("update", false, "rewrite the golden files in testdata/out, testdata/out-blocks, testdata/out-classic and testdata/out-entries")
 
 // sampleOut holds the golden files of TestImportSample, which go test -update writes: settings.json and propose.txt, the
 // settings that the proposal gives and its report; and what the import makes of them, which is site/settings.json,
-// site/schema.yaml, terms/<ID>.json, authors/<ID>.json, media/<ID>.json and import.txt, the report of the import.
+// site/schema.yaml, terms/<ID>.json, authors/<ID>.json, media/<ID>.json, entries/<ID>.json, revisions/<ID>.json and
+// import.txt, the report of the import.
 const sampleOut = "testdata/out"
 
 func readTestdata(t *testing.T, name string) []byte {
@@ -73,29 +74,6 @@ func sampleImport(t *testing.T, rest bool) *Import {
 		imp.REST, imp.RESTFile = sampleREST(t), "site-rest.json"
 	}
 	return imp
-}
-
-// assignSample gives the front page, the page of the posts, the logo and the icon of the sample site the IDs that the
-// conversion of the entries and of the media will give them, and records them as it will.
-func assignSample(t *testing.T, imp *Import) {
-	t.Helper()
-	assign := func(n int64, kind content.RefKind, ref content.Ref) {
-		it := imp.WXR.Post(n)
-		if it == nil {
-			t.Fatalf("the sample has no item %d", n)
-		}
-		id, err := imp.IDs.Assign(PostObject(it), kind)
-		if err != nil {
-			t.Fatal(err)
-		}
-		imp.AddRef(kind, id, ref)
-	}
-	for _, n := range []int64{30, 31} {
-		assign(n, content.RefEntry, content.Ref{Type: content.TypePage, Language: "ja"})
-	}
-	for _, n := range []int64{50, 51} {
-		assign(n, content.RefMedia, content.Ref{Type: content.MediaImage})
-	}
 }
 
 func reportText(t *testing.T, rep *Report) string {
@@ -147,7 +125,9 @@ func TestImportSample(t *testing.T) {
 
 	// The import, with another import and another report, as the two runs of the command will have them.
 	imp = sampleImport(t, true)
-	assignSample(t, imp)
+	if err := imp.PlanEntries(settings, defs); err != nil {
+		t.Fatal(err)
+	}
 	if err := imp.PlanMedia(); err != nil {
 		t.Fatal(err)
 	}
@@ -155,17 +135,7 @@ func TestImportSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logo, icon := site.Logo, site.Icon
-	settingsDoc, err := site.MarshalSettings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	schemaDoc, err := site.MarshalSchema()
-	if err != nil {
-		t.Fatal(err)
-	}
-	golden["site/settings.json"] = string(settingsDoc) + "\n"
-	golden["site/schema.yaml"] = string(schemaDoc)
+	logo, icon, front, posts := site.Logo, site.Icon, maps.Clone(site.FrontPage), maps.Clone(site.PostsPage)
 	terms, err := imp.Terms(site)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +174,35 @@ func TestImportSample(t *testing.T) {
 		}
 		golden["media/"+m.ID+".json"] = string(b) + "\n"
 	}
+	docs, err := collectEntries(context.Background(), imp, settings, site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		entryDoc, err := d.Entry.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		revisionDoc, err := d.Revision.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		golden["entries/"+d.Entry.ID+".json"] = string(entryDoc) + "\n"
+		golden["revisions/"+d.RevisionID+".json"] = string(revisionDoc) + "\n"
+	}
 	golden["import.txt"] = reportText(t, imp.Report)
+
+	// The site settings are written after the entries, which can leave the front page and the posts page out of them.
+	settingsDoc, err := site.MarshalSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaDoc, err := site.MarshalSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden["site/settings.json"] = string(settingsDoc) + "\n"
+	golden["site/schema.yaml"] = string(schemaDoc)
 
 	// The documents are what the site directory will hold: they load, and the terms and the authors read back the same.
 	loaded, err := content.LoadSite(content.SiteFile{Name: "site/settings.json", Data: settingsDoc},
@@ -229,6 +227,14 @@ func TestImportSample(t *testing.T) {
 	checkSampleMedia(t, imp, loaded, media, filesPath, golden)
 	if site.Logo != logo || site.Icon != icon || logo == "" || icon == "" {
 		t.Errorf("the logo and the icon are %q and %q after Media, want %q and %q, which are set", site.Logo, site.Icon, logo, icon)
+	}
+	if !maps.Equal(site.FrontPage, front) || !maps.Equal(site.PostsPage, posts) || front["ja"] == "" || posts["ja"] == "" {
+		t.Errorf("the front page and the posts page are %v and %v after Entries, want %v and %v, which are set", site.FrontPage, site.PostsPage, front, posts)
+	}
+	// The posts 20 and 21 and the pages 30 to 33 are published; the post 22 is a draft.
+	counts := checkSampleEntries(t, imp, loaded, docs, nil)
+	if counts.paths != 6 || counts.protected != 0 || len(docs) != 8 {
+		t.Errorf("the sample has %d entries, %d paths compared and %d protected items, want 8, 6 and 0", len(docs), counts.paths, counts.protected)
 	}
 	for name, text := range golden {
 		if strings.Contains(text, "@") {
@@ -306,6 +312,61 @@ func checkSampleMedia(t *testing.T, imp *Import, site *content.Site, media []con
 	if got := imp.MediaURLs(); !slices.Equal(got, wantURLs) {
 		t.Errorf("MediaURLs = %+v, want %+v", got, wantURLs)
 	}
+}
+
+// sampleEntryCounts is what checkSampleEntries counted, which the test of each sample compares with what its WXR has.
+type sampleEntryCounts struct {
+	paths     int // the published posts and pages whose path was compared with the path of their link
+	protected int // the items that are private or have a password, which are all drafts
+}
+
+// checkSampleEntries checks what the issue asks of the entries of a sample WXR, which site, read back from the documents of
+// the settings that the import made, and docs, what Entries gave, must hold: each entry and revision passes the validation
+// of an import and reads back from its JSON, and the rules across the entries hold (checkEntries); the path that the site
+// gives to each published post and page is that of the link in the WXR; and every private item and every item with a
+// password is a draft. except has the path, as the site writes it, of each published post or page whose link is not its
+// path: the test must give each, and it must not be the path of the link.
+func checkSampleEntries(t *testing.T, imp *Import, site *content.Site, docs []*EntryDoc, except map[int64]string) sampleEntryCounts {
+	t.Helper()
+	checkEntries(t, imp, site, docs)
+	var n sampleEntryCounts
+	home := imp.urlIndex().home
+	compared := make(map[int64]bool)
+	for _, d := range docs {
+		it := imp.WXR.Post(d.Post)
+		if it == nil || d.Entry.Status != content.StatusPublished || (d.Entry.Type != content.TypePost && d.Entry.Type != content.TypePage) {
+			continue
+		}
+		path, err := site.EntryPath(&d.Entry, &d.Revision, imp.PathRef)
+		want, ok := linkPath(home, it.Link)
+		if wantPath, exception := except[d.Post]; exception {
+			if rawPath(wantPath) == want {
+				t.Errorf("the path of item %d must be %q, which is the path of its link: it is not an exception", d.Post, wantPath)
+			}
+			compared[d.Post] = true
+			want, ok = rawPath(wantPath), true
+		}
+		if err != nil || !ok || rawPath(path) != want {
+			t.Errorf("the path of the published item %d is %q, %v, want %q, %v (its link is %s)", d.Post, path, err, want, ok, it.Link)
+		}
+		n.paths++
+	}
+	for post, path := range except {
+		if !compared[post] {
+			t.Errorf("the exception %q of item %d was not used: it is not a published post or page", path, post)
+		}
+	}
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		if typeName(it.Type, site) == "" || discardedStatus(it.Status) != "" || (it.Status != "private" && it.Password == "") {
+			continue
+		}
+		n.protected++
+		if d := docOf(docs, it.ID); d == nil || d.Entry.Status != content.StatusDraft {
+			t.Errorf("the item %d is %q, with a password %t: it must be a draft that was given, got %+v", it.ID, it.Status, it.Password != "", d)
+		}
+	}
+	return n
 }
 
 // goldenFiles lists the files under dir by their paths from it, with / for the separator.
@@ -422,7 +483,12 @@ func TestImportWithoutREST(t *testing.T) {
 
 	// The time zone is left empty, so the settings are not complete until it is entered.
 	imp = sampleImport(t, false)
-	assignSample(t, imp)
+	if err := imp.PlanEntries(proposed, defs); err != nil {
+		t.Fatal(err)
+	}
+	if err := imp.PlanMedia(); err != nil {
+		t.Fatal(err)
+	}
 	_, err = imp.Site(proposed, defs)
 	var errs content.Errors
 	if !errors.As(err, &errs) || len(errs) != 1 || errs[0].Path != "/site/timeZone" || errs[0].Line != 0 || errs[0].Column != 0 {

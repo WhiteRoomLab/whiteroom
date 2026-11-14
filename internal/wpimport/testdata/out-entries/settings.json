@@ -1,0 +1,84 @@
+{
+  "site": {
+    "name": "見本のブログ",
+    "tagline": "エントリーの取り込みの見本です",
+    "url": "https://example.com",
+    "language": "ja",
+    "timeZone": "",
+    "postsPerPage": 10,
+    "noindex": false,
+    "frontPage": 10,
+    "postsPage": 0,
+    "logo": 0,
+    "icon": 0,
+    "allowHtml": false
+  },
+  "urls": {
+    "post": "/{category}/{slug}/",
+    "page": "/{path}/",
+    "author": "/author/{slug}/",
+    "taxonomies": {
+      "category": "/category/{path}/",
+      "genre": "/genre/{slug}/",
+      "tag": "/tag/{slug}/"
+    },
+    "types": {
+      "staff": {
+        "url": "/staff/{slug}/",
+        "archive": ""
+      },
+      "works": {
+        "url": "/works/{slug}/",
+        "archive": ""
+      }
+    }
+  },
+  "defaultCategory": "uncategorized",
+  "pageTemplates": {
+    "templates/landing.php": "landing",
+    "templates/retired.php": "retired",
+    "templates/wide.php": "wide"
+  },
+  "seo": {
+    "plugin": "yoast"
+  },
+  "fields": {
+    "post": {
+      "subtitle": "subtitle"
+    },
+    "staff": {
+      "joined": "joined",
+      "role": "role"
+    },
+    "works": {
+      "client": "client",
+      "colors": "colors",
+      "cover": "cover",
+      "internal_memo": "",
+      "intro": "intro",
+      "items": "items",
+      "keywords": "keywords",
+      "maker": "maker",
+      "manual": "manual",
+      "onsale": "onsale",
+      "opens": "opens",
+      "related": "related",
+      "since": "since",
+      "urls": "urls",
+      "website": "website",
+      "work_year": ""
+    }
+  },
+  "blocks": {
+    "presets": {
+      "color": {},
+      "gradient": {},
+      "fontSize": {},
+      "fontFamily": {},
+      "spacing": {}
+    },
+    "variants": {},
+    "marks": {},
+    "imageSizes": {}
+  }
+}
