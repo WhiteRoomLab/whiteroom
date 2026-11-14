@@ -47,7 +47,7 @@ func (tx *Tx) Seq() uint64 {
 	if tx.done {
 		return 0
 	}
-	return tx.snapshot().seq
+	return uint64(tx.snapshot().seq)
 }
 
 // Get returns the value of key in table, which must not be changed.

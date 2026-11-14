@@ -17,7 +17,7 @@ type op struct {
 	hash     [32]byte
 	size     int64
 	number   uint64
-	seq      uint64
+	seq      seqNum
 	valueOff int
 }
 
@@ -30,27 +30,27 @@ type baseEnd struct {
 // record is a decoded record body.
 type record struct {
 	typ  recType
-	seq  uint64
+	seq  seqNum
 	part uint64  // base
 	ops  []op    // commit, base
 	end  baseEnd // base-end
 }
 
-func appendBodyStart(dst []byte, typ recType, seq uint64) []byte {
-	return binary.LittleEndian.AppendUint64(append(dst, byte(typ)), seq)
+func appendBodyStart(dst []byte, typ recType, seq seqNum) []byte {
+	return binary.LittleEndian.AppendUint64(append(dst, byte(typ)), uint64(seq))
 }
 
-func appendCommit(dst []byte, seq uint64, ops []op) []byte {
+func appendCommit(dst []byte, seq seqNum, ops []op) []byte {
 	start := len(dst)
 	return appendOps(appendBodyStart(dst, recCommit, seq), start, ops)
 }
 
-func appendBase(dst []byte, seq, part uint64, ops []op) []byte {
+func appendBase(dst []byte, seq seqNum, part uint64, ops []op) []byte {
 	start := len(dst)
 	return appendOps(binary.AppendUvarint(appendBodyStart(dst, recBase, seq), part), start, ops)
 }
 
-func appendBaseEnd(dst []byte, seq uint64, e baseEnd) []byte {
+func appendBaseEnd(dst []byte, seq seqNum, e baseEnd) []byte {
 	dst = appendBodyStart(dst, recBaseEnd, seq)
 	for _, v := range [...]uint64{e.parts, e.keys, e.objects, e.events, e.nextEvent} {
 		dst = binary.AppendUvarint(dst, v)
@@ -85,7 +85,7 @@ func appendOps(dst []byte, start int, ops []op) []byte {
 			}
 			dst = binary.AppendUvarint(append(dst, o.hash[:]...), uint64(o.size))
 		case opEvent:
-			dst = binary.AppendUvarint(binary.AppendUvarint(dst, o.number), o.seq)
+			dst = binary.AppendUvarint(binary.AppendUvarint(dst, o.number), uint64(o.seq))
 			dst = appendValue(dst, start, o)
 		default:
 			panic(fmt.Sprintf("logdb: unknown op %d", o.code))
@@ -225,7 +225,7 @@ func decodeOps(p []byte, base int) ([]op, string) {
 			o.size = int64(size)
 		case opEvent:
 			o.number = d.uvarint()
-			o.seq = d.uvarint()
+			o.seq = seqNum(d.uvarint())
 			o.value, o.valueOff = d.value(base)
 		default:
 			d.fail(fmt.Sprintf("unknown op %d", o.code))
@@ -247,7 +247,7 @@ func parseBody(b []byte) (record, string) {
 	if len(b) < minBody {
 		return record{}, "truncated body"
 	}
-	r := record{typ: recType(b[0]), seq: binary.LittleEndian.Uint64(b[1:])}
+	r := record{typ: recType(b[0]), seq: seqNum(binary.LittleEndian.Uint64(b[1:]))}
 	d := &decoder{b: b, i: minBody, short: "truncated body"}
 	switch r.typ {
 	case recCommit:

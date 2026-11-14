@@ -79,8 +79,9 @@ func checkType(p string, mode fs.FileMode, dir bool) error {
 
 // segFile is a segment in log/.
 type segFile struct {
-	name       string
-	gen, index uint64
+	name  string
+	gen   genNum
+	index segNum
 }
 
 // listSegments returns the segments in log/, in the order of generation and index.
@@ -110,7 +111,7 @@ func listSegments(fsys vfs.FS) ([]segFile, error) {
 
 // generation is a generation of the log with its segments, in the order of their indexes.
 type generation struct {
-	gen  uint64
+	gen  genNum
 	segs []segFile
 }
 
@@ -131,7 +132,7 @@ func generations(segs []segFile) []generation {
 // generation from the last one, and syncs log/ after each, so that a crash leaves no gap in it either.
 func (g generation) consecutive(fsys vfs.FS) error {
 	for i, s := range g.segs {
-		if s.index != uint64(i+1) {
+		if s.index != segNum(i+1) {
 			return corruptFile(path.Join(fsys.Name(), "log"), fmt.Sprintf("missing segment %d of generation %d", i+1, g.gen))
 		}
 	}
@@ -142,13 +143,13 @@ func (g generation) consecutive(fsys vfs.FS) error {
 // the parts 0, 1, ..., and its base-end, all with the sequence number S of its first segment; then the commits S+1,
 // S+2, ... In generation 1, the commits 1, 2, ...
 type sequence struct {
-	gen  uint64
-	seq  uint64 // of the last record; S in the base
+	gen  genNum
+	seq  seqNum // of the last record; S in the base
 	base bool   // in the base of a generation after the first
 	part uint64 // of the next base record
 }
 
-func newSequence(gen uint64) sequence {
+func newSequence(gen genNum) sequence {
 	return sequence{gen: gen, base: gen > 1}
 }
 
@@ -210,7 +211,7 @@ func (q *sequence) advance(rec *record) {
 // follows reports whether a record of the type typ with the sequence number seq, after an invalid frame, shows that
 // the frame is not a torn tail: a commit after the last one, or, in the base, which is synced before its base-end is
 // written, a record that is not a base record.
-func (q *sequence) follows(typ recType, seq uint64) bool {
+func (q *sequence) follows(typ recType, seq seqNum) bool {
 	if q.base {
 		return typ != recBase
 	}
@@ -222,19 +223,19 @@ func (q *sequence) follows(typ recType, seq uint64) bool {
 type recovery struct {
 	st      *state
 	seg     *segment // the segment that the next record goes in, open to write
-	cut     int64    // where seg has a torn tail, or -1
+	cut     segOff   // where seg has a torn tail, or -1
 	remove  string   // a torn last segment, or ""
 	head    headWriter
 	info    RecoveryInfo
 	ckp     ckpMark  // the checkpoint that pairs with the log, or zero
 	ckpLog  int64    // the size of the log up to the end of the record of that checkpoint
-	applied []uint64 // the segments whose records it has applied, unless head names them, for a reader to sync
+	applied []segNum // the segments whose records it has applied, unless head names them, for a reader to sync
 	read    readFunc
 	lim     *headSlot // a reader's: the head of the writer that runs, which bounds what it reads
 }
 
 // readFunc reads the bytes of the segment s from off up to end, or to its end if end is negative.
-type readFunc func(s segFile, off, end int64) ([]byte, error)
+type readFunc func(s segFile, off, end segOff) ([]byte, error)
 
 func (r *recovery) close() {
 	if r.seg != nil && r.seg.f != nil {
@@ -248,7 +249,7 @@ func (r *recovery) close() {
 // recoverLog reads the log, the checkpoint and the head of the store in fsys, whose locks the writer holds, decides
 // what Open recovers, and opens the files that it goes on with.
 func recoverLog(fsys vfs.FS) (*recovery, error) {
-	r, err := decide(fsys, nil, func(s segFile, off, end int64) ([]byte, error) {
+	r, err := decide(fsys, nil, func(s segFile, off, end segOff) ([]byte, error) {
 		return readRange(fsys, s.name, off, end, false)
 	})
 	if err != nil {
@@ -293,7 +294,7 @@ func decide(fsys vfs.FS, lim *headSlot, read readFunc) (*recovery, error) {
 			return nil, err
 		}
 		if !found {
-			r.info.IgnoredGenerations = append(r.info.IgnoredGenerations, g.gen)
+			r.info.IgnoredGenerations = append(r.info.IgnoredGenerations, uint64(g.gen))
 		}
 	}
 	switch {
@@ -308,7 +309,7 @@ func decide(fsys vfs.FS, lim *headSlot, read readFunc) (*recovery, error) {
 	}
 	slices.Reverse(r.info.IgnoredGenerations)
 	r.st.segments = int(r.seg.index)
-	r.info.Generation, r.info.Seq = r.st.gen, r.st.seq
+	r.info.Generation, r.info.Seq = uint64(r.st.gen), uint64(r.st.seq)
 	return r, nil
 }
 
@@ -352,7 +353,7 @@ func (r *recovery) recover(fsys vfs.FS, g generation, ck *checkpoint) (bool, err
 // read.
 func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bool, error) {
 	h := ck.h
-	if h.seg > uint64(len(g.segs)) {
+	if h.seg > segNum(len(g.segs)) {
 		return false, nil
 	}
 	s := g.segs[h.seg-1]
@@ -365,7 +366,7 @@ func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bo
 		return false, err
 	}
 	st := ck.st
-	st.end = h.off + int64(n)
+	st.end = h.off + segOff(n)
 	for _, prev := range g.segs[:h.seg-1] {
 		info, err := lstatEntry(fsys, prev.name, false)
 		if err != nil {
@@ -373,7 +374,7 @@ func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bo
 		}
 		st.logBytes += info.Size()
 	}
-	r.ckp, r.ckpLog = ckpMark{gen: h.gen, seq: h.seq}, st.logBytes+st.end
+	r.ckp, r.ckpLog = ckpMark{gen: h.gen, seq: h.seq}, st.logBytes+int64(st.end)
 	q := sequence{gen: g.gen, seq: h.seq}
 	sc, err := r.scanner(fsys, g, st, &q, ck.own)
 	if err != nil {
@@ -384,7 +385,7 @@ func (r *recovery) fromCheckpoint(fsys vfs.FS, g generation, ck *checkpoint) (bo
 		if sc.limit != nil && sc.limit.seq == h.seq && !atHead(st, *sc.limit) {
 			return false, headMismatch(fsys)
 		}
-		st.logBytes += st.end
+		st.logBytes += int64(st.end)
 		seg := &segment{name: s.name, gen: g.gen, index: s.index, firstSeq: sh.firstSeq, salt: sh.salt, end: st.end, records: 1}
 		r.use(fsys, replayed{complete: true, st: st, seg: seg, cut: -1}, sc)
 		return true, nil
@@ -411,7 +412,7 @@ func (ck *checkpoint) pairs(p string, b []byte) (segHeader, int, error) {
 	switch {
 	case errors.As(err, &ve):
 		return sh, 0, err
-	case err != nil, sh.firstSeq > h.seq, h.off == segHeaderSize && sh.firstSeq != h.seq, h.off >= int64(len(b)):
+	case err != nil, sh.firstSeq > h.seq, h.off == segHeaderSize && sh.firstSeq != h.seq, h.off >= segOff(len(b)):
 		return sh, 0, nil
 	}
 	body, n, reason := parseFrame(b[h.off:], sh.salt)
@@ -432,7 +433,7 @@ func (r *recovery) scanner(fsys vfs.FS, g generation, st *state, q *sequence, ow
 	switch {
 	case r.lim == nil:
 	case r.lim.gen == g.gen:
-		if r.lim.seg > uint64(len(g.segs)) {
+		if r.lim.seg > segNum(len(g.segs)) {
 			return nil, headMismatch(fsys)
 		}
 		sc.g.segs, sc.limit = g.segs[:r.lim.seg], r.lim
@@ -444,7 +445,7 @@ func (r *recovery) scanner(fsys vfs.FS, g generation, st *state, q *sequence, ow
 
 // use makes out, the scan sc of the current generation, what r has found.
 func (r *recovery) use(fsys vfs.FS, out replayed, sc *scan) {
-	r.st, r.seg, r.cut, r.info.TruncatedAt, r.info.Replayed = out.st, out.seg, out.cut, out.cut, out.records
+	r.st, r.seg, r.cut, r.info.TruncatedAt, r.info.Replayed = out.st, out.seg, out.cut, int64(out.cut), out.records
 	if out.remove != "" {
 		r.remove, r.info.RemovedSegment = out.remove, path.Join(fsys.Name(), out.remove)
 	}
@@ -474,15 +475,15 @@ type replayed struct {
 	complete bool     // its base, if it has one, is complete
 	st       *state   // with every record that the scan has read applied
 	seg      *segment // the last segment that stays
-	cut      int64    // where seg has a torn tail, or -1
+	cut      segOff   // where seg has a torn tail, or -1
 	remove   string   // a torn last segment, or ""
 	records  int      // applied
-	applied  []uint64 // the segments of those records
+	applied  []segNum // the segments of those records
 }
 
 // run scans the segments of g from g.segs[i]: from its start if off is 0; else after the record that ends at off in it,
 // whose header is h, with b, if not nil, the bytes of the segment from off on.
-func (sc *scan) run(i int, h segHeader, off int64, b []byte) (replayed, error) {
+func (sc *scan) run(i int, h segHeader, off segOff, b []byte) (replayed, error) {
 	out := replayed{st: sc.st, cut: -1}
 	for ; i < len(sc.g.segs) && out.cut < 0 && out.remove == "" && !sc.ended(); i++ {
 		if err := sc.segment(&out, i, h, off, b); err != nil {
@@ -500,12 +501,12 @@ func (sc *scan) ended() bool {
 }
 
 // segment scans g.segs[i] from off, as run says, and adds what it has found to out.
-func (sc *scan) segment(out *replayed, i int, h segHeader, off int64, b []byte) error {
+func (sc *scan) segment(out *replayed, i int, h segHeader, off segOff, b []byte) error {
 	s := sc.g.segs[i]
 	st, q := sc.st, sc.q
 	last := i == len(sc.g.segs)-1
 	p := path.Join(sc.fsys.Name(), s.name)
-	end := int64(-1) // of what is read of the segment: the end of its file, or of the record of the limit
+	end := segOff(-1) // of what is read of the segment: the end of its file, or of the record of the limit
 	if sc.limit != nil && s.index == sc.limit.seg {
 		end = sc.limit.end
 	}
@@ -538,11 +539,11 @@ func (sc *scan) segment(out *replayed, i int, h segHeader, off int64, b []byte) 
 			return err
 		}
 	case end >= 0:
-		b = b[:max(0, min(int64(len(b)), end-off))]
+		b = b[:max(0, min(segOff(len(b)), end-off))]
 	}
 	seg.firstSeq, seg.salt = h.firstSeq, h.salt
 	from, applied := off, false
-	for off < from+int64(len(b)) && !sc.ended() {
+	for off < from+segOff(len(b)) && !sc.ended() {
 		fb := b[off-from:]
 		body, n, reason := parseFrame(fb, h.salt)
 		if reason != "" {
@@ -550,10 +551,10 @@ func (sc *scan) segment(out *replayed, i int, h segHeader, off int64, b []byte) 
 			case end >= 0 && reason == "truncated record":
 				// The frame goes on after the end that the limit names: the caller finds that they differ.
 			case sc.limit != nil || !last || !mayBeTorn(reason):
-				return &CorruptError{Path: p, Offset: off, Reason: reason}
+				return &CorruptError{Path: p, Offset: int64(off), Reason: reason}
 			default:
 				if at := findRecord(b, off-from, h.salt, q.follows); at >= 0 {
-					return &CorruptError{Path: p, Offset: off, Reason: fmt.Sprintf("a valid record follows at offset %d", from+at)}
+					return &CorruptError{Path: p, Offset: int64(off), Reason: fmt.Sprintf("a valid record follows at offset %d", from+at)}
 				}
 			}
 			out.cut = off
@@ -567,11 +568,11 @@ func (sc *scan) segment(out *replayed, i int, h segHeader, off int64, b []byte) 
 			reason = st.applyRecord(sc.own, &rec, s.index, off)
 		}
 		if reason != "" {
-			return &CorruptError{Path: p, Offset: off, Reason: reason}
+			return &CorruptError{Path: p, Offset: int64(off), Reason: reason}
 		}
 		q.advance(&rec)
 		st.seq, st.seg, st.off, st.lastCRC = rec.seq, s.index, off, binary.LittleEndian.Uint32(fb[4:])
-		off += int64(n)
+		off += segOff(n)
 		st.end = off
 		seg.records++
 		out.records++
@@ -584,7 +585,7 @@ func (sc *scan) segment(out *replayed, i int, h segHeader, off int64, b []byte) 
 	if !last && seg.records == 0 {
 		return corruptFile(p, "no records")
 	}
-	st.logBytes += seg.end
+	st.logBytes += int64(seg.end)
 	out.seg = seg
 	return nil
 }
@@ -598,12 +599,12 @@ func mayBeTorn(reason string) bool {
 
 // findRecord returns the first offset after off in b, a segment with salt, of a frame whose CRC verifies and whose
 // record follows accepts by its type and sequence number, or -1.
-func findRecord(b []byte, off int64, salt uint64, follows func(typ recType, seq uint64) bool) int64 {
-	for at := off + 8; at+8 <= int64(len(b)); at += 8 {
+func findRecord(b []byte, off segOff, salt uint64, follows func(typ recType, seq seqNum) bool) segOff {
+	for at := off + 8; at+8 <= segOff(len(b)); at += 8 {
 		if _, _, reason := parseFrame(b[at:], salt); reason != "" && mayBeTorn(reason) {
 			continue
 		}
-		if follows(recType(b[at+8]), binary.LittleEndian.Uint64(b[at+9:])) { // the frame is complete: its body has type and seq
+		if follows(recType(b[at+8]), seqNum(binary.LittleEndian.Uint64(b[at+9:]))) { // the frame is complete: its body has type and seq
 			return at
 		}
 	}
@@ -642,7 +643,7 @@ func (r *recovery) apply(fsys vfs.FS) error {
 		}
 	}
 	if r.cut >= 0 {
-		if err := r.seg.f.Truncate(r.cut); err != nil {
+		if err := r.seg.f.Truncate(int64(r.cut)); err != nil {
 			return err
 		}
 	}
@@ -702,7 +703,7 @@ func readAt(f vfs.File, b []byte, off int64, path string) error {
 }
 
 // readRange reads the file name as readFrom does.
-func readRange(fsys vfs.FS, name string, off, end int64, short bool) ([]byte, error) {
+func readRange(fsys vfs.FS, name string, off, end segOff, short bool) ([]byte, error) {
 	f, err := fsys.Open(name)
 	if err != nil {
 		return nil, err
@@ -713,13 +714,13 @@ func readRange(fsys vfs.FS, name string, off, end int64, short bool) ([]byte, er
 
 // readFrom reads the bytes of f, the file at path p, from off up to end, or to its end if end is negative. If short,
 // a file that ends sooner gives the bytes that it has: a writer in another process may cut what it has not committed.
-func readFrom(f vfs.File, p string, off, end int64, short bool) ([]byte, error) {
+func readFrom(f vfs.File, p string, off, end segOff, short bool) ([]byte, error) {
 	if end < 0 {
 		info, err := f.Stat()
 		if err != nil {
 			return nil, err
 		}
-		end = info.Size()
+		end = segOff(info.Size())
 	}
 	if end < off {
 		return nil, nil
@@ -728,7 +729,7 @@ func readFrom(f vfs.File, p string, off, end int64, short bool) ([]byte, error) 
 		return nil, fmt.Errorf("%s: too large to read", p)
 	}
 	b := make([]byte, end-off)
-	n, err := f.ReadAt(b, off)
+	n, err := f.ReadAt(b, int64(off))
 	switch {
 	case n == len(b):
 		return b, nil

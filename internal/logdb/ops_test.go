@@ -53,7 +53,7 @@ func randomOps(rng *rand.Rand, n int) []op {
 		case 3:
 			ops[i] = op{code: opFile, hash: hashOf(byte(i)), size: rng.Int64()}
 		default:
-			ops[i] = op{code: opEvent, number: rng.Uint64(), seq: rng.Uint64(), value: value}
+			ops[i] = op{code: opEvent, number: rng.Uint64(), seq: seqNum(rng.Uint64()), value: value}
 		}
 	}
 	return ops

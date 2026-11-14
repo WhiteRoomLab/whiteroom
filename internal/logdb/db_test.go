@@ -81,7 +81,7 @@ func TestCreateLayout(t *testing.T) {
 		t.Errorf("after Close:\n%s\nwant:\n%s", got, want)
 	}
 	_, offs := frames(t, fsys, seg1)
-	if s := readHeadFile(t, fsys); s.counter != 4 || s.seq != 1 || s.seg != 1 || s.end != fileSize(t, fsys, seg1) ||
+	if s := readHeadFile(t, fsys); s.counter != 4 || s.seq != 1 || s.seg != 1 || int64(s.end) != fileSize(t, fsys, seg1) ||
 		s.crc != crcAt(t, fsys, seg1, offs[0]) {
 		t.Errorf("head after Close: %+v", s)
 	}
@@ -266,7 +266,7 @@ func TestReopen(t *testing.T) {
 	}
 	// head names the last record.
 	_, offs := frames(t, fsys, seg1)
-	if s := readHeadFile(t, fsys); s.seq != 5 || s.seg != 1 || s.end != fileSize(t, fsys, seg1) ||
+	if s := readHeadFile(t, fsys); s.seq != 5 || s.seg != 1 || int64(s.end) != fileSize(t, fsys, seg1) ||
 		s.crc != crcAt(t, fsys, seg1, offs[len(offs)-1]) || s.gen != 1 {
 		t.Errorf("head after reopening: %+v", s)
 	}
@@ -801,11 +801,11 @@ func TestRollover(t *testing.T) {
 	}
 	first := uint64(1)
 	for i, name := range names {
-		if name != segName(1, uint64(i+1)) {
+		if name != segName(1, segNum(i+1)) {
 			t.Fatalf("segment %d: %s", i+1, name)
 		}
 		h, offs := frames(t, fsys, name)
-		if h.firstSeq != first || len(offs) == 0 {
+		if uint64(h.firstSeq) != first || len(offs) == 0 {
 			t.Errorf("%s: first seq %d, want %d; %d records", name, h.firstSeq, first, len(offs))
 		}
 		if size := fileSize(t, fsys, name); size > o.SegmentBytes && len(offs) > 1 {

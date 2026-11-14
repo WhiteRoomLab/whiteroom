@@ -61,7 +61,7 @@ func (db *DB) compact(ctx context.Context, r Rewrite) error {
 // removeOthers removes the segments of the generations other than gen: incomplete newer ones, which a compaction that
 // failed has left, and older ones. It removes the last one first and syncs log/ after each, so that a crash leaves no
 // gap in a newer generation.
-func (db *DB) removeOthers(gen uint64) error {
+func (db *DB) removeOthers(gen genNum) error {
 	segs, err := listSegments(db.fsys)
 	if err != nil {
 		return err
@@ -185,7 +185,7 @@ func (c *compaction) addEvents(ctx context.Context) error {
 			}
 			data := p.value[:len(p.value):len(p.value)]
 			if c.r.Event != nil {
-				d, keep := c.r.Event(Event{Number: p.number, Seq: p.seq, Data: clone(p.value)})
+				d, keep := c.r.Event(Event{Number: p.number, Seq: uint64(p.seq), Data: clone(p.value)})
 				if !keep {
 					continue
 				}
@@ -258,7 +258,7 @@ func (c *compaction) write(body []byte, rec *record, end bool) error {
 		return fmt.Errorf("a base record is too large: %d bytes (max %d)", len(body), maxBody)
 	}
 	n := int64(frameLen(len(body)))
-	if seg := c.last(); seg.records > 0 && seg.end+n > c.db.o.SegmentBytes {
+	if seg := c.last(); seg.records > 0 && int64(seg.end)+n > c.db.o.SegmentBytes {
 		if err := c.rollover(); err != nil {
 			return err
 		}
@@ -275,7 +275,7 @@ func (c *compaction) write(body []byte, rec *record, end bool) error {
 		return err
 	}
 	c.st.seg, c.st.off, c.st.lastCRC = seg.index, seg.end, binary.LittleEndian.Uint32(frame[4:])
-	seg.end += n
+	seg.end += segOff(n)
 	seg.records++
 	c.st.end = seg.end
 	c.st.logBytes += n
@@ -333,7 +333,7 @@ func (c *compaction) finish() error {
 
 // removeGeneration removes the segments of the old generation gen. It opens them first, so that the Views that read
 // the old state can go on reading objects in them; the handles close them with the store.
-func (db *DB) removeGeneration(gen uint64) error {
+func (db *DB) removeGeneration(gen genNum) error {
 	segs, err := listSegments(db.fsys)
 	if err != nil {
 		return err

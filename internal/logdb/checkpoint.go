@@ -16,7 +16,10 @@ import (
 )
 
 // ckpMark names the state of a checkpoint: its generation and the sequence number of its record.
-type ckpMark struct{ gen, seq uint64 }
+type ckpMark struct {
+	gen genNum
+	seq seqNum
+}
 
 func (m ckpMark) before(st *state) bool {
 	return m.gen < st.gen || m.gen == st.gen && m.seq < st.seq
@@ -158,11 +161,11 @@ func (d *decoder) ckpObjects(h ckpHeader, own *owner) pmap[objLoc] {
 		switch loc.placement {
 		case placeInline:
 			seg, off, size := d.uvarint(), d.uvarint(), d.uvarint()
-			if d.reason == "" && (seg == 0 || seg > h.seg || off < segHeaderSize+8 || off > math.MaxInt64 ||
+			if d.reason == "" && (seg == 0 || seg > uint64(h.seg) || off < segHeaderSize+8 || off > math.MaxInt64 ||
 				size > math.MaxInt64-off) {
 				d.fail(fmt.Sprintf("bad location of object %x", hash[:]))
 			}
-			loc.seg, loc.off, loc.size = seg, int64(off), int64(size)
+			loc.seg, loc.off, loc.size = segNum(seg), segOff(off), int64(size)
 		case placeFile:
 			size := d.uvarint()
 			if d.reason == "" && size > math.MaxInt64 {
@@ -301,7 +304,7 @@ func writeCheckpoint(f vfs.File, st *state) error {
 		w.str(k)
 		w.u8(byte(loc.placement))
 		if loc.placement == placeInline {
-			w.uvarint(loc.seg)
+			w.uvarint(uint64(loc.seg))
 			w.uvarint(uint64(loc.off))
 		}
 		w.uvarint(uint64(loc.size))

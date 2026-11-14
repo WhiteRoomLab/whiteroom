@@ -19,38 +19,41 @@ type handles struct {
 	closed bool               // by Close
 }
 
-type segID struct{ gen, index uint64 }
+type segID struct {
+	gen   genNum
+	index segNum
+}
 
 func newHandles(fsys vfs.FS) *handles {
 	return &handles{fsys: fsys, files: map[segID]vfs.File{}}
 }
 
 // add makes f the file of the segment index of generation gen, which the handles then close.
-func (h *handles) add(gen, index uint64, f vfs.File) {
+func (h *handles) add(gen genNum, index segNum, f vfs.File) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.files[segID{gen, index}] = f
 }
 
 // readAt reads len(b) bytes at off of the segment index of generation gen.
-func (h *handles) readAt(gen, index uint64, b []byte, off int64) error {
+func (h *handles) readAt(gen genNum, index segNum, b []byte, off segOff) error {
 	f, err := h.file(gen, index)
 	if err != nil {
 		return err
 	}
-	return readAt(f, b, off, path.Join(h.fsys.Name(), segName(gen, index)))
+	return readAt(f, b, int64(off), path.Join(h.fsys.Name(), segName(gen, index)))
 }
 
 // readPrefix reads the segment index of generation gen as readPrefix reads a file.
-func (h *handles) readPrefix(gen, index uint64, limit int64) ([]byte, error) {
+func (h *handles) readPrefix(gen genNum, index segNum, limit segOff) ([]byte, error) {
 	f, err := h.file(gen, index)
 	if err != nil {
 		return nil, err
 	}
-	return readOpen(f, path.Join(h.fsys.Name(), segName(gen, index)), limit)
+	return readOpen(f, path.Join(h.fsys.Name(), segName(gen, index)), int64(limit))
 }
 
-func (h *handles) file(gen, index uint64) (vfs.File, error) {
+func (h *handles) file(gen genNum, index segNum) (vfs.File, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.files == nil {
@@ -70,7 +73,7 @@ func (h *handles) file(gen, index uint64) (vfs.File, error) {
 }
 
 // drop closes the file of the segment index of generation gen, if the handles have it, and forgets it.
-func (h *handles) drop(gen, index uint64) {
+func (h *handles) drop(gen genNum, index segNum) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	id := segID{gen, index}

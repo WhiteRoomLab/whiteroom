@@ -159,7 +159,7 @@ func TestBackupCopiesCheckpointAndObjects(t *testing.T) {
 	change(t, db, 5)
 	change(t, db, 6)
 	st := db.cur.Load()
-	want := Position{Generation: 1, Segment: st.seg, End: st.end, Seq: 7, CRC: st.lastCRC}
+	want := Position{Generation: 1, Segment: uint64(st.seg), End: int64(st.end), Seq: 7, CRC: st.lastCRC}
 	dst := simfs.New("/backup")
 	p, err := Backup(ctx, fsys, dst, func(p Position) error {
 		if p != want {
@@ -198,10 +198,10 @@ func TestBackupCopiesCheckpointAndObjects(t *testing.T) {
 	if err != nil || p != want {
 		t.Fatalf("Backup: %+v, %v", p, err)
 	}
-	if ckpOf(t, fsys).seq != 8 || fileSize(t, dst, segName(1, p.Segment)) != p.End ||
-		fileSize(t, fsys, segName(1, p.Segment)) <= p.End {
-		t.Errorf("the copy is not cut at the position: %d bytes of %d", fileSize(t, dst, segName(1, p.Segment)),
-			fileSize(t, fsys, segName(1, p.Segment)))
+	if ckpOf(t, fsys).seq != 8 || fileSize(t, dst, segName(1, segNum(p.Segment))) != p.End ||
+		fileSize(t, fsys, segName(1, segNum(p.Segment))) <= p.End {
+		t.Errorf("the copy is not cut at the position: %d bytes of %d", fileSize(t, dst, segName(1, segNum(p.Segment))),
+			fileSize(t, fsys, segName(1, segNum(p.Segment))))
 	}
 	copyDB := reopen(t, dst, o)
 	if info := copyDB.Recovery(); info.Checkpoint != "none" || info.Seq != 7 {

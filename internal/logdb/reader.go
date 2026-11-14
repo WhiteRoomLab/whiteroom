@@ -22,12 +22,15 @@ type reader struct {
 // tail is where a reader goes on reading the log: in the segment index, whose header it has checked, after end, the
 // end of the records that it has read there (64 if none). before is the size of the segments before it.
 type tail struct {
-	index, firstSeq, salt uint64
-	end, before           int64
+	index    segNum
+	firstSeq seqNum
+	salt     uint64
+	end      segOff
+	before   int64
 }
 
 func tailOf(seg *segment, st *state) tail {
-	return tail{index: seg.index, firstSeq: seg.firstSeq, salt: seg.salt, end: seg.end, before: st.logBytes - seg.end}
+	return tail{index: seg.index, firstSeq: seg.firstSeq, salt: seg.salt, end: seg.end, before: st.logBytes - int64(seg.end)}
 }
 
 // OpenReader opens the store in fsys to read it, in a process other than its writer, which may run or not. Its Views
@@ -75,7 +78,7 @@ func OpenReader(fsys vfs.FS, o Options) (*DB, error) {
 // to its last valid record, holding lock/writer so that none starts meanwhile, and syncs what it has read, which a
 // writer that was killed may have left in the page cache only. If a writer runs, it reads only what head names.
 func (rd *reader) load(db *DB) error {
-	read := func(s segFile, off, end int64) ([]byte, error) {
+	read := func(s segFile, off, end segOff) ([]byte, error) {
 		return readRange(db.fsys, s.name, off, end, true)
 	}
 	var r *recovery
@@ -148,7 +151,7 @@ func (rd *reader) toEnd(db *DB) error {
 	if err := g.consecutive(db.fsys); err != nil {
 		return err
 	}
-	if uint64(len(g.segs)) < rd.tail.index {
+	if segNum(len(g.segs)) < rd.tail.index {
 		msg := fmt.Sprintf("missing segment %d of generation %d", len(g.segs)+1, g.gen)
 		return corruptFile(path.Join(db.fsys.Name(), "log"), msg)
 	}
@@ -195,7 +198,7 @@ func (rd *reader) toHead(db *DB) error {
 				g.segs = append(g.segs, s)
 			}
 		}
-		if uint64(len(g.segs)) != h.seg-rd.tail.index+1 || g.segs[0].index != rd.tail.index {
+		if segNum(len(g.segs)) != h.seg-rd.tail.index+1 || g.segs[0].index != rd.tail.index {
 			return headMismatch(db.fsys)
 		}
 	}
@@ -219,7 +222,7 @@ func (rd *reader) scan(db *DB, cur *state, g generation, lim *headSlot) (*state,
 	next.logBytes = rd.tail.before
 	q := sequence{gen: cur.gen, seq: cur.seq}
 	sc := &scan{fsys: db.fsys, g: g, st: &next, q: &q, own: new(owner), limit: lim,
-		read: func(s segFile, off, end int64) ([]byte, error) {
+		read: func(s segFile, off, end segOff) ([]byte, error) {
 			f, err := db.handles.file(s.gen, s.index)
 			if err != nil {
 				return nil, err
@@ -255,7 +258,7 @@ func (rd *reader) publish(db *DB, next *state, out replayed) {
 
 // sync makes durable the records that the reader has read in the segments indexes of the generation gen: a writer that
 // was killed may have left them in the page cache only. After a Sync failed, the reader stops, as a writer does.
-func (rd *reader) sync(db *DB, gen uint64, indexes []uint64) error {
+func (rd *reader) sync(db *DB, gen genNum, indexes []segNum) error {
 	for _, i := range indexes {
 		f, err := db.handles.file(gen, i)
 		if err != nil {

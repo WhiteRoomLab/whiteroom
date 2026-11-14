@@ -534,7 +534,7 @@ func TestCrashDuringGC(t *testing.T) {
 	t.Logf("%d crash points, %d crashes", n, crashes)
 }
 
-func oldCommit(seq uint64) []byte {
+func oldCommit(seq seqNum) []byte {
 	return appendCommit(nil, seq, []op{{code: opPut, table: 1, key: "old", value: []byte("x")}})
 }
 

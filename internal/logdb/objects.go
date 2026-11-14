@@ -122,7 +122,7 @@ func objName(hash [32]byte) string {
 }
 
 // readObject reads the data of the object hash of the generation gen, which is at loc.
-func (db *DB) readObject(gen uint64, hash [32]byte, loc objLoc) ([]byte, error) {
+func (db *DB) readObject(gen genNum, hash [32]byte, loc objLoc) ([]byte, error) {
 	if loc.placement != placeInline {
 		return db.readObjectFile(hash, loc.size)
 	}

@@ -154,7 +154,7 @@ func TestCheckpointUsed(t *testing.T) {
 	}
 	st := db.cur.Load()
 	if h := ckpOf(t, fsys); h.gen != 1 || h.seq != 6 || h.seg != st.seg || h.off != st.off ||
-		h.recCRC != crcAt(t, fsys, segName(1, st.seg), st.off) || st.seg < 2 {
+		h.recCRC != crcAt(t, fsys, segName(1, st.seg), int64(st.off)) || st.seg < 2 {
 		t.Errorf("checkpoint %+v of the state at %d of segment %d", h, st.off, st.seg)
 	}
 	for i := 6; i < 9; i++ {
@@ -251,7 +251,7 @@ func TestCheckpointDamaged(t *testing.T) {
 		{"an object in segment 0", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(0, 100, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object after the segment of the checkpoint", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1),
-			[]byte{byte(placeInline)}, uv(h.seg+1, 100, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
+			[]byte{byte(placeInline)}, uv(uint64(h.seg)+1, 100, 1))), fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object in a header", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)}, uv(1, 71, 1))),
 			fmt.Sprintf("bad location of object %x", hash(1))},
 		{"an object beyond int64", rawCkp(h, slices.Concat(uv(1, 0, 0, 1), hash(1), []byte{byte(placeInline)},
@@ -414,8 +414,8 @@ func TestCheckpointRecordMismatch(t *testing.T) {
 	}{
 		{"another CRC", func(fsys *simfs.FS) { setCkpHeader(t, fsys, func(h *ckpHeader) { h.recCRC++ }) }, h},
 		{"the offset of another record", func(fsys *simfs.FS) {
-			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off = offs[1] })
-		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: offs[1]}},
+			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off = segOff(offs[1]) })
+		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: segOff(offs[1])}},
 		{"an offset in a record", func(fsys *simfs.FS) {
 			setCkpHeader(t, fsys, func(h *ckpHeader) { h.off += 8 })
 		}, ckpHeader{gen: 1, seq: 3, seg: 1, off: h.off + 8}},
@@ -530,7 +530,7 @@ func TestAutoCheckpoint(t *testing.T) {
 		var fsys *simfs.FS
 		o := Options{CheckpointBytes: 200, SyncCheckpoints: true, Hook: func(p string) error {
 			if p == "checkpoint:done" {
-				seqs = append(seqs, ckpOf(t, fsys).seq)
+				seqs = append(seqs, uint64(ckpOf(t, fsys).seq))
 			}
 			return nil
 		}}

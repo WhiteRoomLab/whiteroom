@@ -1176,5 +1176,5 @@ func changeState(db *DB, fn func(st *state)) {
 
 func inlineOff(db *DB, h [32]byte) int64 {
 	loc, _ := db.cur.Load().objects.Get(string(h[:]))
-	return loc.off
+	return int64(loc.off)
 }

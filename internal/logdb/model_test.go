@@ -843,7 +843,7 @@ func tornTailScenario() scenario {
 				objects: [][]byte{objData(30, 120)}, events: []string{"base"}})
 			name := logNames(t, fsys)[len(logNames(t, fsys))-1]
 			h, _ := frames(t, fsys, name)
-			torn := commitFrame(h.salt, m.seq+1, 1, "torn", value("torn ", 300))
+			torn := commitFrame(h.salt, seqNum(m.seq+1), 1, "torn", value("torn ", 300))
 			setFile(t, fsys, name, slices.Concat(fileData(t, fsys, name), torn[:len(torn)/2]))
 			if info := recoveryOf(t, fsys, o); info.TruncatedAt < 0 {
 				t.Fatalf("Open cuts nothing: %+v", info)
@@ -869,7 +869,7 @@ func tornSegmentScenario() scenario {
 		setup: func(t *testing.T, o Options) (*simfs.FS, *model) {
 			fsys, m := newBase(t, o, &update{puts: []keyValue{setKey(1, "a", value("a ", 1500))},
 				objects: [][]byte{objData(32, 90)}, events: []string{"base"}})
-			setFile(t, fsys, segName(1, uint64(len(logNames(t, fsys))+1)), make([]byte, 40))
+			setFile(t, fsys, segName(1, segNum(len(logNames(t, fsys))+1)), make([]byte, 40))
 			if info := recoveryOf(t, fsys, o); info.RemovedSegment == "" {
 				t.Fatalf("Open removes nothing: %+v", info)
 			}

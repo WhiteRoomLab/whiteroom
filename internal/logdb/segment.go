@@ -12,26 +12,29 @@ import (
 
 // segment is a segment of the log that the writer has open.
 type segment struct {
-	f                          vfs.File
-	name                       string // in the engine's directory
-	gen, index, firstSeq, salt uint64
-	end                        int64 // after its last record
-	records                    int
+	f        vfs.File
+	name     string // in the engine's directory
+	gen      genNum
+	index    segNum
+	firstSeq seqNum
+	salt     uint64
+	end      segOff // after its last record
+	records  int
 }
 
-func segName(gen, index uint64) string {
+func segName(gen genNum, index segNum) string {
 	return fmt.Sprintf("log/%016x-%016x.log", gen, index)
 }
 
 // parseSegName returns the generation and the index of the segment whose file in log/ has the name name, which must
 // be as segName makes it.
-func parseSegName(name string) (gen, index uint64, ok bool) {
+func parseSegName(name string) (genNum, segNum, bool) {
 	if len(name) != 37 || name[16] != '-' || name[33:] != ".log" {
 		return 0, 0, false
 	}
 	gen, ok1 := parseHex(name[:16])
 	index, ok2 := parseHex(name[17:33])
-	return gen, index, ok1 && ok2 && gen > 0 && index > 0
+	return genNum(gen), segNum(index), ok1 && ok2 && gen > 0 && index > 0
 }
 
 // parseHex parses lower case hex digits.
@@ -52,7 +55,7 @@ func parseHex(s string) (uint64, bool) {
 
 // createSegment makes the file of a new segment and writes its header, without syncing them. If it cannot write the
 // header, it removes the file.
-func createSegment(fsys vfs.FS, gen, index, firstSeq uint64) (*segment, error) {
+func createSegment(fsys vfs.FS, gen genNum, index segNum, firstSeq seqNum) (*segment, error) {
 	var salt [8]byte
 	if _, err := rand.Read(salt[:]); err != nil {
 		return nil, err
@@ -75,12 +78,12 @@ func createSegment(fsys vfs.FS, gen, index, firstSeq uint64) (*segment, error) {
 
 // append writes frame after the last record of s, with one WriteAt.
 func (s *segment) append(frame []byte) error {
-	return writeAt(s.f, frame, s.end)
+	return writeAt(s.f, frame, int64(s.end))
 }
 
 // truncate cuts s at end, durably.
-func (s *segment) truncate(end int64) error {
-	if err := s.f.Truncate(end); err != nil {
+func (s *segment) truncate(end segOff) error {
+	if err := s.f.Truncate(int64(end)); err != nil {
 		return err
 	}
 	return s.f.Sync()

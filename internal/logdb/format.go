@@ -68,6 +68,15 @@ const (
 	placeFile   objPlace = 2
 )
 
+// genNum is the number of a generation, segNum the index of a segment in its generation, seqNum the sequence number of
+// a record, and segOff an offset in a segment. They are distinct types, so that one is not taken for another.
+type (
+	genNum uint64
+	segNum uint64
+	seqNum uint64
+	segOff int64
+)
+
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 func corruptFile(path, reason string) error {
@@ -129,7 +138,10 @@ func envelopeReason(env envKind) string {
 // segHeader is the header of a segment: the segment index of generation gen, whose first record has the sequence
 // number firstSeq. salt is in the CRC of every record of the segment.
 type segHeader struct {
-	gen, index, firstSeq, salt uint64
+	gen      genNum
+	index    segNum
+	firstSeq seqNum
+	salt     uint64
 }
 
 func appendSegHeader(dst []byte, h segHeader) []byte {
@@ -137,9 +149,9 @@ func appendSegHeader(dst []byte, h segHeader) []byte {
 	dst = append(dst, segMagic...)
 	dst = binary.LittleEndian.AppendUint32(dst, formatVersion)
 	dst = binary.LittleEndian.AppendUint32(dst, segHeaderSize)
-	dst = binary.LittleEndian.AppendUint64(dst, h.gen)
-	dst = binary.LittleEndian.AppendUint64(dst, h.index)
-	dst = binary.LittleEndian.AppendUint64(dst, h.firstSeq)
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.gen))
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.index))
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.firstSeq))
 	dst = binary.LittleEndian.AppendUint64(dst, h.salt)
 	dst = append(dst, make([]byte, 12)...)
 	return binary.LittleEndian.AppendUint32(dst, crc32.Checksum(dst[start:], castagnoli))
@@ -147,7 +159,7 @@ func appendSegHeader(dst []byte, h segHeader) []byte {
 
 // parseSegHeader checks the header at the start of b, the content of the segment at path, which is named for gen
 // and index. The continuity of firstSeq is for the caller to check.
-func parseSegHeader(path string, b []byte, gen, index uint64) (segHeader, error) {
+func parseSegHeader(path string, b []byte, gen genNum, index segNum) (segHeader, error) {
 	if err := checkStart(path, b, segHeaderSize, segMagic, "a segment"); err != nil {
 		return segHeader{}, err
 	}
@@ -161,9 +173,9 @@ func parseSegHeader(path string, b []byte, gen, index uint64) (segHeader, error)
 		return segHeader{}, corruptFile(path, "nonzero reserved bytes")
 	}
 	h := segHeader{
-		gen:      binary.LittleEndian.Uint64(b[16:]),
-		index:    binary.LittleEndian.Uint64(b[24:]),
-		firstSeq: binary.LittleEndian.Uint64(b[32:]),
+		gen:      genNum(binary.LittleEndian.Uint64(b[16:])),
+		index:    segNum(binary.LittleEndian.Uint64(b[24:])),
+		firstSeq: seqNum(binary.LittleEndian.Uint64(b[32:])),
 		salt:     binary.LittleEndian.Uint64(b[40:]),
 	}
 	if h.gen != gen || h.index != index {
@@ -227,11 +239,12 @@ func parseFrame(b []byte, salt uint64) (body []byte, n int, reason string) {
 // headSlot is a slot of the file head: the durable end of the log after the head update numbered counter, in the
 // slot counter%2. crc is the CRC (the frame's) of the record that ends at end, or 0 if there is none.
 type headSlot struct {
-	counter  uint64
-	gen, seg uint64
-	end      int64
-	seq      uint64
-	crc      uint32
+	counter uint64
+	gen     genNum
+	seg     segNum
+	end     segOff
+	seq     seqNum
+	crc     uint32
 }
 
 func appendHeadSlot(dst []byte, s headSlot) []byte {
@@ -240,10 +253,10 @@ func appendHeadSlot(dst []byte, s headSlot) []byte {
 	dst = binary.LittleEndian.AppendUint32(dst, formatVersion)
 	dst = binary.LittleEndian.AppendUint32(dst, 0)
 	dst = binary.LittleEndian.AppendUint64(dst, s.counter)
-	dst = binary.LittleEndian.AppendUint64(dst, s.gen)
-	dst = binary.LittleEndian.AppendUint64(dst, s.seg)
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.gen))
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.seg))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.end))
-	dst = binary.LittleEndian.AppendUint64(dst, s.seq)
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(s.seq))
 	dst = binary.LittleEndian.AppendUint32(dst, s.crc)
 	return binary.LittleEndian.AppendUint32(dst, crc32.Checksum(dst[start:], castagnoli))
 }
@@ -261,9 +274,9 @@ func parseHeadSlot(path string, b []byte, i int) (headSlot, error) {
 	}
 	s := headSlot{
 		counter: binary.LittleEndian.Uint64(b[16:]),
-		gen:     binary.LittleEndian.Uint64(b[24:]),
-		seg:     binary.LittleEndian.Uint64(b[32:]),
-		seq:     binary.LittleEndian.Uint64(b[48:]),
+		gen:     genNum(binary.LittleEndian.Uint64(b[24:])),
+		seg:     segNum(binary.LittleEndian.Uint64(b[32:])),
+		seq:     seqNum(binary.LittleEndian.Uint64(b[48:])),
 		crc:     binary.LittleEndian.Uint32(b[56:]),
 	}
 	end := binary.LittleEndian.Uint64(b[40:])
@@ -271,7 +284,7 @@ func parseHeadSlot(path string, b []byte, i int) (headSlot, error) {
 		end > math.MaxInt64 {
 		return headSlot{}, corruptFile(path, "bad slot fields")
 	}
-	s.end = int64(end)
+	s.end = segOff(end)
 	return s, nil
 }
 
@@ -327,11 +340,13 @@ func parseObjHeader(path string, b []byte) error {
 // ckpHeader is the header of a checkpoint: the state after the record seq of generation gen, whose frame is at off in
 // the segment seg and has the CRC recCRC, in a body of bodyLen bytes with the CRC bodyCRC.
 type ckpHeader struct {
-	gen, seq, seg uint64
-	off           int64
-	recCRC        uint32
-	bodyLen       int64
-	bodyCRC       uint32
+	gen     genNum
+	seq     seqNum
+	seg     segNum
+	off     segOff
+	recCRC  uint32
+	bodyLen int64
+	bodyCRC uint32
 }
 
 func appendCkpHeader(dst []byte, h ckpHeader) []byte {
@@ -339,9 +354,9 @@ func appendCkpHeader(dst []byte, h ckpHeader) []byte {
 	dst = append(dst, ckpMagic...)
 	dst = binary.LittleEndian.AppendUint32(dst, formatVersion)
 	dst = binary.LittleEndian.AppendUint32(dst, h.recCRC)
-	dst = binary.LittleEndian.AppendUint64(dst, h.gen)
-	dst = binary.LittleEndian.AppendUint64(dst, h.seq)
-	dst = binary.LittleEndian.AppendUint64(dst, h.seg)
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.gen))
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.seq))
+	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.seg))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.off))
 	dst = binary.LittleEndian.AppendUint64(dst, uint64(h.bodyLen))
 	dst = binary.LittleEndian.AppendUint32(dst, h.bodyCRC)
@@ -358,9 +373,9 @@ func parseCkpHeader(path string, b []byte) (ckpHeader, error) {
 	}
 	h := ckpHeader{
 		recCRC:  binary.LittleEndian.Uint32(b[12:]),
-		gen:     binary.LittleEndian.Uint64(b[16:]),
-		seq:     binary.LittleEndian.Uint64(b[24:]),
-		seg:     binary.LittleEndian.Uint64(b[32:]),
+		gen:     genNum(binary.LittleEndian.Uint64(b[16:])),
+		seq:     seqNum(binary.LittleEndian.Uint64(b[24:])),
+		seg:     segNum(binary.LittleEndian.Uint64(b[32:])),
 		bodyCRC: binary.LittleEndian.Uint32(b[56:]),
 	}
 	off, n := binary.LittleEndian.Uint64(b[40:]), binary.LittleEndian.Uint64(b[48:])
@@ -368,7 +383,7 @@ func parseCkpHeader(path string, b []byte) (ckpHeader, error) {
 		n > math.MaxInt64-ckpHeaderSize {
 		return ckpHeader{}, corruptFile(path, "bad header fields")
 	}
-	h.off, h.bodyLen = int64(off), int64(n)
+	h.off, h.bodyLen = segOff(off), int64(n)
 	return h, nil
 }
 

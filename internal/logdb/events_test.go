@@ -235,13 +235,13 @@ func TestEventsFromDisk(t *testing.T) {
 	<-written
 	// Nothing here may stop the test before release is closed: Close would wait for the Update.
 	last, end := segName(1, db.cur.Load().seg), db.cur.Load().end
-	if info, err := fsys.Lstat(last); err != nil || info.Size() <= end {
+	if info, err := fsys.Lstat(last); err != nil || info.Size() <= int64(end) {
 		t.Errorf("the record is not after the end: %v", err)
 	}
 	var guard atomic.Bool
 	guard.Store(true)
 	fsys.Inject(simfs.Fault{Err: syscall.EIO, Match: func(op simfs.Op) bool {
-		return guard.Load() && op.Kind == simfs.OpRead && op.Path == last && op.Off+int64(op.Len) > end
+		return guard.Load() && op.Kind == simfs.OpRead && op.Path == last && op.Off+int64(op.Len) > int64(end)
 	}})
 	if got, err := events(db); err != nil || got != strings.Join(want, "\n") {
 		t.Errorf("events while an Update writes: %v\n%s", err, got)

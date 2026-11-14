@@ -41,7 +41,7 @@ func (db *DB) Events(ctx context.Context, fn func(Event) bool) error {
 	}
 	return readLog(ctx, db.handles, db.cur.Load(), func(r logRecord) (bool, error) {
 		for _, p := range r.rec.ops {
-			if p.code == opEvent && !fn(Event{Number: p.number, Seq: p.seq, Data: clone(p.value)}) {
+			if p.code == opEvent && !fn(Event{Number: p.number, Seq: uint64(p.seq), Data: clone(p.value)}) {
 				return false, nil
 			}
 		}
@@ -52,11 +52,12 @@ func (db *DB) Events(ctx context.Context, fn func(Event) bool) error {
 // logRecord is a record that readLog has read: rec, in the frame of n bytes at off in the segment seg, which is at the
 // path p. crc is the CRC of the frame.
 type logRecord struct {
-	p      string
-	seg    uint64
-	off, n int64
-	crc    uint32
-	rec    record
+	p   string
+	seg segNum
+	off segOff
+	n   int64
+	crc uint32
+	rec record
 }
 
 // readLog reads the records of the log of the generation of st from disk, through h, up to the last record of st,
@@ -64,9 +65,9 @@ type logRecord struct {
 // records follow each other as sequence says, and ctx before each record; the meaning of the ops is for fn to check.
 func readLog(ctx context.Context, h *handles, st *state, fn func(r logRecord) (bool, error)) error {
 	q := newSequence(st.gen)
-	for index := uint64(1); index <= st.seg; index++ {
+	for index := segNum(1); index <= st.seg; index++ {
 		p := path.Join(h.fsys.Name(), segName(st.gen, index))
-		end := int64(-1) // a segment before the last one ends with its file
+		end := segOff(-1) // a segment before the last one ends with its file
 		if index == st.seg {
 			end = st.end
 		}
@@ -82,10 +83,10 @@ func readLog(ctx context.Context, h *handles, st *state, fn func(r logRecord) (b
 			return err
 		}
 		if end < 0 {
-			end = int64(len(b))
+			end = segOff(len(b))
 		}
 		records := 0
-		for off := int64(segHeaderSize); off < end; {
+		for off := segOff(segHeaderSize); off < end; {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -98,14 +99,14 @@ func readLog(ctx context.Context, h *handles, st *state, fn func(r logRecord) (b
 				reason = q.check(&rec)
 			}
 			if reason != "" {
-				return &CorruptError{Path: p, Offset: off, Reason: reason}
+				return &CorruptError{Path: p, Offset: int64(off), Reason: reason}
 			}
 			more, err := fn(logRecord{p: p, seg: index, off: off, n: int64(n), crc: binary.LittleEndian.Uint32(b[off+4:]), rec: rec})
 			if err != nil || !more {
 				return err
 			}
 			q.advance(&rec)
-			off += int64(n)
+			off += segOff(n)
 			records++
 		}
 		if index < st.seg && records == 0 {

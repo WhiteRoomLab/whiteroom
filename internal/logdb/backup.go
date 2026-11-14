@@ -37,7 +37,7 @@ func Backup(ctx context.Context, src, dst vfs.FS, between func(Position) error) 
 		return Position{}, err
 	}
 	st := db.cur.Load()
-	p := Position{Generation: st.gen, Segment: st.seg, End: st.end, Seq: st.seq, CRC: st.lastCRC}
+	p := Position{Generation: uint64(st.gen), Segment: uint64(st.seg), End: int64(st.end), Seq: uint64(st.seq), CRC: st.lastCRC}
 	if between != nil {
 		err = between(p)
 	}
@@ -73,11 +73,11 @@ func (db *DB) copyTo(ctx context.Context, dst vfs.FS, st *state) error {
 			return err
 		}
 	}
-	for index := uint64(1); index <= st.seg; index++ {
+	for index := segNum(1); index <= st.seg; index++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		end := int64(-1)
+		end := segOff(-1)
 		if index == st.seg {
 			end = st.end // the writer may have written more after it
 		}
@@ -121,7 +121,7 @@ func (db *DB) copyTo(ctx context.Context, dst vfs.FS, st *state) error {
 }
 
 // copySegment copies the segment index of generation gen, up to end, or to its end if end is negative, to dst.
-func (db *DB) copySegment(dst vfs.FS, gen, index uint64, end int64) error {
+func (db *DB) copySegment(dst vfs.FS, gen genNum, index segNum, end segOff) error {
 	f, err := db.handles.file(gen, index)
 	if err != nil {
 		return err
@@ -131,9 +131,9 @@ func (db *DB) copySegment(dst vfs.FS, gen, index uint64, end int64) error {
 		if err != nil {
 			return err
 		}
-		end = info.Size()
+		end = segOff(info.Size())
 	}
-	return copyFile(dst, segName(gen, index), io.NewSectionReader(f, 0, end), end)
+	return copyFile(dst, segName(gen, index), io.NewSectionReader(f, 0, int64(end)), int64(end))
 }
 
 // copyCheckpoint copies the checkpoint of the store to dst if it pairs with the log up to st, which dst has: if it is
@@ -157,7 +157,7 @@ func (db *DB) copyCheckpoint(dst vfs.FS, st *state) error {
 	case h.gen != st.gen || h.seq > st.seq || h.seg > st.seg:
 		return nil
 	}
-	end := int64(-1)
+	end := segOff(-1)
 	if h.seg == st.seg {
 		end = st.end
 	}
