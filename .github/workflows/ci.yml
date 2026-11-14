@@ -35,6 +35,13 @@ jobs:
       - name: vet
         run: nix develop -c go vet ./...
 
+      # Compiles the files and the tests as other systems build them; the tests don't run there.
+      - name: vet for darwin
+        run: nix develop -c env GOOS=darwin GOARCH=arm64 go vet ./...
+
+      - name: vet for windows
+        run: nix develop -c env GOOS=windows GOARCH=amd64 go vet ./...
+
       # `golangci-lint run` silently ignores unknown config keys.
       - name: lint config
         run: nix develop -c golangci-lint config verify

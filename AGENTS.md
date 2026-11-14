@@ -23,7 +23,7 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 - `golangci-lint fmt`：整形（gofmt・goimports）
 - `go mod tidy`
 - `CGO_ENABLED=0 go build ./...`・`CGO_ENABLED=0 go test ./...`：リポジトリのすべてが cgo なしでビルドでき、テストが通ること（CI の `build without cgo`・`test without cgo`）
-- `GOOS=darwin GOARCH=arm64 go build ./...`・`GOOS=windows GOARCH=amd64 go build ./...`：Linux のほかの OS だけのファイル（`cmd/whiteroom/terminal_other.go` など）がビルドできること。CI は動かさない。`./...` で動かす（`./cmd/whiteroom` だけを渡すと、リポジトリの直下に実行ファイルができる）。
+- `GOOS=darwin GOARCH=arm64 go vet ./...`・`GOOS=windows GOARCH=amd64 go vet ./...`：Linux のほかの OS だけのファイル（`cmd/whiteroom/terminal_other.go` など）と、テストのファイルが、その OS でコンパイルできること（CI の `vet for darwin`・`vet for windows`。その OS では、テストは動かさない）
 
 `flake.nix` や `flake.lock` を変えたら、`nix fmt` と `nix flake check --all-systems` も実行する。
 
