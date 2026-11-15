@@ -1294,11 +1294,12 @@ func TestAuthenticate(t *testing.T) {
 		e.clock.add(sessionTouch)
 		m0 := e.mark(t)
 		works(t, e, token, p, "the first time that the time is old")
-		m1 := e.mark(t)
-		one := m1.size - m0.size
-		if one <= 0 {
-			t.Fatal("a request that finds the time old writes nothing")
+		// The records, not the bytes of the directory: two writes can differ in size (the time of a record drops its last zeros).
+		seen := []string{string(audit.SessionSeen)}
+		if got := e.added(t, m0); !slices.Equal(got, seen) {
+			t.Fatalf("a request that finds the time old added the records %q, want %q", got, seen)
 		}
+		m1 := e.mark(t)
 		e.clock.add(sessionTouch)
 		const n = 8
 		var arrived atomic.Int32
@@ -1325,8 +1326,8 @@ func TestAuthenticate(t *testing.T) {
 				t.Errorf("request %d = %+v, %v, want the Principal of the login", i, results[i], err)
 			}
 		}
-		if grown := e.mark(t).size - m1.size; grown != one {
-			t.Errorf("%d requests grew the data directory by %d bytes, want %d: one write", n, grown, one)
+		if got := e.added(t, m1); !slices.Equal(got, seen) {
+			t.Errorf("%d requests added the records %q, want %q: one write", n, got, seen)
 		}
 		if s, _ := e.sessionOf(t, token); !s.LastSeenAt.Equal(mgrTime.Add(2 * sessionTouch)) {
 			t.Errorf("the last request is %v, want %v", s.LastSeenAt, mgrTime.Add(2*sessionTouch))
