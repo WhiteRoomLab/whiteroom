@@ -148,6 +148,20 @@ func (g generation) consecutive(fsys vfs.FS) error {
 	return nil
 }
 
+// upTo returns g without the segments after those that lim, the head of the writer that runs beside a reader, and ck
+// name. The reader does not read them, and its list of log/ may have one of them without the one before it: a file
+// system may list so a directory that the writer makes both in meanwhile.
+func (g generation) upTo(lim headSlot, ck *checkpoint) generation {
+	last := lim.seg
+	if ck != nil && ck.h.gen == g.gen {
+		last = max(last, ck.h.seg)
+	}
+	if i := slices.IndexFunc(g.segs, func(s segFile) bool { return s.index > last }); i >= 0 {
+		g.segs = g.segs[:i]
+	}
+	return g
+}
+
 // sequence follows the order of the records of a generation: in a generation after the first, its base records, with
 // the parts 0, 1, ..., and its base-end, all with the sequence number S of its first segment; then the commits S+1,
 // S+2, ... In generation 1, the commits 1, 2, ...
@@ -296,6 +310,9 @@ func decide(fsys vfs.FS, lim *headSlot, read readFunc) (*recovery, error) {
 		}
 		if lim != nil && lim.gen > g.gen {
 			return nil, headMismatch(fsys)
+		}
+		if lim != nil && lim.gen == g.gen {
+			g = g.upTo(*lim, ck)
 		}
 		if err := g.consecutive(fsys); err != nil {
 			return nil, err

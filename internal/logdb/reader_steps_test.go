@@ -2,9 +2,11 @@ package logdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
@@ -60,6 +62,17 @@ func (f stepFile) Stat() (fs.FileInfo, error) {
 func (f stepFile) Sync() error {
 	f.step("sync " + f.name)
 	return f.File.Sync()
+}
+
+// gapFS lists log/ without the segment *hidden, as a file system may list a directory that a file is made in meanwhile.
+type gapFS struct {
+	vfs.FS
+	hidden *string
+}
+
+func (g gapFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := g.FS.ReadDir(name)
+	return slices.DeleteFunc(entries, func(e fs.DirEntry) bool { return name+"/"+e.Name() == *g.hidden }), err
 }
 
 // rival is the writer of a store on simfs, which moves between the operations of a reader. Its commit i+1 is change i.
@@ -324,6 +337,101 @@ func TestReaderBesideWriter(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestReaderListGap gives a reader that opens beside a writer the list of log/ that a file system may give while the
+// writer begins two segments: with the later one, without the earlier. The reader does not read the segments after
+// those that head and the checkpoint name, so it opens; it refuses a list without a segment up to those.
+func TestReaderListGap(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		checkpoint bool   // the writer writes one, in the next segment, after the reader has read head
+		hide       segNum // the segment that the list lacks; head names segment 4
+		seq        uint64 // of the commit that the reader opens at
+		want       string // in the error of OpenReader, if it refuses
+	}{
+		{"after that of head", false, 5, 4, ""},
+		{"after that of the checkpoint", true, 6, 5, ""},
+		{"before that of head", false, 3, 0, "missing segment 3 of generation 1"},
+		{"that of head", false, 4, 0, "the log does not match head"},
+		{"that of the checkpoint", true, 5, 0, "the log does not have sequence 5"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fsys, db := newSim(t, Options{SegmentBytes: 1, CheckpointBytes: -1}) // each commit begins a segment
+			n := 0
+			commit := func() {
+				n++
+				putKey(t, db, 1, fmt.Sprintf("k%d", n), "v")
+			}
+			for range 4 {
+				commit()
+			}
+			hidden, moved := "", map[string]bool{}
+			rd, err := OpenReader(gapFS{stepFS{fsys, func(op string) {
+				switch {
+				case moved[op]:
+				case op == "lstat checkpoint" && c.checkpoint:
+					commit()
+					if err := db.Checkpoint(); err != nil {
+						t.Fatal(err)
+					}
+				case op == "readdir log":
+					commit()
+					commit()
+					hidden = segName(1, c.hide)
+				}
+				moved[op] = true
+			}}, &hidden}, Options{})
+			if c.want != "" {
+				var ce *CorruptError
+				if !errors.As(err, &ce) || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("OpenReader: %v, want %q", err, c.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rd.Close() }()
+			if seq := rd.Recovery().Seq; seq != c.seq {
+				t.Errorf("the reader opened at commit %d, want %d", seq, c.seq)
+			}
+			hidden = ""
+			checkDump(t, rd, dump(t, db))
+		})
+	}
+}
+
+// TestReaderListBase: a reader that opens while a writer opens a store whose compaction was killed after the base-end
+// reads the whole base of the new generation: its list is not cut at the segment that head names in the old one.
+func TestReaderListBase(t *testing.T) {
+	withBaseBytes(t, 50)
+	fsys, db := newSim(t, Options{})
+	for i := range 4 {
+		putKey(t, db, 1, fmt.Sprintf("k%d", i), "a value")
+	}
+	want := dump(t, db)
+	var snap *simfs.FS
+	db.o.SegmentBytes = 1 // each base record begins a segment
+	db.o.Hook = func(p string) error {
+		if p == "compact:base-end" {
+			snap = copyFS(fsys)
+		}
+		return nil
+	}
+	if err := compactDB(db, Rewrite{}); err != nil {
+		t.Fatal(err)
+	}
+	closeDB(t, db)
+	if s := readHeadFile(t, snap); s.gen != 1 || s.seg != 1 || !exists(t, snap, segName(2, 2)) {
+		t.Fatalf("head %+v, segments %v", s, logNames(t, snap))
+	}
+	lockFile(t, snap, "lock/writer", vfs.Exclusive)
+	rd := openReader(t, snap, Options{})
+	if info := rd.Recovery(); info.Generation != 2 || info.IgnoredGenerations != nil {
+		t.Errorf("Recovery: %+v", info)
+	}
+	checkDump(t, rd, want)
 }
 
 // changeStates returns the states of a store after 0..n commits of change.
