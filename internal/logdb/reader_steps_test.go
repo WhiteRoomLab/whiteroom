@@ -76,6 +76,15 @@ func (w *rival) commit() {
 	w.n++
 }
 
+// add commits in the last segment, which must have room.
+func (w *rival) add() {
+	n := w.db.Stats().Segments
+	w.commit()
+	if w.db.Stats().Segments != n {
+		w.t.Fatal("the commit began a segment")
+	}
+}
+
 // segment commits until the writer has begun a segment.
 func (w *rival) segment() {
 	for n := w.db.Stats().Segments; w.db.Stats().Segments == n; {
@@ -104,8 +113,8 @@ func (w *rival) start() {
 	w.db = db
 }
 
-// kill stops the writer, runs one that is killed after j more counted operations, in its Open or in an Update, which
-// is then there or not, and starts one, which recovers and commits.
+// kill stops the writer and runs one that is killed after j more counted operations, in its Open or in an Update, which
+// is then there or not. No writer runs after it, until settle.
 func (w *rival) kill(j int) {
 	w.stop()
 	p := w.fsys.KillAt(w.fsys.Counted() + j)
@@ -115,9 +124,14 @@ func (w *rival) kill(j int) {
 		}
 		_ = db.Close()
 	}
-	w.start()
+}
+
+// settle starts a writer if none runs, which recovers what one that was killed has left, and counts the commits.
+func (w *rival) settle() {
+	if w.db == nil {
+		w.start()
+	}
 	w.n = int(seqOf(w.t, w.db))
-	w.commit()
 }
 
 type rivalMove struct {
@@ -128,7 +142,7 @@ type rivalMove struct {
 // rivalMoves are what the writer does between two operations of a reader.
 func rivalMoves() []rivalMove {
 	moves := []rivalMove{
-		{"commit", (*rival).commit},
+		{"commit", (*rival).add},
 		{"segment", (*rival).segment},
 		{"checkpoint", (*rival).checkpoint},
 		{"segment, checkpoint", func(w *rival) { w.segment(); w.checkpoint() }},
@@ -143,20 +157,24 @@ func rivalMoves() []rivalMove {
 }
 
 // TestReaderBesideWriter lets the writer move before each operation of a reader that opens the store, of a View that
-// refreshes it, and of a Backup: the writer commits, begins a segment, writes a checkpoint, closes, starts again, or is
-// killed after each of its first 16 counted operations (with -race, each fourth), in its Open or in one of its first
-// Updates, and recovers. The reader never finds the store corrupt: it opens at a commit that was durable when it began
-// or later, its Views then see the last one, and the copy of Backup opens to the commit of its position.
+// refreshes it, and of a Backup: the writer commits in its segment, begins a segment, writes a checkpoint, closes,
+// starts again, or is killed after each of its first 16 counted operations (with -race, each fourth), in its Open or
+// in an Update, and no writer runs after it. The reader never finds the store corrupt: it opens at a commit that was
+// durable when it began or later, its Views then see what a writer that starts has, and the next commit of that
+// writer, and the copy of Backup opens to the commit of its position.
 func TestReaderBesideWriter(t *testing.T) {
 	ctx := context.Background()
-	o := Options{Placement: Hybrid, Threshold: 100, SegmentBytes: 300, CheckpointBytes: -1}
+	// After each start, a segment has room for the commit of the move "commit"; after "a checkpoint", for no second
+	// one, so that the writer that is killed there begins a segment.
+	o := Options{Placement: Hybrid, Threshold: 100, SegmentBytes: 950, CheckpointBytes: -1}
 	states := changeStates(t, 40)
-	check := func(t *testing.T, db *DB, seq uint64) error {
-		if seq >= uint64(len(states)) {
+	// same checks that got is the state after seq commits.
+	same := func(got string, seq uint64) error {
+		switch {
+		case seq >= uint64(len(states)):
 			return fmt.Errorf("commit %d: the test has the states of %d", seq, len(states)-1)
-		}
-		if got := stateOf(t, db); got != states[seq] {
-			return fmt.Errorf("at commit %d:\n%s\nwant:\n%s", seq, got, states[seq])
+		case got != states[seq]:
+			return fmt.Errorf("not the state of commit %d:\n%s\nwant:\n%s", seq, got, states[seq])
 		}
 		return nil
 	}
@@ -168,7 +186,7 @@ func TestReaderBesideWriter(t *testing.T) {
 	for _, sc := range []struct {
 		name string
 		need []string // operations that the reader must make
-		// run reads the store of w through a stepFS that calls step, while the writer may move.
+		// run reads the store of w through a stepFS that calls step, while the writer may move, and settles w.
 		run func(w *rival, step func(op string)) error
 	}{
 		{"open", []string{"lstat checkpoint", "readdir log"}, func(w *rival, step func(op string)) error {
@@ -184,10 +202,16 @@ func TestReaderBesideWriter(t *testing.T) {
 				return err
 			}
 			defer func() { _ = rd.Close() }()
+			got := stateOf(w.t, rd)
+			w.settle()
 			if seq := rd.Recovery().Seq; seq < first || seq > uint64(w.n) {
 				return fmt.Errorf("the reader opened at commit %d, want %d..%d", seq, first, w.n)
 			}
-			return check(w.t, rd, uint64(w.n))
+			if err := same(got, uint64(w.n)); err != nil {
+				return err
+			}
+			w.commit()
+			return same(stateOf(w.t, rd), uint64(w.n))
 		}},
 		{"view", []string{"read head"}, func(w *rival, step func(op string)) error {
 			moving := false
@@ -209,22 +233,29 @@ func TestReaderBesideWriter(t *testing.T) {
 				return nil
 			})
 			moving = false
-			switch {
-			case err != nil:
+			if err != nil {
 				return err
-			case seq < first || seq > uint64(w.n):
+			}
+			got := stateOf(w.t, rd)
+			w.settle()
+			if seq < first || seq > uint64(w.n) {
 				return fmt.Errorf("the View saw commit %d, want %d..%d", seq, first, w.n)
 			}
-			return check(w.t, rd, uint64(w.n))
+			if err := same(got, uint64(w.n)); err != nil {
+				return err
+			}
+			w.commit()
+			return same(stateOf(w.t, rd), uint64(w.n))
 		}},
 		{"backup", []string{"lstat checkpoint", "readdir log"}, func(w *rival, step func(op string)) error {
 			first := uint64(w.n)
 			dst := simfs.New("/backup")
 			p, err := Backup(ctx, stepFS{w.fsys, step}, dst, nil)
-			switch {
-			case err != nil:
+			if err != nil {
 				return err
-			case p.Seq < first || p.Seq > uint64(w.n):
+			}
+			w.settle()
+			if p.Seq < first || p.Seq > uint64(w.n) {
 				return fmt.Errorf("the position is commit %d, want %d..%d", p.Seq, first, w.n)
 			}
 			cp, err := Open(dst, o)
@@ -235,7 +266,7 @@ func TestReaderBesideWriter(t *testing.T) {
 			if info := cp.Recovery(); info.Seq != p.Seq || info.TruncatedAt != -1 {
 				return fmt.Errorf("the copy at %+v: %+v", p, info)
 			}
-			return check(w.t, cp, p.Seq)
+			return same(stateOf(w.t, cp), p.Seq)
 		}},
 	} {
 		for _, start := range starts {
