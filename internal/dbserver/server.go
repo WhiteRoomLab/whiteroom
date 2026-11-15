@@ -15,12 +15,12 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
-	"path"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -35,7 +35,10 @@ type Options struct {
 	Now func() time.Time
 	// FreeSpace returns the free bytes of the file system of the data directory; nil: no check.
 	FreeSpace func() (uint64, error)
-	// Hook is called at points of the server, such as "commit:gate", for the tests. Its error fails the operation.
+	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
+	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
+	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal) and "original:renamed" (after
+	// the sync of the directory of the original). Its error fails the operation.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
@@ -55,16 +58,28 @@ type Server struct {
 	// gate is held by a Commit while its Update runs, so that a Backup can keep commits out while its reader opens.
 	gate    sync.Mutex
 	stopped atomic.Bool
+	maxOps  int // the most ops of a Commit
+
+	spaceStep int64 // how much of an original is written between two looks at the free space
+
+	// The originals: the directories of files/ whose names are durable, as keys; syncs is read-locked by each sync of a
+	// PutOriginal, and locked before a PutOriginal answers, so that one that ran beside a failed sync fails too.
+	dirs  sync.Map
+	syncs sync.RWMutex
 
 	ctx    context.Context // ended by Close
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	sessions map[*session]struct{}
-	writers  int // the sessions that have said Hello as the writer
-	readers  int
-	closing  bool
-	wg       sync.WaitGroup
+	mu          sync.Mutex
+	sessions    map[*session]struct{}
+	writers     int // the sessions that have said Hello as the writer
+	readers     int
+	closing     bool
+	draining    bool // Shutdown has begun: no new request
+	requests    int  // the requests that sessions are in
+	drained     chan struct{}
+	drainedOnce sync.Once
+	wg          sync.WaitGroup
 
 	closeOnce sync.Once
 	closeErr  error
@@ -109,8 +124,9 @@ func Create(root vfs.FS, name string, o Options) error {
 }
 
 // Open opens the data directory in root as the writer of its engine. It refuses a store that has commits and no schema
-// row, an invalid row, and a schema newer than dbwire.TableVersion, before the engine changes a file. name is the
-// directory in errors. root stays the caller's: Close does not close it.
+// row, an invalid row, and a schema newer than dbwire.TableVersion, before the engine changes a file. It removes the
+// temporary files that a daemon that was killed left in files/; if it cannot, it fails, and the store is as it was.
+// name is the directory in errors. root stays the caller's: Close does not close it.
 func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err := checkLimits(o.Limits); err != nil {
 		return nil, err
@@ -130,7 +146,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		return nil, err
 	}
 	o.Limits = o.Limits.WithDefaults()
-	o.Log.Accept = acceptSchema(path.Join(name, "logdb"))
+	o.Log.Accept = acceptSchema(fspath.Join(name, "logdb"))
 	db, err := logdb.Open(logFS, o.Log)
 	if err != nil {
 		_ = logFS.Close()
@@ -138,12 +154,18 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{name: name, db: db, logFS: logFS, files: files, limits: o.Limits, o: o, now: o.Now,
-		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}}
+		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, spaceStep: originalSpaceStep,
+		drained: make(chan struct{})}
 	if s.now == nil {
 		s.now = time.Now
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if _, err := rand.Read(s.bootID[:]); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	// The writer lock is held: no temporary file of files/ is in use.
+	if err := s.removeTemps(); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -166,7 +188,7 @@ func checkLimits(l dbwire.Limits) error {
 }
 
 func checkDir(root vfs.FS, name, dir string) error {
-	p := path.Join(name, dir)
+	p := fspath.Join(name, dir)
 	info, err := root.Lstat(dir)
 	var pe *fs.PathError
 	switch {
@@ -195,8 +217,8 @@ func acceptSchema(name string) func(*logdb.Tx) error {
 			}
 			return fmt.Errorf("%s: not a store of whiteroom (no schema version)", name)
 		}
-		switch version, n := binary.Uvarint(v); {
-		case n <= 0 || n != len(v) || version == 0:
+		switch version, valid := schemaVersion(v); {
+		case !valid:
 			return fmt.Errorf("%s: meta %q: invalid value", name, dbwire.MetaSchema)
 		case version > dbwire.TableVersion:
 			return fmt.Errorf("%s: the store schema is of version %d, newer than this program knows (%d)", name,
@@ -206,13 +228,26 @@ func acceptSchema(name string) func(*logdb.Tx) error {
 	}
 }
 
+// schemaVersion reads the value of the row meta/schema: one whole uvarint that is not 0.
+func schemaVersion(v []byte) (version uint64, valid bool) {
+	version, n := binary.Uvarint(v)
+	return version, n > 0 && n == len(v) && version != 0
+}
+
 // ServeConn serves the connection conn, whose peer has the role, until it ends, and closes it.
 func (s *Server) ServeConn(conn net.Conn, role dbwire.Role) {
+	s.serveConn(conn, role, nil)
+}
+
+// serveConn is ServeConn for a peer that is denied if deny is not nil: its Hello is answered CodeDenied with the text of
+// deny, and nothing changes.
+func (s *Server) serveConn(conn net.Conn, role dbwire.Role, deny error) {
 	c := s.newSession(conn, role)
 	if c == nil {
 		_ = conn.Close()
 		return
 	}
+	c.deny = deny
 	c.serve()
 }
 
@@ -222,19 +257,60 @@ func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closing = true
-		sessions := make([]*session, 0, len(s.sessions))
-		for c := range s.sessions {
-			sessions = append(sessions, c)
-		}
 		s.mu.Unlock()
 		s.cancel()
-		for _, c := range sessions {
-			_ = c.conn.Close()
-		}
+		s.closeConns()
 		s.wg.Wait()
 		s.closeErr = errors.Join(s.db.Close(), s.logFS.Close(), s.files.Close())
 	})
 	return s.closeErr
+}
+
+func (s *Server) closeConns() {
+	s.mu.Lock()
+	sessions := make([]*session, 0, len(s.sessions))
+	for c := range s.sessions {
+		sessions = append(sessions, c)
+	}
+	s.mu.Unlock()
+	for _, c := range sessions {
+		_ = c.conn.Close()
+	}
+}
+
+// beginRequest counts a request that a session is in, unless Shutdown has begun.
+func (s *Server) beginRequest() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining {
+		return false
+	}
+	s.requests++
+	return true
+}
+
+func (s *Server) endRequest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.requests--; s.draining && s.requests == 0 {
+		s.drainedOnce.Do(func() { close(s.drained) })
+	}
+}
+
+// Shutdown refuses new requests, waits until no session is inside a request or ctx ends, and then closes the
+// connections. Close still closes the engine.
+func (s *Server) Shutdown(ctx context.Context) {
+	s.mu.Lock()
+	s.draining = true
+	if s.requests == 0 {
+		s.drainedOnce.Do(func() { close(s.drained) })
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.drained:
+	case <-ctx.Done():
+	}
+	s.closeConns()
 }
 
 func (s *Server) logf(format string, args ...any) {

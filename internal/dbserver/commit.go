@@ -36,6 +36,10 @@ type refusal struct {
 
 func (r *refusal) Error() string { return r.msg }
 
+// maxCommitOps is the most ops of a Commit: the limit of bytes counts them as they are sent, and a Commit of very many
+// tiny ops would cost the daemon many times its bytes in memory.
+const maxCommitOps = 1 << 22
+
 // requestSlack is what a request has besides the bytes that its limit counts: the hashes, the sizes, the end mark.
 const requestSlack = 64
 
@@ -112,6 +116,9 @@ func (c *session) commitRequest() bool {
 		}
 		if used += o.Size(); used > l.Commit {
 			return c.refuseAndClose(dbwire.CodeLimit, fmt.Sprintf("the ops of a Commit are over %d bytes", l.Commit))
+		}
+		if len(ops) >= c.s.maxOps {
+			return c.refuseAndClose(dbwire.CodeLimit, fmt.Sprintf("a Commit of more than %d ops", c.s.maxOps))
 		}
 		ops = append(ops, o)
 	}
@@ -205,11 +212,16 @@ func (c *session) update(expected uint64, ops []dbwire.Op) bool {
 }
 
 func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, markFn func() []byte) error {
+	var before uint64 // the schema version that the store has, 0 if it has none
+	if v, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema)); ok {
+		before, _ = schemaVersion(v)
+	}
 	for _, hash := range c.staged.order {
 		if _, err := tx.PutObject(c.staged.data[hash]); err != nil {
 			return err
 		}
 	}
+	heads := false
 	for i, o := range ops {
 		var err error
 		switch o.Kind {
@@ -219,6 +231,7 @@ func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, markFn func() []byte) err
 					return &refusal{dbwire.CodeRule, fmt.Sprintf("op %d: table %d is append-only: a row is not changed", i, o.Table)}
 				}
 			}
+			heads = heads || o.Table == dbwire.TableHeads
 			err = tx.Put(o.Table, o.Key, o.Value)
 		case dbwire.OpDelete:
 			err = tx.Delete(o.Table, o.Key)
@@ -229,5 +242,41 @@ func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, markFn func() []byte) err
 			return err
 		}
 	}
+	if r := checkSchema(tx, before); r != nil {
+		return r
+	}
+	if heads && countRows(tx, dbwire.TableHeads, maxHeadRows+1) > maxHeadRows {
+		return &refusal{dbwire.CodeRule, fmt.Sprintf("the table of the heads would have more than %d rows", maxHeadRows)}
+	}
 	return tx.AppendEvent(markFn())
+}
+
+// checkSchema returns the refusal of a commit that would leave the row meta/schema as the daemon's own Open would refuse
+// it, or as a lower version than before, the version that the store had: the daemon never commits a state that it would
+// not open again.
+func checkSchema(tx *logdb.Tx, before uint64) *refusal {
+	v, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema))
+	if !ok {
+		return &refusal{dbwire.CodeRule, "the commit would leave the store without its schema version"}
+	}
+	switch version, valid := schemaVersion(v); {
+	case !valid:
+		return &refusal{dbwire.CodeRule, "the commit would leave an invalid schema version"}
+	case version > dbwire.TableVersion:
+		return &refusal{dbwire.CodeRule, fmt.Sprintf("the commit would set the schema version %d, newer than this daemon knows (%d)",
+			version, dbwire.TableVersion)}
+	case version < before:
+		return &refusal{dbwire.CodeRule, fmt.Sprintf("the commit would lower the schema version from %d to %d", before, version)}
+	}
+	return nil
+}
+
+// countRows counts the rows of table, and stops after max of them.
+func countRows(tx *logdb.Tx, table uint32, max int) int {
+	n := 0
+	tx.Scan(table, nil, func(_, _ []byte) bool {
+		n++
+		return n < max
+	})
+	return n
 }

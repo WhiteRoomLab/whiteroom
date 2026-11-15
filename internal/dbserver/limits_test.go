@@ -1,6 +1,7 @@
 package dbserver
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -49,7 +50,11 @@ func TestSafeText(t *testing.T) {
 		{"an error that nothing knows", errors.New("table 2, key " + secret), "the engine failed"},
 		{"a joined error", errors.Join(errors.New(secret), pe), pe.Error()},
 		{"the error of a failed sync alone", logdb.ErrFailed, "the engine failed"},
-		{"the error of a context", fmt.Errorf("%s: %w", secret, errors.ErrUnsupported), "the engine failed"},
+		{"an error that is not of a context", fmt.Errorf("%s: %w", secret, errors.ErrUnsupported), "the engine failed"},
+		{"a sentence of the daemon's own", &refusal{dbwire.CodeFailed, "a sentence"}, "a sentence"},
+		{"the same that something wraps", fmt.Errorf("%s: %w", secret, &refusal{dbwire.CodeFailed, "a sentence"}), "a sentence"},
+		{"the end of a context", fmt.Errorf("%s: %w", secret, context.Canceled), "context canceled"},
+		{"the time of a context", fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "context deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := safeText(tc.err)
@@ -165,7 +170,6 @@ func TestNoValuesLeak(t *testing.T) {
 		_ = c.Close()
 		e.PutOriginalTrailer(hashOf(secret), int64(len(secret)))
 	}, nil))
-	refuse(r.do(dbwire.KindBackup, nil, nil))
 	refuse(r.do(dbwire.KindOriginal, func(e *dbwire.Enc) { e.OriginalRequest(hashOf(secret)) }, nil))
 
 	// What the peer sends that is not a message, each in a connection that ends after it.

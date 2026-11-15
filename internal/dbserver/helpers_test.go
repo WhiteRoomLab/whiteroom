@@ -1,6 +1,7 @@
 package dbserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -8,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
@@ -19,6 +23,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 // secret is in the keys, values, objects and events that the tests send: no reply and no log line may hold it.
@@ -47,7 +52,8 @@ func noLeaks(t testing.TB) {
 			buf := make([]byte, 1<<20)
 			stacks = string(buf[:runtime.Stack(buf, true)])
 			for _, g := range strings.Split(stacks, "\n\n") {
-				for _, marker := range []string{"dbserver.(*session)", "dbserver.(*Server).openSnapshot", "dbserver.(*Server).ServeConn"} {
+				for _, marker := range []string{"dbserver.(*session)", "dbserver.(*Server).openSnapshot", "dbserver.(*Server).ServeConn",
+					"dbserver.(*Server).Serve(", "dbserver.(*Server).serveConn", "dbserver.Run("} {
 					if strings.Contains(g, marker) {
 						return true
 					}
@@ -107,6 +113,7 @@ func (c *clock) set(t time.Time) {
 type fixture struct {
 	t     testing.TB
 	fs    *simfs.FS
+	dir   string // a data directory on the OS, if fs is nil
 	opts  Options
 	srv   *Server
 	logs  *logLines
@@ -145,10 +152,34 @@ func newFixture(t testing.TB, mod func(*Options)) *fixture {
 	return f
 }
 
+// newDirFixture is newFixture for a data directory on the OS, for the tests that need a real file system.
+func newDirFixture(t testing.TB, mod func(*Options)) *fixture {
+	t.Helper()
+	noLeaks(t)
+	f := &fixture{t: t, dir: filepath.Join(t.TempDir(), "data"), opts: testOptions(), logs: &logLines{},
+		clock: &clock{t: testBase, step: time.Second}}
+	if mod != nil {
+		mod(&f.opts)
+	}
+	f.opts.Now = f.clock.now
+	f.opts.Logf = f.logs.logf
+	if err := CreateDir(f.dir, f.opts); err != nil {
+		t.Fatal(err)
+	}
+	f.open()
+	return f
+}
+
 // open opens the server, and closes it at the end of the test.
 func (f *fixture) open() {
 	f.t.Helper()
-	srv, err := Open(f.fs, "data", f.opts)
+	var srv *Server
+	var err error
+	if f.fs == nil {
+		srv, err = OpenDir(f.dir, f.opts)
+	} else {
+		srv, err = Open(f.fs, "data", f.opts)
+	}
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -167,10 +198,17 @@ func (f *fixture) reopen() {
 
 func (f *fixture) db() *logdb.DB { return EngineOf(f.srv) }
 
-// update runs fn in an Update of the engine, behind the rules of the daemon.
+// update runs fn in an Update of the engine, which puts the schema row too if the store has none, as the first commit of a
+// store has to.
 func (f *fixture) update(fn func(tx *logdb.Tx)) {
 	f.t.Helper()
 	if err := f.db().Update(context.Background(), func(tx *logdb.Tx) error {
+		if _, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema)); !ok {
+			op := schemaOp()
+			if err := tx.Put(op.Table, op.Key, op.Value); err != nil {
+				return err
+			}
+		}
 		fn(tx)
 		return nil
 	}); err != nil {
@@ -426,7 +464,21 @@ func (c *client) putObject(data string) ([32]byte, error) {
 	return h, c.do(dbwire.KindPutObject, func(e *dbwire.Enc) { e.PutObjectRequest(h, []byte(data)) }, dbwire.ReadEmpty)
 }
 
+// commit sends a Commit. The first commit of a store also puts the schema row, which every commit must leave, unless ops
+// have it, and an event for it: commitExactly sends the ops as they are.
 func (c *client) commit(expected uint64, ops ...dbwire.Op) (seq uint64, mark time.Time, err error) {
+	if expected == 0 && !slices.ContainsFunc(ops, func(o dbwire.Op) bool {
+		return o.Table == dbwire.TableMeta && string(o.Key) == dbwire.MetaSchema
+	}) {
+		ops = append([]dbwire.Op{schemaOp()}, ops...)
+		if !slices.ContainsFunc(ops, func(o dbwire.Op) bool { return o.Kind == dbwire.OpEvent }) {
+			ops = append(ops, event("schema"))
+		}
+	}
+	return c.commitExactly(expected, ops...)
+}
+
+func (c *client) commitExactly(expected uint64, ops ...dbwire.Op) (seq uint64, mark time.Time, err error) {
 	err = c.do(dbwire.KindCommit, func(e *dbwire.Enc) {
 		e.CommitRequest(expected)
 		for _, o := range ops {
@@ -560,3 +612,159 @@ func hashHex(data string) string {
 	h := hashOf(data)
 	return fmt.Sprintf("%x", h[:])
 }
+
+// putOriginal sends data as the chunks of a PutOriginal, with the trailer that has its hash and size.
+func (c *client) putOriginal(data []byte) ([32]byte, error) {
+	h := sha256.Sum256(data)
+	return h, c.putOriginalAs(data, h, int64(len(data)))
+}
+
+// putOriginalAs is putOriginal with the hash and the size of the trailer, which may be wrong.
+func (c *client) putOriginalAs(data []byte, hash [32]byte, size int64) error {
+	return c.do(dbwire.KindPutOriginal, func(e *dbwire.Enc) {
+		ch := e.Chunks()
+		_, _ = ch.Write(data)
+		_ = ch.Close()
+		e.PutOriginalTrailer(hash, size)
+	}, dbwire.ReadEmpty)
+}
+
+// original reads the original whose hash is hash: its size, and its bytes.
+func (c *client) original(hash [32]byte) (data []byte, err error) {
+	err = c.do(dbwire.KindOriginal, func(e *dbwire.Enc) { e.OriginalRequest(hash) }, func(d *dbwire.Dec) error {
+		size, err := dbwire.ReadOriginalReply(d, 1<<30)
+		if err != nil {
+			return err
+		}
+		if data, err = io.ReadAll(d.Stream(size)); err != nil {
+			return err
+		}
+		return d.End()
+	})
+	return data, err
+}
+
+// A backupReply is what a Backup gave: the entries in order, as text, the position, the lines of the heads, and the files.
+type backupReply struct {
+	order []string
+	pos   dbwire.BackupPosition
+	heads []string
+	dirs  []string
+	files map[string][]byte
+}
+
+// readBackup reads the reply of a Backup that has been sent, to its end.
+func (c *client) readBackup(into vfs.FS) (*backupReply, error) {
+	r := &backupReply{files: map[string][]byte{}}
+	if err := c.rd.Reply(); err != nil {
+		c.f.record(err)
+		return nil, err
+	}
+	err := r.read(&dbwire.Dec{R: c.rd}, into, nil)
+	c.f.record(err)
+	return r, err
+}
+
+// read reads the entries of d. If into is not nil, it makes them there, as a restore does. after is called after each entry.
+func (r *backupReply) read(d *dbwire.Dec, into vfs.FS, after func(en dbwire.BackupEntry)) error {
+	for {
+		en, ok := dbwire.ReadBackupEntry(d)
+		if !ok {
+			if d.Err == nil {
+				r.order = append(r.order, "end")
+			}
+			return d.Err
+		}
+		switch en.Kind {
+		case dbwire.EntryEnd: // not given
+		case dbwire.EntryPosition:
+			r.pos = en.Position
+			r.order = append(r.order, "position")
+		case dbwire.EntryHead:
+			r.heads = append(r.heads, en.Line)
+			r.order = append(r.order, "head")
+		case dbwire.EntryDir:
+			r.dirs = append(r.dirs, en.Path)
+			r.order = append(r.order, "dir "+en.Path)
+			if into != nil {
+				if err := into.Mkdir(en.Path, 0o700); err != nil {
+					return err
+				}
+			}
+		case dbwire.EntryFile:
+			r.order = append(r.order, "file "+en.Path)
+			var f vfs.File
+			if into != nil {
+				var err error
+				if f, err = into.OpenFile(en.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
+					return err
+				}
+			}
+			var buf bytes.Buffer
+			w := io.Writer(&buf)
+			if f != nil {
+				w = io.MultiWriter(&buf, f)
+			}
+			_, err := io.Copy(w, dbwire.NewChunkReader(d, 1<<40))
+			if f != nil {
+				err = errors.Join(err, f.Sync(), f.Close())
+			}
+			if err != nil {
+				return err
+			}
+			r.files[en.Path] = buf.Bytes()
+		}
+		if after != nil {
+			after(en)
+		}
+	}
+}
+
+// backup takes a Backup, and makes what it gives in into, if it is not nil.
+func (c *client) backup(into vfs.FS) (*backupReply, error) {
+	c.t.Helper()
+	sent := c.send(dbwire.KindBackup, nil)
+	r, err := c.readBackup(into)
+	if serr := <-sent; err == nil && serr != nil {
+		err = serr
+	}
+	return r, err
+}
+
+// keepAll is the crash model that keeps every change of fsys that is not durable: the machine restarts after its page
+// cache has reached the disk.
+func keepAll(fsys *simfs.FS) simfs.Model {
+	keep := make([]bool, len(fsys.Pending()))
+	for i := range keep {
+		keep[i] = true
+	}
+	return simfs.Model{Name: "keep-all", Keep: keep}
+}
+
+var loseAll = simfs.Model{Name: "lose-all"}
+
+// filesOf returns the paths of the files of fsys that are in the directory dir, with what they hold.
+func filesOf(fsys *simfs.FS, dir string) map[string]string {
+	m := map[string]string{}
+	fsys.Walk(func(p string, data []byte) {
+		if strings.HasPrefix(p, dir+"/") {
+			m[p] = string(data)
+		}
+	})
+	return m
+}
+
+// tempFiles returns the temporary files of PutOriginal in the files/ of fsys.
+func tempFiles(fsys *simfs.FS) []string {
+	var names []string
+	for p := range filesOf(fsys, "files") {
+		if strings.HasPrefix(path.Base(p), tempPrefix) {
+			names = append(names, p)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// originalPath is the path of the file of the original whose hash is h in the data directory.
+func originalPath(h [32]byte) string { return fmt.Sprintf("files/%x/%x", h[:1], h) }

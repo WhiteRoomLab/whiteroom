@@ -127,7 +127,7 @@ memory: 512
 		}
 	})
 
-	// A socket that starts with @ is kept, for listenSocket to refuse, wherever the file is; and ./ in front of a name that
+	// A socket that starts with @ is kept, for unixsock.Listen to refuse, wherever the file is; and ./ in front of a name that
 	// starts with @ stays, in a file in the working directory, as Join would cut it.
 	t.Run("a socket that starts with @", func(t *testing.T) {
 		at := filepath.Join(root, "at")

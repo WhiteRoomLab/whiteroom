@@ -178,7 +178,7 @@ func (r *configReader) fromDir(s string) string {
 }
 
 // socketPath returns the string raw as the path of a socket: as path does, but a value that starts with @ is kept, whatever
-// the directory of the config file is, for listenSocket to refuse.
+// the directory of the config file is, for unixsock.Listen to refuse.
 func (r *configReader) socketPath(ptr string, raw json.RawMessage) string {
 	s, ok := r.text(ptr, raw)
 	if !ok || filepath.IsAbs(s) || strings.HasPrefix(s, "@") {

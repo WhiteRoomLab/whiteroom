@@ -15,7 +15,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
@@ -26,6 +25,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/publish"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/unixsock"
 )
 
 const serveAdminUsage = `Usage: whiteroom serve admin [flags] [SITE]
@@ -387,7 +387,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 		return err
 	}
 	if s.network == "unix" {
-		a.listener, err = listenSocket(s.addr)
+		a.listener, err = unixsock.Listen(s.addr)
 	} else {
 		a.listener, err = net.Listen("tcp", s.addr)
 	}
@@ -441,56 +441,6 @@ func makeTempDir(dir string) error {
 		}
 	}
 	return admin.RemoveTemps(dir)
-}
-
-// maxSocketPath is the most bytes of the path of a Unix domain socket: 107 on Linux, whose address has room for 108 with the
-// NUL that ends it.
-const maxSocketPath = len(syscall.RawSockaddrUnix{}.Path) - 1
-
-// listenSocket listens on the Unix domain socket file at path, which it makes with the mode 0660: the owner and the group
-// connect to it, as a reverse proxy does. A socket file that nobody listens on, as a server that was killed leaves, is
-// replaced; any other file there is left as it is, and is an error. Closing the listener removes the file.
-func listenSocket(path string) (net.Listener, error) {
-	// Linux takes it for an abstract socket, which has no file: the dial below would miss a file of that name.
-	if strings.HasPrefix(path, "@") {
-		return nil, fmt.Errorf("listen unix %s: a path that starts with @ is of an abstract socket, which has no file: "+
-			"start the path of a file with ./", path)
-	}
-	// Before the path is looked at: a socket file at a path that is too long may be there, and a dial of it fails.
-	if len(path) > maxSocketPath {
-		return nil, fmt.Errorf("listen unix %s: the path of a socket has at most %d bytes, and this one has %d", path, maxSocketPath,
-			len(path))
-	}
-	info, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return nil, err
-	case info.Mode()&os.ModeSocket == 0:
-		return nil, fmt.Errorf("listen unix %s: the path exists and is not a socket, and is left as it is", path)
-	default:
-		conn, err := net.DialTimeout("unix", path, time.Second)
-		switch {
-		case err == nil:
-			_ = conn.Close()
-			return nil, fmt.Errorf("listen unix %s: another process listens on the socket, which is left as it is", path)
-		case !errors.Is(err, syscall.ECONNREFUSED):
-			return nil, fmt.Errorf("listen unix %s: cannot tell whether another process listens on the socket, which is left "+
-				"as it is: %w", path, err)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	}
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o660); err != nil {
-		_ = l.Close()
-		return nil, err
-	}
-	return l, nil
 }
 
 // openAdminSite opens the site directory site, of which the server reads only the schema file and the theme: the theme

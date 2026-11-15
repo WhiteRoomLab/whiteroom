@@ -317,6 +317,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
@@ -330,8 +331,10 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
         dbserver-test:
           list-mode: strict
           files:
@@ -339,9 +342,11 @@ linters:
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
         logdb:
           list-mode: strict
           files:
@@ -459,6 +464,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
     forbidigo:
       analyze-types: true

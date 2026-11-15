@@ -84,8 +84,8 @@ const verifyDiffers = "the state in memory differs from the log"
 
 // safeText returns the text of err for a reply or a log line. It is the text of an error of the OS, of a damaged file
 // or of a file of a newer format, which name paths, sizes and offsets; of a sync that failed, the same for its cause; or
-// one of the sentences of the engine's Verify, whose detail, which may hold values of rows, is cut. Any other error
-// becomes a fixed sentence.
+// one of the sentences of the engine's Verify, whose detail, which may hold values of rows, is cut; or a sentence of the
+// daemon's own (a refusal), or the end of a context. Any other error becomes a fixed sentence.
 func safeText(err error) string {
 	if err == nil {
 		return ""
@@ -102,8 +102,15 @@ func safeText(err error) string {
 		le *os.LinkError
 		ce *logdb.CorruptError
 		ve *logdb.VersionError
+		rf *refusal
 	)
 	switch {
+	case errors.As(err, &rf): // a sentence of the daemon's own
+		return rf.msg
+	case errors.Is(err, context.Canceled):
+		return context.Canceled.Error()
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded.Error()
 	case errors.As(err, &ce):
 		return ce.Error()
 	case errors.As(err, &ve):

@@ -13,6 +13,8 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
+const closingText = "the daemon is closing"
+
 // readBuffer is the size of the buffer that dbwire.NewReader makes, so that it reads from the buffer of the session
 // itself, whose Peek waits for the first byte of a request.
 const readBuffer = 32 << 10
@@ -62,7 +64,8 @@ type session struct {
 	role   dbwire.Role
 	ctx    context.Context // ended with the session, or when the server closes
 	cancel context.CancelFunc
-	hello  bool // counted in the roles of the server
+	hello  bool  // counted in the roles of the server
+	deny   error // not nil: the peer is not let in, and the Hello is answered with it
 	snap   *snapshot
 	staged staged
 }
@@ -97,15 +100,24 @@ func (c *session) serve() {
 			return
 		}
 		c.conn.busy = true
-		kind, err := c.rd.Next()
-		if err != nil {
-			c.bad(err)
-			return
-		}
-		if !c.dispatch(kind) {
+		if !c.request() {
 			return
 		}
 	}
+}
+
+// request reads and answers one request. A server that is shutting down refuses it.
+func (c *session) request() bool {
+	if !c.s.beginRequest() {
+		return c.refuseAndClose(dbwire.CodeBusy, closingText)
+	}
+	defer c.s.endRequest()
+	kind, err := c.rd.Next()
+	if err != nil {
+		c.bad(err)
+		return false
+	}
+	return c.dispatch(kind)
 }
 
 func (c *session) end() {
@@ -164,6 +176,8 @@ func (c *session) handshake() bool {
 	case err != nil:
 		c.bad(err)
 		return false
+	case c.deny != nil:
+		return c.refuseAndClose(dbwire.CodeDenied, c.deny.Error())
 	case version != dbwire.Version:
 		return c.refuseAndClose(dbwire.CodeVersion,
 			fmt.Sprintf("protocol version %d, but the daemon speaks version %d", version, dbwire.Version))
@@ -196,8 +210,8 @@ func (c *session) register() (dbwire.Code, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
-	case s.closing:
-		return dbwire.CodeBusy, "the daemon is closing"
+	case s.closing, s.draining:
+		return dbwire.CodeBusy, closingText
 	case c.role == dbwire.RoleWriter && s.writers > 0:
 		return dbwire.CodeBusy, "another writer is connected"
 	case c.role == dbwire.RoleReader && s.readers >= s.limits.Readers:
@@ -313,28 +327,4 @@ func (c *session) releaseRequest() bool {
 	}
 	c.dropSnapshot()
 	return c.ok(nil)
-}
-
-func (c *session) backupRequest() bool {
-	if err := c.empty(); err != nil {
-		c.bad(err)
-		return false
-	}
-	return c.fail(dbwire.CodeInternal, "not supported yet")
-}
-
-func (c *session) originalRequest() bool {
-	if _, err := dbwire.ReadOriginalRequest(&dbwire.Dec{R: c.rd}); err != nil {
-		c.bad(err)
-		return false
-	}
-	return c.fail(dbwire.CodeInternal, "not supported yet")
-}
-
-// putOriginalRequest: a reader is denied; the writer's request has chunks that are not read, so the session ends.
-func (c *session) putOriginalRequest() bool {
-	if c.role != dbwire.RoleWriter {
-		return c.refuseBody(5*c.s.limits.Object+64, dbwire.CodeDenied, "only the writer may put an original")
-	}
-	return c.refuseAndClose(dbwire.CodeInternal, "not supported yet")
 }

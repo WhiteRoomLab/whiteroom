@@ -99,7 +99,7 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		return 1
 	}
 	if missing {
-		if err := store.SyncParent(dest); err != nil {
+		if err := fspath.SyncParent(dest); err != nil {
 			return fail(err)
 		}
 	}

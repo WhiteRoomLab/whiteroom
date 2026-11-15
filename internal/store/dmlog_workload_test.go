@@ -20,6 +20,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -377,7 +378,7 @@ func openPhase(t *testing.T, root string, ph workloadPhase, mark func(text strin
 	loose := os.Getenv(envDMLogLoose) != ""
 	if ph.create && loose {
 		// As create does on the OS, for the file system of workloadIn.
-		if err := makeDirs(dir, SyncParent); err != nil {
+		if err := fspath.MakeDirs(dir); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -467,7 +468,7 @@ func backupWorkload(ctx context.Context, root string) error {
 	if os.Getenv(envDMLogLoose) == "" {
 		return Backup(ctx, src, dst)
 	}
-	if err := makeDirs(dst, SyncParent); err != nil {
+	if err := fspath.MakeDirs(dst); err != nil {
 		return err
 	}
 	srcFS, err := looseRoot(src)

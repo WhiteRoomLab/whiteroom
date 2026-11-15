@@ -3,6 +3,7 @@ package dbserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"net"
 	"testing"
@@ -66,6 +67,22 @@ func FuzzSession(f *testing.F) {
 		_ = c.Close()
 		e.PutOriginalTrailer(hashOf("original"), 8)
 	})))
+	putOriginal := func(data string, hash [32]byte, size int64) func(w *dbwire.Writer, e *dbwire.Enc) {
+		return request(dbwire.KindPutOriginal, func(e *dbwire.Enc) {
+			c := e.Chunks()
+			_, _ = c.Write([]byte(data))
+			_ = c.Close()
+			e.PutOriginalTrailer(hash, size)
+		})
+	}
+	f.Add(byte(1), stream(putOriginal("original", hashOf("original"), 8), putOriginal("original", hashOf("other"), 8),
+		putOriginal("original", hashOf("original"), 9), putOriginal("", hashOf(""), 0),
+		request(dbwire.KindOriginal, func(e *dbwire.Enc) { e.OriginalRequest(hashOf("original")) }),
+		request(dbwire.KindBackup, nil)))
+	f.Add(byte(1), stream(request(dbwire.KindPutOriginal, func(e *dbwire.Enc) {
+		e.U32(1 << 31)
+		e.Raw(make([]byte, 300))
+	})))
 	f.Add(byte(0), stream(request(dbwire.KindHello, func(e *dbwire.Enc) { e.HelloRequest() })))
 	f.Add(byte(0), []byte{0x42, 1, 0, 0, 0, 0, 0, 0})
 	f.Add(byte(1), []byte{byte(dbwire.KindCommit), 0, 0, 0, 0, 0, 0, 1, 0, byte(dbwire.KindCommit), 1, 0, 0, 0, 0, 0, 0})
@@ -105,6 +122,12 @@ func FuzzSession(f *testing.F) {
 			t.Fatal("the session did not end")
 		}
 		<-drained
+		// Whatever the peer sent, files/ has originals alone, each with the name of its hash.
+		for name, data := range filesOf(fx.fs, "files") {
+			if sum := sha256.Sum256([]byte(data)); name != originalPath(sum) {
+				t.Fatalf("files/ has %s with the data of %x", name, sum)
+			}
+		}
 		if err := fx.db().Verify(context.Background()); err != nil {
 			t.Fatalf("the store is damaged: %v", err)
 		}

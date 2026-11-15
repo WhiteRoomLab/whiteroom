@@ -67,7 +67,7 @@ func TestPutObjectDropped(t *testing.T) {
 			wantCode(t, err, dbwire.CodeSeq)
 		},
 		"a Commit that breaks a rule": func(t *testing.T, w *client, seq uint64) {
-			_, _, err := w.commit(seq, put(2, "k", "v"))
+			_, _, err := w.commitExactly(seq, put(2, "k", "v"))
 			wantCode(t, err, dbwire.CodeRule)
 		},
 	} {
@@ -363,6 +363,7 @@ func (f *fixture) connectAfter(c *client) *client {
 
 func TestCommitLimits(t *testing.T) {
 	f := newFixture(t, func(o *Options) { o.Limits.Commit = 100 })
+	f.update(func(*logdb.Tx) {}) // the schema row, so that the commits below are of the sizes that they say
 	opsOf := func(size int) []dbwire.Op {
 		// One event of size bytes in all: an event is 5 bytes and its data.
 		return []dbwire.Op{event(strings.Repeat("e", size-5))}
@@ -587,6 +588,7 @@ func TestMinFree(t *testing.T) {
 			return free.Load(), nil
 		}
 	})
+	f.update(func(*logdb.Tx) {}) // the schema row, so that the commits below are of the sizes that they say
 	w := f.connect(dbwire.RoleWriter)
 	object := strings.Repeat("o", 100)
 	seq := w.mustSnapshot()
@@ -765,4 +767,159 @@ func TestHookFailure(t *testing.T) {
 	f.unchanged(before)
 	fail.Store(false)
 	w.mustCommit(put(2, "k", "v"))
+}
+
+// TestCommitSchemaRule checks that the daemon never commits a state that its own Open would refuse: after the ops of a
+// Commit, the row meta/schema must be there, one whole uvarint, from 1 to the version of the tables, and not lower than it
+// was. A refusal changes nothing, and the store opens again.
+func TestCommitSchemaRule(t *testing.T) {
+	version := func(v uint64) []byte { return binary.AppendUvarint(nil, v) }
+	row := func(value []byte) dbwire.Op {
+		return dbwire.Op{Kind: dbwire.OpPut, Table: dbwire.TableMeta, Key: []byte(dbwire.MetaSchema), Value: value}
+	}
+	f := newFixture(t, nil)
+	w := f.connect(dbwire.RoleWriter)
+	// refuse sends ops as they are, in a commit after the snapshot, and checks that the store is as it was and opens again.
+	refuse := func(name, text string, ops ...dbwire.Op) {
+		t.Helper()
+		before := f.dump()
+		seq := w.mustSnapshot()
+		_, _, err := w.commitExactly(seq, append(ops, event("e"))...)
+		re := wantCode(t, err, dbwire.CodeRule)
+		if re.Msg != text {
+			t.Errorf("%s: the text is %q, want %q", name, re.Msg, text)
+		}
+		f.unchanged(before)
+		f.reopen()
+		f.unchanged(before)
+		w = f.connect(dbwire.RoleWriter)
+	}
+	accept := func(name string, ops ...dbwire.Op) {
+		t.Helper()
+		seq := w.mustSnapshot()
+		if got, _, err := w.commitExactly(seq, append(ops, event("e"))...); err != nil || got != seq+1 {
+			t.Fatalf("%s: Commit = %d, %v", name, got, err)
+		}
+	}
+
+	// The first commit of a store puts the row.
+	refuse("no row", "the commit would leave the store without its schema version", put(2, "a", "1"))
+	refuse("only an event", "the commit would leave the store without its schema version")
+	refuse("the delete of a row that is not there", "the commit would leave the store without its schema version",
+		del(dbwire.TableMeta, dbwire.MetaSchema))
+	refuse("a version over the one that the daemon knows",
+		"the commit would set the schema version 8, newer than this daemon knows (7)", row(version(8)))
+	refuse("a version far over", "the commit would set the schema version 1000000, newer than this daemon knows (7)",
+		row(version(1_000_000)))
+	refuse("0", "the commit would leave an invalid schema version", row(version(0)))
+	refuse("bytes that are not a uvarint", "the commit would leave an invalid schema version", row([]byte{0x80}))
+	refuse("no byte", "the commit would leave an invalid schema version", row(nil))
+	refuse("a uvarint and a byte", "the commit would leave an invalid schema version", row(append(version(7), 0)))
+	refuse("a uvarint that is too long", "the commit would leave an invalid schema version",
+		row([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01}))
+	refuse("the text of a version", "the commit would set the schema version 55, newer than this daemon knows (7)",
+		row([]byte("7"))) // the byte 0x37 is the uvarint 55
+	refuse("the last of two puts", "the commit would leave an invalid schema version", row(version(7)), row(version(0)))
+	if f.dump().Seq != 0 {
+		t.Fatal("a refusal has committed")
+	}
+
+	// A version from 1 to 7 is a first commit that works; the store is then of that version.
+	accept("version 6", row(version(6)))
+	refuse("a delete of the row", "the commit would leave the store without its schema version",
+		del(dbwire.TableMeta, dbwire.MetaSchema))
+	refuse("a lower version", "the commit would lower the schema version from 6 to 5", row(version(5)))
+	refuse("a lower version in two puts", "the commit would lower the schema version from 6 to 1", row(version(7)),
+		row(version(1)))
+	refuse("a version over the one that the daemon knows",
+		"the commit would set the schema version 8, newer than this daemon knows (7)", row(version(8)))
+	refuse("an invalid row", "the commit would leave an invalid schema version", row([]byte{0xff}))
+	accept("the same version", row(version(6)))
+	accept("a commit that does not touch the row", put(2, "a", "1"))
+	accept("the version that the daemon knows", row(version(7)))
+	refuse("a lower version", "the commit would lower the schema version from 7 to 6", row(version(6)))
+	accept("a commit that does not touch the row", put(2, "b", "2"))
+	// A delete and a put of the row in one commit leaves it.
+	accept("a delete and a put", del(dbwire.TableMeta, dbwire.MetaSchema), row(version(7)))
+	if f.dump().Seq != 6 {
+		t.Errorf("the store has the sequence number %d, want 6", f.dump().Seq)
+	}
+	for _, l := range f.logs.all() {
+		t.Errorf("a refusal has logged %q", l)
+	}
+}
+
+// TestCommitOpsLimit checks that a Commit of more ops than the limit is refused, and the connection closed: the limit of
+// bytes counts the ops as they are sent, and tiny ops would cost the daemon many times their bytes.
+func TestCommitOpsLimit(t *testing.T) {
+	f := newFixture(t, nil)
+	if f.srv.maxOps != 1<<22 {
+		t.Fatalf("the limit of ops is %d, want %d", f.srv.maxOps, 1<<22)
+	}
+	f.srv.maxOps = 3
+	w := f.connect(dbwire.RoleWriter)
+	before := f.dump()
+	seq := w.mustSnapshot()
+	_, _, err := w.commitExactly(seq, schemaOp(), event("1"), event("2"), event("3"))
+	re := wantCode(t, err, dbwire.CodeLimit)
+	if want := "a Commit of more than 3 ops"; re.Msg != want {
+		t.Errorf("the text is %q, want %q", re.Msg, want)
+	}
+	w.wantClosed()
+	f.unchanged(before)
+
+	w = f.connectAfter(w)
+	seq = w.mustSnapshot()
+	if got, _, err := w.commitExactly(seq, schemaOp(), event("1"), event("2")); err != nil || got != 1 {
+		t.Fatalf("a Commit of exactly the limit = %d, %v", got, err)
+	}
+	// Ops that are not events count too.
+	seq = w.mustSnapshot()
+	_, _, err = w.commitExactly(seq, put(2, "a", "1"), put(2, "b", "1"), del(2, "a"), event("e"))
+	wantCode(t, err, dbwire.CodeLimit)
+	w.wantClosed()
+	if f.dump().Seq != 1 {
+		t.Error("a Commit of too many ops has committed")
+	}
+}
+
+// TestHeadRowsLimit checks that the table of the heads has at most 16 rows: a Commit that would leave more is refused, and
+// changes nothing; a row that is there may be replaced.
+func TestHeadRowsLimit(t *testing.T) {
+	f := newFixture(t, nil)
+	w := f.connect(dbwire.RoleWriter)
+	key := func(i int) string { return fmt.Sprintf("log%02d", i) }
+	line := func(i, n int) string { return fmt.Sprintf("audit head log%02d %d sha256:00", i, n) }
+	for i := range maxHeadRows {
+		// Several commits: one row each, and in the last also a row that is there.
+		ops := []dbwire.Op{put(dbwire.TableHeads, key(i), line(i, 1))}
+		if i == maxHeadRows-1 {
+			ops = append(ops, put(dbwire.TableHeads, key(i-1), line(i-1, 2)))
+		}
+		w.mustCommit(ops...)
+	}
+	before := f.dump()
+	if got := len(before.Tables[dbwire.TableHeads]); got != maxHeadRows {
+		t.Fatalf("the table has %d rows, want %d", got, maxHeadRows)
+	}
+	for name, ops := range map[string][]dbwire.Op{
+		"a 17th key":              {put(dbwire.TableHeads, key(16), line(16, 1))},
+		"a 17th key with a reput": {put(dbwire.TableHeads, key(0), line(0, 5)), put(dbwire.TableHeads, key(16), line(16, 1))},
+		"two new keys":            {put(dbwire.TableHeads, key(16), line(16, 1)), put(dbwire.TableHeads, key(17), line(17, 1))},
+	} {
+		seq := w.mustSnapshot()
+		_, _, err := w.commit(seq, append(ops, event("e"))...)
+		re := wantCode(t, err, dbwire.CodeRule)
+		if want := "the table of the heads would have more than 16 rows"; re.Msg != want {
+			t.Errorf("%s: the text is %q, want %q", name, re.Msg, want)
+		}
+		f.unchanged(before)
+	}
+	// A row that is there is replaced, as often as the writer wants.
+	for n := 3; n < 6; n++ {
+		w.mustCommit(put(dbwire.TableHeads, key(0), line(0, n)), put(dbwire.TableHeads, key(15), line(15, n)))
+	}
+	if after := f.dump(); len(after.Tables[dbwire.TableHeads]) != maxHeadRows || after.Seq != before.Seq+3 {
+		t.Errorf("after the commits that replace rows, the table has %d rows at %d", len(after.Tables[dbwire.TableHeads]), after.Seq)
+	}
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/unixsock"
 )
 
 // adminWait is how long the tests wait for a start, a stop or a build of serve admin.
@@ -863,10 +864,10 @@ func TestServeAdminSocket(t *testing.T) {
 	fail("no directory", missing, "bind: no such file or directory")
 	noFile(t, "no directory", filepath.Dir(missing))
 	tooLong := func(n int) string {
-		return fmt.Sprintf("the path of a socket has at most %d bytes, and this one has %d", maxSocketPath, n)
+		return fmt.Sprintf("the path of a socket has at most %d bytes, and this one has %d", unixsock.MaxPath, n)
 	}
 	long := socketDir(t)
-	for _, n := range []int{maxSocketPath + 1, maxSocketPath + 20} {
+	for _, n := range []int{unixsock.MaxPath + 1, unixsock.MaxPath + 20} {
 		path := filepath.Join(long, strings.Repeat("x", n-len(long)-1))
 		if len(path) != n {
 			t.Fatalf("the path has %d bytes, want %d", len(path), n)
@@ -877,7 +878,7 @@ func TestServeAdminSocket(t *testing.T) {
 
 	// A socket file that nobody listens on, at a path that is too long, which a shorter path through a symbolic link has
 	// made: it is not looked at, and is left as it is.
-	deep := filepath.Join(socketDir(t), strings.Repeat("d", maxSocketPath))
+	deep := filepath.Join(socketDir(t), strings.Repeat("d", unixsock.MaxPath))
 	if err := os.Mkdir(deep, 0o700); err != nil {
 		t.Fatal(err)
 	}
