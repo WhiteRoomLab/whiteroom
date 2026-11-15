@@ -277,11 +277,12 @@ func recoverLog(fsys vfs.FS) (*recovery, error) {
 // the reader reads the generation of lim only up to it, and a newer one, which that writer goes on in once its Open has
 // written head, only to the end of its base, as that is what it knows to be durable.
 func decide(fsys vfs.FS, lim *headSlot, read readFunc) (*recovery, error) {
-	segs, err := listSegments(fsys)
+	// Before log/ is listed: beside a reader, the writer may begin a segment and write a checkpoint that names it.
+	ck, why, err := readCheckpoint(fsys)
 	if err != nil {
 		return nil, err
 	}
-	ck, why, err := readCheckpoint(fsys)
+	segs, err := listSegments(fsys)
 	if err != nil {
 		return nil, err
 	}
