@@ -133,6 +133,32 @@ func (c *Client) snapshotWriter(ctx context.Context) (*conn, uint64, error) {
 	return cn, seq, nil
 }
 
+// liveWriter returns the writer connection with no snapshot, for the holder of the turn. A connection that it has kept is
+// tried with a Snapshot and a Release, and replaced if that fails: the request that follows carries bytes of a reader,
+// which cannot be sent again.
+func (c *Client) liveWriter(ctx context.Context) (*conn, error) {
+	if cn := c.wconn; cn != nil && !cn.dead.Load() {
+		_, err := cn.snapshot(ctx)
+		if err == nil {
+			err = cn.release(ctx)
+		}
+		if err == nil {
+			return cn, nil
+		}
+		cn.close()
+		c.wconn = nil
+		if _, ok := errors.AsType[*ioError](err); !ok {
+			return nil, err
+		}
+	}
+	cn, err := c.connect(ctx, dbwire.RoleWriter)
+	if err != nil {
+		return nil, err
+	}
+	c.wconn = cn
+	return cn, nil
+}
+
 func (c *Client) acquireTurn(ctx context.Context) error {
 	select {
 	case c.turn <- struct{}{}:

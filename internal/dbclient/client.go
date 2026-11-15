@@ -318,6 +318,9 @@ func (cn *conn) call(ctx context.Context, kind dbwire.Kind, body func(*dbwire.En
 
 // failure returns the error to give for err, which has ended the connection.
 func (cn *conn) failure(ctx context.Context, err error) error {
+	if le, ok := errors.AsType[*localError](err); ok {
+		return le.err
+	}
 	switch {
 	case errors.Is(err, errStop):
 		return err
@@ -334,17 +337,23 @@ func (cn *conn) failure(ctx context.Context, err error) error {
 // errStop ends a reply that its reader does not want to read to the end.
 var errStop = errors.New("the reply is not read to its end")
 
+// localError is a failure on the caller's side of a request, such as a reader or a directory that fails: it ends the
+// connection, as the request is not done, and is returned as it is.
+type localError struct{ err error }
+
+func (e *localError) Error() string { return e.err.Error() }
+func (e *localError) Unwrap() error { return e.err }
+
 func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*dbwire.Dec) error) error {
 	cn.wr.Begin(kind)
 	e := &dbwire.Enc{W: cn.wr}
 	if body != nil {
 		body(e)
 	}
-	err := cn.wr.End()
-	if err == nil {
-		err = e.Err
+	if e.Err != nil {
+		return e.Err // the message is left open, and the connection ends
 	}
-	if err != nil {
+	if err := cn.wr.End(); err != nil {
 		return err
 	}
 	if err := cn.rd.Reply(); err != nil {

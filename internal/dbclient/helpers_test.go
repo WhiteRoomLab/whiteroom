@@ -181,6 +181,7 @@ type recorder struct {
 	dials    []dbwire.Role
 	reqs     []dbwire.Kind
 	live     int
+	conns    []*recConn
 	closes   int // of the dialer
 	// failDial, if it is not nil, is called with the number of this attempt, and its error is the error of the dial.
 	failDial func(attempt int) error
@@ -208,7 +209,20 @@ func (r *recorder) Dial(ctx context.Context, role dbwire.Role) (net.Conn, error)
 	defer r.mu.Unlock()
 	r.dials = append(r.dials, role)
 	r.live++
-	return &recConn{Conn: nc, r: r, start: true}, nil
+	rc := &recConn{Conn: nc, r: r, start: true}
+	r.conns = append(r.conns, rc)
+	return rc, nil
+}
+
+// cutAll closes every connection that the dialer made, under the client, which does not know: the daemon has ended them,
+// as a restart does.
+func (r *recorder) cutAll() {
+	r.mu.Lock()
+	conns := slices.Clone(r.conns)
+	r.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Conn.Close()
+	}
 }
 
 func (r *recorder) String() string {
