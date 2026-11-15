@@ -179,6 +179,27 @@ func ascend[V any](t *pnode[V], prefix string, fn func(string, V) bool) bool {
 	return true
 }
 
+// AscendAfter calls fn for each key with prefix that is greater than after, in key order, until fn returns false. It
+// walks down to the first such key, so it does not pass the keys before it.
+func (m pmap[V]) AscendAfter(prefix, after string, fn func(key string, val V) bool) {
+	ascendAfter(m.root, prefix, after, fn)
+}
+
+// ascendAfter is ascend for the keys greater than after: a node that is not, with its left subtree, is skipped.
+func ascendAfter[V any](t *pnode[V], prefix, after string, fn func(string, V) bool) bool {
+	for t != nil {
+		if t.key <= after || t.key < prefix {
+			t = t.right
+			continue
+		}
+		if !ascendAfter(t.left, prefix, after, fn) || !strings.HasPrefix(t.key, prefix) || !fn(t.key, t.val) {
+			return false
+		}
+		t = t.right
+	}
+	return true
+}
+
 // fromSorted builds the pmap of keys, which must be strictly ascending, and vals, in linear time. Its nodes belong
 // to o. It is the pmap that putting the keys one by one makes.
 func fromSorted[V any](o *owner, keys []string, vals []V) (pmap[V], error) {

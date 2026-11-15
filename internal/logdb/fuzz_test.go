@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"maps"
 	"os"
 	"slices"
 	"testing"
@@ -392,6 +393,69 @@ func FuzzOpen(f *testing.F) {
 		}
 		if info2 := again.Recovery(); info2.Seq != info.Seq || info2.TruncatedAt != -1 || info2.RemovedSegment != "" {
 			t.Fatalf("the second recovery: %+v after %+v", info2, info)
+		}
+	})
+}
+
+// FuzzAscendAfter makes a pmap of the fields of data, which end at a comma, once by putting them in order and once with
+// fromSorted, and checks that AscendAfter gives the keys with prefix that are greater than after, in order and with
+// their values, also when fn stops it.
+func FuzzAscendAfter(f *testing.F) {
+	f.Add([]byte("a,ab,abc,abd,b,ba,c,"), "a", "ab")
+	f.Add([]byte("a,ab,abc,abd,b,ba,c,"), "", "")
+	f.Add([]byte("a,ab,abc,abd,b,ba,c,"), "a", "")
+	f.Add([]byte(",a,,ab,"), "", "")
+	f.Add([]byte("b,a,c,a,"), "b", "a")
+	f.Add([]byte("a\x00,a\xff,a,"), "a", "a\x00")
+	f.Add([]byte("x"), "y", "")
+	f.Add([]byte(""), "", "")
+	f.Fuzz(func(t *testing.T, data []byte, prefix, after string) {
+		last := map[string]int{}
+		var put pmap[int]
+		for i, field := range bytes.Split(data, []byte(",")) {
+			put = put.Put(nil, string(field), i)
+			last[string(field)] = i
+		}
+		sorted := slices.Sorted(maps.Keys(last))
+		vals := make([]int, len(sorted))
+		for i, k := range sorted {
+			vals[i] = last[k]
+		}
+		built, err := fromSorted(nil, sorted, vals)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := afterWant(sorted, prefix, after)
+		limit := (len(prefix) + len(after) + len(data)) % 4
+		for name, m := range map[string]pmap[int]{"put": put, "fromSorted": built} {
+			var got []string
+			m.AscendAfter(prefix, after, func(k string, v int) bool {
+				if v != last[k] {
+					t.Fatalf("%s: key %q has the value %d, want %d", name, k, v, last[k])
+				}
+				got = append(got, k)
+				return true
+			})
+			if !slices.Equal(got, want) {
+				t.Fatalf("%s: prefix %q after %q: %q, want %q", name, prefix, after, got, want)
+			}
+			if limit > 0 {
+				if got, first := afterGot(m, prefix, after, limit), want[:min(limit, len(want))]; !slices.Equal(got, first) {
+					t.Fatalf("%s: prefix %q after %q stopped after %d: %q, want %q", name, prefix, after, limit, got, first)
+				}
+			}
+			// AscendAfter after "" is Ascend without the empty key.
+			var all []string
+			m.Ascend(prefix, func(k string, _ int) bool {
+				all = append(all, k)
+				return true
+			})
+			if len(all) > 0 && all[0] == "" {
+				all = all[1:]
+			}
+			if got := afterGot(m, prefix, "", 0); !slices.Equal(got, all) {
+				t.Fatalf("%s: prefix %q: AscendAfter after the empty key %q, Ascend without it %q", name, prefix, got, all)
+			}
 		}
 	})
 }

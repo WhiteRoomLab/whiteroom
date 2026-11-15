@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -289,6 +290,188 @@ func TestPmapAscend(t *testing.T) {
 	})
 	if n != 100 {
 		t.Errorf("%d keys with prefix p012, want 100", n)
+	}
+}
+
+// afterWant returns the keys of sorted that AscendAfter gives: those with prefix that are greater than after.
+func afterWant(sorted []string, prefix, after string) []string {
+	var want []string
+	for _, k := range sorted {
+		if strings.HasPrefix(k, prefix) && k > after {
+			want = append(want, k)
+		}
+	}
+	return want
+}
+
+// afterGot returns the keys that m.AscendAfter gives, stopping after limit keys if limit is not 0.
+func afterGot[V any](m pmap[V], prefix, after string, limit int) []string {
+	var got []string
+	m.AscendAfter(prefix, after, func(k string, _ V) bool {
+		got = append(got, k)
+		return limit == 0 || len(got) < limit
+	})
+	return got
+}
+
+func TestPmapAscendAfter(t *testing.T) {
+	keys := []string{"", "a", "ab", "abc", "abd", "b", "ba", "c", "c\x00", "c\xff"}
+	vals := make([]int, len(keys))
+	for i := range vals {
+		vals[i] = i
+	}
+	sorted, err := fromSorted(nil, keys, vals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var put pmap[int]
+	for _, i := range rand.New(rand.NewPCG(63, 5)).Perm(len(keys)) {
+		put = put.Put(nil, keys[i], i)
+	}
+	for _, m := range []pmap[int]{sorted, put} {
+		for _, c := range []struct {
+			prefix, after string
+			want          []string
+		}{
+			{"", "", keys[1:]},
+			{"", "a", keys[2:]},
+			{"", "ab", keys[3:]},
+			{"", "aa", keys[2:]},
+			{"", "ac", keys[5:]},
+			{"", "c\xff", nil},
+			{"", "d", nil},
+			{"", "\x00", keys[1:]},
+			{"a", "", keys[1:5]},
+			{"a", "a", keys[2:5]},
+			{"a", "ab", keys[3:5]},
+			{"a", "abc", keys[4:5]},
+			{"a", "abd", nil},
+			{"a", "abcd", keys[4:5]},
+			{"b", "a", keys[5:7]},
+			{"b", "b", keys[6:7]},
+			{"b", "ba", nil},
+			{"b", "bz", nil},
+			{"b", "c", nil},
+			{"c", "b", keys[7:]},
+			{"c", "c", keys[8:]},
+			{"c", "c\x00", keys[9:]},
+			{"c", "c\xff", nil},
+			{"c\x00", "c", keys[8:9]},
+			{"c\x00", "c\x00", nil},
+			{"d", "", nil},
+			{"d", "e", nil},
+			{"ab", "a", keys[2:5]},
+			{"abc", "", keys[3:4]},
+			{"abe", "", nil},
+		} {
+			if got := afterGot(m, c.prefix, c.after, 0); !slices.Equal(got, c.want) {
+				t.Errorf("prefix %q after %q: %q, want %q", c.prefix, c.after, got, c.want)
+			}
+			if want := afterWant(keys, c.prefix, c.after); !slices.Equal(want, c.want) {
+				t.Fatalf("prefix %q after %q: the test wants %q, the filter gives %q", c.prefix, c.after, c.want, want)
+			}
+		}
+		for stop := 1; stop <= 3; stop++ {
+			if got, want := afterGot(m, "a", "a", stop), []string{"ab", "abc", "abd"}[:stop]; !slices.Equal(got, want) {
+				t.Errorf("stop after %d: %q, want %q", stop, got, want)
+			}
+		}
+		m.AscendAfter("", "", func(k string, v int) bool {
+			if keys[v] != k {
+				t.Errorf("key %q with value %d", k, v)
+			}
+			return true
+		})
+	}
+
+	// Pages of n keys, each after the last key of the one before, are the keys that Ascend gives.
+	rng := rand.New(rand.NewPCG(63, 6))
+	var big pmap[int]
+	var all []string
+	for i := range 2000 {
+		k := fmt.Sprintf("p%04d", rng.IntN(5000))
+		if _, ok := big.Get(k); !ok {
+			all = append(all, k)
+		}
+		big = big.Put(nil, k, i)
+	}
+	slices.Sort(all)
+	for _, n := range []int{1, 2, 7, 100, 3000} {
+		var got []string
+		after := ""
+		for {
+			page := afterGot(big, "p", after, n)
+			if len(page) == 0 {
+				break
+			}
+			got = append(got, page...)
+			after = page[len(page)-1]
+			if len(got) > len(all) {
+				t.Fatalf("pages of %d: more than the %d keys", n, len(all))
+			}
+		}
+		if !slices.Equal(got, all) {
+			t.Errorf("pages of %d: %d keys, want %d", n, len(got), len(all))
+		}
+	}
+
+	// A random map against the filter of its sorted keys, for the prefixes and the keys after which it is read.
+	letters := []string{"a", "b", "c", "\x00", "\xff"}
+	randomKey := func() string {
+		var b strings.Builder
+		for range rng.IntN(5) {
+			b.WriteString(letters[rng.IntN(len(letters))])
+		}
+		return b.String()
+	}
+	for range 200 {
+		var m pmap[int]
+		o := new(owner)
+		if rng.IntN(2) == 0 {
+			o = nil
+		}
+		present := map[string]bool{}
+		for range rng.IntN(300) {
+			k := randomKey()
+			m = m.Put(o, k, 0)
+			present[k] = true
+		}
+		check := func(stage string) {
+			t.Helper()
+			sorted := slices.Sorted(maps.Keys(present))
+			if got := checkTree(t, m); !slices.Equal(got, sorted) {
+				t.Fatalf("%s: keys %q, want %q", stage, got, sorted)
+			}
+			prefixes, afters := []string{""}, []string{""}
+			for range 20 {
+				k := randomKey()
+				prefixes = append(prefixes, k[:rng.IntN(len(k)+1)], randomKey())
+				afters = append(afters, k, randomKey())
+			}
+			for _, prefix := range prefixes {
+				for _, after := range afters {
+					want := afterWant(sorted, prefix, after)
+					if got := afterGot(m, prefix, after, 0); !slices.Equal(got, want) {
+						t.Fatalf("%s: prefix %q after %q: %q, want %q", stage, prefix, after, got, want)
+					}
+					stop := 1 + rng.IntN(len(want)+2)
+					if got := afterGot(m, prefix, after, stop); !slices.Equal(got, want[:min(stop, len(want))]) {
+						t.Fatalf("%s: prefix %q after %q stopped after %d: %q, want %q", stage, prefix, after, stop, got, want[:min(stop, len(want))])
+					}
+				}
+			}
+		}
+		check("puts")
+		for k := range present {
+			if rng.IntN(3) == 0 {
+				var found bool
+				if m, found = m.Delete(o, k); !found {
+					t.Fatalf("Delete(%q) did not find the key", k)
+				}
+				delete(present, k)
+			}
+		}
+		check("deletes")
 	}
 }
 
