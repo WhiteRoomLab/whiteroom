@@ -149,8 +149,8 @@ func (g generation) consecutive(fsys vfs.FS) error {
 }
 
 // upTo returns g without the segments after those that lim, the head of the writer that runs beside a reader, and ck
-// name. The reader does not read them, and its list of log/ may have one of them without the one before it: a file
-// system may list so a directory that the writer makes both in meanwhile.
+// name. The reader does not read them, and its list of log/ may have one of them without the one before it: while the
+// writer makes both, a file system may list the later one only.
 func (g generation) upTo(lim headSlot, ck *checkpoint) generation {
 	last := lim.seg
 	if ck != nil && ck.h.gen == g.gen {

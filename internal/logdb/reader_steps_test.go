@@ -163,7 +163,7 @@ func rivalMoves() []rivalMove {
 		{"segment, close", func(w *rival) { w.segment(); w.stop() }},
 		{"restart, segment, checkpoint", func(w *rival) { w.stop(); w.start(); w.segment(); w.checkpoint() }},
 	}
-	for j := 1; j <= 16; j += matrixSize(1, 4, 1) {
+	for j := matrixSize(1, 2, 1); j <= 16; j += matrixSize(1, 4, 1) {
 		moves = append(moves, rivalMove{fmt.Sprintf("kill after %d operations", j), func(w *rival) { w.kill(j) }})
 	}
 	return moves
@@ -171,10 +171,10 @@ func rivalMoves() []rivalMove {
 
 // TestReaderBesideWriter lets the writer move before each operation of a reader that opens the store, of a View that
 // refreshes it, and of a Backup: the writer commits in its segment, begins a segment, writes a checkpoint, closes,
-// starts again, or is killed after each of its first 16 counted operations (with -race, each fourth), in its Open or
-// in an Update, and no writer runs after it. The reader never finds the store corrupt: it opens at a commit that was
-// durable when it began or later, its Views then see what a writer that starts has, and the next commit of that
-// writer, and the copy of Backup opens to the commit of its position.
+// starts again, or is killed after each of its first 16 counted operations (with -race, the 2nd, 6th, 10th and 14th),
+// in its Open or in an Update, and no writer runs after it. The reader never finds the store corrupt: it opens at a
+// commit that was durable when it began or later, its Views then see what a writer that starts has, and the next
+// commit of that writer, and the copy of Backup opens to the commit of its position.
 func TestReaderBesideWriter(t *testing.T) {
 	ctx := context.Background()
 	// After each start, a segment has room for the commit of the move "commit"; after "a checkpoint", for no second
@@ -196,6 +196,28 @@ func TestReaderBesideWriter(t *testing.T) {
 		{"a checkpoint", func(w *rival) { w.checkpoint(); w.commit() }},
 		{"a checkpoint of the last commit", (*rival).checkpoint},
 	}
+	// begin makes a store, and starts its writer as start does.
+	begin := func(t *testing.T, start rivalMove) *rival {
+		fsys := simfs.New(simDir)
+		db, err := Create(fsys, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := &rival{t: t, o: o, fsys: fsys, db: db}
+		for range 5 {
+			w.commit()
+		}
+		start.do(w)
+		return w
+	}
+	tuned := begin(t, starts[1])
+	tuned.add()
+	segments := tuned.db.Stats().Segments
+	tuned.commit()
+	if tuned.db.Stats().Segments == segments {
+		t.Fatal(`the second commit after "a checkpoint" did not begin a segment`)
+	}
+	tuned.stop()
 	for _, sc := range []struct {
 		name string
 		need []string // operations that the reader must make
@@ -287,21 +309,12 @@ func TestReaderBesideWriter(t *testing.T) {
 				t.Parallel()
 				// run makes a store and reads it as sc does, with step, which gets its writer, before each operation.
 				run := func(step func(w *rival, op string)) error {
-					fsys := simfs.New(simDir)
-					db, err := Create(fsys, o)
-					if err != nil {
-						t.Fatal(err)
-					}
-					w := &rival{t: t, o: o, fsys: fsys, db: db}
+					w := begin(t, start)
 					defer func() {
 						if w.db != nil {
 							_ = w.db.Close()
 						}
 					}()
-					for range 5 {
-						w.commit()
-					}
-					start.do(w)
 					return sc.run(w, func(op string) { step(w, op) })
 				}
 				at, done := "no move", false
@@ -400,6 +413,51 @@ func TestReaderListGap(t *testing.T) {
 			checkDump(t, rd, dump(t, db))
 		})
 	}
+}
+
+// TestReaderListGapStaleCheckpoint: a checkpoint of an older generation, which names a later segment than head does,
+// does not keep the names after that of head, where the list of generation 2 has a gap.
+func TestReaderListGapStaleCheckpoint(t *testing.T) {
+	fsys, db := newSim(t, Options{SegmentBytes: 1, CheckpointBytes: -1}) // each commit begins a segment
+	n := 0
+	commit := func() {
+		n++
+		putKey(t, db, 1, fmt.Sprintf("k%d", n), "v")
+	}
+	for range 6 {
+		commit()
+	}
+	if err := db.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	// A compaction whose checkpoint fails leaves that of generation 1; the writer goes on in generation 2.
+	fsys.Inject(simfs.Fault{Match: ckpTemp(simfs.OpSync), Err: errors.New("no"), Times: 1})
+	if err := compactDB(db, Rewrite{}); err == nil {
+		t.Fatal("the checkpoint did not fail")
+	}
+	commit()
+	head, ck := readHeadFile(t, fsys), ckpOf(t, fsys)
+	if head.gen != 2 || ck.gen != 1 || ck.seg <= head.seg+1 {
+		t.Fatalf("head %+v, checkpoint %+v", head, ck)
+	}
+	hidden, moved := "", false
+	rd, err := OpenReader(gapFS{stepFS{fsys, func(op string) {
+		if op == "readdir log" && !moved {
+			moved = true
+			commit()
+			commit()
+			hidden = segName(2, head.seg+1)
+		}
+	}}, &hidden}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rd.Close() }()
+	if info := rd.Recovery(); info.Seq != 7 || info.Generation != 2 || info.Checkpoint != "stale" {
+		t.Errorf("Recovery: %+v", info)
+	}
+	hidden = ""
+	checkDump(t, rd, dump(t, db))
 }
 
 // TestReaderListBase: a reader that opens while a writer opens a store whose compaction was killed after the base-end
