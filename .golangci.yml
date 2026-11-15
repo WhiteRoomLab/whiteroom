@@ -81,6 +81,13 @@ linters:
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
               desc: dmlog は、store のテストだけが使う
+        to-dbtest:
+          list-mode: lax
+          files:
+            - "!$test"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+              desc: dbtest は、プロセスの中でデーモンを動かす、テストの土台で、テストだけが使う
         stdlib-only:
           list-mode: strict
           # Every package with a rule of its own is excluded here; other files may import only the standard library.
@@ -93,7 +100,9 @@ linters:
             - "!**/internal/build/*.go"
             - "!**/internal/build/gen/*.go"
             - "!**/internal/content/*.go"
+            - "!**/internal/dbclient/*.go"
             - "!**/internal/dbserver/*.go"
+            - "!**/internal/dbserver/dbtest/*.go"
             - "!**/internal/edit/*.go"
             - "!**/internal/imaging/*.go"
             - "!**/internal/logdb/*.go"
@@ -345,6 +354,41 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
+        dbclient:
+          list-mode: strict
+          files:
+            - "**/internal/dbclient/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        dbclient-test:
+          list-mode: strict
+          files:
+            - "**/internal/dbclient/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        dbtest:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/dbtest/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
             - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
         logdb:
