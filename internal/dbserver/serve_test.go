@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"runtime"
 	"slices"
@@ -138,6 +139,17 @@ func TestServeBound(t *testing.T) {
 				t.Errorf("Hello of the connection that waited: %v", err)
 			}
 		})
+	}
+}
+
+// TestServeHugeReaders checks that a limit of readers near the largest int does not make Serve panic.
+func TestServeHugeReaders(t *testing.T) {
+	f := newFixture(t, func(o *Options) { o.Limits.Readers = math.MaxInt })
+	l := newPipeListener()
+	f.serve(l, dbwire.RoleReader, nil)
+	c := f.clientOf(l.dial(t))
+	if err := c.sayHello(); err != nil {
+		t.Errorf("Hello with Limits.Readers = math.MaxInt: %v", err)
 	}
 }
 

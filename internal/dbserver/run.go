@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -162,7 +163,8 @@ func (s *Server) Serve(l net.Listener, role dbwire.Role, check func(net.Conn) er
 	}
 	bound := 1 + connectionSlack
 	if role == dbwire.RoleReader {
-		bound = s.limits.Readers + connectionSlack
+		// The cap keeps the sum from overflowing, which would make the channel panic.
+		bound = min(s.limits.Readers, math.MaxInt-connectionSlack) + connectionSlack
 	}
 	slots := make(chan struct{}, bound)
 	var backoff time.Duration

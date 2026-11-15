@@ -94,6 +94,7 @@ linters:
           files:
             - $all
             - "!**/cmd/whiteroom/*.go"
+            - "!**/cmd/whiteroom-db/*.go"
             - "!**/internal/account/*.go"
             - "!**/internal/admin/*.go"
             - "!**/internal/audit/*.go"
@@ -523,6 +524,28 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/store$
             - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        cmd/whiteroom-db:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom-db/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+        cmd/whiteroom-db-test:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom-db/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
     forbidigo:
       analyze-types: true
       forbid:
