@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/configfile"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 )
 
@@ -49,6 +50,19 @@ func linesOf(file string, lines []string) string {
 	return b.String()
 }
 
+// daemonItems are the lines of the items that only whiteroom-db uses, which the config file of whiteroom may hold: whiteroom
+// checks their types and ranges, and does not keep them.
+const daemonItems = `writerUser: whiteroom
+writerGroup: 1001
+readerGroup: "www-data"
+maxReaders: 16
+maxStaged: 1048576
+commitRate: 0
+minFree: 2097152
+snapshotIdle: 30s
+stall: 1m30s
+`
+
 // sizedConfig returns a config file of n bytes that gives the item data, with a comment for the rest.
 func sizedConfig(n int) string {
 	head := "data: a\n# "
@@ -69,6 +83,7 @@ theme: %s
 out: out/releases
 cache: ./cache
 tmp: spool/tmp
+db: run
 addr: 127.0.0.1:8081
 socket: %s
 origin: https://admin.example.com
@@ -89,20 +104,24 @@ memory: 512
 			"every item", all,
 			config{
 				data: in("data"), site: filepath.Join(root, "site"), theme: abs, out: in("out/releases"), cache: in("cache"),
-				tmp: in("spool/tmp"), addr: "127.0.0.1:8081", socket: filepath.Join(abs, "admin.sock"), origin: "https://admin.example.com",
-				url: "https://staging.example.com", trustedProxies: []string{"10.0.0.0/8", "::1"}, workers: 4, memory: 512,
+				tmp: in("spool/tmp"), db: in("run"), addr: "127.0.0.1:8081", socket: filepath.Join(abs, "admin.sock"),
+				origin: "https://admin.example.com", url: "https://staging.example.com", trustedProxies: []string{"10.0.0.0/8", "::1"},
+				workers: 4, memory: 512,
 			},
 		},
 		{"a url as written", "url: \"HTTPS://Example.com/\"\n", config{url: "HTTPS://Example.com/"}},
 		{"one item", "out: o\n", config{out: in("o")}},
 		{"tmp, from the directory of the file", "tmp: t\n", config{tmp: in("t")}},
 		{"tmp, an absolute path", "tmp: " + strconv.Quote(abs) + "\n", config{tmp: abs}},
+		{"db, from the directory of the file", "db: d\n", config{db: in("d")}},
+		{"db, an absolute path", "db: " + strconv.Quote(abs) + "\n", config{db: abs}},
+		{"the items of the daemon, which are not kept", daemonItems, config{}},
 		{"an address with brackets", "addr: \"[::1]:8081\"\n", config{addr: "[::1]:8081"}},
 		{"numbers of 0", "workers: 0\nmemory: 0\n", config{}},
-		{"the largest memory", fmt.Sprintf("memory: %d\n", maxMemory), config{memory: maxMemory}},
+		{"the largest memory", fmt.Sprintf("memory: %d\n", configfile.MaxMemory), config{memory: configfile.MaxMemory}},
 		{"no proxies", "trustedProxies: []\n", config{}},
 		{"an empty mapping", "{}\n", config{}},
-		{"the largest size", sizedConfig(maxConfigSize), config{data: in("a")}},
+		{"the largest size", sizedConfig(configfile.MaxSize), config{data: in("a")}},
 	} {
 		file := writeConfig(t, dir, "whiteroom.yaml", tt.text)
 		got, err := loadConfig(file)
@@ -225,8 +244,8 @@ memory: 512
 		{"a fraction for memory", "memory: 1.5\n", []string{"1:1: /memory: " + notMemory}, []string{"1.5"}},
 		{"a negative workers", "workers: -1\n", []string{"1:1: /workers: " + notWorkers}, []string{"-1"}},
 		{"a negative memory", "memory: -1\n", []string{"1:1: /memory: " + notMemory}, []string{"-1"}},
-		{"a memory over the largest", fmt.Sprintf("memory: %d\n", maxMemory+1), []string{"1:1: /memory: " + notMemory},
-			[]string{strconv.FormatInt(maxMemory+1, 10)}},
+		{"a memory over the largest", fmt.Sprintf("memory: %d\n", configfile.MaxMemory+1), []string{"1:1: /memory: " + notMemory},
+			[]string{strconv.FormatInt(configfile.MaxMemory+1, 10)}},
 		{"a workers over the integers", "workers: 99999999999999999999\n", []string{"1:1: /workers: " + notWorkers},
 			[]string{"99999999999999999999"}},
 		{"an empty path", "data: \"\"\n", []string{"1:1: /data: " + empty}, nil},
@@ -259,7 +278,7 @@ memory: 512
 	} {
 		file := writeConfig(t, dir, "whiteroom.yaml", tt.text)
 		got, err := loadConfig(file)
-		var es content.Errors
+		var es configfile.Problems
 		if !errors.As(err, &es) {
 			t.Errorf("%s: loadConfig = %+v, %v, want problems", tt.what, got, err)
 			continue
@@ -279,23 +298,23 @@ memory: 512
 	}
 
 	missing := filepath.Join(root, "missing.yaml")
-	if _, err := loadConfig(missing); !errors.Is(err, fs.ErrNotExist) || errors.As(err, new(content.Errors)) {
+	if _, err := loadConfig(missing); !errors.Is(err, fs.ErrNotExist) || errors.As(err, new(configfile.Problems)) {
 		t.Errorf("loadConfig of a missing file = %v, want an error of fs.ErrNotExist", err)
 	}
-	if _, err := loadConfig(dir); err == nil || errors.As(err, new(content.Errors)) {
+	if _, err := loadConfig(dir); err == nil || errors.As(err, new(configfile.Problems)) {
 		t.Errorf("loadConfig of a directory = %v, want an error that is not about the content", err)
 	}
-	large := writeConfig(t, dir, "large.yaml", sizedConfig(maxConfigSize+1))
+	large := writeConfig(t, dir, "large.yaml", sizedConfig(configfile.MaxSize+1))
 	_, err := loadConfig(large)
-	if want := large + " is larger than 1048576 bytes"; err == nil || err.Error() != want || errors.As(err, new(content.Errors)) {
-		t.Errorf("loadConfig of a file of %d bytes = %v, want %s", maxConfigSize+1, err, want)
+	if want := large + " is larger than 1048576 bytes"; err == nil || err.Error() != want || errors.As(err, new(configfile.Problems)) {
+		t.Errorf("loadConfig of a file of %d bytes = %v, want %s", configfile.MaxSize+1, err, want)
 	}
 }
 
 // TestPrintConfigError checks that the problems in a config file print a line each, and that any other error prints
 // after the name of the command.
 func TestPrintConfigError(t *testing.T) {
-	problems := content.Errors{
+	problems := configfile.Problems{
 		{File: "a.yaml", Line: 2, Column: 3, Path: "/data", Msg: "must be a string"},
 		{File: "a.yaml", Line: 4, Column: 1, Msg: "unknown"},
 	}
@@ -619,6 +638,95 @@ func TestConfigTmpOfOtherCommands(t *testing.T) {
 			if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
 				t.Errorf("whiteroom %s with tmp: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", args[0], value, code,
 					stdout, stderr, want)
+			}
+		}
+	}
+}
+
+// TestConfigDaemonItems checks that the commands which take -config accept a file that has the item db and the items of
+// whiteroom-db, which they check for their types and ranges and do not use: nothing is made for db, and a value that is not
+// right is a problem of the file for each of them, a line, and exit 2, as for the other items.
+func TestConfigDaemonItems(t *testing.T) {
+	root := storedRoot(t)
+	conf := filepath.Join(root, "conf")
+	file := writeConfig(t, conf, "daemon.yaml",
+		"data: ../data\nsite: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\ndb: ../run\n"+daemonItems)
+
+	if code, _, stderr := runCmd(t, "backup", "-config", file, filepath.Join(t.TempDir(), "copy")); code != 0 || stderr != "" {
+		t.Errorf("whiteroom backup -config with the items of the daemon = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
+	}
+	code, stdout, stderr := runCmd(t, "doctor", "-config", file)
+	checkClean(t, "doctor, with the items of the daemon", filepath.Join(root, "data"), code, stdout, stderr, false)
+	if code, _, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin); code != 0 ||
+		stderr != "" {
+		t.Errorf("whiteroom account reset -config with the items of the daemon = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
+	}
+	if code, _, stderr := runCmd(t, "build", "-config", file); code != 0 {
+		t.Errorf("whiteroom build -config with the items of the daemon = %d, with stderr:\n%s\nwant 0", code, stderr)
+	}
+	data := filepath.Join(t.TempDir(), "data")
+	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-data", data)...); code != 0 {
+		t.Errorf("whiteroom init -config with the items of the daemon = %d, with stderr:\n%s\nwant 0", code, stderr)
+	}
+	s, base := initSample(t), t.TempDir()
+	a := startAdmin(t, t.Context(), "-config", s.configIn(t, filepath.Join(base, "conf"), "db: ../run", strings.TrimSuffix(daemonItems, "\n")))
+	stopsWith(t, "the server with the items of the daemon", a)
+	checkMissing(t, "the commands, which do not use db", filepath.Join(root, "run"))
+	checkMissing(t, "serve admin, which does not use db", filepath.Join(base, "run"))
+
+	const (
+		notName     = "must be a name, or a number of 0 or more"
+		notPositive = "must be an integer of 1 or more"
+		notNumber   = "must be an integer of 0 or more"
+		notDuration = "must be a duration of 0 or more, such as 30s or 5m"
+	)
+	for _, tt := range []struct{ item, value, msg string }{
+		{"db", "123", "must be a string"},
+		{"db", `""`, "must not be empty"},
+		{"writerUser", "-1", notName},
+		{"writerGroup", "true", notName},
+		{"readerGroup", `""`, notName},
+		{"maxReaders", "0", notPositive},
+		{"maxStaged", `"8"`, notPositive},
+		{"commitRate", "-1", notNumber},
+		{"minFree", "1.5", notNumber},
+		{"snapshotIdle", "5", notDuration},
+		{"stall", "soon", notDuration},
+	} {
+		bad := writeConfig(t, conf, "bad-daemon.yaml", "data: ../data\n"+tt.item+": "+tt.value+"\n")
+		want := bad + ":2:1: /" + tt.item + ": " + tt.msg + "\n"
+		for _, args := range [][]string{
+			{"backup", "-config", bad, filepath.Join(t.TempDir(), "copy")}, {"doctor", "-config", bad}, {"build", "-config", bad},
+			{"account", "reset", "-config", bad, initLogin}, {"account", "delete", "-config", bad, "usr_x"},
+			append([]string{"init"}, adminFlags("-config", bad, "-data", filepath.Join(t.TempDir(), "data"))...),
+		} {
+			if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
+				t.Errorf("whiteroom %s with %s: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", args[0], tt.item,
+					tt.value, code, stdout, stderr, want)
+			}
+		}
+		if code, stdout, stderr := runAdminCmd(t, "-config", bad); code != 2 || stdout != "" || stderr != want {
+			t.Errorf("whiteroom serve admin with %s: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", tt.item,
+				tt.value, code, stdout, stderr, want)
+		}
+	}
+}
+
+// TestConfigProblemFormat checks that the line of a problem of a config file is that of content.Error, which the lines of
+// the config files have been until configfile read them, for every combination of the fields that the problem has.
+func TestConfigProblemFormat(t *testing.T) {
+	for _, file := range []string{"", "whiteroom.yaml"} {
+		for _, line := range []int{0, 7} {
+			for _, column := range []int{0, 3} {
+				for _, path := range []string{"", "/data", "/trustedProxies/2"} {
+					for _, msg := range []string{"must be a string", ""} {
+						want := (&content.Error{File: file, Line: line, Column: column, Path: path, Msg: msg}).Error()
+						got := (&configfile.Problem{File: file, Line: line, Column: column, Path: path, Msg: msg}).Error()
+						if got != want {
+							t.Errorf("the line of the problem in %q at %d:%d, %q, %q is %q, want %q", file, line, column, path, msg, got, want)
+						}
+					}
+				}
 			}
 		}
 	}

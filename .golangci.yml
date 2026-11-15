@@ -99,6 +99,7 @@ linters:
             - "!**/internal/audit/*.go"
             - "!**/internal/build/*.go"
             - "!**/internal/build/gen/*.go"
+            - "!**/internal/configfile/*.go"
             - "!**/internal/content/*.go"
             - "!**/internal/dbclient/*.go"
             - "!**/internal/dbserver/*.go"
@@ -127,6 +128,17 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        configfile:
+          list-mode: strict
+          files:
+            - "**/internal/configfile/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/content$
+              desc: configfile は content を使わない（whiteroom-db も configfile をリンクし、デーモンはコンテンツのモデルを知らない。3.6）
         audit:
           list-mode: strict
           files:
@@ -501,6 +513,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/admin$
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$

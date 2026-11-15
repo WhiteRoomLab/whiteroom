@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
+	"github.com/WhiteRoomLab/whiteroom/internal/configfile"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
@@ -43,9 +43,6 @@ is read.
 
 Flags:
 `
-
-// maxMemory is the most MiB of -memory, whose bytes must fit in an int64.
-const maxMemory int64 = math.MaxInt64 >> 20
 
 // themedSource is a site directory with the theme of another directory.
 type themedSource struct {
@@ -97,8 +94,8 @@ func (f *buildFlags) rangeError() string {
 	switch {
 	case f.workers < 0:
 		return fmt.Sprintf("-workers %d is out of range (0 or more)", f.workers)
-	case f.memory < 0 || f.memory > maxMemory:
-		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, maxMemory)
+	case f.memory < 0 || f.memory > configfile.MaxMemory:
+		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, configfile.MaxMemory)
 	}
 	return ""
 }

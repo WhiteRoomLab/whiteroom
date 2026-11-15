@@ -20,6 +20,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/admin"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/configfile"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/publish"
@@ -188,7 +189,7 @@ func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Wri
 
 // printConfigProblem prints on w the problem msg with the item at path in the config file.
 func printConfigProblem(w io.Writer, file, path, msg string) {
-	printf(w, "%s\n", (&content.Error{File: file, Path: path, Msg: msg}).Error())
+	printf(w, "%s\n", (&configfile.Problem{File: file, Path: path, Msg: msg}).Error())
 }
 
 // listenChoice is what the server listens on, and whether the config file said so.
