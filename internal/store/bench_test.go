@@ -675,6 +675,19 @@ func TestBenchmarks(t *testing.T) {
 	}
 }
 
+// TestBenchmarkNote checks that results.md says that the store ran through an in-process daemon over net.Pipe, with
+// and without tables.
+func TestBenchmarkNote(t *testing.T) {
+	env := &benchEnv{Sets: map[string]benchFacts{}}
+	for _, runs := range []int{1, 3} {
+		md := benchMarkdown(env, runs, nil)
+		if !strings.Contains(md, benchDaemonNote) || !strings.Contains(md, "in-process daemon over net.Pipe") {
+			t.Errorf("results.md of %d runs does not say that the store ran through an in-process daemon over net.Pipe:\n%s",
+				runs, md)
+		}
+	}
+}
+
 // benchCommand returns the command of a process of TestBenchHelper with job.
 func benchCommand(t *testing.T, job benchJob) *exec.Cmd {
 	t.Helper()
@@ -1144,6 +1157,12 @@ func benchSummary(results []benchResult, sets []benchSet) []benchTable {
 	return tables
 }
 
+// benchDaemonNote is the line of results.md that says how the store ran: each scenario is a process with a daemon of its
+// own, inside it, and the store is a client of it.
+const benchDaemonNote = "The store ran through an in-process daemon over net.Pipe: every call is a request to the daemon of the " +
+	"process of the scenario, which has the data directory through the counting file system, so that the counts are " +
+	"those of the files; the numbers are not those of a daemon in a process of its own, over a socket."
+
 // benchMarkdown returns results.md: a table of each set, with a column for each backend.
 func benchMarkdown(env *benchEnv, runs int, tables []benchTable) string {
 	var b strings.Builder
@@ -1153,6 +1172,7 @@ func benchMarkdown(env *benchEnv, runs int, tables []benchTable) string {
 	}
 	fmt.Fprintf(&b, ". %s, Linux %s, %s (%d CPUs), %s on %s (%s).\n", env.Go, env.Kernel, env.CPU, env.CPUs,
 		env.Mount.Type, env.Mount.Device, env.DiskModel)
+	b.WriteString("\n" + benchDaemonNote + "\n")
 	for _, table := range tables {
 		f := env.Sets[table.Set]
 		fmt.Fprintf(&b, "\n## %s\n\n%d documents, %d versions, %d revisions (%d of 64 KiB or more), %d events, "+

@@ -64,8 +64,13 @@ func Init(dir string, o Options) error {
 type daemon struct {
 	key  any
 	dir  string
-	srv  *dbserver.Server
-	refs int // the handles that are not released
+	srv  *dbserver.Server // set before ready is closed
+	refs int              // the handles that are not released, under registry.mu
+
+	ready   chan struct{} // closed when srv is open, or the open has failed (err)
+	err     error
+	closing bool          // the last handle has been released, under registry.mu
+	closed  chan struct{} // closed when it has been closed
 
 	mu        sync.Mutex
 	gone      bool // released or abandoned: no new connection
@@ -73,6 +78,8 @@ type daemon struct {
 	serving   sync.WaitGroup // the Serve calls of Listen, and the sessions that Dial started
 }
 
+// registry has the daemons by their keys; its lock is held only to read or change the map, and never while an engine
+// opens or closes, so that a daemon that hangs does not stop the others.
 var registry struct {
 	mu sync.Mutex
 	m  map[any]*daemon
@@ -86,7 +93,7 @@ type Daemon struct {
 }
 
 // Acquire returns a handle of the daemon of the data directory dir, which the first Acquire opens with o: later ones
-// share it, and o is not looked at.
+// share it, and o is not looked at. While the daemon of dir is being closed, Acquire waits for it.
 func Acquire(dir string, o Options) (*Daemon, error) {
 	var key any
 	if o.FS != nil {
@@ -98,27 +105,50 @@ func Acquire(dir string, o Options) (*Daemon, error) {
 		}
 		key = abs
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if d, ok := registry.m[key]; ok {
-		d.refs++
-		return &Daemon{d: d}, nil
+	for {
+		registry.mu.Lock()
+		d, ok := registry.m[key]
+		switch {
+		case !ok:
+			d = &daemon{key: key, dir: dir, refs: 1, ready: make(chan struct{}), closed: make(chan struct{})}
+			if registry.m == nil {
+				registry.m = map[any]*daemon{}
+			}
+			registry.m[key] = d
+			registry.mu.Unlock()
+			return d.open(o)
+		case d.closing:
+			registry.mu.Unlock()
+			<-d.closed
+		default:
+			d.refs++
+			registry.mu.Unlock()
+			<-d.ready
+			if d.err == nil {
+				return &Daemon{d: d}, nil
+			}
+		}
 	}
-	var srv *dbserver.Server
+}
+
+// open opens the engine of the new daemon d, which is in the registry, and returns its first handle.
+func (d *daemon) open(o Options) (*Daemon, error) {
 	var err error
 	if o.FS != nil {
-		srv, err = dbserver.Open(o.FS, dir, o.server())
+		d.srv, err = dbserver.Open(o.FS, d.dir, o.server())
 	} else {
-		srv, err = dbserver.OpenDir(dir, o.server())
+		d.srv, err = dbserver.OpenDir(d.dir, o.server())
 	}
 	if err != nil {
+		d.err = err
+		registry.mu.Lock()
+		delete(registry.m, d.key)
+		registry.mu.Unlock()
+		close(d.ready)
+		close(d.closed)
 		return nil, err
 	}
-	d := &daemon{key: key, dir: dir, srv: srv, refs: 1}
-	if registry.m == nil {
-		registry.m = map[any]*daemon{}
-	}
-	registry.m[key] = d
+	close(d.ready)
 	return &Daemon{d: d}, nil
 }
 
@@ -128,15 +158,22 @@ func (h *Daemon) Release() error {
 	if h.released.Swap(true) {
 		return nil
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
 	d := h.d
+	registry.mu.Lock()
 	if d.refs--; d.refs > 0 {
+		registry.mu.Unlock()
 		return nil
 	}
-	if registry.m[d.key] == d { // an abandoned daemon has left already
-		delete(registry.m, d.key)
-	}
+	d.closing = true
+	registry.mu.Unlock()
+	defer func() {
+		registry.mu.Lock()
+		if registry.m[d.key] == d { // an abandoned daemon has left already
+			delete(registry.m, d.key)
+		}
+		registry.mu.Unlock()
+		close(d.closed)
+	}()
 	if d.stop() {
 		return nil
 	}
@@ -166,12 +203,12 @@ func (d *daemon) stop() (abandoned bool) {
 // process that has been killed or has hung does: for the tests of a crash on a simulated file system. Its handles
 // release nothing from then on.
 func (h *Daemon) Abandon() {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
 	d := h.d
+	registry.mu.Lock()
 	if registry.m[d.key] == d {
 		delete(registry.m, d.key)
 	}
+	registry.mu.Unlock()
 	d.stop()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -457,9 +457,10 @@ func readDataSize(name string) (int64, error) {
 }
 
 // checkPoint checks the device in the state p, dev of size bytes, of which a replay has written the bytes written,
-// with a copy of it that extract gives as a directory. After an ack, a reader, which repairs nothing, opens the store
-// of the workload and passes checkWorkload with the pair n of the last ack or n+1, or after the mark closed n; then
-// checkWriter passes, with a pair that is not before the one that the reader has seen; and after the mark
+// with a copy of it that extract gives as a directory. After an ack, a reader opens the store of the workload (the
+// daemon of the reader opens its engine as a writer, which repairs the directory) and passes checkWorkload with the pair
+// n of the last ack or n+1, or after the mark closed n; then checkWriter passes, with a pair that is not before the one
+// that the reader has seen; and after the mark
 // backup-<n>, checkBackup passes. Before an ack, the store may be missing, and no reader looks. An error is a problem
 // of the store; a file system that cannot be read is in r.unread.
 func (r *dmlogReport) checkPoint(t *testing.T, c dmlogCheck, work string, dev io.ReaderAt, size int64,
@@ -520,7 +521,7 @@ func (r *dmlogReport) checkPoint(t *testing.T, c dmlogCheck, work string, dev io
 	return r.checkBackup(t, root, p)
 }
 
-// readerSees opens the store of dir as a reader, and returns its pair after checkWorkload.
+// readerSees opens the store of dir as a reader client of a daemon, and returns its pair after checkWorkload.
 func readerSees(t *testing.T, dir string, lo, hi int, closed bool) (int, error) {
 	t.Helper()
 	s, err := openLogReader(dir, workloadOptions())
@@ -1126,17 +1127,11 @@ func TestExt4Extraction(t *testing.T) {
 		"closed early":                        reader + `the pair of 10, want one from 9 to 9`,
 		"no copy":                             reader + `openLogReader() = `,
 		"a store that no process opens":       reader + `openLogReader() = `,
-		"a store that its writer cannot open": "!" + reader,
+		"a store that its writer cannot open": reader + `openLogReader() = `,
 		"a missing original":                  reader + `the original of the Update 10 is missing`,
 		"a store that takes no Update":        "!" + reader,
 
 		"a commit after the checkpoint of Close": reader + `after Close, open has found `,
-	}
-	// The cases that tell a reader from a writer by what each opens: a reader is a client of the daemon, which opens the
-	// engine as a writer, and has no engine of its own.
-	pending := map[string]string{
-		"a store that its writer cannot open":    "the daemon opens the engine as a writer, so a reader that opens where the writer cannot is no case",
-		"a commit after the checkpoint of Close": "the reader is a client of the daemon, which has no open of its own to check after Close",
 	}
 	// As root, a process opens and writes what the modes do not allow.
 	needsUser := map[string]bool{"a store that its writer cannot open": true, "a store that takes no Update": true}
@@ -1172,7 +1167,7 @@ func TestExt4Extraction(t *testing.T) {
 		{"an index of other documents", []any{"ack-9", noIndex, "flush"}, 3, nil,
 			`(flush), after ack-9: the index is not the one that the documents give: `},
 		{"a commit after the checkpoint of Close", []any{"ack-9", notClosed, "flush", "ack-10", "closed"}, 5, nil,
-			`(mark "closed"), after ack-10 and closed: after Close, open has found `},
+			`(mark "closed"), after ack-10 and closed: a reader: after Close, open has found `},
 		{"a store that takes no Update", []any{"ack-9", noUpdate, "flush"}, 3, nil,
 			`(flush), after ack-9: PutOriginal() before the Update 10: `},
 		{"no copy", []any{"ack-9", "backup-9", images[10], "flush", "ack-10", "closed"}, 3, nil,
@@ -1192,9 +1187,6 @@ func TestExt4Extraction(t *testing.T) {
 			"the device after the log: it differs from "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if reason, ok := pending[c.name]; ok {
-				pendingDaemon(t, reason)
-			}
 			t.Parallel()
 			rec := recording(t, c.steps...)
 			if c.data != nil {

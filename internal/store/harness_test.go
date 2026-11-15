@@ -245,15 +245,55 @@ func openLogReader(dir string, o options) (*Store, error) {
 	})
 }
 
-func infoOf(t *testing.T, s *Store) *storeInfo {
-	t.Helper()
+// lookup returns what the harness keeps of s, or an error if the harness did not open it or it is closed.
+func lookup(s *Store) (*storeInfo, error) {
 	harness.mu.Lock()
 	defer harness.mu.Unlock()
 	info, ok := harness.stores[s]
 	if !ok {
-		t.Fatalf("the store was not opened by the harness, or its daemon has been released")
+		return nil, errors.New("the store was not opened by the harness, or its daemon has been released")
+	}
+	return info, nil
+}
+
+func infoOf(t *testing.T, s *Store) *storeInfo {
+	t.Helper()
+	info, err := lookup(s)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return info
+}
+
+// socketDir makes a directory for the sockets of a daemon, which has a path short enough for them, and removes it at the
+// end of the test.
+func socketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "wr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if n := len(filepath.Join(dir, dbwire.WriterSocket)); n > 100 {
+		t.Fatalf("the path of a socket would have %d bytes: %s", n, dir)
+	}
+	return dir
+}
+
+// serve starts or joins the daemon of the data directory dir with o, with no store of its own, and makes it listen on
+// the sockets in a new directory, which it returns, for the clients of other processes. The end of the test releases it.
+func serve(t *testing.T, dir string, o options) (*dbtest.Daemon, string) {
+	t.Helper()
+	h, d, err := acquire(dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	sockets := socketDir(t)
+	if err := h.Listen(sockets); err != nil {
+		t.Fatalf("Listen() = %v", err)
+	}
+	return h, sockets
 }
 
 // daemonOf returns the handle of the daemon of s, which s was opened on.
@@ -322,10 +362,10 @@ func failedAtHook(err, errHook error, point string) bool {
 	return ok && re.Code == dbwire.CodeFailed && re.Msg == "the engine failed"
 }
 
-// isStopped reports whether err is the refusal of the daemon after a sync has failed.
+// isStopped reports whether err is the refusal of the daemon after a sync has failed, with its sentence.
 func isStopped(err error) bool {
 	re, ok := errors.AsType[*dbwire.RemoteError](err)
-	return ok && re.Code == dbwire.CodeStopped
+	return ok && re.Code == dbwire.CodeStopped && strings.HasPrefix(re.Msg, "the store has stopped after a sync failed")
 }
 
 // eventually waits up to 5 seconds for ok to return true, and fails the test with what, "what must hold", if it does not.
@@ -337,12 +377,6 @@ func eventually(t *testing.T, ok func() bool, what string) {
 			return
 		}
 	}
-}
-
-// pendingDaemon skips the test, which phase 12 of the plan of the DB daemon (issue 109) makes pass through the daemon.
-func pendingDaemon(t *testing.T, reason string) {
-	t.Helper()
-	t.Skip("pending phase 12: " + reason)
 }
 
 // testBackend is a backend that the tests run on: the engine of the daemon with *log.

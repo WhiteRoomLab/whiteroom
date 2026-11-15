@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,5 +253,86 @@ func TestAbandon(t *testing.T) {
 	}
 	if err := srv.Close(); err != nil { // the test closes what it abandoned
 		t.Error(err)
+	}
+}
+
+// TestHungDaemon checks that a daemon that hangs while it closes stops only the Acquire of its own directory, and that
+// the Acquire waits for it.
+func TestHungDaemon(t *testing.T) {
+	dir, other := newDir(t), newDir(t)
+	hung, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	o := options()
+	o.Log.Hook = func(point string) error {
+		if point == "checkpoint:renamed" {
+			once.Do(func() { close(hung) })
+			<-release
+		}
+		return nil
+	}
+	h, err := Acquire(dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := dbclient.Open(context.Background(), h.Dialer(), dbwire.RoleWriter, dbclient.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit(t, c, "k")
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }() // the last release closes the engine, which hangs in a checkpoint
+	select {
+	case <-hung:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("the engine has not written a checkpoint when it was closed")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		h, err := Acquire(other, options())
+		if err == nil {
+			err = h.Release()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Acquire and Release of another directory: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("the daemon that hangs stops Acquire and Release of another directory")
+	}
+
+	type acquired struct {
+		h   *Daemon
+		err error
+	}
+	again := make(chan acquired, 1)
+	go func() {
+		h, err := Acquire(dir, options())
+		again <- acquired{h, err}
+	}()
+	select {
+	case a := <-again:
+		close(release)
+		t.Fatalf("Acquire of the directory of a daemon that is closing has returned: %v", a.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-closed; err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	select {
+	case a := <-again:
+		if a.err != nil {
+			t.Fatalf("Acquire after the daemon has closed: %v", a.err)
+		}
+		if err := a.h.Release(); err != nil {
+			t.Error(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Acquire of the directory has not returned after the daemon has closed")
 	}
 }
