@@ -102,6 +102,30 @@ func (r *Report) Add(e Entry) {
 	r.entries = append(r.entries, e)
 }
 
+// count returns the number of entries added so far.
+func (r *Report) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.entries)
+}
+
+// dropFrom removes the entries after the first n that drop says yes to.
+func (r *Report) dropFrom(n int, drop func(Entry) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n >= len(r.entries) {
+		return
+	}
+	kept := r.entries[:n]
+	for _, e := range r.entries[n:] {
+		if !drop(e) {
+			kept = append(kept, e)
+		}
+	}
+	clear(r.entries[len(kept):])
+	r.entries = kept
+}
+
 // Entries returns a copy of the entries in the order of the report: by the place in the WXR, then the record, the kind
 // (skipped, changed, review), the message, and the target. The same entries make the same list.
 func (r *Report) Entries() []Entry {

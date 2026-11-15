@@ -1,18 +1,20 @@
 // Package wpimport imports a WordPress site from its WXR (section 6.10 of the design document). An import goes in steps,
 // and the order is needed: Read reads the WXR; ProposeSettings guesses what the WXR does not hold, such as the time zone
 // and the URL rules, as Settings, which the person who imports checks and corrects; the plan decides what to import,
-// gives each object of WordPress its ID in a Table, and records the entries and the media with AddRef (PlanMedia is its
-// part for the media); Site makes the site settings from the corrected Settings, finding the front page, the logo and the
-// like among those records; Terms and Authors make the terms and the author profiles in that site; Media then makes the
-// media from the attachments, reading each original from a copy of the uploads or from the old site and writing it to
-// files/ of the site directory, and drops from the Table the attachments that it cannot import; the conversion of the
-// entries then turns each into an entity, calling Body for the content of each entry to get its blocks, finds the IDs of
-// the others with the Table's Lookup and Ref, and drops from the Table what it cannot import; the writing puts the
-// entities into the site directory. MediaURLs, called after Media, gives the addresses that the files of the media had in
-// the old site, for the redirects. Only reading, the settings, the IDs, the report of what was not imported, Import (the
-// state of an import), the conversion of the terms, of the authors, of the site settings and of the media (with the
-// Downloader that reads from the old site), the conversion of the content of the block editor and of the classic editor
-// into blocks (Body), and the guess of the permalinks are here so far.
+// gives each object of WordPress its ID in a Table, and records the entries and the media with AddRef (PlanEntries and
+// PlanMedia are its parts for them); Site makes the site settings from the corrected Settings, finding the front page,
+// the logo and the like among those records; Terms and Authors make the terms and the author profiles in that site; Media
+// then makes the media from the attachments, reading each original from a copy of the uploads or from the old site and
+// writing it to files/ of the site directory, and drops from the Table the attachments that it cannot import; Entries
+// then decides which items are entries and what state each has, makes the revision of each, calling Body for its content
+// to get its blocks, and gives the entries to a function one at a time, in the order of the WXR, without holding the
+// content after that; it finds the IDs of the others with the Table's Lookup and Ref, drops from the Table what it
+// cannot import, and takes out of the site settings a front page or a posts page that is not published as an entry; the
+// writing puts the entities into the site directory. MediaURLs, called after Media, gives the addresses that the files
+// of the media had in the old site, for the redirects. Only reading, the settings, the IDs, the report of what was not
+// imported, Import (the state of an import), the conversion of the terms, of the authors, of the site settings, of the
+// media (with the Downloader that reads from the old site) and of the entries, the conversion of the content of the block
+// editor and of the classic editor into blocks (Body), and the guess of the permalinks are here so far.
 package wpimport
 
 import (

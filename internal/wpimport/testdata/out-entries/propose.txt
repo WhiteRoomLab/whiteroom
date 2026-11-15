@@ -1,0 +1,21 @@
+entries.xml:13:1: review: channel: WordPress keeps the number of posts on a page and whether search engines may index the site where the import cannot read them; check site.postsPerPage (10 by default) and site.noindex -> site/settings.json#/postsPerPage
+entries.xml:13:1: review: channel: inferred the permalink structure "/%category%/%postname%/" of posts from 15 of 15 links; the URL rule is "/{category}/{slug}/" -> site/schema.yaml#/types/post/url
+entries.xml:13:1: review: channel: inferred the permalink structure "/%pagename%/" of pages from 8 of 8 links; the URL rule is "/{path}/" -> site/schema.yaml#/types/page/url
+entries.xml:13:1: review: channel: inferred the permalink structure "/staff/%staff%/" of the post type staff from 2 of 2 links; the URL rule is "/staff/{slug}/" -> site/schema.yaml#/types/staff/url
+entries.xml:13:1: review: channel: inferred the permalink structure "/works/%works%/" of the post type works from 2 of 2 links; the URL rule is "/works/{slug}/" -> site/schema.yaml#/types/works/url
+entries.xml:13:1: review: channel: posts without a category had "uncategorized" in their links; it is the default category -> site/schema.yaml#/types/post/url
+entries.xml:13:1: review: channel: set site.logo and site.icon to attachments of the WXR, if the site had them -> site/settings.json#/logo
+entries.xml:13:1: review: channel: the REST API did not give the links of author pages; the URL rule is "/author/{slug}/", the default of WordPress for the front "/" -> site/schema.yaml#/authorUrl
+entries.xml:13:1: review: channel: the REST API did not give the links of the taxonomy category; the URL rule is "/category/{path}/", the default of WordPress for the front "/" -> site/schema.yaml#/taxonomies/category/url
+entries.xml:13:1: review: channel: the REST API did not give the links of the taxonomy genre; the URL rule is "/genre/{slug}/", the default of WordPress for the front "/" -> site/schema.yaml#/taxonomies/genre/url
+entries.xml:13:1: review: channel: the REST API did not give the links of the taxonomy tag; the URL rule is "/tag/{slug}/", the default of WordPress for the front "/" -> site/schema.yaml#/taxonomies/tag/url
+entries.xml:13:1: review: channel: the REST API did not give the time zone; enter site.timeZone -> site/settings.json#/timeZone
+entries.xml:13:1: review: channel: the REST API did not tell whether the post type staff had an archive; set its archive if it had one -> site/schema.yaml#/types/staff/archive
+entries.xml:13:1: review: channel: the REST API did not tell whether the post type works had an archive; set its archive if it had one -> site/schema.yaml#/types/works/archive
+entries.xml:13:1: review: channel: the front page is page 10, whose link is the home page; set site.postsPage if the site had a page of posts -> site/settings.json#/frontPage
+entries.xml:13:1: review: channel: the items have the SEO settings of Yoast SEO (7 items); seo.plugin is "yoast": its titles, descriptions, canonical URLs, noindex and images for sharing are imported; the defaults of the plugin for the site and for each post type are options of WordPress, which the WXR does not have
+entries.xml:13:1: review: channel: the items of the post type post have 1 custom field: "subtitle" (1 item); fields.post maps it to a field of post in the schema file
+entries.xml:13:1: review: channel: the items of the post type staff have 2 custom fields: "joined" (2 items), "role" (1 item); fields.staff maps them to the fields of staff in the schema file
+entries.xml:13:1: review: channel: the items of the post type works have 16 custom fields: "client" (2 items), "colors" (2 items), "cover" (2 items), "internal_memo" (2 items), "onsale" (2 items), "intro" (1 item), "items" (1 item), "keywords" (1 item), "maker" (1 item), "manual" (1 item), and 6 more; fields.works maps them to the fields of works in the schema file
+entries.xml:13:1: review: channel: the pages use 3 page templates of WordPress: "templates/landing.php" (1 time), "templates/retired.php" (1 time), "templates/wide.php" (1 time); pageTemplates maps them to the page templates of the theme of the site
+entries.xml:1317:2: skipped: item (product): 1 item of the post type product is not imported; define product in the schema file to import it

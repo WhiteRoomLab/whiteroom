@@ -435,6 +435,49 @@ func TestReportEntriesAreACopy(t *testing.T) {
 	}
 }
 
+func TestReportDropFrom(t *testing.T) {
+	rep := NewReport(Info{})
+	if rep.count() != 0 {
+		t.Errorf("count() = %d for an empty report", rep.count())
+	}
+	for _, m := range []string{"a", "b", "c", "d", "e"} {
+		rep.Add(Entry{Kind: Review, Message: m})
+	}
+	if rep.count() != 5 {
+		t.Errorf("count() = %d, want 5", rep.count())
+	}
+	messages := func() string {
+		var out []string
+		for _, e := range rep.entries {
+			out = append(out, e.Message)
+		}
+		return strings.Join(out, "")
+	}
+	odd := func(e Entry) bool { return e.Message == "b" || e.Message == "d" || e.Message == "a" }
+	// Only the entries after the first n.
+	rep.dropFrom(2, odd)
+	if got := messages(); got != "abce" {
+		t.Errorf("after dropping from the third that are a, b or d: %q, want abce", got)
+	}
+	rep.dropFrom(0, func(e Entry) bool { return e.Message == "a" })
+	if got := messages(); got != "bce" {
+		t.Errorf("after dropping a from the start: %q, want bce", got)
+	}
+	// Nothing after the end; nothing is dropped.
+	rep.dropFrom(3, func(Entry) bool { return true })
+	rep.dropFrom(10, func(Entry) bool { return true })
+	if got := messages(); got != "bce" || rep.count() != 3 {
+		t.Errorf("after dropping from the end: %q (%d), want bce", got, rep.count())
+	}
+	if tail := rep.entries[:cap(rep.entries)][3:]; len(tail) > 0 && tail[0] != (Entry{}) {
+		t.Errorf("the entries that were dropped are still held: %+v", tail[0])
+	}
+	rep.Add(Entry{Kind: Review, Message: "f"})
+	if got := messages(); got != "bcef" {
+		t.Errorf("after an entry is added: %q, want bcef", got)
+	}
+}
+
 func TestReportConcurrent(t *testing.T) {
 	const workers, each = 8, 200
 	rep := NewReport(Info{})

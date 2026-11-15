@@ -22,7 +22,9 @@ type Import struct {
 	RESTFile string
 
 	refs map[string]importRef
-	urls *urlIndex // made when the links of a body, Media or MediaURLs first need it
+	// paths are the slug and the parent of the terms and of the pages that were converted, by ID, for PathRef.
+	paths map[string]content.PathRef
+	urls  *urlIndex // made when the links of a body, Media or MediaURLs first need it
 	// patternBodies are the contents of the synced patterns, read when a body first copies the pattern, by its post ID.
 	patternBodies map[int64]*patternBody
 	// forms are the forms of Contact Form 7 in the WXR, collected when a body first looks for one; formsRead tells that.
@@ -40,7 +42,7 @@ type importRef struct {
 // New returns the import of the site of e, which Read read from the file called file, with the report rep. The caller
 // sets REST and RESTFile if the REST API is used.
 func New(file string, e *wxr.Export, rep *Report) *Import {
-	return &Import{File: file, WXR: e, Report: rep, IDs: NewTable(Seed(e)), refs: make(map[string]importRef)}
+	return &Import{File: file, WXR: e, Report: rep, IDs: NewTable(Seed(e)), refs: make(map[string]importRef), paths: make(map[string]content.PathRef)}
 }
 
 // AddRef records that the entity with the ID id of kind has been made, with r as Lookup tells of it. It replaces an
@@ -65,4 +67,29 @@ func (imp *Import) Ref(kind content.RefKind, id string) (content.Ref, bool) {
 		return content.Ref{}, false
 	}
 	return r.ref, true
+}
+
+// setPath records the slug and the parent of the term or the page with the ID id, which PathRef gives back.
+func (imp *Import) setPath(id string, p content.PathRef) {
+	if imp.paths == nil {
+		imp.paths = make(map[string]content.PathRef)
+	}
+	imp.paths[id] = p
+}
+
+// PathRef tells the slug and the parent of a term (content.RefTerm) or of a page (content.RefEntry) that was converted,
+// if it is one that Ref knows. It is the lookup that content.Site's EntryPath, EntryRulePath and TermPath take, to find the
+// ancestors and the categories of a path. The terms can be looked up after Terms, and the pages after Entries.
+func (imp *Import) PathRef(kind content.RefKind, id string) (content.PathRef, bool) {
+	if kind != content.RefTerm && kind != content.RefEntry {
+		return content.PathRef{}, false
+	}
+	p, ok := imp.paths[id]
+	if !ok {
+		return content.PathRef{}, false
+	}
+	if _, ok := imp.Ref(kind, id); !ok {
+		return content.PathRef{}, false
+	}
+	return p, true
 }

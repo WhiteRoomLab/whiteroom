@@ -30,6 +30,11 @@
     }
   },
   "defaultCategory": "",
+  "pageTemplates": {},
+  "seo": {
+    "plugin": ""
+  },
+  "fields": {},
   "blocks": {
     "presets": {
       "color": {},

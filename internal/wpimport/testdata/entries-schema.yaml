@@ -1,0 +1,46 @@
+# The definitions that the developer of the site in entries.xml writes, for the tests of internal/wpimport.
+# The URL rules are left out: the import guesses them from the old site.
+schemaVersion: 1
+types:
+  post:
+    fields:
+      subtitle: {type: text, label: サブタイトル}
+  works:
+    label: 制作実績
+    taxonomies: [genre]
+    body: true
+    fields:
+      client: {type: text}
+      year: {type: number}
+      onsale: {type: boolean}
+      since: {type: date}
+      opens: {type: datetime}
+      colors: {type: select, options: [red, green, blue], multiple: true}
+      cover: {type: media, accept: [image]}
+      manual: {type: media, accept: [pdf]}
+      maker: {type: entry, types: [post]}
+      related: {type: entry, multiple: true}
+      keywords: {type: term, taxonomy: tag, multiple: true}
+      website: {type: link}
+      address:
+        type: group
+        fields:
+          city: {type: text}
+          zip: {type: text}
+      items:
+        type: list
+        of:
+          type: group
+          fields:
+            title: {type: text}
+            amount: {type: number}
+      urls: {type: list, of: {type: text}}
+      intro: {type: richText}
+  staff:
+    label: スタッフ
+    fields:
+      role: {type: text, required: true}
+      joined: {type: date}
+taxonomies:
+  genre:
+    label: ジャンル

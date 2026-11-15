@@ -29,8 +29,28 @@ type Settings struct {
 	URLs URLSettings  `json:"urls"`
 	// DefaultCategory is the slug, decoded, of the category that %category% takes for a post without one: "" if the
 	// permalink structure of the posts has no such tag.
-	DefaultCategory string        `json:"defaultCategory"`
-	Blocks          BlockSettings `json:"blocks"`
+	DefaultCategory string `json:"defaultCategory"`
+	// PageTemplates tells how the page templates of the old site are named in the theme of the site (5.4.2): the keys are
+	// the page templates of WordPress (the values of _wp_page_template, such as "templates/full-width.php") and the values
+	// the names in the theme. A page whose template is not a key gets the name that templateName makes of it, and a value of
+	// "" leaves the template out.
+	PageTemplates map[string]string `json:"pageTemplates"`
+	// SEO tells which SEO plugin's postmeta the SEO settings of the entries are read from (6.10.5).
+	SEO SEOSettings `json:"seo"`
+	// Fields tells which field of the schema file each custom field of WordPress (a key of the postmeta) is imported as: by
+	// the name of the post type in whiteroom, and then the key. A key that is not here is imported as the field of the same
+	// name, if the type has one; a value of "" leaves the key out (6.10.5). The keys are those of the fields of the type: a
+	// field in a group, or in a row of a list, is read from the key of the group or the list with _<name>, or
+	// _<number>_<name>, after it, and the table is not asked about that key.
+	Fields map[string]map[string]string `json:"fields"`
+	Blocks BlockSettings                `json:"blocks"`
+}
+
+// SEOSettings tells which SEO plugin the old site used.
+type SEOSettings struct {
+	// Plugin is yoast, rankmath, seopress, tsf, ssp or aioseo, or "" if the SEO settings of the entries are not imported.
+	// Only the postmeta of this plugin are read: a site that changed its plugin keeps those of the old one, which are stale.
+	Plugin string `json:"plugin"`
 }
 
 // SiteSettings are the general settings of the site, in its language.
@@ -272,10 +292,11 @@ func (imp *Import) postSource(id int64) Source {
 // ProposeSettings guesses the settings of the site (6.10.1, 6.10.4) from the channel of the WXR, from the REST API in
 // imp.REST if there is one, and from the links of the old site, and records the grounds of the guess and the values to
 // check or to enter in the report. The names that the bodies use (presets, block styles, image sizes, and the classes of
-// inline elements) are listed in Blocks, for the person who imports to map them (6.10.5). defs is the schema file of the
-// developer, as UnmarshalSchema reads it, or nil. The
-// URL rules in it are kept; the others are guessed. It is an error, and nothing is recorded, if the REST API is not that
-// of the site of the WXR, or does not say whose it is.
+// inline elements) are listed in Blocks, and the page templates that the pages use in PageTemplates, for the person who
+// imports to map them (6.10.5). The SEO plugin that most items have postmeta of is SEO.Plugin, and the custom fields that the
+// items of each post type have are in Fields, for the person to map to the fields of the schema file. defs is the schema file of
+// the developer, as UnmarshalSchema reads it, or nil. The URL rules in it are kept; the others are guessed. It is an error,
+// and nothing is recorded, if the REST API is not that of the site of the WXR, or does not say whose it is.
 func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 	if imp.WXR == nil {
 		return nil, errors.New("the WXR is needed to propose the settings")
@@ -287,7 +308,12 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 		defs = &content.Site{}
 	}
 	ch := &imp.WXR.Channel
-	s := &Settings{URLs: URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}}, Blocks: emptyBlockSettings()}
+	s := &Settings{
+		URLs:          URLSettings{Taxonomies: map[string]string{}, Types: map[string]TypeURLs{}},
+		PageTemplates: map[string]string{},
+		Fields:        map[string]map[string]string{},
+		Blocks:        emptyBlockSettings(),
+	}
 	st := &s.Site
 	st.Name, st.Tagline = ch.Title, ch.Description
 	if st.Name == "" {
@@ -307,8 +333,192 @@ func (imp *Import) ProposeSettings(defs *content.Site) (*Settings, error) {
 	}
 	imp.reportSkippedTypes(defs)
 	imp.proposeBlocks(s, defs)
+	imp.proposePageTemplates(s)
+	imp.proposeSEO(s, defs)
+	imp.proposeFields(s, defs)
 	imp.reportSkippedTaxonomies(defs)
 	return s, nil
+}
+
+// proposePageTemplates counts the page templates that the pages use, and puts them in s.PageTemplates for the person who
+// imports to map them to those of the theme of the site (6.10.5): each maps to the name that templateName makes of it, or
+// to nothing. They are recorded once for review. It reads the pages that are imported: those that are not in the trash nor
+// an automatic draft.
+func (imp *Import) proposePageTemplates(s *Settings) {
+	counts := make(map[string]int)
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		if it.Type != "page" || discardedStatus(it.Status) != "" {
+			continue
+		}
+		if file := pageTemplateOf(it); file != "" {
+			counts[file]++
+		}
+	}
+	for file := range counts {
+		s.PageTemplates[file] = templateName(file)
+	}
+	if n := len(counts); n > 0 {
+		imp.channelEntry(Review, Target{}, "the pages use %s of WordPress: %s; pageTemplates maps them to the page templates of the theme of the site",
+			plural(n, "page template", "page templates"), usedNames(counts))
+	}
+}
+
+// proposeSEO finds the SEO plugin that the items that are imported have the settings of in their postmeta, and puts the one
+// that most of them have in s.SEO.Plugin, for the person who imports to check (6.10.5). Of two that as many have, it takes the
+// first of seoPlugins. There is nothing to put, and nothing to record, if no item has any. The items that are imported are
+// those of a type that the site has that are not in the trash nor an automatic draft.
+func (imp *Import) proposeSEO(s *Settings, defs *content.Site) {
+	counts := make([]int, len(seoPlugins))
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		if typeName(it.Type, defs) == "" || discardedStatus(it.Status) != "" {
+			continue
+		}
+		for j := range seoPlugins {
+			if seoPlugins[j].hasSettings(it) {
+				counts[j]++
+			}
+		}
+	}
+	var found []int
+	for j, n := range counts {
+		if n > 0 {
+			found = append(found, j)
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	slices.SortStableFunc(found, func(a, b int) int { return cmp.Compare(counts[b], counts[a]) })
+	chosen := &seoPlugins[found[0]]
+	s.SEO.Plugin = chosen.name
+	parts := make([]string, len(found))
+	for i, j := range found {
+		parts[i] = fmt.Sprintf("%s (%s)", seoPlugins[j].label, count(counts[j], "item"))
+	}
+	list := strings.Join(parts, ", ")
+	if n := len(parts); n > 1 {
+		list = strings.Join(parts[:n-1], ", ") + " and " + parts[n-1]
+	}
+	imp.channelEntry(Review, Target{}, "the items have the SEO settings of %s; seo.plugin is %q: its titles, descriptions, canonical URLs, "+
+		"noindex and images for sharing are imported; the defaults of the plugin for the site and for each post type are options of "+
+		"WordPress, which the WXR does not have", list, chosen.name)
+	if chosen.name == seoAIOSEO {
+		imp.channelEntry(Review, Target{}, "All in One SEO keeps the canonical URL, noindex and the image for sharing in its own table, "+
+			"which the WXR does not have; only its titles and descriptions are imported")
+	}
+}
+
+// checkSEOPlugin fails if name is neither empty nor the name of an SEO plugin.
+func checkSEOPlugin(name string, fail func(pointer, format string, args ...any)) {
+	if name == "" || seoPluginNamed(name) != nil {
+		return
+	}
+	names := make([]string, len(seoPlugins))
+	for i := range seoPlugins {
+		names[i] = seoPlugins[i].name
+	}
+	fail("/seo/plugin", "unknown SEO plugin %q: use %s or %s, or leave it empty", name, strings.Join(names[:len(names)-1], ", "), names[len(names)-1])
+}
+
+// proposeFields counts the custom fields of WordPress that the items of each post type have, and puts them in s.Fields for
+// the person who imports to map them to the fields of the schema file (6.10.5): each key maps to the field of the type that is
+// called the same, and to nothing if there is none. The post types that no item has a custom field of have no entry. The keys
+// are counted by the items that have a value for them. Not counted are the keys that WordPress and the plugins keep for
+// themselves, those of the SEO plugin of s.SEO (proposeSEO has put it there), the keys of the rows of a list, and the keys
+// that the groups and the lists of the type are read from, which the table does not map. It reads the items that are
+// imported: those of a type that the site has that are not in the trash nor an automatic draft.
+func (imp *Import) proposeFields(s *Settings, defs *content.Site) {
+	rules := keyRules{plugin: pluginKeys(s.SEO.Plugin)}
+	counts := make(map[string]map[string]int)
+	nested := make(map[string]*nestedKeys)
+	var order []string // the post types, by their first item
+	for i := range imp.WXR.Items {
+		it := &imp.WXR.Items[i]
+		typ := typeName(it.Type, defs)
+		if typ == "" || discardedStatus(it.Status) != "" {
+			continue
+		}
+		if nested[typ] == nil {
+			nested[typ] = nestedKeysOf(defs.Type(typ))
+		}
+		keys := slices.DeleteFunc(rules.candidates(it, nil, &metaIndex{metas: it.Meta}), nested[typ].has)
+		if len(keys) == 0 {
+			continue
+		}
+		if counts[typ] == nil {
+			counts[typ] = make(map[string]int)
+			order = append(order, typ)
+		}
+		for _, key := range keys {
+			counts[typ][key]++
+		}
+	}
+	for _, typ := range order {
+		def := defs.Type(typ)
+		table := make(map[string]string, len(counts[typ]))
+		for key := range counts[typ] {
+			table[key] = ""
+			if def != nil && slices.ContainsFunc(def.Fields, func(f content.FieldDef) bool { return f.Name == key }) {
+				table[key] = key
+			}
+		}
+		s.Fields[typ] = table
+		format := "the items of the post type %s have %s: %s; fields.%s maps them to the fields of %s in the schema file"
+		if len(table) == 1 {
+			format = "the items of the post type %s have %s: %s; fields.%s maps it to a field of %s in the schema file"
+		}
+		imp.channelEntry(Review, Target{}, format,
+			typeText(typ), plural(len(table), "custom field", "custom fields"), usedNamesOf(counts[typ], "item", "items"), typeText(typ), typeText(typ))
+	}
+}
+
+// checkFieldTable fails for each post type of table that site does not have, each key whose field its type does not have,
+// and each key after the first that names a field that another key names.
+func checkFieldTable(site *content.Site, table map[string]map[string]string, fail func(pointer, format string, args ...any)) {
+	for _, typ := range slices.Sorted(maps.Keys(table)) {
+		pointer := "/fields/" + pointerEscaper.Replace(typ)
+		def := site.Type(typ)
+		if def == nil {
+			fail(pointer, "type %q is not in the schema file", typ)
+			continue
+		}
+		keyOf := make(map[string]string)
+		for _, key := range slices.Sorted(maps.Keys(table[typ])) {
+			name := table[typ][key]
+			prev, taken := keyOf[name]
+			switch {
+			case name == "":
+			case !slices.ContainsFunc(def.Fields, func(f content.FieldDef) bool { return f.Name == name }):
+				fail(pointer+"/"+pointerEscaper.Replace(key), "the type %s has no field %q", typeText(typ), name)
+			case taken:
+				fail(pointer+"/"+pointerEscaper.Replace(key), "the field %q is also that of %q", name, prev)
+			default:
+				keyOf[name] = key
+			}
+		}
+	}
+}
+
+// pageTemplateOf returns the page template of the item it in WordPress: the first _wp_page_template without the white space
+// around it, or "" if there is none, as WordPress takes an empty value and "default" for no template.
+func pageTemplateOf(it *wxr.Item) string {
+	file, _ := it.Meta.Get("_wp_page_template")
+	if file = strings.TrimSpace(file); file == "default" {
+		return ""
+	}
+	return file
+}
+
+// templateName returns the name that the theme of the site gives the page template file of WordPress, if it is the name
+// of the file: what follows the last "/", without ".php". It returns "" if that is not a name that whiteroom accepts.
+func templateName(file string) string {
+	name := strings.TrimSuffix(file[strings.LastIndexByte(file, '/')+1:], ".php")
+	if content.CheckName(name) != nil {
+		return ""
+	}
+	return name
 }
 
 // checkREST checks that imp.REST, if there is one, is the REST API of the site of the WXR: its home has the same host
@@ -788,6 +998,9 @@ func (imp *Import) Site(s *Settings, defs *content.Site) (*content.Site, error) 
 	site.AuthorURL = s.URLs.Author
 	setSchemaURLs(site, s, fail)
 	checkBlockNames(&s.Blocks, fail)
+	checkPageTemplates(s.PageTemplates, fail)
+	checkSEOPlugin(s.SEO.Plugin, fail)
+	checkFieldTable(site, s.Fields, fail)
 
 	site.NormalizeSettings()
 	if err := site.Validate(imp.Ref); err != nil {
@@ -881,6 +1094,17 @@ func checkBlockNames(b *BlockSettings, fail func(pointer, format string, args ..
 				if err := content.CheckName(name); err != nil {
 					fail(m.pointer+pointerEscaper.Replace(key), "%s", err.Error())
 				}
+			}
+		}
+	}
+}
+
+// checkPageTemplates fails for each value of names that is neither empty nor a name that whiteroom accepts.
+func checkPageTemplates(names map[string]string, fail func(pointer, format string, args ...any)) {
+	for _, key := range slices.Sorted(maps.Keys(names)) {
+		if name := names[key]; name != "" {
+			if err := content.CheckName(name); err != nil {
+				fail("/pageTemplates/"+pointerEscaper.Replace(key), "%s", err.Error())
 			}
 		}
 	}

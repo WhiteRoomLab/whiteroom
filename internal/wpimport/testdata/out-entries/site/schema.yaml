@@ -1,0 +1,88 @@
+schemaVersion: 1
+authorUrl: /author/{slug}/
+taxonomies:
+  category:
+    url: /category/{path}/
+  tag:
+    url: /tag/{slug}/
+  genre:
+    label: ジャンル
+    url: /genre/{slug}/
+types:
+  page:
+    url: /{path}/
+  post:
+    url: /{category}/{slug}/
+    fields:
+      subtitle:
+        type: text
+        label: サブタイトル
+  works:
+    label: 制作実績
+    url: /works/{slug}/
+    taxonomies: [genre]
+    body: true
+    fields:
+      client:
+        type: text
+      year:
+        type: number
+      onsale:
+        type: boolean
+      since:
+        type: date
+      opens:
+        type: datetime
+      colors:
+        type: select
+        options: [red, green, blue]
+        multiple: true
+      cover:
+        type: media
+        accept: [image]
+      manual:
+        type: media
+        accept: [pdf]
+      maker:
+        type: entry
+        types: [post]
+      related:
+        type: entry
+        multiple: true
+      keywords:
+        type: term
+        multiple: true
+        taxonomy: tag
+      website:
+        type: link
+      address:
+        type: group
+        fields:
+          city:
+            type: text
+          zip:
+            type: text
+      items:
+        type: list
+        of:
+          type: group
+          fields:
+            title:
+              type: text
+            amount:
+              type: number
+      urls:
+        type: list
+        of:
+          type: text
+      intro:
+        type: richText
+  staff:
+    label: スタッフ
+    url: /staff/{slug}/
+    fields:
+      role:
+        type: text
+        required: true
+      joined:
+        type: date

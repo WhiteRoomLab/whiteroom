@@ -773,6 +773,11 @@ func TestProposeSkippedTypes(t *testing.T) {
 		{id: 10, typ: "page", link: "https://example.com/b/"},
 		{id: 11, typ: "product", status: "trash", link: "https://example.com/?p=11"},
 		{id: 12, typ: "book", link: "https://example.com/book/a/"},
+		// ACF keeps its definitions in these, which are no content and are not reported.
+		{id: 13, typ: "acf-field-group", link: "https://example.com/?p=13"},
+		{id: 14, typ: "acf-field", link: "https://example.com/?p=14"},
+		{id: 15, typ: "acf-post-type", link: "https://example.com/?p=15"},
+		{id: 16, typ: "acf-taxonomy", link: "https://example.com/?p=16"},
 	}
 	in := siteWXR("https://example.com", "ja", items...)
 	defs := new(content.Site)
@@ -839,6 +844,11 @@ func TestSettingsWriteJSON(t *testing.T) {
     "types": {}
   },
   "defaultCategory": "",
+  "pageTemplates": {},
+  "seo": {
+    "plugin": ""
+  },
+  "fields": {},
   "blocks": {
     "presets": {
       "color": {},
@@ -868,6 +878,11 @@ func TestSettingsWriteJSON(t *testing.T) {
 			Types:      map[string]TypeURLs{"works": {URL: "/w/{slug}/", Archive: "/w/"}, "book": {}},
 		},
 		DefaultCategory: "お知らせ",
+		PageTemplates:   map[string]string{"templates/full-width.php": "full-width", "a~b/c.php": "", "page-lp.php": "lp"},
+		SEO:             SEOSettings{Plugin: "yoast"},
+		Fields: map[string]map[string]string{
+			"works": {"client": "client", "old~key": "", "a/b": "memo"}, "post": {"subtitle": "subtitle"}, "a~b": {},
+		},
 		Blocks: BlockSettings{
 			Presets: PresetSettings{
 				Color:      map[string]string{"vivid-red": "accent", "pale-pink": ""},
@@ -921,6 +936,25 @@ func TestSettingsWriteJSON(t *testing.T) {
     }
   },
   "defaultCategory": "お知らせ",
+  "pageTemplates": {
+    "a~b/c.php": "",
+    "page-lp.php": "lp",
+    "templates/full-width.php": "full-width"
+  },
+  "seo": {
+    "plugin": "yoast"
+  },
+  "fields": {
+    "a~b": {},
+    "post": {
+      "subtitle": "subtitle"
+    },
+    "works": {
+      "a/b": "memo",
+      "client": "client",
+      "old~key": ""
+    }
+  },
   "blocks": {
     "presets": {
       "color": {
@@ -1023,6 +1057,809 @@ func TestReadSettingsBlocks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(s.Blocks, want) || !s.Site.AllowHTML {
 		t.Errorf("ReadSettings has the blocks %+v and allowHtml %v, want %+v and true", s.Blocks, s.Site.AllowHTML, want)
+	}
+}
+
+func TestReadSettingsPageTemplates(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"pageTemplates": {"templates/full-width.php": "full-width", "page-lp.php": ""}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"templates/full-width.php": "full-width", "page-lp.php": ""}
+	if !reflect.DeepEqual(s.PageTemplates, want) {
+		t.Errorf("ReadSettings has the page templates %#v, want %#v", s.PageTemplates, want)
+	}
+	// A file without the key has none, and one with no names has an empty map.
+	for in, wantNil := range map[string]bool{`{}`: true, `{"site": {}}`: true, `{"pageTemplates": {}}`: false} {
+		s, err := ReadSettings("settings.json", []byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (s.PageTemplates == nil) != wantNil || len(s.PageTemplates) != 0 {
+			t.Errorf("ReadSettings(%s) has the page templates %#v, want nil: %v", in, s.PageTemplates, wantNil)
+		}
+	}
+}
+
+func TestTemplateName(t *testing.T) {
+	long := strings.Repeat("a", content.MaxTextBytes+1)
+	for _, tt := range []struct{ file, want string }{
+		{"templates/full-width.php", "full-width"},
+		{"page-lp.php", "page-lp"},
+		{"a/b/c/Landing_2.php", "Landing_2"},
+		{"full-width", "full-width"},
+		{"template.PHP", ""},
+		{"x.php.php", ""},
+		{".php", ""},
+		{"", ""},
+		{"templates/", ""},
+		{"templates/.php", ""},
+		{"my page.php", ""},
+		{"page-ünï.php", ""},
+		{"templates/full width.php", ""},
+		{"a.b.php", ""},
+		{"1.php", "1"},
+		{"-.php", "-"},
+		{"templates/" + long + ".php", ""},
+		{`dir\file.php`, ""},
+	} {
+		if got := templateName(tt.file); got != tt.want {
+			t.Errorf("templateName(%.40q) = %.40q, want %.40q", tt.file, got, tt.want)
+		}
+	}
+}
+
+// pageTemplateEntries lists the entries of the report about the page templates, as "kind: message", with " -> pointer" if
+// there is a place in the settings.
+func pageTemplateEntries(rep *Report) []string {
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the pages use") {
+			line := string(e.Kind) + ": " + e.Message
+			if e.Target != (Target{}) {
+				line += " -> " + e.Target.File + "#" + e.Target.Pointer
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestProposePageTemplates(t *testing.T) {
+	const tail = "; pageTemplates maps them to the page templates of the theme of the site"
+	page := func(id int, status, typ string, templates ...string) bodyXML {
+		x := bodyXML{id: id, typ: typ, status: status}
+		for _, v := range templates {
+			x.meta = append(x.meta, [2]string{"_wp_page_template", v})
+		}
+		return x
+	}
+	t.Run("the templates of the pages that are imported", func(t *testing.T) {
+		in := bodiesWXR(
+			page(1, "publish", "page", "templates/full-width.php"),
+			page(2, "draft", "page", "templates/full-width.php"),
+			page(3, "private", "page", " \ttemplates/full-width.php\n"),
+			page(4, "publish", "page", "page-lp.php"),
+			page(5, "publish", "page", "default"),
+			page(6, "publish", "page", ""),
+			page(7, "publish", "page", "  \n"),
+			page(8, "trash", "page", "templates/trashed.php"),
+			page(9, "auto-draft", "page", "templates/auto.php"),
+			page(10, "publish", "post", "templates/post.php"),
+			page(11, "publish", "page", "Landing Page.php"),
+			page(12, "pending", "page", "page-lp.php", "templates/second.php"),
+			page(13, "publish", "page", " default "),
+			page(14, "publish", "page", "Default"),
+			page(15, "publish", "page"),
+			page(16, "publish", "works", "templates/works.php"),
+			page(17, "future", "page", "templates/ü.php"),
+		)
+		s, imp := proposeFrom(t, in, nil, nil)
+		want := map[string]string{
+			"templates/full-width.php": "full-width", "page-lp.php": "page-lp", "Landing Page.php": "", "Default": "Default",
+			"templates/ü.php": "",
+		}
+		if !reflect.DeepEqual(s.PageTemplates, want) {
+			t.Errorf("PageTemplates = %#v, want %#v", s.PageTemplates, want)
+		}
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 5 page templates of WordPress: "templates/full-width.php" (3 times), "page-lp.php" (2 times), "Default" (1 time), ` +
+				`"Landing Page.php" (1 time), "templates/ü.php" (1 time)` + tail,
+		})
+		for _, e := range imp.Report.Entries() {
+			if strings.HasPrefix(e.Message, "the pages use") && (e.Source.Record != recordChannel || e.Target != (Target{})) {
+				t.Errorf("the entry %+v is not about the channel, with no place in the settings", e)
+			}
+		}
+	})
+	t.Run("one template", func(t *testing.T) {
+		s, imp := proposeFrom(t, bodiesWXR(page(1, "publish", "page", "tpl-a.php")), nil, nil)
+		if want := map[string]string{"tpl-a.php": "tpl-a"}; !reflect.DeepEqual(s.PageTemplates, want) {
+			t.Errorf("PageTemplates = %#v, want %#v", s.PageTemplates, want)
+		}
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 1 page template of WordPress: "tpl-a.php" (1 time)` + tail,
+		})
+	})
+	t.Run("the names that are counted most are first, and then by name", func(t *testing.T) {
+		in := bodiesWXR(
+			page(1, "publish", "page", "b.php"), page(2, "publish", "page", "a.php"),
+			page(3, "publish", "page", "c.php"), page(4, "publish", "page", "c.php"),
+		)
+		_, imp := proposeFrom(t, in, nil, nil)
+		sameStrings(t, "the entries", pageTemplateEntries(imp.Report), []string{
+			`review: the pages use 3 page templates of WordPress: "c.php" (2 times), "a.php" (1 time), "b.php" (1 time)` + tail,
+		})
+	})
+	t.Run("no template", func(t *testing.T) {
+		in := bodiesWXR(page(1, "publish", "page"), page(2, "publish", "page", "default"), page(3, "trash", "page", "x.php"),
+			page(4, "publish", "post", "y.php"))
+		s, imp := proposeFrom(t, in, nil, nil)
+		if s.PageTemplates == nil || len(s.PageTemplates) != 0 {
+			t.Errorf("PageTemplates = %#v, want an empty map that is not nil", s.PageTemplates)
+		}
+		if got := pageTemplateEntries(imp.Report); len(got) != 0 {
+			t.Errorf("the entries are %q, want none", got)
+		}
+		_, imp = proposeFrom(t, siteWXR("https://example.com", "ja"), nil, nil)
+		if got := pageTemplateEntries(imp.Report); len(got) != 0 {
+			t.Errorf("the entries of a site without pages are %q, want none", got)
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, bodiesWXR(page(1, "publish", "page", "templates/full-width.php"), page(2, "publish", "page", "A B.php")), nil, nil)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := `  "pageTemplates": {
+    "A B.php": "",
+    "templates/full-width.php": "full-width"
+  },
+`; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the page templates\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+}
+
+func TestSitePageTemplates(t *testing.T) {
+	imp, defs := siteImport(t)
+	// Names that the theme can have, and the empty name, which leaves the template out, are all right, with any key.
+	s := sampleSettings()
+	s.PageTemplates = map[string]string{"templates/full-width.php": "full-width", "a b.php": "", "": "x_1", "Y-2": "Y-2"}
+	if _, err := imp.Site(s, defs); err != nil {
+		t.Fatalf("Site with names that are right = %v", err)
+	}
+
+	// The keys are in order, and the pointer has the key escaped.
+	s = sampleSettings()
+	s.PageTemplates = map[string]string{"templates/b.php": "a b", "a~c.php": "ü", "ok.php": "fine", "z.php": "1+1"}
+	site, err := imp.Site(s, defs)
+	if site != nil {
+		t.Errorf("Site = %+v, want none", site)
+	}
+	const invalid = `invalid name %q: use ASCII letters, digits, "-" and "_"`
+	sameStrings(t, "the errors", errorLines(t, err), []string{
+		"/pageTemplates/a~0c.php: " + fmt.Sprintf(invalid, "ü"),
+		"/pageTemplates/templates~1b.php: " + fmt.Sprintf(invalid, "a b"),
+		"/pageTemplates/z.php: " + fmt.Sprintf(invalid, "1+1"),
+	})
+	var errs content.Errors
+	_ = errors.As(err, &errs)
+	for _, e := range errs {
+		if e.File != "" || e.Line != 0 || e.Column != 0 {
+			t.Errorf("the error %+v has a place", *e)
+		}
+	}
+
+	// A name that is too long is an error too, and the others are not hidden by it.
+	s = sampleSettings()
+	s.Site.URL = ""
+	s.PageTemplates = map[string]string{"long.php": strings.Repeat("a", content.MaxTextBytes+1)}
+	_, err = imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || got[0] != fmt.Sprintf("/pageTemplates/long.php: too long: %d bytes (max %d)", content.MaxTextBytes+1, content.MaxTextBytes) ||
+		!strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %.300q, want one at /pageTemplates/long.php and one at /site/url", got)
+	}
+
+	// Settings without the table are all right.
+	s = sampleSettings()
+	if s.PageTemplates != nil {
+		t.Fatal("the settings of the test have page templates")
+	}
+	if _, err := imp.Site(s, defs); err != nil {
+		t.Errorf("Site without page templates = %v", err)
+	}
+}
+
+// fieldProposals lists the entries of the report about the custom fields of the items, as "kind: message", which are at the
+// channel and have no place in the settings.
+func fieldProposals(t *testing.T, rep *Report) []string {
+	t.Helper()
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the items of the post type") {
+			if e.Source.Record != recordChannel || e.Target != (Target{}) {
+				t.Errorf("the entry %+v is not about the channel, with no place in the settings", e)
+			}
+			out = append(out, string(e.Kind)+": "+e.Message)
+		}
+	}
+	return out
+}
+
+func TestProposeFields(t *testing.T) {
+	defs := fieldsDefs(t)
+	item := func(id int, typ, status string, kv ...string) bodyXML {
+		return bodyXML{id: id, typ: typ, status: status, meta: metas(kv...)}
+	}
+	proposal := func(typ string, n int, list string) string {
+		if n == 1 {
+			return fmt.Sprintf("review: the items of the post type %[1]s have 1 custom field: %[2]s; fields.%[1]s maps it to a field of %[1]s in the schema file", typ, list)
+		}
+		return fmt.Sprintf("review: the items of the post type %[1]s have %[2]d custom fields: %[3]s; fields.%[1]s maps them to the fields of %[1]s in the schema file",
+			typ, n, list)
+	}
+	t.Run("the keys of the items of each type", func(t *testing.T) {
+		in := bodiesWXR(
+			item(1, "works", "", "client", "A", "memo", "B", "year", "1", "note", "n"),
+			item(2, "works", "draft", "client", "A2", "note", " \n", "extra", "e"),
+			item(3, "works", "private", "client", "A3", "_edit_lock", "x", "rank_math_title", "x", "ssp_meta_x", "x", "blank", "", "rank_mathx", "x", "ssp_metax", "x"),
+			item(4, "post", "", "subtitle", "s", "extra2", "x"),
+			item(5, "page", "", "pg", "x"),
+			item(6, "product", "", "prod", "x"),
+			item(7, "works", "trash", "trashed", "x"),
+			item(8, "works", "auto-draft", "auto", "x"),
+			item(9, "post", "", "extra2", "y", "extra2", "z"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		want := map[string]map[string]string{
+			"works": {"client": "client", "memo": "memo", "year": "year", "note": "", "extra": "", "rank_mathx": "", "ssp_metax": ""},
+			"post":  {"subtitle": "subtitle", "extra2": ""},
+			"page":  {"pg": ""},
+		}
+		if !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+		sameSet(t, "the entries", fieldProposals(t, imp.Report), []string{
+			proposal("works", 7, `"client" (3 items), "extra" (1 item), "memo" (1 item), "note" (1 item), "rank_mathx" (1 item), "ssp_metax" (1 item), "year" (1 item)`),
+			proposal("post", 2, `"extra2" (2 items), "subtitle" (1 item)`),
+			proposal("page", 1, `"pg" (1 item)`),
+		})
+	})
+	t.Run("the keys of the rows of a list are not counted", func(t *testing.T) {
+		in := bodiesWXR(item(1, "works", "",
+			"items", "2", "items_0_title", "A", "items_1_title", "B", "items_00_x", "c", "orphan_0_x", "d", "a_0_b", "e", "a_0_b_1_c", "f",
+			"blankp", " ", "blankp_0_x", "v", "x_0", "y", "items_0", "z", "n_1_", "w"))
+		s, _ := proposeFrom(t, in, nil, defs)
+		want := map[string]string{"items": "items", "items_00_x": "", "orphan_0_x": "", "a_0_b": "", "x_0": "", "items_0": "", "n_1_": ""}
+		if !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("Fields = %v, want %v", s.Fields["works"], want)
+		}
+	})
+	t.Run("the keys that a group or a list of the type is read from are not counted", func(t *testing.T) {
+		in := bodiesWXR(
+			item(1, "works", "",
+				"address", " ", "address_city", "Tokyo", "address_geo_lat", "35.6", "address_country", "JP", "address_geo", "g", "addressx_city", "x",
+				"items_0_title", "A", "items_0_parts", "1", "items_0_parts_0_name", "x", "items_0_unknown", "u", "itemsx_0_title", "B", "items_00_title", "C"),
+			// The type post has no such group and no such list.
+			item(2, "post", "", "address_city", "Osaka", "items_0_title", "D"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		want := map[string]map[string]string{
+			"works": {"address_country": "", "address_geo": "", "addressx_city": "", "itemsx_0_title": "", "items_00_title": ""},
+			"post":  {"address_city": "", "items_0_title": ""},
+		}
+		if !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+		sameSet(t, "the entries", fieldProposals(t, imp.Report), []string{
+			proposal("works", 5, `"address_country" (1 item), "address_geo" (1 item), "addressx_city" (1 item), "items_00_title" (1 item), "itemsx_0_title" (1 item)`),
+			proposal("post", 2, `"address_city" (1 item), "items_0_title" (1 item)`),
+		})
+		// An item that has only such keys has no custom field to map.
+		s, imp = proposeFrom(t, bodiesWXR(item(1, "works", "", "address_city", "Tokyo", "items_0_title", "A")), nil, defs)
+		if len(s.Fields) != 0 || len(fieldProposals(t, imp.Report)) != 0 {
+			t.Errorf("Fields = %v with the entries %q, want none", s.Fields, fieldProposals(t, imp.Report))
+		}
+	})
+	t.Run("the keys of the SEO plugin are not counted", func(t *testing.T) {
+		// Yoast SEO is the plugin of most items, so redirect, which The SEO Framework keeps, is a custom field.
+		in := bodiesWXR(
+			item(1, "works", "", "_yoast_wpseo_title", "a"), item(2, "works", "", "_yoast_wpseo_title", "b"), item(3, "works", "", "_yoast_wpseo_title", "c"),
+			item(4, "works", "", "redirect", "x", "exclude_local_search", "1"),
+		)
+		s, _ := proposeFrom(t, in, nil, defs)
+		if want := map[string]string{"redirect": "redirect", "exclude_local_search": ""}; s.SEO.Plugin != "yoast" || !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("the plugin is %q and Fields %v, want yoast and %v", s.SEO.Plugin, s.Fields["works"], want)
+		}
+		// The SEO Framework is the plugin of the items, so its keys are not.
+		in = bodiesWXR(
+			item(1, "works", "", "_genesis_title", "a", "redirect", "x", "exclude_local_search", "1", "exclude_from_archive", "1", "foo", "y"),
+			item(2, "works", "", "_genesis_title", "b", "_open_graph_title", "c"),
+		)
+		s, imp := proposeFrom(t, in, nil, defs)
+		if want := map[string]string{"foo": ""}; s.SEO.Plugin != "tsf" || !reflect.DeepEqual(s.Fields["works"], want) {
+			t.Errorf("the plugin is %q and Fields %v, want tsf and %v", s.SEO.Plugin, s.Fields["works"], want)
+		}
+		sameStrings(t, "the entries", fieldProposals(t, imp.Report), []string{
+			`review: the items of the post type works have 1 custom field: "foo" (1 item); fields.works maps it to a field of works in the schema file`,
+		})
+	})
+	t.Run("no custom fields", func(t *testing.T) {
+		in := bodiesWXR(item(1, "works", "", "_edit_lock", "x", "blank", " "), item(2, "post", ""), item(3, "works", "trash", "k", "v"))
+		s, imp := proposeFrom(t, in, nil, defs)
+		if s.Fields == nil || len(s.Fields) != 0 {
+			t.Errorf("Fields = %#v, want an empty map that is not nil", s.Fields)
+		}
+		if got := fieldProposals(t, imp.Report); len(got) != 0 {
+			t.Errorf("the entries are %q, want none", got)
+		}
+		_, imp = proposeFrom(t, siteWXR("https://example.com", "ja"), nil, defs)
+		if got := fieldProposals(t, imp.Report); len(got) != 0 {
+			t.Errorf("the entries of a site without items are %q, want none", got)
+		}
+	})
+	t.Run("more than ten keys", func(t *testing.T) {
+		var kv []string
+		for i := 1; i <= 13; i++ {
+			kv = append(kv, fmt.Sprintf("k%02d", i), "x")
+		}
+		in := bodiesWXR(item(1, "works", "", kv...), item(2, "works", "", "k13", "x", "k12", "x", "k12", "y"))
+		_, imp := proposeFrom(t, in, nil, defs)
+		sameStrings(t, "the entries", fieldProposals(t, imp.Report), []string{proposal("works", 13,
+			`"k12" (2 items), "k13" (2 items), "k01" (1 item), "k02" (1 item), "k03" (1 item), "k04" (1 item), "k05" (1 item), "k06" (1 item), "k07" (1 item), "k08" (1 item), and 3 more`)})
+	})
+	t.Run("a type that the schema file does not define", func(t *testing.T) {
+		// The fields of post and page are those of the schema file if it has them, and none otherwise.
+		in := bodiesWXR(item(1, "post", "", "subtitle", "s", "other", "o"), item(2, "works", "", "client", "c"))
+		s, _ := proposeFrom(t, in, nil, nil)
+		if want := map[string]map[string]string{"post": {"subtitle": "", "other": ""}}; !reflect.DeepEqual(s.Fields, want) {
+			t.Errorf("Fields = %v, want %v", s.Fields, want)
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, bodiesWXR(item(1, "works", "", "client", "A", "a/b", "x", "a~b", "y")), nil, defs)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := "  \"fields\": {\n    \"works\": {\n      \"a/b\": \"\",\n      \"a~b\": \"\",\n      \"client\": \"client\"\n    }\n  },\n"; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the fields\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+}
+
+func TestReadSettingsFields(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"fields": {"works": {"client_name": "client", "old": ""}, "post": {}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]map[string]string{"works": {"client_name": "client", "old": ""}, "post": {}}; !reflect.DeepEqual(s.Fields, want) {
+		t.Errorf("ReadSettings has the fields %#v, want %#v", s.Fields, want)
+	}
+	for in, wantNil := range map[string]bool{`{}`: true, `{"site": {}}`: true, `{"fields": {}}`: false} {
+		s, err := ReadSettings("settings.json", []byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (s.Fields == nil) != wantNil || len(s.Fields) != 0 {
+			t.Errorf("ReadSettings(%s) has the fields %#v, want nil: %v", in, s.Fields, wantNil)
+		}
+	}
+	for _, tt := range []struct{ in, want string }{
+		{`{"fields": {"works": {"a": 5}}}`, "/fields/works/a: expected string, got number"},
+		{`{"fields": {"works": {"a": null}}}`, "/fields/works/a: null is not allowed; omit the key"},
+		{`{"fields": {"works": null}}`, "/fields/works: null is not allowed; omit the key"},
+		{`{"fields": {"works": []}}`, "/fields/works: expected object, got array"},
+		{`{"fields": []}`, "/fields: expected object, got array"},
+		{`{"fields": {"works": {"a": "b", "a": "c"}}}`, "/fields/works/a: duplicate key"},
+	} {
+		_, err := ReadSettings("settings.json", []byte(tt.in))
+		if got := errorLines(t, err); len(got) != 1 || got[0] != tt.want {
+			t.Errorf("ReadSettings(%s) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSiteFields(t *testing.T) {
+	imp, _ := siteImport(t)
+	defs := fieldsDefs(t)
+	settings := func(table map[string]map[string]string) *Settings {
+		s := sampleSettings()
+		s.Fields = table
+		return s
+	}
+	// Fields of the schema file, for any key, in the types of the schema file, and post and page, with or without a definition of them.
+	site, err := imp.Site(settings(map[string]map[string]string{
+		"works": {"client_name": "client", "a/b": "memo", "old": "", "again": ""}, "post": {"sub": "subtitle", "x": ""}, "gear": {}, "page": {"y": ""}, "plain": {"z": ""},
+	}), defs)
+	if err != nil || site == nil {
+		t.Fatalf("Site with fields that are right = %v", err)
+	}
+	// The errors are in the order of the types and of the keys, and each has the pointer with the segments escaped.
+	_, err = imp.Site(settings(map[string]map[string]string{
+		"works":  {"a": "client", "b": "client", "c": "nosuch", "d": "memo", "e": "memo", "f": "client", "g~/": "nosuch"},
+		"nosuch": {"x": "client"}, "a/b": {}, "post": {"s": "nothing", "t": "subtitle", "u": "subtitle"},
+	}), defs)
+	sameStrings(t, "the errors", errorLines(t, err), []string{
+		`/fields/a~1b: type "a/b" is not in the schema file`,
+		`/fields/nosuch: type "nosuch" is not in the schema file`,
+		`/fields/post/s: the type post has no field "nothing"`,
+		`/fields/post/u: the field "subtitle" is also that of "t"`,
+		`/fields/works/b: the field "client" is also that of "a"`,
+		`/fields/works/c: the type works has no field "nosuch"`,
+		`/fields/works/e: the field "memo" is also that of "d"`,
+		`/fields/works/f: the field "client" is also that of "a"`,
+		`/fields/works/g~0~1: the type works has no field "nosuch"`,
+	})
+	var errs content.Errors
+	_ = errors.As(err, &errs)
+	for _, e := range errs {
+		if e.File != "" || e.Line != 0 || e.Column != 0 {
+			t.Errorf("the error %+v has a place", *e)
+		}
+	}
+
+	// A type that the schema file does not define is one that post and page are not.
+	_, err = imp.Site(settings(map[string]map[string]string{"works": {"a": "client"}, "post": {"a": "subtitle"}, "page": {"a": "subtitle"}}), nil)
+	var ofFields []string
+	for _, l := range errorLines(t, err) {
+		if strings.HasPrefix(l, "/fields/") {
+			ofFields = append(ofFields, l)
+		}
+	}
+	sameStrings(t, "the errors without a schema file", ofFields, []string{
+		`/fields/page/a: the type page has no field "subtitle"`,
+		`/fields/post/a: the type post has no field "subtitle"`,
+		`/fields/works: type "works" is not in the schema file`,
+	})
+
+	// The others are not hidden by these.
+	s := settings(map[string]map[string]string{"works": {"a": "nosuch"}})
+	s.Site.URL = ""
+	_, err = imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || got[0] != `/fields/works/a: the type works has no field "nosuch"` || !strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %q, want one at /fields/works/a and one at /site/url", got)
+	}
+
+	// Settings without the table are all right.
+	if _, err := imp.Site(settings(nil), defs); err != nil {
+		t.Errorf("Site without fields = %v", err)
+	}
+}
+
+// seoEntries lists the entries of the report about the SEO plugin, as "kind: message", with " -> file#pointer" if there is a
+// place.
+func seoEntries(rep *Report) []string {
+	var out []string
+	for _, e := range rep.Entries() {
+		if strings.HasPrefix(e.Message, "the items have the SEO settings") || strings.HasPrefix(e.Message, "All in One SEO keeps") {
+			line := string(e.Kind) + ": " + e.Message
+			if e.Target != (Target{}) {
+				line += " -> " + e.Target.File + "#" + e.Target.Pointer
+			}
+			if e.Source.Record != recordChannel {
+				line += " (not at the channel)"
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestProposeSEO(t *testing.T) {
+	const tail = ": its titles, descriptions, canonical URLs, noindex and images for sharing are imported; the defaults of the plugin " +
+		"for the site and for each post type are options of WordPress, which the WXR does not have"
+	const aioseoTable = "review: All in One SEO keeps the canonical URL, noindex and the image for sharing in its own table, " +
+		"which the WXR does not have; only its titles and descriptions are imported"
+	item := func(id int, status, typ string, meta ...string) bodyXML {
+		x := bodyXML{id: id, typ: typ, status: status}
+		for i := 0; i+1 < len(meta); i += 2 {
+			x.meta = append(x.meta, [2]string{meta[i], meta[i+1]})
+		}
+		return x
+	}
+	yoast := func(id int) bodyXML { return item(id, "publish", "post", "_yoast_wpseo_title", "A title") }
+	rankmath := func(id int) bodyXML { return item(id, "publish", "post", "rank_math_description", "A description") }
+	seopress := func(id int) bodyXML { return item(id, "publish", "page", "_seopress_titles_title", "A title") }
+	tsf := func(id int) bodyXML { return item(id, "draft", "post", "_genesis_description", "A description") }
+	ssp := func(id int) bodyXML { return item(id, "publish", "post", "ssp_meta_title", "A title") }
+	aioseo := func(id int) bodyXML { return item(id, "publish", "post", "_aioseo_title", "A title") }
+	build := func(groups ...[]bodyXML) string {
+		var all []bodyXML
+		for _, g := range groups {
+			all = append(all, g...)
+		}
+		return bodiesWXR(all...)
+	}
+	many := func(n, first int, f func(int) bodyXML) []bodyXML {
+		var out []bodyXML
+		for i := range n {
+			out = append(out, f(first+i))
+		}
+		return out
+	}
+
+	for _, tt := range []struct {
+		name   string
+		in     string
+		plugin string
+		want   []string
+	}{
+		{
+			name: "the plugin that most items have, and the others that are there", in: build(many(3, 1, yoast), many(1, 10, rankmath)), plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (3 items) and Rank Math (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "the plugin with more items is taken, wherever it is in the WXR", in: build(many(1, 1, yoast), many(2, 10, rankmath)), plugin: "rankmath",
+			want: []string{`review: the items have the SEO settings of Rank Math (2 items) and Yoast SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "one plugin", in: build(many(1, 1, seopress)), plugin: "seopress",
+			want: []string{`review: the items have the SEO settings of SEOPress (1 item); seo.plugin is "seopress"` + tail},
+		},
+		{
+			name: "as many items: the first in the table, which lists them in its order", in: build(many(2, 1, tsf), many(2, 10, seopress), many(2, 20, yoast)),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items), SEOPress (2 items) and The SEO Framework (2 items); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "three plugins by their numbers", in: build(many(2, 1, ssp), many(3, 10, rankmath), many(2, 20, tsf), many(1, 30, aioseo)), plugin: "rankmath",
+			want: []string{`review: the items have the SEO settings of Rank Math (3 items), The SEO Framework (2 items), SEO SIMPLE PACK (2 items) and All in One SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "four plugins at last", in: build(many(1, 1, yoast), many(1, 10, rankmath), many(1, 20, seopress), many(1, 30, tsf), many(1, 40, ssp), many(1, 50, aioseo)),
+			plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (1 item), Rank Math (1 item), SEOPress (1 item), The SEO Framework (1 item), ` +
+				`SEO SIMPLE PACK (1 item) and All in One SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "All in One SEO has a second entry", in: build(many(2, 1, aioseo), many(1, 10, yoast)), plugin: "aioseo",
+			want: []string{
+				`review: the items have the SEO settings of All in One SEO (2 items) and Yoast SEO (1 item); seo.plugin is "aioseo"` + tail,
+				aioseoTable,
+			},
+		},
+		{
+			name: "All in One SEO that is not the one taken has none", in: build(many(1, 1, aioseo), many(2, 10, yoast)), plugin: "yoast",
+			want: []string{`review: the items have the SEO settings of Yoast SEO (2 items) and All in One SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "the items that are not imported are not counted",
+			in: build(
+				[]bodyXML{
+					item(1, "publish", "post", "_yoast_wpseo_title", "A title"),
+					item(2, "trash", "post", "rank_math_title", "In the trash"),
+					item(3, "trash", "page", "rank_math_title", "In the trash"),
+					item(4, "auto-draft", "post", "rank_math_title", "Automatic"),
+					item(5, "publish", "product", "rank_math_title", "A type that the site does not have"),
+					item(6, "inherit", "attachment", "rank_math_title", "An attachment"),
+					item(7, "publish", "wp_block", "rank_math_title", "A reusable block"),
+				}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "an item that has the settings of two plugins counts for both",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_title", "A", "rank_math_title", "B"),
+				item(2, "publish", "post", "_yoast_wpseo_title", "A", "rank_math_title", "B", "ssp_meta_title", "C"),
+				item(3, "publish", "post", "rank_math_title", "B"),
+			}),
+			plugin: "rankmath",
+			want:   []string{`review: the items have the SEO settings of Rank Math (3 items), Yoast SEO (2 items) and SEO SIMPLE PACK (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "a draft, a private and a scheduled item are counted",
+			in: build([]bodyXML{
+				item(1, "draft", "post", "ssp_meta_title", "A"), item(2, "private", "post", "ssp_meta_title", "B"),
+				item(3, "future", "page", "ssp_meta_title", "C"), item(4, "pending", "post", "ssp_meta_title", "D"),
+				item(5, "publish", "post", "_yoast_wpseo_title", "A title"),
+			}),
+			plugin: "ssp",
+			want:   []string{`review: the items have the SEO settings of SEO SIMPLE PACK (4 items) and Yoast SEO (1 item); seo.plugin is "ssp"` + tail},
+		},
+		{
+			name: "a custom type that the schema file has",
+			in: build([]bodyXML{item(1, "publish", "works", "_aioseo_description", "A description"), item(2, "publish", "post", "rank_math_title", "A title")},
+				[]bodyXML{item(3, "publish", "works", "rank_math_title", "Another")}),
+			plugin: "rankmath",
+			want:   []string{`review: the items have the SEO settings of Rank Math (2 items) and All in One SEO (1 item); seo.plugin is "rankmath"` + tail},
+		},
+		{
+			name: "a postmeta that is only recorded counts, and one that is read counts for each of its keys once",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_opengraph-title", "Shared"),
+				item(2, "publish", "post", "_yoast_wpseo_title", "A", "_yoast_wpseo_metadesc", "B", "_yoast_wpseo_canonical", "https://example.org/"),
+				item(3, "publish", "post", "rank_math_breadcrumb_title", "Crumb"),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items) and Rank Math (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			// redirect and the like are custom fields on a site without The SEO Framework: they do not tell that it was there.
+			name: "the keys of The SEO Framework that are plain words tell nothing",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "redirect", "https://example.org/"), item(2, "publish", "post", "exclude_local_search", "1"),
+				item(3, "publish", "post", "exclude_from_archive", "1"),
+			}),
+		},
+		{
+			name: "the keys of The SEO Framework that are plain words are not counted with its others",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "redirect", "https://example.org/"), item(2, "publish", "post", "redirect", "https://example.org/"),
+				item(3, "publish", "post", "_genesis_title", "A title", "redirect", "https://example.org/"),
+				item(4, "publish", "post", "_yoast_wpseo_title", "A"), item(5, "publish", "post", "_yoast_wpseo_title", "B"),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items) and The SEO Framework (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			// Without it, a site that wrote no SEO settings by hand would lose the primary categories from its addresses.
+			name: "the primary category of Yoast SEO alone tells that the site had it",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_primary_category", "4"), item(2, "publish", "post"),
+				item(3, "publish", "post", "_yoast_wpseo_primary_category", ""),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
+			name: "values that are empty, white space or only in a later postmeta do not count",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "_yoast_wpseo_title", ""),
+				item(2, "publish", "post", "_yoast_wpseo_title", " \t\n "),
+				item(3, "publish", "post", "_yoast_wpseo_title", "", "_yoast_wpseo_title", "A later one"),
+				item(4, "publish", "post", "_yoast_wpseo_focuskw", "keyword", "_yoast_wpseo_linkdex", "30"),
+				item(5, "publish", "post", "rank_math_advanced_robots", "a:1:{s:6:\"max-snippet\";i:-1;}", "rank_math_focus_keyword", "x"),
+				item(6, "publish", "post", "Yoast_wpseo_title", "wrong case"),
+			}),
+			plugin: "", want: nil,
+		},
+		{name: "no postmeta of a plugin", in: build([]bodyXML{item(1, "publish", "post")}), plugin: "", want: nil},
+		{name: "no items", in: siteWXR("https://example.com", "ja"), plugin: "", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			defs := &content.Site{Types: []content.TypeDef{{Name: "works", Label: "Works", Body: true}}}
+			s, imp := proposeFrom(t, tt.in, nil, defs)
+			if s.SEO.Plugin != tt.plugin {
+				t.Errorf("SEO.Plugin = %q, want %q", s.SEO.Plugin, tt.plugin)
+			}
+			sameSet(t, "the entries", seoEntries(imp.Report), tt.want)
+		})
+	}
+
+	t.Run("every key of a plugin that is not a plain word counts, one item for each", func(t *testing.T) {
+		var plain []string
+		for _, p := range seoPlugins {
+			var items []bodyXML
+			n := 0
+			for i, k := range p.keys() {
+				items = append(items, item(i+1, "publish", "post", k, "x"))
+				if (keyRules{}).custom(k) {
+					plain = append(plain, p.name+" "+k)
+				} else {
+					n++
+				}
+			}
+			s, imp := proposeFrom(t, bodiesWXR(items...), nil, nil)
+			if s.SEO.Plugin != p.name {
+				t.Errorf("the plugin of the items with the keys of %s is %q", p.name, s.SEO.Plugin)
+			}
+			want := fmt.Sprintf(`review: the items have the SEO settings of %s (%d items); seo.plugin is %q`, p.label, n, p.name)
+			if got := seoEntries(imp.Report); !slices.ContainsFunc(got, func(l string) bool { return strings.HasPrefix(l, want) }) {
+				t.Errorf("the entries about %s are %q, want one that starts with %q", p.name, got, want)
+			}
+		}
+		if want := []string{"tsf redirect", "tsf exclude_local_search", "tsf exclude_from_archive"}; !slices.Equal(plain, want) {
+			t.Errorf("the keys that are plain words are %q, want %q", plain, want)
+		}
+	})
+	t.Run("the proposal is written and read back", func(t *testing.T) {
+		s, _ := proposeFrom(t, build(many(1, 1, rankmath)), nil, nil)
+		var b bytes.Buffer
+		if err := s.WriteJSON(&b); err != nil {
+			t.Fatal(err)
+		}
+		if want := "  \"seo\": {\n    \"plugin\": \"rankmath\"\n  },\n"; !strings.Contains(b.String(), want) {
+			t.Errorf("the file is\n%s\nwant the SEO settings\n%s", b.String(), want)
+		}
+		back, err := ReadSettings("settings.json", b.Bytes())
+		if err != nil || !reflect.DeepEqual(back, s) {
+			t.Errorf("ReadSettings = %+v, %v, want %+v", back, err, s)
+		}
+	})
+	t.Run("the proposal is the same each time", func(t *testing.T) {
+		in := build(many(2, 1, ssp), many(2, 10, yoast))
+		first, imp := proposeFrom(t, in, nil, nil)
+		want := seoEntries(imp.Report)
+		for range 20 {
+			again, imp := proposeFrom(t, in, nil, nil)
+			if again.SEO != first.SEO {
+				t.Fatalf("SEO = %+v, want %+v", again.SEO, first.SEO)
+			}
+			sameStrings(t, "the entries", seoEntries(imp.Report), want)
+		}
+	})
+}
+
+func TestReadSettingsSEO(t *testing.T) {
+	s, err := ReadSettings("settings.json", []byte(`{"seo": {"plugin": "tsf"}}`))
+	if err != nil || s.SEO.Plugin != "tsf" {
+		t.Errorf("ReadSettings = %+v, %v, want the plugin tsf", s, err)
+	}
+	// A file without the key, and one with no plugin, have none.
+	for _, in := range []string{`{}`, `{"seo": {}}`, `{"seo": {"plugin": ""}}`} {
+		if s, err := ReadSettings("settings.json", []byte(in)); err != nil || s.SEO.Plugin != "" {
+			t.Errorf("ReadSettings(%s) = %+v, %v, want no plugin", in, s, err)
+		}
+	}
+	// The name is not checked when the file is read: Site checks it.
+	if s, err := ReadSettings("settings.json", []byte(`{"seo": {"plugin": "nosuch"}}`)); err != nil || s.SEO.Plugin != "nosuch" {
+		t.Errorf("ReadSettings of an unknown plugin = %+v, %v", s, err)
+	}
+	for _, tt := range []struct{ in, want string }{
+		{`{"seo": {"plugin": 5}}`, "/seo/plugin: expected string, got number"},
+		{`{"seo": {"plugin": null}}`, "/seo/plugin: null is not allowed; omit the key"},
+		{`{"seo": {"plugin": "a", "other": 1}}`, "/seo/other: unknown key"},
+		{`{"seo": "yoast"}`, "/seo: expected object, got string"},
+	} {
+		_, err := ReadSettings("settings.json", []byte(tt.in))
+		if err == nil {
+			t.Errorf("ReadSettings(%s) = nil", tt.in)
+			continue
+		}
+		if got := errorLines(t, err); len(got) != 1 || got[0] != tt.want {
+			t.Errorf("ReadSettings(%s) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSiteSEOPlugin(t *testing.T) {
+	imp, defs := siteImport(t)
+	for _, name := range []string{"", "yoast", "rankmath", "seopress", "tsf", "ssp", "aioseo"} {
+		s := sampleSettings()
+		s.SEO.Plugin = name
+		if _, err := imp.Site(s, defs); err != nil {
+			t.Errorf("Site with the plugin %q = %v", name, err)
+		}
+	}
+	for _, name := range []string{"Yoast", "yoast ", "wordpress-seo", "all-in-one-seo", "x"} {
+		s := sampleSettings()
+		s.SEO.Plugin = name
+		site, err := imp.Site(s, defs)
+		if site != nil {
+			t.Errorf("Site with the plugin %q = %+v, want none", name, site)
+		}
+		want := fmt.Sprintf(`/seo/plugin: unknown SEO plugin %q: use yoast, rankmath, seopress, tsf, ssp or aioseo, or leave it empty`, name)
+		sameStrings(t, "the errors", errorLines(t, err), []string{want})
+		var errs content.Errors
+		_ = errors.As(err, &errs)
+		for _, e := range errs {
+			if e.File != "" || e.Line != 0 || e.Column != 0 {
+				t.Errorf("the error %+v has a place", *e)
+			}
+		}
+	}
+	// The others are not hidden by it.
+	s := sampleSettings()
+	s.SEO.Plugin = "x"
+	s.Site.URL = ""
+	_, err := imp.Site(s, defs)
+	got := errorLines(t, err)
+	if len(got) != 2 || !strings.HasPrefix(got[0], "/seo/plugin: ") || !strings.HasPrefix(got[1], "/site/url: ") {
+		t.Errorf("the errors are %q, want one at /seo/plugin and one at /site/url", got)
 	}
 }
 
@@ -1142,6 +1979,16 @@ func TestReadSettingsErrors(t *testing.T) {
 			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "expected boolean, got string"}}},
 		{"allowHtml as null", `{"site": {"allowHtml": null}}`,
 			[]settingsProblem{{at: `"allowHtml"`, pointer: "/site/allowHtml", msg: "null is not allowed; omit the key"}}},
+		{"a number as a page template", `{"pageTemplates": {"a.php": 5}}`,
+			[]settingsProblem{{at: `"a.php"`, pointer: "/pageTemplates/a.php", msg: "expected string, got number"}}},
+		{"null as a page template", `{"pageTemplates": {"templates/a.php": null}}`,
+			[]settingsProblem{{at: `"templates/a.php"`, pointer: "/pageTemplates/templates~1a.php", msg: "null is not allowed; omit the key"}}},
+		{"null as the page templates", `{"pageTemplates": null}`,
+			[]settingsProblem{{at: `"pageTemplates"`, pointer: "/pageTemplates", msg: "null is not allowed; omit the key"}}},
+		{"an array where the page templates are", `{"pageTemplates": []}`,
+			[]settingsProblem{{at: `"pageTemplates"`, pointer: "/pageTemplates", msg: "expected object, got array"}}},
+		{"the same page template twice", `{"pageTemplates": {"a.php": "a", "a.php": "b"}}`,
+			[]settingsProblem{{at: `"a.php"`, nth: 2, pointer: "/pageTemplates/a.php", msg: "duplicate key"}}},
 	} {
 		s, err := ReadSettings(file, []byte(tt.in))
 		if err == nil || s != nil {
@@ -1215,13 +2062,18 @@ func TestOffsetPlace(t *testing.T) {
 	}
 }
 
-// siteImport returns the import of the sample WXR with the front page, the page of the posts, the logo and the icon of
-// the sample converted, and the schema file of the sample.
+// siteImport returns the import of the sample WXR after the plan of the entries and the media, which gives the front page,
+// the page of the posts, the logo and the icon of the sample their IDs, and the schema file of the sample.
 func siteImport(t *testing.T) (*Import, *content.Site) {
 	t.Helper()
-	imp := sampleImport(t, false)
-	assignSample(t, imp)
-	return imp, sampleDefs(t)
+	imp, defs := sampleImport(t, false), sampleDefs(t)
+	if err := imp.PlanEntries(sampleSettings(), defs); err != nil {
+		t.Fatal(err)
+	}
+	if err := imp.PlanMedia(); err != nil {
+		t.Fatal(err)
+	}
+	return imp, defs
 }
 
 // sampleSettings is a corrected set of the settings of the sample site.

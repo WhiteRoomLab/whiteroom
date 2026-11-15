@@ -25,6 +25,8 @@ var ownedTypes = map[string]bool{
 	"customize_changeset": true, "oembed_cache": true, "user_request": true, "wp_block": true, "wp_template": true,
 	"wp_template_part": true, "wp_global_styles": true, "wp_navigation": true, "wp_font_family": true,
 	"wp_font_face": true,
+	// ACF keeps the definitions of its fields and types in these; they are not content, and the import does not read them.
+	"acf-field-group": true, "acf-field": true, "acf-post-type": true, "acf-taxonomy": true,
 }
 
 // taxonomyName returns the name in the site settings of the taxonomy wp of WordPress, or "" if its terms are not
