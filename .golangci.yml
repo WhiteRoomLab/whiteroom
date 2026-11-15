@@ -93,7 +93,7 @@ linters:
           list-mode: lax
           files:
             - "!$test"
-            # Until phase 14 of the plan of issue 109, the commands reach the data directory through a daemon in their process.
+            # Until phase 14 of the plan of issue 109, whiteroom serve admin reaches the data directory through a daemon in its process.
             - "!**/cmd/whiteroom/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
@@ -536,6 +536,7 @@ linters:
           list-mode: strict
           files:
             - "**/cmd/whiteroom/*.go"
+            - "!$test"
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
@@ -544,6 +545,32 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/build$
             - github.com/WhiteRoomLab/whiteroom/internal/configfile$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/publish$
+            - github.com/WhiteRoomLab/whiteroom/internal/serve$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            # Until phase 14 of the plan of issue 109: whiteroom serve admin runs a daemon inside its process (embedded.go).
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        cmd/whiteroom-test:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/admin$
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/publish$

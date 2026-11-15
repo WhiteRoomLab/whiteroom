@@ -18,13 +18,15 @@ import (
 
 // TestInitServeAdminPublish is the first of the issue's conditions, through the commands and HTTP and nothing else, with
 // the real number of rounds of the password hash: a config file; whiteroom init, with the password on a pipe, imports the
-// sample site; whiteroom serve admin, on the socket of the file, publishes its release; whiteroom serve public serves it;
+// sample site into the store of the daemon of the file (db); whiteroom serve admin, on the socket of the file, publishes its
+// release, from the data directory of the file (data), which it still opens by itself; whiteroom serve public serves it;
 // a page that the API makes and publishes is a page of serve public as soon as the build that took the publishing has
 // ended; and both servers stop with 0, the socket file gone.
 func TestInitServeAdminPublish(t *testing.T) {
 	dir, sock := t.TempDir(), socketPath(t)
+	db := newDB(t)
 	s := adminSite{
-		data: filepath.Join(dir, "data"), site: copySample(t), out: filepath.Join(dir, "out"), cache: filepath.Join(dir, "cache"),
+		data: db.data, db: db.sockets, site: copySample(t), out: filepath.Join(dir, "out"), cache: filepath.Join(dir, "cache"),
 		theme: exampleTheme,
 	}
 	cfg := s.configIn(t, dir, "socket: "+strconv.Quote(sock), "origin: http://localhost")

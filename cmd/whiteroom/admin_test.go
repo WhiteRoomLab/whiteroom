@@ -42,10 +42,12 @@ import (
 // adminWait is how long the tests wait for a start, a stop or a build of serve admin.
 const adminWait = 60 * time.Second
 
-// adminSite is a data directory that whiteroom init has made, and the directories that serve admin works with.
+// adminSite is a store that whiteroom init has made in the daemon of the test, and the directories that serve admin works with:
+// the data directory, which it still opens by itself, and the directory of the sockets of the daemon, which the other commands
+// connect to.
 type adminSite struct {
-	data, site, out, cache string
-	theme                  string // the argument of -theme, "" for SITE/theme
+	data, db, site, out, cache string
+	theme                      string // the argument of -theme, "" for SITE/theme
 }
 
 // initSample makes a data directory with the sample site imported by whiteroom init, from a copy of the sample site, which
@@ -53,12 +55,12 @@ type adminSite struct {
 func initSample(t *testing.T) adminSite {
 	t.Helper()
 	site := copySample(t)
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data, site)...); code != 0 {
+	db := newDB(t)
+	if code, _, stderr := initDB(t, db, initPassword+"\n", site); code != 0 {
 		t.Fatalf("whiteroom init of the sample site = %d, with stderr:\n%s", code, stderr)
 	}
 	return adminSite{
-		data: data, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
+		data: db.data, db: db.sockets, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
 	}
 }
 
@@ -66,8 +68,8 @@ func initSample(t *testing.T) adminSite {
 // schema file of the sample site, which the example theme of -theme goes with: the builds of its server fail, soon.
 func initEmpty(t *testing.T) adminSite {
 	t.Helper()
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+	db := newDB(t)
+	if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
 		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
 	}
 	schema, err := os.ReadFile(filepath.Join(sampleSite, "site", "schema.yaml"))
@@ -82,10 +84,13 @@ func initEmpty(t *testing.T) adminSite {
 		t.Fatal(err)
 	}
 	return adminSite{
-		data: data, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
+		data: db.data, db: db.sockets, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
 		theme: exampleTheme,
 	}
 }
+
+// database returns the daemon of s, which the other commands connect to.
+func (s adminSite) database() testDB { return testDB{data: s.data, sockets: s.db} }
 
 // args returns the arguments of whiteroom serve admin for s, with the flags more before SITE.
 func (s adminSite) args(more ...string) []string {
@@ -107,6 +112,9 @@ func (s adminSite) configIn(t *testing.T, dir string, more ...string) string {
 	t.Helper()
 	lines := []string{"data: " + strconv.Quote(s.data), "site: " + strconv.Quote(s.site), "out: " + strconv.Quote(s.out),
 		"cache: " + strconv.Quote(s.cache)}
+	if s.db != "" {
+		lines = append(lines, "db: "+strconv.Quote(s.db))
+	}
 	if s.theme != "" {
 		theme, err := filepath.Abs(s.theme)
 		if err != nil {
@@ -419,9 +427,8 @@ func checkUnlocked(t *testing.T, what, data string) {
 }
 
 // manifestOf returns the manifest of the files of dir, as the manifest.txt of the golden files has it: a line for each
-// file, with its size and its SHA-256. The line of logdb/head has no SHA-256: until the commands connect to whiteroom-db,
-// a command that opens a data directory starts a daemon in its process, whose engine rewrites that file when it opens
-// and when it closes, and nothing else of the directory.
+// file, with its size and its SHA-256, those of the engine's files included. The daemon of the directory runs while a test
+// takes it, and a command that only reads the store changes none of them.
 func manifestOf(t *testing.T, dir string) string {
 	t.Helper()
 	var names []string
@@ -440,10 +447,6 @@ func manifestOf(t *testing.T, dir string) string {
 		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
 		if err != nil {
 			t.Fatal(err)
-		}
-		if name == "logdb/head" {
-			fmt.Fprintf(&b, "%s %d\n", name, len(data))
-			continue
 		}
 		fmt.Fprintf(&b, "%s %d %x\n", name, len(data), sha256.Sum256(data))
 	}

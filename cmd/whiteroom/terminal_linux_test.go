@@ -306,148 +306,132 @@ func TestReadHidden(t *testing.T) {
 	}
 }
 
-// TestInitTerminal makes data directories with the password typed at a pseudo terminal, which asks twice, without echo, and
+// TestInitTerminal initializes stores with the password typed at a pseudo terminal, which asks twice, without echo, and
 // again if the two are not the same or the password is refused; and the failures and the interrupts, after which the
-// terminal is as it was and the data directory is not made.
+// terminal is as it was and the store has no administrator.
 func TestInitTerminal(t *testing.T) {
-	// start opens a terminal and a whiteroom init of a data directory that is missing, and returns the data directory, the
-	// terminal as it is, the command and the arguments after the flags of the administrator that it was given.
-	start := func(t *testing.T, extra ...string) (data string, before syscall.Termios, r *ptyInit) {
+	// start opens a terminal and a whiteroom init of a new store, and returns the daemon, the terminal as it is and the
+	// command, with the arguments after the flags of the administrator that it was given.
+	start := func(t *testing.T, extra ...string) (db testDB, before syscall.Termios, r *ptyInit) {
 		t.Helper()
-		data = filepath.Join(t.TempDir(), "data")
+		db = newDB(t)
 		p := openPTY(t)
 		before = p.termios()
-		return data, before, startPTYInit(t, p, adminFlags(append([]string{"-data", data}, extra...)...)...)
+		return db, before, startPTYInit(t, p, adminFlags(append([]string{"-db", db.sockets}, extra...)...)...)
 	}
-	made := func(data string) string {
-		return "created the data directory " + data + "\ncreated the administrator " + initLogin + " ("
+	made := func(db testDB) string {
+		return "initialized the store of " + db.sockets + "\ncreated the administrator " + initLogin + " ("
 	}
-	// succeeded checks that the data directory is made, with the password, and with the first administrator.
-	succeeded := func(t *testing.T, r *ptyInit, before syscall.Termios, data, stderr string, secrets ...string) {
+	// succeeded checks that the store is made, with the password, and with the first administrator.
+	succeeded := func(t *testing.T, r *ptyInit, before syscall.Termios, db testDB, stderr string, secrets ...string) {
 		t.Helper()
 		r.exit()
-		got := inspect(t, data, initPassword)
+		got := inspect(t, db.data, initPassword)
 		admin := checkAdmin(t, "the terminal", got)
-		r.finish(before, data, 0, made(data)+admin.ID+")\n", stderr, append(secrets, initPassword)...)
+		r.finish(before, db.data, 0, made(db)+admin.ID+")\n", stderr, append(secrets, initPassword)...)
 		if len(got.docs) != 0 {
 			t.Errorf("the store has documents")
 		}
 	}
 
 	t.Run("the password twice", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, initPassword)
 		r.answer(2, initPassword)
-		succeeded(t, r, before, data, promptTwice)
+		succeeded(t, r, before, db, promptTwice)
 	})
 	t.Run("the two are not the same", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, initPassword)
 		r.answer(2, otherWord)
 		r.answer(3, initPassword)
 		r.answer(4, initPassword)
-		succeeded(t, r, before, data, promptTwice+notSame+promptTwice, otherWord)
+		succeeded(t, r, before, db, promptTwice+notSame+promptTwice, otherWord)
 	})
 	t.Run("a password that is refused", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, shortWord)
 		r.answer(2, shortWord)
 		r.answer(3, initPassword)
 		r.answer(4, initPassword)
-		succeeded(t, r, before, data, promptTwice+tooShort+promptTwice, shortWord)
+		succeeded(t, r, before, db, promptTwice+tooShort+promptTwice, shortWord)
 	})
 	t.Run("a mismatch and a password that is refused", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, shortWord)
 		r.answer(2, otherWord)
 		r.answer(3, shortWord)
 		r.answer(4, shortWord)
 		r.answer(5, initPassword)
 		r.answer(6, initPassword)
-		succeeded(t, r, before, data, promptTwice+notSame+promptTwice+tooShort+promptTwice, shortWord, otherWord)
+		succeeded(t, r, before, db, promptTwice+notSame+promptTwice+tooShort+promptTwice, shortWord, otherWord)
 	})
 
 	t.Run("three entries that are not the same", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		for n := 1; n <= 6; n += 2 {
 			r.answer(n, initPassword)
 			r.answer(n+1, otherWord)
 		}
-		r.finish(before, data, 1, "", promptTwice+notSame+promptTwice+notSame+promptTwice+notSame+
+		r.finish(before, db.data, 1, "", promptTwice+notSame+promptTwice+notSame+promptTwice+notSame+
 			"whiteroom init: no password was accepted in 3 tries\n", initPassword, otherWord)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("three passwords that are refused", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		for n := 1; n <= 6; n += 2 {
 			r.answer(n, shortWord)
 			r.answer(n+1, shortWord)
 		}
-		r.finish(before, data, 1, "", promptTwice+tooShort+promptTwice+tooShort+promptTwice+tooShort+
+		r.finish(before, db.data, 1, "", promptTwice+tooShort+promptTwice+tooShort+promptTwice+tooShort+
 			"whiteroom init: no password was accepted in 3 tries\n", shortWord)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("a valid password and a flag that is refused", func(t *testing.T) {
-		data, before, r := start(t, "-email", "nobody")
+		db, before, r := start(t, "-email", "nobody")
 		r.answer(1, initPassword)
 		r.answer(2, initPassword)
-		r.finish(before, data, 1, "", promptTwice+emailLine(), initPassword)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", promptTwice+emailLine(), initPassword)
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("a flag and a password that are refused", func(t *testing.T) {
-		data, before, r := start(t, "-email", "nobody")
+		db, before, r := start(t, "-email", "nobody")
 		r.answer(1, shortWord)
 		r.answer(2, shortWord)
-		r.finish(before, data, 1, "", promptTwice+emailLine()+tooShort, shortWord)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", promptTwice+emailLine()+tooShort, shortWord)
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("the end of the input", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.prompt(1)
 		r.p.typeText("\x04")
-		r.finish(before, data, 1, "", "Password: \nwhiteroom init: no password was read from the standard input\n")
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", "Password: \nwhiteroom init: no password was read from the standard input\n")
+		checkStoreMade(t, "after the failure", db)
 	})
 
 	t.Run("an interrupt at the first prompt", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.prompt(1)
 		r.cancel()
-		r.finish(before, data, 1, "", "Password: \nwhiteroom init: interrupted\n")
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", "Password: \nwhiteroom init: interrupted\n")
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("an interrupt at the second prompt", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, initPassword)
 		r.prompt(2)
 		r.cancel()
-		r.finish(before, data, 1, "", "Password: \nPassword (again): \nwhiteroom init: interrupted\n", initPassword)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", "Password: \nPassword (again): \nwhiteroom init: interrupted\n", initPassword)
+		checkStoreMade(t, "after the failure", db)
 	})
 	t.Run("an interrupt once the store is made", func(t *testing.T) {
-		data, before, r := start(t)
+		db, before, r := start(t)
 		r.answer(1, shortWord)
 		r.answer(2, shortWord)
 		r.prompt(3)
 		r.cancel()
-		r.finish(before, data, 1, "", promptTwice+tooShort+"Password: \nwhiteroom init: interrupted\n", shortWord)
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("the data directory is made:\n%s", s)
-		}
+		r.finish(before, db.data, 1, "", promptTwice+tooShort+"Password: \nwhiteroom init: interrupted\n", shortWord)
+		checkStoreMade(t, "after the failure", db)
 	})
 }
 
@@ -461,77 +445,77 @@ const (
 // two are not the same or the password is refused, 3 times at most; after a failure the terminal is as it was and the
 // account is not changed.
 func TestAccountResetTerminal(t *testing.T) {
-	// start makes a data directory with the first administrator, and opens a terminal and a whiteroom account reset for it,
-	// and returns the data directory, the account, the logs as they are, the terminal as it is and the command.
-	start := func(t *testing.T) (data string, admin account.Account, logs logRecords, before syscall.Termios, r *ptyInit) {
+	// start makes a store with the first administrator, and opens a terminal and a whiteroom account reset for it, and returns
+	// the daemon, the account, the logs as they are, the terminal as it is and the command.
+	start := func(t *testing.T) (db testDB, admin account.Account, logs logRecords, before syscall.Termios, r *ptyInit) {
 		t.Helper()
-		data = accountData(t)
-		admin = mustFind(t, data, initLogin)
-		logs = logsOf(t, data)
+		db = accountDB(t)
+		admin = mustFind(t, db, initLogin)
+		logs = logsOf(t, db)
 		p := openPTY(t)
 		before = p.termios()
-		return data, admin, logs, before, startPTYCommand(t, p, "whiteroom account reset", "New password for", "account", "reset",
-			"-data", data, initLogin)
+		return db, admin, logs, before, startPTYCommand(t, p, "whiteroom account reset", "New password for", "account", "reset",
+			"-db", db.sockets, initLogin)
 	}
 	// succeeded checks that the password is reset, and that the terminal and the data directory have none of the secrets.
-	succeeded := func(t *testing.T, r *ptyInit, data string, admin account.Account, before syscall.Termios, stderr string, secrets ...string) {
+	succeeded := func(t *testing.T, r *ptyInit, db testDB, admin account.Account, before syscall.Termios, stderr string, secrets ...string) {
 		t.Helper()
 		r.exit()
-		r.finish(before, data, 0, "reset the password of "+admin.Login+" ("+admin.ID+")\n", stderr, append(secrets, changedPassword)...)
-		checkLogin(t, "after the command", data, initLogin, changedPassword)
+		r.finish(before, db.data, 0, "reset the password of "+admin.Login+" ("+admin.ID+")\n", stderr, append(secrets, changedPassword)...)
+		checkLogin(t, "after the command", db, initLogin, changedPassword)
 	}
 	// unchanged checks that a command that failed has left the account and the logs as they were.
-	unchanged := func(t *testing.T, r *ptyInit, data string, logs logRecords, before syscall.Termios, stderr string, secrets ...string) {
+	unchanged := func(t *testing.T, r *ptyInit, db testDB, logs logRecords, before syscall.Termios, stderr string, secrets ...string) {
 		t.Helper()
-		r.finish(before, data, 1, "", stderr, secrets...)
-		checkLogs(t, "after the command", data, logs)
-		checkLogin(t, "after the command", data, initLogin, initPassword)
+		r.finish(before, db.data, 1, "", stderr, secrets...)
+		checkLogs(t, "after the command", db, logs)
+		checkLogin(t, "after the command", db, initLogin, initPassword)
 	}
 
 	t.Run("the password twice", func(t *testing.T) {
-		data, admin, _, before, r := start(t)
+		db, admin, _, before, r := start(t)
 		r.answer(1, changedPassword)
 		r.answer(2, changedPassword)
-		succeeded(t, r, data, admin, before, resetPrompts)
+		succeeded(t, r, db, admin, before, resetPrompts)
 	})
 	t.Run("the two are not the same", func(t *testing.T) {
-		data, admin, _, before, r := start(t)
+		db, admin, _, before, r := start(t)
 		r.answer(1, changedPassword)
 		r.answer(2, otherWord)
 		r.answer(3, changedPassword)
 		r.answer(4, changedPassword)
-		succeeded(t, r, data, admin, before, resetPrompts+resetNotSame+resetPrompts, otherWord)
+		succeeded(t, r, db, admin, before, resetPrompts+resetNotSame+resetPrompts, otherWord)
 	})
 	t.Run("a password that is refused", func(t *testing.T) {
-		data, admin, _, before, r := start(t)
+		db, admin, _, before, r := start(t)
 		r.answer(1, shortWord)
 		r.answer(2, shortWord)
 		r.answer(3, changedPassword)
 		r.answer(4, changedPassword)
-		succeeded(t, r, data, admin, before, resetPrompts+resetTooShort+resetPrompts, shortWord)
+		succeeded(t, r, db, admin, before, resetPrompts+resetTooShort+resetPrompts, shortWord)
 	})
 	t.Run("three passwords that are refused", func(t *testing.T) {
-		data, _, logs, before, r := start(t)
+		db, _, logs, before, r := start(t)
 		for n := 1; n <= 6; n += 2 {
 			r.answer(n, shortWord)
 			r.answer(n+1, shortWord)
 		}
-		unchanged(t, r, data, logs, before, resetPrompts+resetTooShort+resetPrompts+resetTooShort+resetPrompts+resetTooShort+
+		unchanged(t, r, db, logs, before, resetPrompts+resetTooShort+resetPrompts+resetTooShort+resetPrompts+resetTooShort+
 			"whiteroom account reset: no password was accepted in 3 tries\n", shortWord)
 	})
 	t.Run("three entries that are not the same", func(t *testing.T) {
-		data, _, logs, before, r := start(t)
+		db, _, logs, before, r := start(t)
 		for n := 1; n <= 6; n += 2 {
 			r.answer(n, changedPassword)
 			r.answer(n+1, otherWord)
 		}
-		unchanged(t, r, data, logs, before, resetPrompts+resetNotSame+resetPrompts+resetNotSame+resetPrompts+resetNotSame+
+		unchanged(t, r, db, logs, before, resetPrompts+resetNotSame+resetPrompts+resetNotSame+resetPrompts+resetNotSame+
 			"whiteroom account reset: no password was accepted in 3 tries\n", changedPassword, otherWord)
 	})
 	t.Run("an interrupt at the prompt", func(t *testing.T) {
-		data, _, logs, before, r := start(t)
+		db, _, logs, before, r := start(t)
 		r.prompt(1)
 		r.cancel()
-		unchanged(t, r, data, logs, before, "New password for "+initLogin+": \nwhiteroom account reset: interrupted\n")
+		unchanged(t, r, db, logs, before, "New password for "+initLogin+": \nwhiteroom account reset: interrupted\n")
 	})
 }

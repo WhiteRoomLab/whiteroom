@@ -24,12 +24,12 @@ const buildUsage = `Usage: whiteroom build [flags] [SITE]
 Build the site in the directory SITE (default ".") into a new release in the
 output directory, and publish it.
 
-With -data, or data in the config file, the documents and the originals of the
-media are those of the data directory, which the build opens as a process that
-reads it and does not write it: a whiteroom serve admin may serve it at the same
-time, if the build has other -out and -cache directories. From SITE it reads only
-the schema file site/schema.yaml and the theme. Without -data and data, the whole
-site is read from SITE.
+With -db, or db in the config file, the documents and the originals of the media
+are those of the store of the daemon whiteroom-db whose sockets are in that
+directory, which the build reads as a reader and does not write: a whiteroom serve
+admin may serve it at the same time, if the build has other -out and -cache
+directories. From SITE it reads only the schema file site/schema.yaml and the
+theme. Without -db and db, the whole site is read from SITE.
 
 With -url, or url in the config file, the build takes URL as the url of the site
 settings, for this build only: the settings are not changed, and the same
@@ -37,9 +37,10 @@ documents give another release for another URL. It is for the site of another
 environment, such as https://staging.example.com. URL is checked as the url of
 the settings is.
 
-With -config, the items data, site, theme, out, cache, workers, memory and url of
-the YAML file give what the flags and SITE leave out. Without it, no config file
-is read.
+With -config, the items db, site, theme, out, cache, workers, memory and url of the
+YAML file give what the flags and SITE leave out; the other items are checked and
+not used: one file may be shared with whiteroom-db. Without it, no config file is
+read.
 
 Flags:
 `
@@ -57,7 +58,7 @@ type buildFlags struct {
 	config, out, cache, theme, url string
 	workers                        int
 	memory                         int64
-	dataDir                        string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
+	dbDir                          string // -db, of whiteroom build only: whiteroom serve admin has a flag of its own, -data
 }
 
 // newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
@@ -69,8 +70,8 @@ func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 		flags.PrintDefaults()
 	}
 	f := addBuildFlags(flags)
-	flags.StringVar(&f.dataDir, "data", "", "read the documents and the originals from the data directory `DIR` instead of SITE "+
-		"(default data of the config file)")
+	flags.StringVar(&f.dbDir, "db", "", "read the documents and the originals from the store of the daemon whose sockets are in the "+
+		"directory `DIR` instead of SITE (default db of the config file)")
 	return flags, f
 }
 
@@ -151,8 +152,8 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	p := errorPrinter{w: stderr, command: flags.Name(), site: s.site, theme: s.theme}
-	if data := cmp.Or(f.dataDir, cfg.data); data != "" {
-		return buildFromStore(ctx, stdout, p, data, s)
+	if db := cmp.Or(f.dbDir, cfg.db); db != "" {
+		return buildFromStore(ctx, stdout, p, db, s)
 	}
 
 	src, closeSite, err := openSite(s.site, s.theme)

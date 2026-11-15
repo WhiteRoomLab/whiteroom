@@ -18,6 +18,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
@@ -25,13 +26,14 @@ import (
 // noteLine starts the line that whiteroom doctor writes on stderr when it has not checked the published documents.
 const noteLine = "whiteroom doctor: note: "
 
-// doctorOn runs whiteroom doctor with -data data, the arguments args and the text stdin as the standard input, and checks
-// that the data directory is as it was: no file is made, removed or changed in it.
-func doctorOn(t *testing.T, data, stdin string, args ...string) (code int, stdout, stderr string) {
+// doctorOn runs whiteroom doctor on the daemon db, with the arguments args and the text stdin as the standard input, and
+// checks that the data directory is as it was: no file is made, removed or changed in it, with the hash of each. A directory
+// that has none, because no daemon runs, is as it was too.
+func doctorOn(t *testing.T, db testDB, stdin string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	before := stateOf(t, data)
-	code, stdout, stderr = runCmdIn(t, strings.NewReader(stdin), append([]string{"doctor", "-data", data}, args...)...)
-	if after := stateOf(t, data); after != before {
+	before := stateOf(t, db.data)
+	code, stdout, stderr = runCmdIn(t, strings.NewReader(stdin), append([]string{"doctor", "-db", db.sockets}, args...)...)
+	if after := stateOf(t, db.data); after != before {
 		t.Errorf("whiteroom doctor %s changed the data directory:\n%s\nwas:\n%s", strings.Join(args, " "), after, before)
 	}
 	return code, stdout, stderr
@@ -59,24 +61,24 @@ func checkStderr(t *testing.T, what, stderr string, note bool) {
 	}
 }
 
-// checkClean checks that whiteroom doctor of the data directory data has found no problem: the one line on stdout and the
-// exit code 0.
-func checkClean(t *testing.T, what, data string, code int, stdout, stderr string, note bool) {
+// checkClean checks that whiteroom doctor of the daemon whose sockets are in the directory db has found no problem: the one
+// line on stdout and the exit code 0.
+func checkClean(t *testing.T, what, db string, code int, stdout, stderr string, note bool) {
 	t.Helper()
-	if want := "no problems found in " + data + "\n"; code != 0 || stdout != want {
+	if want := "no problems found in " + db + "\n"; code != 0 || stdout != want {
 		t.Errorf("%s: whiteroom doctor = %d, with stdout %q, want 0 and %q", what, code, stdout, want)
 	}
 	checkStderr(t, what, stderr, note)
 }
 
-// checkProblems checks that whiteroom doctor of the data directory data has found problems in the parts, one problem of
-// each and in that order: the exit code is 1, the lines of stdout start with the parts, and the last line counts them. It
-// returns the lines of the problems.
-func checkProblems(t *testing.T, what, data string, code int, stdout, stderr string, note bool, parts ...string) []string {
+// checkProblems checks that whiteroom doctor of the daemon whose sockets are in the directory db has found problems in the
+// parts, one problem of each and in that order: the exit code is 1, the lines of stdout start with the parts, and the last
+// line counts them. It returns the lines of the problems.
+func checkProblems(t *testing.T, what, db string, code int, stdout, stderr string, note bool, parts ...string) []string {
 	t.Helper()
 	checkStderr(t, what, stderr, note)
 	problems, last := doctorLines(t, stdout)
-	want := count(len(parts), "problem") + " found in " + data
+	want := count(len(parts), "problem") + " found in " + db
 	if code != 1 || last != want || len(problems) != len(parts) {
 		t.Errorf("%s: whiteroom doctor = %d, with stdout:\n%s\nwant 1, %d problems and the last line %q", what, code, stdout, len(parts), want)
 		return problems
@@ -209,42 +211,44 @@ func damageSchema(t *testing.T, site string) {
 }
 
 // TestDoctorClean checks whiteroom doctor of data directories that have no problem: what whiteroom init has made, with and
-// without SITE and -theme, one without settings, and the copy that whiteroom backup has taken, with the heads that it
-// printed. It prints one line and exits with 0, and changes nothing in the data directory.
+// without SITE and -theme, one without settings, and the copy that whiteroom backup has taken, which a second daemon serves,
+// with the heads that it printed. It prints one line and exits with 0, and changes nothing in the data directory.
 func TestDoctorClean(t *testing.T) {
 	s := initSample(t)
-	code, stdout, stderr := doctorOn(t, s.data, "")
-	checkClean(t, "no SITE", s.data, code, stdout, stderr, true)
-	code, stdout, stderr = doctorOn(t, s.data, "", s.site)
-	checkClean(t, "SITE", s.data, code, stdout, stderr, false)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-theme", exampleTheme, s.site)
-	checkClean(t, "SITE and -theme", s.data, code, stdout, stderr, false)
+	code, stdout, stderr := doctorOn(t, s.database(), "")
+	checkClean(t, "no SITE", s.db, code, stdout, stderr, true)
+	code, stdout, stderr = doctorOn(t, s.database(), "", s.site)
+	checkClean(t, "SITE", s.db, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-theme", exampleTheme, s.site)
+	checkClean(t, "SITE and -theme", s.db, code, stdout, stderr, false)
 	// Only the schema file and the theme are read of SITE.
 	only := initSample(t)
 	schemaOnly(t, only.site, true)
-	code, stdout, stderr = doctorOn(t, only.data, "", only.site)
-	checkClean(t, "SITE with only the schema file and the theme", only.data, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, only.database(), "", only.site)
+	checkClean(t, "SITE with only the schema file and the theme", only.db, code, stdout, stderr, false)
 	// The theme of -theme, when SITE has none.
 	schemaOnly(t, only.site, false)
-	code, stdout, stderr = doctorOn(t, only.data, "", "-theme", exampleTheme, only.site)
-	checkClean(t, "SITE with only the schema file, and -theme", only.data, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, only.database(), "", "-theme", exampleTheme, only.site)
+	checkClean(t, "SITE with only the schema file, and -theme", only.db, code, stdout, stderr, false)
 
 	empty := initEmpty(t)
-	code, stdout, stderr = doctorOn(t, empty.data, "")
-	checkClean(t, "no settings and no SITE", empty.data, code, stdout, stderr, true)
+	code, stdout, stderr = doctorOn(t, empty.database(), "")
+	checkClean(t, "no settings and no SITE", empty.db, code, stdout, stderr, true)
 
+	// The copy, which a second daemon serves on its own sockets.
 	dest := filepath.Join(t.TempDir(), "backup")
-	code, printed, stderr := runCmd(t, "backup", "-data", s.data, dest)
+	code, printed, stderr := runCmd(t, "backup", "-db", s.db, dest)
 	if code != 0 || stderr != "" {
 		t.Fatalf("whiteroom backup = %d, with stderr:\n%s", code, stderr)
 	}
-	code, stdout, stderr = doctorOn(t, dest, "", s.site)
-	checkClean(t, "the copy", dest, code, stdout, stderr, false)
+	copied := dbOn(t, dest)
+	code, stdout, stderr = doctorOn(t, copied, "", s.site)
+	checkClean(t, "the copy", copied.sockets, code, stdout, stderr, false)
 	heads := writeHeads(t, printed)
-	code, stdout, stderr = doctorOn(t, dest, "", "-heads", heads, s.site)
-	checkClean(t, "the copy, with the heads that the backup printed", dest, code, stdout, stderr, false)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-heads", heads, s.site)
-	checkClean(t, "the data directory, with the heads that the backup printed", s.data, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, copied, "", "-heads", heads, s.site)
+	checkClean(t, "the copy, with the heads that the backup printed", copied.sockets, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", heads, s.site)
+	checkClean(t, "the data directory, with the heads that the backup printed", s.db, code, stdout, stderr, false)
 }
 
 // TestDoctorProblems damages data directories that whiteroom init has made, and checks the problems that whiteroom doctor
@@ -256,8 +260,8 @@ func TestDoctorProblems(t *testing.T) {
 		s := initSample(t)
 		id := entryIDs(t, s.data)[0]
 		dropEntryRows(t, s.data, id)
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		problems := checkProblems(t, "a row of the index", s.data, code, stdout, stderr, false, "index")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "a row of the index", s.db, code, stdout, stderr, false, "index")
 		if len(problems) == 1 && !strings.Contains(problems[0], id) {
 			t.Errorf("the problem %q does not name the entry %s", problems[0], id)
 		}
@@ -270,8 +274,8 @@ func TestDoctorProblems(t *testing.T) {
 		if err := os.Remove(file); err != nil {
 			t.Fatal(err)
 		}
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		problems := checkProblems(t, "an original that is missing", s.data, code, stdout, stderr, false, "original")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "an original that is missing", s.db, code, stdout, stderr, false, "original")
 		if len(problems) == 1 && !strings.Contains(problems[0], hash) {
 			t.Errorf("the problem %q does not name the original %s", problems[0], hash)
 		}
@@ -282,22 +286,41 @@ func TestDoctorProblems(t *testing.T) {
 		file := originalFiles(t, s.data)[1]
 		hash := hashOf(t, file)
 		flipBit(t, file, 0)
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		problems := checkProblems(t, "an original that has other bytes", s.data, code, stdout, stderr, false, "original")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "an original that has other bytes", s.db, code, stdout, stderr, false, "original")
 		if len(problems) == 1 && !strings.Contains(problems[0], hash) {
 			t.Errorf("the problem %q does not name the original %s", problems[0], hash)
 		}
 	})
 
-	t.Run("a log that cannot be read", func(t *testing.T) {
+	t.Run("a log that is damaged under the daemon", func(t *testing.T) {
+		// The daemon has the log open, and opened it whole: the engine's check finds what a byte of it has become, and so does the
+		// check of the audit logs, which are read from it.
 		s := initSample(t)
 		damageLog(t, s.data)
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		checkProblems(t, "a log that cannot be read", s.data, code, stdout, stderr, false, "open")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "a log that is damaged", s.db, code, stdout, stderr, false, "engine", "audit")
+		for _, p := range problems {
+			if !strings.Contains(p, "corrupt at offset") {
+				t.Errorf("the problem %q does not tell that the log is corrupt", p)
+			}
+		}
+	})
+
+	t.Run("a store that cannot be read", func(t *testing.T) {
+		// A daemon that runs on a data directory that has no store: it is not one of whiteroom.
+		s := initSample(t)
+		db := newDB(t)
+		code, stdout, stderr := doctorOn(t, db, "", s.site)
+		problems := checkProblems(t, "a daemon without a store", db.sockets, code, stdout, stderr, false, "open")
+		if len(problems) == 1 && !strings.Contains(problems[0], store.ErrNoStore.Error()) {
+			t.Errorf("the problem %q does not tell that the daemon has no store", problems[0])
+		}
 		// Nothing else is checked, what -heads says included.
 		heads := writeHeads(t, "audit head activity seven sha256:zz\n")
-		code, stdout, stderr = doctorOn(t, s.data, "", "-heads", heads, s.site)
-		checkProblems(t, "a log that cannot be read, and a line of heads that cannot", s.data, code, stdout, stderr, false, "open")
+		code, stdout, stderr = doctorOn(t, db, "", "-heads", heads, s.site)
+		checkProblems(t, "a daemon without a store, and a line of heads that cannot be read", db.sockets, code, stdout, stderr,
+			false, "open")
 	})
 
 	t.Run("several parts", func(t *testing.T) {
@@ -309,8 +332,8 @@ func TestDoctorProblems(t *testing.T) {
 		if err := os.Remove(file); err != nil {
 			t.Fatal(err)
 		}
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		problems := checkProblems(t, "several parts", s.data, code, stdout, stderr, false, "index", "index", "original")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "several parts", s.db, code, stdout, stderr, false, "index", "index", "original")
 		if len(problems) == 3 {
 			for i, id := range ids[:2] {
 				if !strings.Contains(problems[i], id) {
@@ -322,8 +345,8 @@ func TestDoctorProblems(t *testing.T) {
 			}
 		}
 		// The same problems without SITE, and the note.
-		code, stdout, stderr = doctorOn(t, s.data, "")
-		checkProblems(t, "several parts without SITE", s.data, code, stdout, stderr, true, "index", "index", "original")
+		code, stdout, stderr = doctorOn(t, s.database(), "")
+		checkProblems(t, "several parts without SITE", s.db, code, stdout, stderr, true, "index", "index", "original")
 	})
 }
 
@@ -398,19 +421,19 @@ func TestDoctorHeads(t *testing.T) {
 		return line[:len(line)-1] + digit + "\n"
 	}
 
-	code, stdout, stderr := doctorOn(t, s.data, "", "-heads", writeHeads(t, good), s.site)
-	checkClean(t, "the heads as the server wrote them", s.data, code, stdout, stderr, false)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-heads", writeHeads(t, served))
-	checkClean(t, "the stderr of the server as it is, without SITE", s.data, code, stdout, stderr, true)
-	code, stdout, stderr = doctorOn(t, s.data, good, "-heads", "-", s.site)
-	checkClean(t, "the heads on the standard input", s.data, code, stdout, stderr, false)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-heads", writeHeads(t, good+good), s.site)
-	checkClean(t, "the heads twice", s.data, code, stdout, stderr, false)
+	code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, good), s.site)
+	checkClean(t, "the heads as the server wrote them", s.db, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", writeHeads(t, served))
+	checkClean(t, "the stderr of the server as it is, without SITE", s.db, code, stdout, stderr, true)
+	code, stdout, stderr = doctorOn(t, s.database(), good, "-heads", "-", s.site)
+	checkClean(t, "the heads on the standard input", s.db, code, stdout, stderr, false)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", writeHeads(t, good+good), s.site)
+	checkClean(t, "the heads twice", s.db, code, stdout, stderr, false)
 
 	t.Run("a head that is not the hash of its record", func(t *testing.T) {
 		text := changed(headAt[len(headAt)-1], otherHash)
-		code, stdout, stderr := doctorOn(t, s.data, "", "-heads", writeHeads(t, text), s.site)
-		problems := checkProblems(t, "a changed hash", s.data, code, stdout, stderr, false, "audit")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, text), s.site)
+		problems := checkProblems(t, "a changed hash", s.db, code, stdout, stderr, false, "audit")
 		if len(problems) == 1 && !strings.Contains(problems[0], "head kept outside the store") {
 			t.Errorf("the problem %q does not tell that the head kept outside the store is not the hash", problems[0])
 		}
@@ -418,8 +441,8 @@ func TestDoctorHeads(t *testing.T) {
 
 	t.Run("a problem of the audit logs, and a line that cannot be read", func(t *testing.T) {
 		text := changed(headAt[len(headAt)-1], otherHash) + "audit head activity seven\n"
-		code, stdout, stderr := doctorOn(t, s.data, "", "-heads", writeHeads(t, text), s.site)
-		checkProblems(t, "an audit problem and a head that cannot be read", s.data, code, stdout, stderr, false, "audit", "heads")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, text), s.site)
+		checkProblems(t, "an audit problem and a head that cannot be read", s.db, code, stdout, stderr, false, "audit", "heads")
 	})
 
 	t.Run("a head of a record that is not there", func(t *testing.T) {
@@ -432,8 +455,8 @@ func TestDoctorHeads(t *testing.T) {
 			h.N += 1000
 			return h.String() + "\n"
 		})
-		code, stdout, stderr := doctorOn(t, s.data, "", "-heads", writeHeads(t, text), s.site)
-		problems := checkProblems(t, "a head after the end of the log", s.data, code, stdout, stderr, false, "audit")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, text), s.site)
+		problems := checkProblems(t, "a head after the end of the log", s.db, code, stdout, stderr, false, "audit")
 		if len(problems) == 1 && !strings.Contains(problems[0], "ends with record") {
 			t.Errorf("the problem %q does not tell where the log ends", problems[0])
 		}
@@ -443,8 +466,8 @@ func TestDoctorHeads(t *testing.T) {
 		const secret = "token-4f9d2c71"
 		bad := "2026-11-14T10:00:03Z whiteroom: audit head activity seven sha256:zz " + secret + "\n"
 		file := writeHeads(t, good+bad)
-		code, stdout, stderr := doctorOn(t, s.data, "", "-heads", file, s.site)
-		problems := checkProblems(t, "a line that cannot be read", s.data, code, stdout, stderr, false, "heads")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", file, s.site)
+		problems := checkProblems(t, "a line that cannot be read", s.db, code, stdout, stderr, false, "heads")
 		want := fmt.Sprintf("heads: %s:%d: ", file, len(lines)+1)
 		if len(problems) == 1 && !strings.HasPrefix(problems[0], want) {
 			t.Errorf("the problem %q does not start with %q", problems[0], want)
@@ -454,8 +477,8 @@ func TestDoctorHeads(t *testing.T) {
 		}
 		// Two of them, with a line that has no "audit head " between them, which is skipped.
 		file = writeHeads(t, bad+"audit hea\n"+bad)
-		code, stdout, stderr = doctorOn(t, s.data, "", "-heads", file, s.site)
-		problems = checkProblems(t, "two lines that cannot be read", s.data, code, stdout, stderr, false, "heads", "heads")
+		code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", file, s.site)
+		problems = checkProblems(t, "two lines that cannot be read", s.db, code, stdout, stderr, false, "heads", "heads")
 		if len(problems) == 2 && (!strings.HasPrefix(problems[0], "heads: "+file+":1: ") || !strings.HasPrefix(problems[1], "heads: "+file+":3: ")) {
 			t.Errorf("the problems %q do not tell the lines 1 and 3", problems)
 		}
@@ -467,8 +490,8 @@ func TestDoctorHeads(t *testing.T) {
 			{"lines without the marker", "one\ntwo audit hea\n"},
 			{"a line with a marker that is too long to be read", "audit head " + strings.Repeat("x", 3<<20) + "\n"},
 		} {
-			code, stdout, stderr := doctorOn(t, s.data, "", "-heads", writeHeads(t, tt.text), s.site)
-			problems := checkProblems(t, tt.what, s.data, code, stdout, stderr, false, "heads")
+			code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, tt.text), s.site)
+			problems := checkProblems(t, tt.what, s.db, code, stdout, stderr, false, "heads")
 			if len(problems) == 1 && strings.Contains(problems[0], "xxxx") {
 				t.Errorf("%s: the problem has the line: %.200q", tt.what, problems[0])
 			}
@@ -479,8 +502,8 @@ func TestDoctorHeads(t *testing.T) {
 		// Skipped, but counted: the line that follows it is the second after the heads.
 		long := "x audit head " + strings.Repeat("y", 3<<20) + "\n"
 		file := writeHeads(t, good+long+"z audit head x\n")
-		code, stdout, stderr := doctorOn(t, s.data, "", "-heads", file, s.site)
-		problems := checkProblems(t, "a line that is too long", s.data, code, stdout, stderr, false, "heads")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", file, s.site)
+		problems := checkProblems(t, "a line that is too long", s.db, code, stdout, stderr, false, "heads")
 		want := fmt.Sprintf("heads: %s:%d: ", file, len(lines)+2)
 		if len(problems) == 1 && !strings.HasPrefix(problems[0], want) {
 			t.Errorf("the problem %q does not start with %q", problems[0], want)
@@ -490,29 +513,32 @@ func TestDoctorHeads(t *testing.T) {
 	t.Run("after a backup", func(t *testing.T) {
 		s := initSample(t)
 		dest := filepath.Join(t.TempDir(), "backup")
-		code, printed, stderr := runCmd(t, "backup", "-data", s.data, dest)
+		code, printed, stderr := runCmd(t, "backup", "-db", s.db, dest)
 		if code != 0 || stderr != "" {
 			t.Fatalf("whiteroom backup = %d, with stderr:\n%s", code, stderr)
 		}
+		copied := dbOn(t, dest)
 		h1 := writeHeads(t, printed)
 		h2 := writeHeads(t, servedLog(t, s, func(a *adminProc, cookie string) {
 			id := a.publishPage(t, cookie, "en", "After the backup", "after-the-backup")
 			a.waitPublished(t, cookie, id)
 		}))
 		for _, tt := range []struct {
-			what, data, heads string
-			clean             bool
+			what  string
+			db    testDB
+			heads string
+			clean bool
 		}{
-			{"the copy, with its heads", dest, h1, true},
-			{"the copy, with the heads written after it", dest, h2, false},
-			{"the data directory, with the heads before the writes", s.data, h1, true},
-			{"the data directory, with the heads after them", s.data, h2, true},
+			{"the copy, with its heads", copied, h1, true},
+			{"the copy, with the heads written after it", copied, h2, false},
+			{"the data directory, with the heads before the writes", s.database(), h1, true},
+			{"the data directory, with the heads after them", s.database(), h2, true},
 		} {
-			code, stdout, stderr := doctorOn(t, tt.data, "", "-heads", tt.heads, s.site)
+			code, stdout, stderr := doctorOn(t, tt.db, "", "-heads", tt.heads, s.site)
 			if tt.clean {
-				checkClean(t, tt.what, tt.data, code, stdout, stderr, false)
+				checkClean(t, tt.what, tt.db.sockets, code, stdout, stderr, false)
 			} else {
-				checkProblems(t, tt.what, tt.data, code, stdout, stderr, false, "audit")
+				checkProblems(t, tt.what, tt.db.sockets, code, stdout, stderr, false, "audit")
 			}
 		}
 	})
@@ -526,9 +552,9 @@ func TestDoctorSite(t *testing.T) {
 	t.Run("a schema that does not accept a document", func(t *testing.T) {
 		s := initSample(t)
 		damageSchema(t, s.site)
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
 		problems, last := doctorLines(t, stdout)
-		if code != 1 || stderr != "" || len(problems) == 0 || last != count(len(problems), "problem")+" found in "+s.data {
+		if code != 1 || stderr != "" || len(problems) == 0 || last != count(len(problems), "problem")+" found in "+s.db {
 			t.Fatalf("whiteroom doctor = %d, with stdout:\n%s\nand stderr %q, want 1, the problems of the site, and their number", code, stdout,
 				stderr)
 		}
@@ -545,10 +571,10 @@ func TestDoctorSite(t *testing.T) {
 		}
 
 		// Without SITE, the documents are not checked, and the note says so.
-		code, stdout, stderr = doctorOn(t, s.data, "")
-		checkClean(t, "no SITE", s.data, code, stdout, stderr, true)
+		code, stdout, stderr = doctorOn(t, s.database(), "")
+		checkClean(t, "no SITE", s.db, code, stdout, stderr, true)
 		// With -theme, the same.
-		code, stdout, stderr = doctorOn(t, s.data, "", "-theme", exampleTheme, s.site)
+		code, stdout, stderr = doctorOn(t, s.database(), "", "-theme", exampleTheme, s.site)
 		if again, _ := doctorLines(t, stdout); code != 1 || stderr != "" || !slices.Equal(again, problems) {
 			t.Errorf("whiteroom doctor -theme = %d, with stdout:\n%s\nand stderr %q, want the problems as without -theme", code, stdout, stderr)
 		}
@@ -556,8 +582,8 @@ func TestDoctorSite(t *testing.T) {
 
 	t.Run("no settings", func(t *testing.T) {
 		s := initEmpty(t)
-		code, stdout, stderr := doctorOn(t, s.data, "", "-theme", s.theme, s.site)
-		problems := checkProblems(t, "a data directory without settings", s.data, code, stdout, stderr, false, "site")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-theme", s.theme, s.site)
+		problems := checkProblems(t, "a data directory without settings", s.db, code, stdout, stderr, false, "site")
 		if len(problems) == 1 && !strings.Contains(problems[0], "no site settings") {
 			t.Errorf("the problem %q does not tell that the data directory has no settings", problems[0])
 		}
@@ -569,41 +595,42 @@ func TestDoctorSite(t *testing.T) {
 		if err := os.WriteFile(schema, []byte("a: [\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-		problems := checkProblems(t, "a schema that is not YAML", s.data, code, stdout, stderr, false, "site")
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "a schema that is not YAML", s.db, code, stdout, stderr, false, "site")
 		if len(problems) == 1 && !strings.HasPrefix(problems[0], "site: "+schema+":") {
 			t.Errorf("the problem %q does not start with the path of the schema file %s", problems[0], schema)
 		}
 	})
 }
 
-// TestDoctorConfig checks the items of a config file: the paths are from its directory; the item data gives the data
-// directory, and the flag -data wins; the item site gives SITE, which the argument wins over, and with it the published
-// documents are checked; the item theme is used with a SITE only; a problem in the file is a usage error with no output.
+// TestDoctorConfig checks the items of a config file: the paths are from its directory; the item db gives the daemon, and the
+// flag -db wins; the item site gives SITE, which the argument wins over, and with it the published documents are checked; the
+// item theme is used with a SITE only; the item data, which is the daemon's, is not used; a problem in the file is a usage
+// error with no output.
 func TestDoctorConfig(t *testing.T) {
-	t.Run("data alone", func(t *testing.T) {
-		root := storedRoot(t)
-		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "# the settings of every command\ndata: ../data\n"+
+	t.Run("db alone", func(t *testing.T) {
+		root, db := storedRoot(t)
+		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "# the settings of every command\ndb: ../run\n"+
 			"addr: 127.0.0.1:8081\nworkers: 2\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-		checkClean(t, "the item data", filepath.Join(root, "data"), code, stdout, stderr, true)
+		checkClean(t, "the item db", db.sockets, code, stdout, stderr, true)
 	})
 
-	t.Run("data, site and theme", func(t *testing.T) {
-		root := storedRoot(t)
-		conf, data := filepath.Join(root, "conf"), filepath.Join(root, "data")
-		file := writeConfig(t, conf, "whiteroom.yaml", "data: ../data\nsite: ../site\ntheme: ../theme\n")
+	t.Run("db, site and theme", func(t *testing.T) {
+		root, db := storedRoot(t)
+		conf := filepath.Join(root, "conf")
+		file := writeConfig(t, conf, "whiteroom.yaml", "db: ../run\nsite: ../site\ntheme: ../theme\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-		checkClean(t, "the items", data, code, stdout, stderr, false)
+		checkClean(t, "the items", db.sockets, code, stdout, stderr, false)
 
 		// The argument SITE wins over the item, which names a directory that is none.
-		bad := writeConfig(t, conf, "bad-site.yaml", "data: ../data\nsite: ../no-such-site\ntheme: ../theme\n")
+		bad := writeConfig(t, conf, "bad-site.yaml", "db: ../run\nsite: ../no-such-site\ntheme: ../theme\n")
 		code, stdout, stderr = runCmd(t, "doctor", "-config", bad)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "no-such-site") {
 			t.Errorf("whiteroom doctor -config with a SITE that is none = %d, with stdout %q and stderr %q, want 1 and its path", code, stdout, stderr)
 		}
 		code, stdout, stderr = runCmd(t, "doctor", "-config", bad, filepath.Join(root, "site"))
-		checkClean(t, "the argument SITE over the item", data, code, stdout, stderr, false)
+		checkClean(t, "the argument SITE over the item", db.sockets, code, stdout, stderr, false)
 
 		// The site of the file is checked: a schema that does not accept a document is a problem.
 		damageSchema(t, filepath.Join(root, "site"))
@@ -615,29 +642,37 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("the flag wins over the item", func(t *testing.T) {
-		root := storedRoot(t)
-		bad := writeConfig(t, filepath.Join(root, "conf"), "bad.yaml", "data: ../no-such-data\n")
-		data := filepath.Join(root, "data")
-		code, stdout, stderr := runCmd(t, "doctor", "-config", bad, "-data", data)
-		checkClean(t, "-data over the item", data, code, stdout, stderr, true)
+		root, db := storedRoot(t)
+		bad := writeConfig(t, filepath.Join(root, "conf"), "bad.yaml", "db: ../no-such-run\n")
+		code, stdout, stderr := runCmd(t, "doctor", "-config", bad, "-db", db.sockets)
+		checkClean(t, "-db over the item", db.sockets, code, stdout, stderr, true)
 		code, stdout, stderr = runCmd(t, "doctor", "-config", bad)
-		checkProblems(t, "the item data of a directory that is none", filepath.Join(root, "no-such-data"), code, stdout, stderr, false, "open")
+		checkProblems(t, "the item db of a directory that is none", filepath.Join(root, "no-such-run"), code, stdout, stderr, false, "open")
 	})
 
 	t.Run("a theme without a SITE", func(t *testing.T) {
-		root := storedRoot(t)
-		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "data: ../data\ntheme: ../no-such-theme\n")
+		root, db := storedRoot(t)
+		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "db: ../run\ntheme: ../no-such-theme\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-		checkClean(t, "the item theme without a SITE", filepath.Join(root, "data"), code, stdout, stderr, true)
+		checkClean(t, "the item theme without a SITE", db.sockets, code, stdout, stderr, true)
 		code, stdout, stderr = runCmd(t, "doctor", "-config", file, "-theme", filepath.Join(root, "theme"))
 		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom doctor: -theme is for SITE: ") {
 			t.Errorf("whiteroom doctor -theme without a SITE = %d, with stdout %q and stderr %q, want 2 and the usage error", code, stdout, stderr)
 		}
 	})
 
+	t.Run("the item data is not used", func(t *testing.T) {
+		root, db := storedRoot(t)
+		file := writeConfig(t, filepath.Join(root, "conf"), "data.yaml", "data: "+strconv.Quote(db.data)+"\n")
+		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
+		if want := "whiteroom doctor: " + errNoDB + "\n" + doctorUsageText(t); code != 2 || stdout != "" || stderr != want {
+			t.Errorf("whiteroom doctor -config with the item data = %d, with stdout %q and stderr:\n%s\nwant 2, and the usage error", code, stdout, stderr)
+		}
+	})
+
 	t.Run("a problem in the file", func(t *testing.T) {
-		root := storedRoot(t)
-		file := writeConfig(t, filepath.Join(root, "conf"), "unknown.yaml", "data: ../data\nsnack: 1\n")
+		root, _ := storedRoot(t)
+		file := writeConfig(t, filepath.Join(root, "conf"), "unknown.yaml", "db: ../run\nsnack: 1\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
 		if want := file + ":2:1: /snack: unknown item\n"; code != 2 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom doctor -config = %d, with stdout %q and stderr %q, want 2, nothing and %q", code, stdout, stderr, want)
@@ -659,8 +694,8 @@ func TestDoctorBesideAdmin(t *testing.T) {
 		t.Fatalf("the build of the publishing has %+v, want a release\nstderr:\n%s", built.Last, a.stderr)
 	}
 	for range 2 {
-		code, stdout, stderr := runCmd(t, "doctor", "-data", s.data, s.site)
-		checkClean(t, "beside the server", s.data, code, stdout, stderr, false)
+		code, stdout, stderr := runCmd(t, "doctor", "-db", s.db, s.site)
+		checkClean(t, "beside the server", s.db, code, stdout, stderr, false)
 		if status, _ := a.exchange(t, http.MethodGet, "/api/entries/"+id, "", "Cookie", cookie); status != http.StatusOK {
 			t.Errorf("the server answers %d after whiteroom doctor, want %d", status, http.StatusOK)
 		}
@@ -668,8 +703,8 @@ func TestDoctorBesideAdmin(t *testing.T) {
 	if code := a.stop(t); code != 0 {
 		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
-	code, stdout, stderr := doctorOn(t, s.data, "", s.site)
-	checkClean(t, "after the server", s.data, code, stdout, stderr, false)
+	code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+	checkClean(t, "after the server", s.db, code, stdout, stderr, false)
 }
 
 // TestDoctorErrors checks what whiteroom doctor cannot check: a file of -heads or of SITE that cannot be read is told on
@@ -677,53 +712,63 @@ func TestDoctorBesideAdmin(t *testing.T) {
 // problem open; and a context that is done is "interrupted".
 func TestDoctorErrors(t *testing.T) {
 	s := initSample(t)
-	missing := filepath.Join(t.TempDir(), "missing")
+	missing := filepath.Join(shortDir(t), "missing")
+	none := testDB{data: missing, sockets: missing}
 	dir := t.TempDir()
 
 	// An error of the command is told on stderr, and nothing is on stdout.
-	failing := func(what, data, wantStderr string, args ...string) {
+	failing := func(what string, db testDB, wantStderr string, args ...string) {
 		t.Helper()
-		code, stdout, stderr := doctorOn(t, data, "", args...)
+		code, stdout, stderr := doctorOn(t, db, "", args...)
 		if code != 1 || stdout != "" || stderr != wantStderr {
 			t.Errorf("%s: whiteroom doctor %s = %d, with stdout %q and stderr %q, want 1, nothing and %q", what,
 				strings.Join(args, " "), code, stdout, stderr, wantStderr)
 		}
 	}
-	failing("a file of -heads that is none", s.data, "whiteroom doctor: open "+missing+": no such file or directory\n",
+	failing("a file of -heads that is none", s.database(), "whiteroom doctor: open "+missing+": no such file or directory\n",
 		"-heads", missing, s.site)
-	failing("a directory as the file of -heads", s.data, "whiteroom doctor: reading "+dir+": read "+dir+": is a directory\n",
+	failing("a directory as the file of -heads", s.database(), "whiteroom doctor: reading "+dir+": read "+dir+": is a directory\n",
 		"-heads", dir, s.site)
-	// Before the data directory is opened.
-	failing("a file of -heads that is none, and a data directory that is none", missing,
+	// Before the daemon is connected to.
+	failing("a file of -heads that is none, and a daemon that is none", none,
 		"whiteroom doctor: open "+missing+": no such file or directory\n", "-heads", missing, s.site)
 
 	noSchema := initSample(t)
 	if err := os.Remove(filepath.Join(noSchema.site, "site", "schema.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	failing("a SITE without the schema file", noSchema.data, filepath.Join(noSchema.site, "site", "schema.yaml")+": missing file\n",
+	failing("a SITE without the schema file", noSchema.database(), filepath.Join(noSchema.site, "site", "schema.yaml")+": missing file\n",
 		noSchema.site)
-	failing("a SITE without the schema file, and a data directory that is none", missing,
+	failing("a SITE without the schema file, and a daemon that is none", none,
 		filepath.Join(noSchema.site, "site", "schema.yaml")+": missing file\n", noSchema.site)
 	noTheme := initSample(t)
 	schemaOnly(t, noTheme.site, false)
-	failing("a SITE without a theme", noTheme.data, filepath.Join(noTheme.site, "theme")+": missing directory\n", noTheme.site)
-	failing("a theme that is none", s.data, "whiteroom doctor: open "+missing+": no such file or directory\n", "-theme", missing, s.site)
+	failing("a SITE without a theme", noTheme.database(), filepath.Join(noTheme.site, "theme")+": missing directory\n", noTheme.site)
+	failing("a theme that is none", s.database(), "whiteroom doctor: open "+missing+": no such file or directory\n", "-theme", missing, s.site)
 
-	t.Run("a data directory that cannot be opened", func(t *testing.T) {
-		for _, tt := range []struct{ what, data string }{{"a missing directory", missing}, {"an empty directory", t.TempDir()}} {
-			code, stdout, stderr := doctorOn(t, tt.data, "", s.site)
-			checkProblems(t, tt.what, tt.data, code, stdout, stderr, false, "open")
-			// The files of SITE are checked first, and the site is not checked at all.
-			code, stdout, stderr = doctorOn(t, tt.data, "")
-			checkProblems(t, tt.what+", no SITE", tt.data, code, stdout, stderr, false, "open")
+	t.Run("a daemon that cannot be reached", func(t *testing.T) {
+		// A directory of sockets that is missing, and one that is empty: the problem open names the socket that is dialed, with
+		// SITE and without it, and nothing else is checked.
+		for _, dir := range []string{missing, shortDir(t)} {
+			t.Run(filepath.Base(dir), func(t *testing.T) {
+				t.Parallel()
+				db := testDB{data: s.data, sockets: dir}
+				for _, args := range [][]string{{s.site}, nil} {
+					code, stdout, stderr := doctorOn(t, db, "", args...)
+					problems := checkProblems(t, "a daemon that cannot be reached", dir, code, stdout, stderr, false, "open")
+					if len(problems) == 1 && (!strings.HasPrefix(problems[0], "open: "+dir+": "+dbclient.ErrUnavailable.Error()+": ") ||
+						!strings.Contains(problems[0], filepath.Join(dir, "reader.sock"))) {
+						t.Errorf("the problem %q does not tell that the daemon cannot be reached, with the name of the socket", problems[0])
+					}
+				}
+			})
 		}
 	})
 
 	t.Run("a context that is done", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		for _, args := range [][]string{{"doctor", "-data", s.data, s.site}, {"doctor", "-data", s.data}} {
+		for _, args := range [][]string{{"doctor", "-db", s.db, s.site}, {"doctor", "-db", s.db}} {
 			var stdout, stderr bytes.Buffer
 			code := run(ctx, args, testEnv(strings.NewReader(""), &stdout, &stderr))
 			if want := "whiteroom doctor: interrupted\n"; code != 1 || stdout.Len() > 0 || stderr.String() != want {
@@ -754,13 +799,13 @@ func TestReportLimit(t *testing.T) {
 		want  string
 		code  int
 	}{
-		{1, "stopped after 1 problem in " + s.data, 1},
-		{2, "stopped after 2 problems in " + s.data, 1},
-		{3, "stopped after 3 problems in " + s.data, 1},
-		{4, "3 problems found in " + s.data, 1},
+		{1, "stopped after 1 problem in " + s.db, 1},
+		{2, "stopped after 2 problems in " + s.db, 1},
+		{3, "stopped after 3 problems in " + s.db, 1},
+		{4, "3 problems found in " + s.db, 1},
 	} {
 		var stdout, stderr bytes.Buffer
-		code := doctor(t.Context(), []string{"-data", s.data, s.site}, testEnv(strings.NewReader(""), &stdout, &stderr), tt.limit)
+		code := doctor(t.Context(), []string{"-db", s.db, s.site}, testEnv(strings.NewReader(""), &stdout, &stderr), tt.limit)
 		problems, last := doctorLines(t, stdout.String())
 		if code != tt.code || last != tt.want || len(problems) != min(tt.limit, 3) || stderr.Len() > 0 {
 			t.Errorf("whiteroom doctor with the limit %d = %d, with stdout:\n%s\nand stderr %q, want %d problems and %q", tt.limit, code,
@@ -791,7 +836,7 @@ func TestDoctorURL(t *testing.T) {
 	// itself checks that whiteroom doctor has found the redirect that leads back to itself, and nothing else.
 	itself := func(what string, code int, stdout, stderr string) {
 		t.Helper()
-		problems := checkProblems(t, what, s.data, code, stdout, stderr, false, "site")
+		problems := checkProblems(t, what, s.db, code, stdout, stderr, false, "site")
 		if len(problems) == 1 && (!strings.HasPrefix(problems[0], "site: redirects/rdr_") ||
 			!strings.HasSuffix(problems[0], ": /to: redirects to itself")) {
 			t.Errorf("%s: the problem is %q, want the redirect that leads back to itself", what, problems[0])
@@ -799,16 +844,16 @@ func TestDoctorURL(t *testing.T) {
 	}
 	clean := func(what string, code int, stdout, stderr string) {
 		t.Helper()
-		checkClean(t, what, s.data, code, stdout, stderr, false)
+		checkClean(t, what, s.db, code, stdout, stderr, false)
 	}
 
-	code, stdout, stderr := doctorOn(t, s.data, "", s.site)
+	code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
 	clean("no URL", code, stdout, stderr)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-url", staging, s.site)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-url", staging, s.site)
 	itself("-url", code, stdout, stderr)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-url", other, s.site)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-url", other, s.site)
 	clean("-url of another site", code, stdout, stderr)
-	code, stdout, stderr = doctorOn(t, s.data, "", "-url", "https://example.com", s.site)
+	code, stdout, stderr = doctorOn(t, s.database(), "", "-url", "https://example.com", s.site)
 	clean("-url of the URL of the settings", code, stdout, stderr)
 
 	t.Run("the item of the config file", func(t *testing.T) {
@@ -830,16 +875,16 @@ func TestDoctorURL(t *testing.T) {
 	t.Run("no SITE", func(t *testing.T) {
 		wantErr := "whiteroom doctor: -url is for SITE: give the directory SITE of the site to check, or site in the config file\n" +
 			doctorUsageText(t)
-		code, stdout, stderr := doctorOn(t, s.data, "", "-url", staging)
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-url", staging)
 		if code != 2 || stdout != "" || stderr != wantErr {
 			t.Errorf("whiteroom doctor -url without a SITE = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", code,
 				stdout, stderr, wantErr)
 		}
 		// The item is used with a SITE only, and is not looked at without it, whatever it is.
 		for _, value := range []string{staging, "https://example.com/"} {
-			file := writeConfig(t, t.TempDir(), "whiteroom.yaml", fmt.Sprintf("data: %q\nurl: %q\n", s.data, value))
+			file := writeConfig(t, t.TempDir(), "whiteroom.yaml", fmt.Sprintf("db: %q\nurl: %q\n", s.db, value))
 			code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-			checkClean(t, "the item "+value+" without a SITE", s.data, code, stdout, stderr, true)
+			checkClean(t, "the item "+value+" without a SITE", s.db, code, stdout, stderr, true)
 		}
 	})
 
@@ -852,9 +897,9 @@ func TestDoctorURL(t *testing.T) {
 					what, args = "url of the config file", []string{"-config", s.config(t, "url: "+strconv.Quote(tt.value))}
 				}
 				want := "whiteroom doctor: " + what + " is not a valid site URL: " + tt.reason + "\n"
-				// Also for a data directory that is missing, which it does not come to open.
-				for _, data := range []string{s.data, missing} {
-					code, stdout, stderr := doctorOn(t, data, "", append(args, s.site)...)
+				// Also for a daemon that is none, which it does not come to connect to.
+				for _, db := range []testDB{s.database(), {data: missing, sockets: missing}} {
+					code, stdout, stderr := doctorOn(t, db, "", append(args, s.site)...)
 					if code != 2 || stdout != "" || stderr != want {
 						t.Errorf("%s of %q: whiteroom doctor = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", what,
 							tt.value, code, stdout, stderr, want)

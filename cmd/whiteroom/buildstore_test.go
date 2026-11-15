@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"maps"
@@ -10,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 // schemaOnly removes from site, a copy of the sample site, all but what a build from a data directory reads of it: the
@@ -61,26 +65,34 @@ func storedWarnings(t *testing.T, site, theme string) string {
 // s, with the flags more before SITE.
 func buildStored(t *testing.T, s adminSite, more ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	args := append([]string{"build", "-data", s.data, "-out", s.out, "-cache", s.cache}, more...)
+	args := append([]string{"build", "-db", s.db, "-out", s.out, "-cache", s.cache}, more...)
 	return runCmd(t, append(args, s.site)...)
 }
 
-// storedRoot makes a directory with the data directory data/ that whiteroom init has made of the sample site, the site
-// directory site/ that has only the schema file, the example theme in theme/, and an empty conf/.
-func storedRoot(t *testing.T) string {
+// storedRoot makes a directory with the sockets run/ of a daemon that has the store that whiteroom init has made of the sample
+// site, the site directory site/ that has only the schema file, the example theme in theme/, and an empty conf/. It returns
+// the directory and the daemon.
+func storedRoot(t *testing.T) (string, testDB) {
 	t.Helper()
 	root := sampleRoot(t)
 	site := filepath.Join(root, "site")
-	code, _, stderr := runInitCmd(t, initPassword+"\n",
-		adminFlags("-data", filepath.Join(root, "data"), "-theme", filepath.Join(root, "theme"), site)...)
+	db := newDBAt(t, filepath.Join(root, "run"))
+	code, _, stderr := initDB(t, db, initPassword+"\n", "-theme", filepath.Join(root, "theme"), site)
 	if code != 0 {
 		t.Fatalf("whiteroom init of the sample site = %d, with stderr:\n%s", code, stderr)
 	}
 	schemaOnly(t, site, false)
-	return root
+	return root, db
 }
 
-// TestBuildData builds the sample site from the data directory that whiteroom init has made of it, from a site directory that
+// noDaemon is the line that a command prints for the directory dir of sockets in which no daemon listens, where it connects
+// to the socket named name.
+func noDaemon(command, dir, name string) string {
+	return command + ": " + dir + ": " + dbclient.ErrUnavailable.Error() + ": dial unix " + filepath.Join(dir, name) +
+		": connect: no such file or directory\n"
+}
+
+// TestBuildData builds the sample site from the store that whiteroom init has made of it, through its daemon, from a site directory that
 // has only its schema file and its theme: the release has the name of the release that the build from the directory makes,
 // the output is that of the build from the directory, with the names of the documents of the data directory in the warnings,
 // and the second build finds the release published. With -theme the theme of SITE is not read. The files and the heads of
@@ -97,16 +109,16 @@ func TestBuildData(t *testing.T) {
 	for _, published := range []bool{true, false} {
 		code, stdout, stderr := buildStored(t, s)
 		if code != 0 {
-			t.Fatalf("whiteroom build -data = %d, with stderr:\n%s", code, stderr)
+			t.Fatalf("whiteroom build -db = %d, with stderr:\n%s", code, stderr)
 		}
 		if want := sampleSummary(t, s.out, published); stdout != want {
-			t.Errorf("whiteroom build -data printed %q, want %q", stdout, want)
+			t.Errorf("whiteroom build -db printed %q, want %q", stdout, want)
 		}
 		if got := currentOf(t, s.out); got != release {
-			t.Errorf("whiteroom build -data published the release %s, the build of the directory %s", got, release)
+			t.Errorf("whiteroom build -db published the release %s, the build of the directory %s", got, release)
 		}
 		if stderr != warnings {
-			t.Errorf("whiteroom build -data printed the warnings:\n%s\nwant:\n%s", stderr, warnings)
+			t.Errorf("whiteroom build -db printed the warnings:\n%s\nwant:\n%s", stderr, warnings)
 		}
 	}
 
@@ -114,18 +126,18 @@ func TestBuildData(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, cache := t.TempDir(), t.TempDir()
-	code, stdout, stderr := runCmd(t, "build", "-data", s.data, "-theme", exampleTheme, "-out", out, "-cache", cache, s.site)
+	code, stdout, stderr := runCmd(t, "build", "-db", s.db, "-theme", exampleTheme, "-out", out, "-cache", cache, s.site)
 	if code != 0 {
-		t.Fatalf("whiteroom build -data -theme = %d, with stderr:\n%s", code, stderr)
+		t.Fatalf("whiteroom build -db -theme = %d, with stderr:\n%s", code, stderr)
 	}
 	if want := sampleSummary(t, out, true); stdout != want {
-		t.Errorf("whiteroom build -data -theme printed %q, want %q", stdout, want)
+		t.Errorf("whiteroom build -db -theme printed %q, want %q", stdout, want)
 	}
 	if got := currentOf(t, out); got != release {
-		t.Errorf("whiteroom build -data -theme published the release %s, the build of the directory %s", got, release)
+		t.Errorf("whiteroom build -db -theme published the release %s, the build of the directory %s", got, release)
 	}
 	if want := storedWarnings(t, s.site, exampleTheme); stderr != want {
-		t.Errorf("whiteroom build -data -theme printed the warnings:\n%s\nwant:\n%s", stderr, want)
+		t.Errorf("whiteroom build -db -theme printed the warnings:\n%s\nwant:\n%s", stderr, want)
 	}
 
 	if got := manifestOf(t, s.data); got != files {
@@ -142,16 +154,16 @@ func TestBuildDataDefaults(t *testing.T) {
 	s := initSample(t)
 	schemaOnly(t, s.site, true)
 	before := manifestOf(t, s.data)
-	code, stdout, stderr := runCmd(t, "build", "-data", s.data, s.site)
+	code, stdout, stderr := runCmd(t, "build", "-db", s.db, s.site)
 	if code != 0 {
-		t.Fatalf("whiteroom build -data %s = %d, with stderr:\n%s", s.site, code, stderr)
+		t.Fatalf("whiteroom build -db %s = %d, with stderr:\n%s", s.site, code, stderr)
 	}
 	out := filepath.Join(s.site, "out")
 	if want := sampleSummary(t, out, true); stdout != want {
-		t.Errorf("whiteroom build -data printed %q, want %q", stdout, want)
+		t.Errorf("whiteroom build -db printed %q, want %q", stdout, want)
 	}
 	if want := storedWarnings(t, s.site, ""); stderr != want {
-		t.Errorf("whiteroom build -data printed the warnings:\n%s\nwant:\n%s", stderr, want)
+		t.Errorf("whiteroom build -db printed the warnings:\n%s\nwant:\n%s", stderr, want)
 	}
 	if _, err := os.Stat(filepath.Join(s.site, "cache", "CACHEDIR.TAG")); err != nil {
 		t.Errorf("the cache directory of SITE is not made: %v", err)
@@ -164,9 +176,10 @@ func TestBuildDataDefaults(t *testing.T) {
 	}
 }
 
-// TestBuildDataConfig builds from a data directory that a config file gives, with the paths of the file from its directory:
-// the data directory, the site directory with only the schema file, the theme, the output and the cache directories, and
-// that -data wins over the item data, and that no item data is a build from the site directory.
+// TestBuildDataConfig builds from the store of the daemon that a config file gives, with the paths of the file from its
+// directory: the directory of the sockets, the site directory with only the schema file, the theme, the output and the cache
+// directories, and that -db wins over the item db, and that no item db is a build from the site directory, also with the item
+// data, which is the daemon's.
 func TestBuildDataConfig(t *testing.T) {
 	ref := t.TempDir()
 	buildSample(t, ref, t.TempDir())
@@ -174,9 +187,9 @@ func TestBuildDataConfig(t *testing.T) {
 	const items = "site: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\n"
 
 	t.Run("the items of the file", func(t *testing.T) {
-		root := storedRoot(t)
+		root, _ := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "# the settings of every command\n"+
-			"data: ../data\n"+items+"addr: 127.0.0.1:8081\nsocket: ../run/admin.sock\norigin: https://admin.example.com\n"+
+			"db: ../run\n"+items+"addr: 127.0.0.1:8081\nsocket: ../run/admin.sock\norigin: https://admin.example.com\n"+
 			"trustedProxies:\n  - 10.0.0.0/8\n  - ::1\nworkers: 2\nmemory: 256\n")
 		code, stdout, stderr := runCmd(t, "build", "-config", file)
 		if code != 0 {
@@ -195,37 +208,47 @@ func TestBuildDataConfig(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, "cache", "CACHEDIR.TAG")); err != nil {
 			t.Errorf("the cache directory of the file is not made: %v", err)
 		}
-		checkMissing(t, "the items of the file", filepath.Join(root, "run"))
+		checkMissing(t, "the items of the file", filepath.Join(root, "data"))
 	})
 
 	t.Run("the flag wins over the item", func(t *testing.T) {
-		root := storedRoot(t)
+		root, db := storedRoot(t)
 		conf := filepath.Join(root, "conf")
-		missing := filepath.Join(root, "missing-data")
-		bad := writeConfig(t, conf, "bad.yaml", "data: ../missing-data\n"+items)
-		code, stdout, stderr := runCmd(t, "build", "-config", bad, "-data", filepath.Join(root, "data"))
+		missing := filepath.Join(root, "missing-run")
+		bad := writeConfig(t, conf, "bad.yaml", "db: ../missing-run\n"+items)
+		code, stdout, stderr := runCmd(t, "build", "-config", bad, "-db", db.sockets)
 		if code != 0 {
-			t.Fatalf("whiteroom build -config -data = %d, with the config file of a missing data directory, and stderr:\n%s", code, stderr)
+			t.Fatalf("whiteroom build -config -db = %d, with the config file of a missing daemon, and stderr:\n%s", code, stderr)
 		}
 		if got := currentOf(t, filepath.Join(root, "out")); got != release {
-			t.Errorf("whiteroom build -config -data published the release %s, the build of the directory %s", got, release)
+			t.Errorf("whiteroom build -config -db published the release %s, the build of the directory %s", got, release)
 		}
 		if want := sampleSummary(t, filepath.Join(root, "out"), true); stdout != want {
-			t.Errorf("whiteroom build -config -data printed %q, want %q", stdout, want)
+			t.Errorf("whiteroom build -config -db printed %q, want %q", stdout, want)
 		}
 
-		good := writeConfig(t, conf, "good.yaml", "data: ../data\nsite: ../site\ntheme: ../theme\nout: ../out2\ncache: ../cache2\n")
-		failingBuild(t, "-data of a missing directory over the item", t.Context(), "whiteroom build: open "+missing+
-			": no such file or directory\n", "-config", good, "-data", missing)
-		checkMissing(t, "-data of a missing directory over the item", filepath.Join(root, "out2"))
+		good := writeConfig(t, conf, "good.yaml", "db: ../run\nsite: ../site\ntheme: ../theme\nout: ../out2\ncache: ../cache2\n")
+		failingBuild(t, "-db of a missing directory over the item", t.Context(), noDaemon("whiteroom build", missing, "reader.sock"),
+			"-config", good, "-db", missing)
+		checkMissing(t, "-db of a missing directory over the item", filepath.Join(root, "out2"))
 	})
 
-	t.Run("no item data", func(t *testing.T) {
-		root := storedRoot(t)
-		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", items)
-		failingBuild(t, "a site directory without documents", t.Context(),
-			filepath.Join(root, "site", "site", "settings.json")+": missing file\n", "-config", file)
-		checkMissing(t, "a site directory without documents", filepath.Join(root, "out"))
+	t.Run("no item db", func(t *testing.T) {
+		root, _ := storedRoot(t)
+		// The item data is the daemon's: it does not make a build from a store, and its type is checked.
+		for _, text := range []string{items, "data: ../data\n" + items} {
+			file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", text)
+			failingBuild(t, "a site directory without documents", t.Context(),
+				filepath.Join(root, "site", "site", "settings.json")+": missing file\n", "-config", file)
+			checkMissing(t, "a site directory without documents", filepath.Join(root, "out"))
+		}
+		file := writeConfig(t, filepath.Join(root, "conf"), "bad.yaml", "data: 5\ndb: ../run\n"+items)
+		var stdout, stderr bytes.Buffer
+		code := run(t.Context(), []string{"build", "-config", file}, testEnv(failingReader{t}, &stdout, &stderr))
+		if want := file + ":1:1: /data: must be a string\n"; code != 2 || stdout.Len() != 0 || stderr.String() != want {
+			t.Errorf("whiteroom build -config with a data that is no string = %d, with stdout %q and stderr %q, want 2, nothing and %q",
+				code, stdout.String(), stderr.String(), want)
+		}
 	})
 }
 
@@ -242,23 +265,23 @@ func TestBuildDataBesideAdmin(t *testing.T) {
 	first := currentOf(t, s.out)
 
 	outB, cacheB := t.TempDir(), t.TempDir()
-	code, stdout, stderr := runCmd(t, "build", "-data", s.data, "-out", outB, "-cache", cacheB, s.site)
+	code, stdout, stderr := runCmd(t, "build", "-db", s.db, "-out", outB, "-cache", cacheB, s.site)
 	if code != 0 {
-		t.Fatalf("whiteroom build -data beside the server = %d, with stderr:\n%s", code, stderr)
+		t.Fatalf("whiteroom build -db beside the server = %d, with stderr:\n%s", code, stderr)
 	}
 	if want := sampleSummary(t, outB, true); stdout != want {
-		t.Errorf("whiteroom build -data beside the server printed %q, want %q", stdout, want)
+		t.Errorf("whiteroom build -db beside the server printed %q, want %q", stdout, want)
 	}
 	if got := currentOf(t, outB); got != first {
 		t.Errorf("the build beside the server published the release %s, the server %s", got, first)
 	}
 
-	code, stdout, stderr = runCmd(t, "build", "-data", s.data, "-out", s.out, "-cache", s.cache, s.site)
+	code, stdout, stderr = runCmd(t, "build", "-db", s.db, "-out", s.out, "-cache", s.cache, s.site)
 	if code != 0 {
-		t.Fatalf("whiteroom build -data into the output directory of the server = %d, with stderr:\n%s", code, stderr)
+		t.Fatalf("whiteroom build -db into the output directory of the server = %d, with stderr:\n%s", code, stderr)
 	}
 	if want := sampleSummary(t, s.out, false); stdout != want {
-		t.Errorf("whiteroom build -data into the output directory of the server printed %q, want %q", stdout, want)
+		t.Errorf("whiteroom build -db into the output directory of the server printed %q, want %q", stdout, want)
 	}
 
 	const slug = "beside-the-server"
@@ -270,12 +293,12 @@ func TestBuildDataBesideAdmin(t *testing.T) {
 	if second == first {
 		t.Fatalf("the server has published the release %s, as before the page", second)
 	}
-	code, stdout, stderr = runCmd(t, "build", "-data", s.data, "-out", outB, "-cache", cacheB, s.site)
+	code, stdout, stderr = runCmd(t, "build", "-db", s.db, "-out", outB, "-cache", cacheB, s.site)
 	if code != 0 {
-		t.Fatalf("whiteroom build -data after the page = %d, with stderr:\n%s", code, stderr)
+		t.Fatalf("whiteroom build -db after the page = %d, with stderr:\n%s", code, stderr)
 	}
 	if want := "published release " + second + " in " + outB + ": "; !strings.HasPrefix(stdout, want) {
-		t.Errorf("whiteroom build -data after the page printed %q, want it to start with %q", stdout, want)
+		t.Errorf("whiteroom build -db after the page printed %q, want it to start with %q", stdout, want)
 	}
 	if got := currentOf(t, outB); got != second {
 		t.Errorf("the build after the page published the release %s, the server %s", got, second)
@@ -298,33 +321,44 @@ func TestBuildDataErrors(t *testing.T) {
 		s := initEmpty(t)
 		code, stdout, stderr := buildStored(t, s, "-theme", s.theme)
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom build: ") || strings.Count(stderr, "\n") != 1 ||
-			!strings.Contains(stderr, "no site settings") || !strings.Contains(stderr, s.data) {
-			t.Errorf("whiteroom build -data of a data directory without settings = %d, with stdout %q and stderr:\n%s\nwant 1, "+
-				"and a line that tells that the data directory %s has no site settings", code, stdout, stderr, s.data)
+			!strings.Contains(stderr, "the store of "+s.db+" has no site settings") {
+			t.Errorf("whiteroom build -db of a store without settings = %d, with stdout %q and stderr:\n%s\nwant 1, "+
+				"and a line that tells that the store of %s has no site settings", code, stdout, stderr, s.db)
 		}
 		for _, dir := range []string{s.out, s.cache} {
 			checkMissing(t, "a data directory without settings", dir)
 		}
 	})
 
-	t.Run("a missing data directory", func(t *testing.T) {
+	t.Run("a missing directory of sockets", func(t *testing.T) {
 		s := initSample(t)
-		missing := filepath.Join(t.TempDir(), "missing")
-		failingBuild(t, "a missing data directory", t.Context(), "whiteroom build: open "+missing+": no such file or directory\n",
-			"-data", missing, "-out", s.out, "-cache", s.cache, s.site)
+		missing := filepath.Join(shortDir(t), "missing")
+		failingBuild(t, "a missing directory of sockets", t.Context(), noDaemon("whiteroom build", missing, "reader.sock"),
+			"-db", missing, "-out", s.out, "-cache", s.cache, s.site)
 		for _, name := range []string{missing, s.out, s.cache} {
-			checkMissing(t, "a missing data directory", name)
+			checkMissing(t, "a missing directory of sockets", name)
 		}
 	})
 
-	t.Run("an empty data directory", func(t *testing.T) {
+	t.Run("an empty directory of sockets", func(t *testing.T) {
 		s := initSample(t)
-		empty := t.TempDir()
-		failingBuild(t, "an empty data directory", t.Context(), "whiteroom build: "+filepath.Join(empty, "logdb")+
-			": missing directory\n", "-data", empty, "-out", s.out, "-cache", s.cache, s.site)
-		checkEmpty(t, "an empty data directory", empty)
+		empty := shortDir(t)
+		failingBuild(t, "an empty directory of sockets", t.Context(), noDaemon("whiteroom build", empty, "reader.sock"),
+			"-db", empty, "-out", s.out, "-cache", s.cache, s.site)
+		checkEmpty(t, "an empty directory of sockets", empty)
 		for _, name := range []string{s.out, s.cache} {
-			checkMissing(t, "an empty data directory", name)
+			checkMissing(t, "an empty directory of sockets", name)
+		}
+	})
+
+	t.Run("a daemon that has no store", func(t *testing.T) {
+		s := initSample(t)
+		fresh := newDB(t)
+		failingBuild(t, "a daemon that has no store", t.Context(),
+			"whiteroom build: "+fresh.sockets+": "+store.ErrNoStore.Error()+"\n",
+			"-db", fresh.sockets, "-out", s.out, "-cache", s.cache, s.site)
+		for _, name := range []string{s.out, s.cache} {
+			checkMissing(t, "a daemon that has no store", name)
 		}
 	})
 
@@ -336,11 +370,11 @@ func TestBuildDataErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := filepath.Join(s.site, "site", "schema.yaml") + ": missing file\n"
-		failingBuild(t, "a SITE without the schema file", t.Context(), want, "-data", s.data, "-out", s.out, "-cache", s.cache, s.site)
+		failingBuild(t, "a SITE without the schema file", t.Context(), want, "-db", s.db, "-out", s.out, "-cache", s.cache, s.site)
 		// SITE is opened first: its problem comes before that of the data directory, which is not opened.
 		missing := filepath.Join(t.TempDir(), "missing")
-		failingBuild(t, "a SITE without the schema file, and a missing data directory", t.Context(), want,
-			"-data", missing, "-out", s.out, "-cache", s.cache, s.site)
+		failingBuild(t, "a SITE without the schema file, and a missing directory of sockets", t.Context(), want,
+			"-db", missing, "-out", s.out, "-cache", s.cache, s.site)
 		for _, name := range []string{s.out, s.cache} {
 			checkMissing(t, "a SITE without the schema file", name)
 		}
@@ -353,7 +387,7 @@ func TestBuildDataErrors(t *testing.T) {
 		s := initSample(t)
 		schemaOnly(t, s.site, false)
 		failingBuild(t, "a SITE without a theme", t.Context(), filepath.Join(s.site, "theme")+": missing directory\n",
-			"-data", s.data, "-out", s.out, "-cache", s.cache, s.site)
+			"-db", s.db, "-out", s.out, "-cache", s.cache, s.site)
 		for _, name := range []string{s.out, s.cache} {
 			checkMissing(t, "a SITE without a theme", name)
 		}
@@ -376,7 +410,7 @@ func TestBuildDataErrors(t *testing.T) {
 		}
 		code, stdout, stderr := buildStored(t, s)
 		if code != 1 || stdout != "" {
-			t.Errorf("whiteroom build -data of a document that the schema does not accept = %d, with stdout %q, want 1, and none", code,
+			t.Errorf("whiteroom build -db of a document that the schema does not accept = %d, with stdout %q, want 1, and none", code,
 				stdout)
 		}
 		found := false
@@ -389,7 +423,7 @@ func TestBuildDataErrors(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("whiteroom build -data printed:\n%s\nwant a line of revisions/rev_01JC0000000000000000000002.json about /fields/client", stderr)
+			t.Errorf("whiteroom build -db printed:\n%s\nwant a line of revisions/rev_01JC0000000000000000000002.json about /fields/client", stderr)
 		}
 		checkMissing(t, "a document that the schema does not accept", filepath.Join(s.out, "current"))
 	})
@@ -403,7 +437,7 @@ func TestBuildDataErrors(t *testing.T) {
 		}
 		code, stdout, stderr := buildStored(t, s)
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, schema+":") {
-			t.Errorf("whiteroom build -data with a schema that is not YAML = %d, with stdout %q and stderr:\n%s\nwant 1, none, and "+
+			t.Errorf("whiteroom build -db with a schema that is not YAML = %d, with stdout %q and stderr:\n%s\nwant 1, none, and "+
 				"a problem of %s", code, stdout, stderr, schema)
 		}
 		checkMissing(t, "a schema that is not YAML", filepath.Join(s.out, "current"))
@@ -413,7 +447,7 @@ func TestBuildDataErrors(t *testing.T) {
 		s := initSample(t)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		failingBuild(t, "canceled", ctx, "whiteroom build: interrupted\n", "-data", s.data, "-out", s.out, "-cache", s.cache, s.site)
+		failingBuild(t, "canceled", ctx, "whiteroom build: interrupted\n", "-db", s.db, "-out", s.out, "-cache", s.cache, s.site)
 		for _, name := range []string{s.out, s.cache} {
 			checkMissing(t, "canceled", name)
 		}
@@ -424,9 +458,9 @@ func TestBuildDataErrors(t *testing.T) {
 		for _, args := range [][]string{
 			{"-workers", "-1", s.site}, {"-memory", "-1", s.site}, {"-memory", "8796093022208", s.site}, {s.site, s.site},
 		} {
-			code, stdout, stderr := runCmd(t, append([]string{"build", "-data", s.data, "-out", s.out, "-cache", s.cache}, args...)...)
+			code, stdout, stderr := runCmd(t, append([]string{"build", "-db", s.db, "-out", s.out, "-cache", s.cache}, args...)...)
 			if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom build: ") || !strings.Contains(stderr, buildUsage) {
-				t.Errorf("whiteroom build -data %s = %d, with stdout %q and stderr:\n%s\nwant 2, and a line and the usage",
+				t.Errorf("whiteroom build -db %s = %d, with stdout %q and stderr:\n%s\nwant 2, and a line and the usage",
 					strings.Join(args, " "), code, stdout, stderr)
 			}
 			checkMissing(t, strings.Join(args, " "), s.out)
@@ -465,27 +499,27 @@ func TestBuildDataURL(t *testing.T) {
 	files, heads := manifestOf(t, s.data), storedHeads(t, s.data)
 	// fromData builds from the data directory data into new directories, with the flags more, and returns the name of the
 	// release.
-	fromData := func(t *testing.T, data string, more ...string) string {
+	fromData := func(t *testing.T, db string, more ...string) string {
 		t.Helper()
 		out := t.TempDir()
-		args := append([]string{"build", "-data", data, "-out", out, "-cache", t.TempDir()}, more...)
+		args := append([]string{"build", "-db", db, "-out", out, "-cache", t.TempDir()}, more...)
 		code, stdout, stderr := runCmd(t, append(args, s.site)...)
 		if want := storedWarnings(t, s.site, ""); code != 0 || stderr != want {
-			t.Fatalf("whiteroom build -data %s = %d, with stderr:\n%s\nwant 0, and the warnings:\n%s", strings.Join(more, " "), code, stderr, want)
+			t.Fatalf("whiteroom build -db %s = %d, with stderr:\n%s\nwant 0, and the warnings:\n%s", strings.Join(more, " "), code, stderr, want)
 		}
 		name := currentOf(t, out)
 		if want := "published release " + name + " in " + out + ": "; !strings.HasPrefix(stdout, want) {
-			t.Errorf("whiteroom build -data %s printed %q, want it to start with %q", strings.Join(more, " "), stdout, want)
+			t.Errorf("whiteroom build -db %s printed %q, want it to start with %q", strings.Join(more, " "), stdout, want)
 		}
 		return name
 	}
 
 	t.Run("the flag", func(t *testing.T) {
-		if got := fromData(t, s.data, "-url", staging); got != changed {
-			t.Errorf("whiteroom build -data -url %s is the release %s, the build of the directory %s", staging, got, changed)
+		if got := fromData(t, s.db, "-url", staging); got != changed {
+			t.Errorf("whiteroom build -db -url %s is the release %s, the build of the directory %s", staging, got, changed)
 		}
-		if got := fromData(t, s.data); got != plain {
-			t.Errorf("whiteroom build -data is the release %s after the build with the URL, want %s", got, plain)
+		if got := fromData(t, s.db); got != plain {
+			t.Errorf("whiteroom build -db is the release %s after the build with the URL, want %s", got, plain)
 		}
 	})
 
@@ -511,19 +545,19 @@ func TestBuildDataURL(t *testing.T) {
 
 	t.Run("a copy", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "backup")
-		if code, _, stderr := runCmd(t, "backup", "-data", s.data, dest); code != 0 {
+		if code, _, stderr := runCmd(t, "backup", "-db", s.db, dest); code != 0 {
 			t.Fatalf("whiteroom backup = %d, with stderr:\n%s", code, stderr)
 		}
 		restored := filepath.Join(t.TempDir(), "restored")
 		if err := os.CopyFS(restored, os.DirFS(dest)); err != nil {
 			t.Fatal(err)
 		}
-		for _, data := range []string{dest, restored} {
-			if got := fromData(t, data, "-url", staging); got != changed {
-				t.Errorf("whiteroom build -data %s -url %s is the release %s, want %s", data, staging, got, changed)
+		for _, db := range []testDB{dbOn(t, dest), dbOn(t, restored)} {
+			if got := fromData(t, db.sockets, "-url", staging); got != changed {
+				t.Errorf("whiteroom build -db %s -url %s is the release %s, want %s", db.data, staging, got, changed)
 			}
-			if got := fromData(t, data); got != plain {
-				t.Errorf("whiteroom build -data %s is the release %s, want %s", data, got, plain)
+			if got := fromData(t, db.sockets); got != plain {
+				t.Errorf("whiteroom build -db %s is the release %s, want %s", db.data, got, plain)
 			}
 		}
 	})

@@ -51,10 +51,13 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom build -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			help)
 	}
-	for _, name := range []string{"-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-out DIR", "-theme DIR", "-url URL", "-workers N"} {
+	for _, name := range []string{"-cache DIR", "-config FILE", "-db DIR", "-memory MiB", "-out DIR", "-theme DIR", "-url URL", "-workers N"} {
 		if !strings.Contains(help, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom build has no flag %s:\n%s", name, help)
 		}
+	}
+	if strings.Contains(help, "-data") {
+		t.Errorf("the usage of whiteroom build has the flag -data, which is gone:\n%s", help)
 	}
 	code, stdout, serveHelp := runCmd(t, "serve", "public", "-h")
 	if code != 0 || stdout != "" || !strings.HasPrefix(serveHelp, servePublicUsage) {
@@ -88,7 +91,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom rollback -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			rollbackHelp)
 	}
-	for _, line := range []string{"whiteroom rollback OUT [RELEASE]", "whiteroom build -data DIR [flags] [SITE]"} {
+	for _, line := range []string{"whiteroom rollback OUT [RELEASE]", "whiteroom build -db DIR [flags] [SITE]"} {
 		if !strings.Contains(usage, "\n  "+line+"\n") {
 			t.Errorf("the list of the commands has no %s:\n%s", line, usage)
 		}
@@ -99,7 +102,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom backup -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			backupHelp)
 	}
-	for _, name := range []string{"-config FILE", "-data DIR"} {
+	for _, name := range []string{"-config FILE", "-db DIR"} {
 		if !strings.Contains(backupHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom backup has no flag %s:\n%s", name, backupHelp)
 		}
@@ -113,7 +116,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			doctorHelp)
 	}
-	for _, name := range []string{"-config FILE", "-data DIR", "-heads FILE", "-theme DIR", "-url URL"} {
+	for _, name := range []string{"-config FILE", "-db DIR", "-heads FILE", "-theme DIR", "-url URL"} {
 		if !strings.Contains(doctorHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom doctor has no flag %s:\n%s", name, doctorHelp)
 		}
@@ -133,7 +136,7 @@ func TestRun(t *testing.T) {
 			deleteHelp)
 	}
 	for _, help := range []struct{ command, text string }{{"reset", resetHelp}, {"delete", deleteHelp}} {
-		for _, name := range []string{"-config FILE", "-data DIR"} {
+		for _, name := range []string{"-config FILE", "-db DIR"} {
 			if !strings.Contains(help.text, "\n  "+name+"\n") {
 				t.Errorf("the usage of whiteroom account %s has no flag %s:\n%s", help.command, name, help.text)
 			}
@@ -158,7 +161,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom init -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout,
 			initHelp)
 	}
-	for _, name := range []string{"-config FILE", "-data DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR", "-url URL"} {
+	for _, name := range []string{"-config FILE", "-db DIR", "-email ADDRESS", "-login LOGIN", "-name NAME", "-theme DIR", "-url URL"} {
 		if !strings.Contains(initHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom init has no flag %s:\n%s", name, initHelp)
 		}
@@ -208,27 +211,27 @@ func TestRun(t *testing.T) {
 		{[]string{"build", "-memory", "-1"}, 2, "", memory("-1")},
 		{[]string{"build", "-memory", "8796093022208"}, 2, "", memory("8796093022208")},
 		{[]string{"build", "-workers", "-1"}, 2, "", "whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
-		{[]string{"build", "-data", "d", "-workers", "-1"}, 2, "",
+		{[]string{"build", "-db", "d", "-workers", "-1"}, 2, "",
 			"whiteroom build: -workers -1 is out of range (0 or more)\n" + help},
-		{[]string{"build", "-data", "d", "a", "b"}, 2, "", tooMany},
+		{[]string{"build", "-db", "d", "a", "b"}, 2, "", tooMany},
 		{[]string{"build", "-config", missing}, 2, "", "whiteroom build: " + openErr.Error() + "\n"},
 		{[]string{"build", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"build", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "build")},
-		{[]string{"build", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "build")},
+		{[]string{"build", "-db", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "build")},
 		{[]string{"init", "-x"}, 2, "", "flag provided but not defined: -x\n" + initHelp},
 		{[]string{"init"}, 2, "", initUsageErr("-login is required")},
 		{[]string{"init", "-login", "a"}, 2, "", initUsageErr("-name is required")},
 		{[]string{"init", "-login", "a", "-name", "b"}, 2, "", initUsageErr("-email is required")},
-		{withAdmin(), 2, "", initUsageErr("no data directory: give -data DIR, or data in the config file")},
-		{withAdmin("-data", "d", "x", "y"), 2, "", tooManyInit},
+		{withAdmin(), 2, "", initUsageErr(errNoDB)},
+		{withAdmin("-db", "d", "x", "y"), 2, "", tooManyInit},
 		{[]string{"init", "x", "y"}, 2, "", tooManyInit},
-		{withAdmin("-data", "d", "-theme", "t"), 2, "",
+		{withAdmin("-db", "d", "-theme", "t"), 2, "",
 			initUsageErr("-theme is for SITE: give the directory SITE of the site to import")},
 		{withAdmin("-config", missing), 2, "", "whiteroom init: " + openErr.Error() + "\n"},
 		{withAdmin("-config", broken), 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
-		{withAdmin("-data", "d", "-url", "https://staging.example.com"), 2, "",
+		{withAdmin("-db", "d", "-url", "https://staging.example.com"), 2, "",
 			initUsageErr("-url is for SITE: give the directory SITE of the site to import")},
-		{withAdmin("-data", "d", "-url", "https://example.com/", "a"), 2, "", fmt.Sprintf(badURL, "init")},
+		{withAdmin("-db", "d", "-url", "https://example.com/", "a"), 2, "", fmt.Sprintf(badURL, "init")},
 		{[]string{"rollback"}, 2, "", rollbackErr("no output directory: give OUT")},
 		{[]string{"rollback", "a", "b", "c"}, 2, "", rollbackErr("too many arguments: give OUT and at most one RELEASE")},
 		{[]string{"rollback", "-x"}, 2, "", "flag provided but not defined: -x\n" + rollbackHelp},
@@ -236,25 +239,25 @@ func TestRun(t *testing.T) {
 		{[]string{"rollback", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + rollbackHelp},
 		{[]string{"rollback", "-url", "https://staging.example.com", "a"}, 2, "", "flag provided but not defined: -url\n" + rollbackHelp},
 		{[]string{"backup"}, 2, "", backupErr("no destination: give DEST, after the flags")},
-		{[]string{"backup", "-data", "d"}, 2, "", backupErr("no destination: give DEST, after the flags")},
+		{[]string{"backup", "-db", "d"}, 2, "", backupErr("no destination: give DEST, after the flags")},
 		{[]string{"backup", "-x", "d"}, 2, "", "flag provided but not defined: -x\n" + backupHelp},
-		{[]string{"backup", "d"}, 2, "", backupErr("no data directory: give -data DIR, or data in the config file")},
-		{[]string{"backup", "-data", "d", "a", "b"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
-		{[]string{"backup", "a", "-data", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
-		{[]string{"backup", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+		{[]string{"backup", "d"}, 2, "", backupErr(errNoDB)},
+		{[]string{"backup", "-db", "d", "a", "b"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "a", "-db", "d"}, 2, "", backupErr("too many arguments: give one DEST, after the flags")},
+		{[]string{"backup", "-url", "https://staging.example.com", "-db", "d", "a"}, 2, "",
 			"flag provided but not defined: -url\n" + backupHelp},
 		{[]string{"backup", "-config", missing, "d"}, 2, "", "whiteroom backup: " + openErr.Error() + "\n"},
 		{[]string{"backup", "-config", broken, "d"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
-		{[]string{"doctor"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
-		{[]string{"doctor", "-data", "d", "a", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
-		{[]string{"doctor", "a", "-data", "d", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
-		{[]string{"doctor", "-data", "d", "-theme", "t"}, 2, "",
+		{[]string{"doctor"}, 2, "", doctorErr(errNoDB)},
+		{[]string{"doctor", "-db", "d", "a", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "a", "-db", "d", "b"}, 2, "", doctorErr("too many arguments: give at most one SITE, after the flags")},
+		{[]string{"doctor", "-db", "d", "-theme", "t"}, 2, "",
 			doctorErr("-theme is for SITE: give the directory SITE of the site to check, or site in the config file")},
-		{[]string{"doctor", "-theme", "t"}, 2, "", doctorErr("no data directory: give -data DIR, or data in the config file")},
+		{[]string{"doctor", "-theme", "t"}, 2, "", doctorErr(errNoDB)},
 		{[]string{"doctor", "-x"}, 2, "", "flag provided but not defined: -x\n" + doctorHelp},
-		{[]string{"doctor", "-data", "d", "-url", "https://staging.example.com"}, 2, "",
+		{[]string{"doctor", "-db", "d", "-url", "https://staging.example.com"}, 2, "",
 			doctorErr("-url is for SITE: give the directory SITE of the site to check, or site in the config file")},
-		{[]string{"doctor", "-data", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "doctor")},
+		{[]string{"doctor", "-db", "d", "-url", "https://example.com/", "a"}, 2, "", fmt.Sprintf(badURL, "doctor")},
 		{[]string{"doctor", "-heads"}, 2, "", "flag needs an argument: -heads\n" + doctorHelp},
 		{[]string{"doctor", "-config", missing}, 2, "", "whiteroom doctor: " + openErr.Error() + "\n"},
 		{[]string{"doctor", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
@@ -263,27 +266,41 @@ func TestRun(t *testing.T) {
 		{[]string{"account", "-h"}, 0, accountUsage, ""},
 		{[]string{"account", "help"}, 0, accountUsage, ""},
 		{[]string{"account", "reset"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
-		{[]string{"account", "reset", "-data", "d"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
-		{[]string{"account", "reset", "a"}, 2, "", resetErr("no data directory: give -data DIR, or data in the config file")},
-		{[]string{"account", "reset", "-data", "d", "a", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
-		{[]string{"account", "reset", "a", "-data", "d", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
-		{[]string{"account", "reset", "-password", "x", "-data", "d", "a"}, 2, "",
+		{[]string{"account", "reset", "-db", "d"}, 2, "", resetErr("no login name: give LOGIN, after the flags")},
+		{[]string{"account", "reset", "a"}, 2, "", resetErr(errNoDB)},
+		{[]string{"account", "reset", "-db", "d", "a", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "a", "-db", "d", "b"}, 2, "", resetErr("too many arguments: give one LOGIN, after the flags")},
+		{[]string{"account", "reset", "-password", "x", "-db", "d", "a"}, 2, "",
 			"flag provided but not defined: -password\n" + resetHelp},
-		{[]string{"account", "reset", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+		{[]string{"account", "reset", "-url", "https://staging.example.com", "-db", "d", "a"}, 2, "",
 			"flag provided but not defined: -url\n" + resetHelp},
 		{[]string{"account", "reset", "-config", missing, "a"}, 2, "", "whiteroom account reset: " + openErr.Error() + "\n"},
 		{[]string{"account", "reset", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"account", "delete"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
-		{[]string{"account", "delete", "-data", "d"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
-		{[]string{"account", "delete", "a"}, 2, "", deleteErr("no data directory: give -data DIR, or data in the config file")},
-		{[]string{"account", "delete", "-data", "d", "a", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
-		{[]string{"account", "delete", "a", "-data", "d", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
-		{[]string{"account", "delete", "-password", "x", "-data", "d", "a"}, 2, "",
+		{[]string{"account", "delete", "-db", "d"}, 2, "", deleteErr("no account ID: give ID, after the flags")},
+		{[]string{"account", "delete", "a"}, 2, "", deleteErr(errNoDB)},
+		{[]string{"account", "delete", "-db", "d", "a", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "a", "-db", "d", "b"}, 2, "", deleteErr("too many arguments: give one ID, after the flags")},
+		{[]string{"account", "delete", "-password", "x", "-db", "d", "a"}, 2, "",
 			"flag provided but not defined: -password\n" + deleteHelp},
-		{[]string{"account", "delete", "-url", "https://staging.example.com", "-data", "d", "a"}, 2, "",
+		{[]string{"account", "delete", "-url", "https://staging.example.com", "-db", "d", "a"}, 2, "",
 			"flag provided but not defined: -url\n" + deleteHelp},
 		{[]string{"account", "delete", "-config", missing, "a"}, 2, "", "whiteroom account delete: " + openErr.Error() + "\n"},
 		{[]string{"account", "delete", "-config", broken, "a"}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
+		// -data is gone from the commands that connect to the daemon, and so is the item data for them: it is the daemon's.
+		{withAdmin("-data", "d"), 2, "", "flag provided but not defined: -data\n" + initHelp},
+		{[]string{"build", "-data", "d"}, 2, "", "flag provided but not defined: -data\n" + help},
+		{[]string{"backup", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + backupHelp},
+		{[]string{"doctor", "-data", "d"}, 2, "", "flag provided but not defined: -data\n" + doctorHelp},
+		{[]string{"account", "reset", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + resetHelp},
+		{[]string{"account", "delete", "-data", "d", "a"}, 2, "", "flag provided but not defined: -data\n" + deleteHelp},
+		// -db: a flag that has no value, and one that has an empty value, which is no database.
+		{[]string{"build", "-db"}, 2, "", "flag needs an argument: -db\n" + help},
+		{withAdmin("-db", ""), 2, "", initUsageErr(errNoDB)},
+		{[]string{"backup", "-db", "", "a"}, 2, "", backupErr(errNoDB)},
+		{[]string{"doctor", "-db", ""}, 2, "", doctorErr(errNoDB)},
+		{[]string{"account", "reset", "-db", "", "a"}, 2, "", resetErr(errNoDB)},
+		{[]string{"account", "delete", "-db", "", "a"}, 2, "", deleteErr(errNoDB)},
 		{[]string{"serve"}, 2, "", usage},
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},

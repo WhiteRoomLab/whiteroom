@@ -569,23 +569,23 @@ func TestBuildURLFlag(t *testing.T) {
 // file as a string and no more: a value that does not pass the rule of the url of the site settings is no problem for them,
 // and one that is not a string is.
 func TestConfigURLOfOtherCommands(t *testing.T) {
-	root := storedRoot(t)
+	root, db := storedRoot(t)
 	conf := filepath.Join(root, "conf")
 	for _, value := range []string{"\"https://Example.com/\"", "\"ftp://x\""} {
-		file := writeConfig(t, conf, "bad-url.yaml", "data: ../data\nurl: "+value+"\n")
+		file := writeConfig(t, conf, "bad-url.yaml", "db: ../run\nurl: "+value+"\n")
 		dest := filepath.Join(t.TempDir(), "copy")
 		if code, _, stderr := runCmd(t, "backup", "-config", file, dest); code != 0 || stderr != "" {
 			t.Errorf("whiteroom backup -config with url: %s = %d, with stderr:\n%s\nwant 0, and none", value, code, stderr)
 		}
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-		checkClean(t, "doctor without SITE, url: "+value, filepath.Join(root, "data"), code, stdout, stderr, true)
+		checkClean(t, "doctor without SITE, url: "+value, db.sockets, code, stdout, stderr, true)
 		code, _, stderr = runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin)
 		if code != 0 || stderr != "" {
 			t.Errorf("whiteroom account reset -config with url: %s = %d, with stderr:\n%s\nwant 0, and none", value, code, stderr)
 		}
 	}
 
-	file := writeConfig(t, conf, "number-url.yaml", "data: ../data\nurl: 123\n")
+	file := writeConfig(t, conf, "number-url.yaml", "db: ../run\nurl: 123\n")
 	want := file + ":2:1: /url: must be a string\n"
 	for _, args := range [][]string{
 		{"backup", "-config", file, filepath.Join(t.TempDir(), "copy")}, {"doctor", "-config", file},
@@ -602,30 +602,29 @@ func TestConfigURLOfOtherCommands(t *testing.T) {
 // take the item tmp of a config file as a path and no more: they make no directory for it, and a value that is not a string,
 // or is empty, is a problem of the file for each of them.
 func TestConfigTmpOfOtherCommands(t *testing.T) {
-	root := storedRoot(t)
+	root, db := storedRoot(t)
 	conf := filepath.Join(root, "conf")
 	tmp := filepath.Join(root, "tmp")
-	file := writeConfig(t, conf, "tmp.yaml", "data: ../data\nsite: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\ntmp: ../tmp\n")
+	file := writeConfig(t, conf, "tmp.yaml", "db: ../run\nsite: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\ntmp: ../tmp\n")
 
 	if code, _, stderr := runCmd(t, "backup", "-config", file, filepath.Join(t.TempDir(), "copy")); code != 0 || stderr != "" {
 		t.Errorf("whiteroom backup -config with tmp = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
 	}
 	code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-	checkClean(t, "doctor, with tmp", filepath.Join(root, "data"), code, stdout, stderr, false)
+	checkClean(t, "doctor, with tmp", db.sockets, code, stdout, stderr, false)
 	if code, _, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin); code != 0 || stderr != "" {
 		t.Errorf("whiteroom account reset -config with tmp = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
 	}
 	if code, _, stderr := runCmd(t, "build", "-config", file); code != 0 {
 		t.Errorf("whiteroom build -config with tmp = %d, with stderr:\n%s\nwant 0", code, stderr)
 	}
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-data", data)...); code != 0 {
+	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-db", newDB(t).sockets)...); code != 0 {
 		t.Errorf("whiteroom init -config with tmp = %d, with stderr:\n%s\nwant 0", code, stderr)
 	}
 	checkMissing(t, "the commands that do not serve", tmp)
 
 	for _, value := range []string{"123", `""`} {
-		bad := writeConfig(t, conf, "bad-tmp.yaml", "data: ../data\ntmp: "+value+"\n")
+		bad := writeConfig(t, conf, "bad-tmp.yaml", "db: ../run\ntmp: "+value+"\n")
 		want := bad + ":2:1: /tmp: must be a string\n"
 		if value == `""` {
 			want = bad + ":2:1: /tmp: must not be empty\n"
@@ -633,7 +632,7 @@ func TestConfigTmpOfOtherCommands(t *testing.T) {
 		for _, args := range [][]string{
 			{"backup", "-config", bad, filepath.Join(t.TempDir(), "copy")}, {"doctor", "-config", bad}, {"build", "-config", bad},
 			{"account", "reset", "-config", bad, initLogin}, {"account", "delete", "-config", bad, "usr_x"},
-			append([]string{"init"}, adminFlags("-config", bad, "-data", filepath.Join(t.TempDir(), "data"))...),
+			append([]string{"init"}, adminFlags("-config", bad, "-db", "unused")...),
 		} {
 			if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
 				t.Errorf("whiteroom %s with tmp: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", args[0], value, code,
@@ -644,10 +643,12 @@ func TestConfigTmpOfOtherCommands(t *testing.T) {
 }
 
 // TestConfigDaemonItems checks that the commands which take -config accept a file that has the item db and the items of
-// whiteroom-db, which they check for their types and ranges and do not use: nothing is made for db, and a value that is not
-// right is a problem of the file for each of them, a line, and exit 2, as for the other items.
+// whiteroom-db, which they check for their types and ranges and do not use but db, which the commands that connect to the
+// daemon use, and serve admin, which keeps its own -data for now, does not: it makes nothing for it, and a value that is not
+// right is a problem of the file for each of them, a line, and exit 2, as for the other items. The item data is checked for
+// its type, and the commands that connect do not use it.
 func TestConfigDaemonItems(t *testing.T) {
-	root := storedRoot(t)
+	root, db := storedRoot(t)
 	conf := filepath.Join(root, "conf")
 	file := writeConfig(t, conf, "daemon.yaml",
 		"data: ../data\nsite: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\ndb: ../run\n"+daemonItems)
@@ -656,7 +657,7 @@ func TestConfigDaemonItems(t *testing.T) {
 		t.Errorf("whiteroom backup -config with the items of the daemon = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
 	}
 	code, stdout, stderr := runCmd(t, "doctor", "-config", file)
-	checkClean(t, "doctor, with the items of the daemon", filepath.Join(root, "data"), code, stdout, stderr, false)
+	checkClean(t, "doctor, with the items of the daemon", db.sockets, code, stdout, stderr, false)
 	if code, _, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin); code != 0 ||
 		stderr != "" {
 		t.Errorf("whiteroom account reset -config with the items of the daemon = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
@@ -664,15 +665,14 @@ func TestConfigDaemonItems(t *testing.T) {
 	if code, _, stderr := runCmd(t, "build", "-config", file); code != 0 {
 		t.Errorf("whiteroom build -config with the items of the daemon = %d, with stderr:\n%s\nwant 0", code, stderr)
 	}
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-data", data)...); code != 0 {
+	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-db", newDB(t).sockets)...); code != 0 {
 		t.Errorf("whiteroom init -config with the items of the daemon = %d, with stderr:\n%s\nwant 0", code, stderr)
 	}
 	s, base := initSample(t), t.TempDir()
-	a := startAdmin(t, t.Context(), "-config", s.configIn(t, filepath.Join(base, "conf"), "db: ../run", strings.TrimSuffix(daemonItems, "\n")))
+	// The file of serve admin has the items of the daemon, and a db that is a path from the file, which serve admin does not use.
+	a := startAdmin(t, t.Context(), "-config", s.configIn(t, filepath.Join(base, "conf"), strings.TrimSuffix(daemonItems, "\n")))
 	stopsWith(t, "the server with the items of the daemon", a)
-	checkMissing(t, "the commands, which do not use db", filepath.Join(root, "run"))
-	checkMissing(t, "serve admin, which does not use db", filepath.Join(base, "run"))
+	checkMissing(t, "serve admin, which does not make the directory of db", filepath.Join(base, "run"))
 
 	const (
 		notName     = "must be a name, or a number of 0 or more"
@@ -698,7 +698,7 @@ func TestConfigDaemonItems(t *testing.T) {
 		for _, args := range [][]string{
 			{"backup", "-config", bad, filepath.Join(t.TempDir(), "copy")}, {"doctor", "-config", bad}, {"build", "-config", bad},
 			{"account", "reset", "-config", bad, initLogin}, {"account", "delete", "-config", bad, "usr_x"},
-			append([]string{"init"}, adminFlags("-config", bad, "-data", filepath.Join(t.TempDir(), "data"))...),
+			append([]string{"init"}, adminFlags("-config", bad, "-db", "unused")...),
 		} {
 			if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
 				t.Errorf("whiteroom %s with %s: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", args[0], tt.item,
@@ -749,11 +749,12 @@ func checkEmpty(t *testing.T, what, dir string) {
 	}
 }
 
-// sampleRoot makes a new directory with the sample site in site/ without a theme, the example theme in theme/ and an
-// empty conf/, and returns it. The working directory must be that of the package.
+// sampleRoot makes a new directory, whose path is short enough for the sockets of a daemon in it, with the sample site in
+// site/ without a theme, the example theme in theme/ and an empty conf/, and returns it. The working directory must be that
+// of the package.
 func sampleRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := shortDir(t)
 	if err := os.CopyFS(filepath.Join(root, "site"), os.DirFS(sampleSite)); err != nil {
 		t.Fatal(err)
 	}

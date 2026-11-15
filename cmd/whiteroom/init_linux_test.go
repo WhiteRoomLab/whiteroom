@@ -2,12 +2,12 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
+	"time"
 )
 
-// TestInitClosesStore checks that whiteroom init leaves no file open, whether it succeeds or fails once the store is
-// made, so that the store is closed before the data directory is removed.
+// TestInitClosesStore checks that whiteroom init leaves no file open, whether it succeeds or fails once the store is made,
+// so that its connections to the daemon are closed, the daemon's side of them too.
 func TestInitClosesStore(t *testing.T) {
 	open := func() int {
 		t.Helper()
@@ -25,13 +25,21 @@ func TestInitClosesStore(t *testing.T) {
 		{"a success", nil, 0},
 		{"a failure once the store is made", []string{"-email", "nobody"}, 1},
 	} {
-		data := filepath.Join(t.TempDir(), "data")
+		// The daemon runs before the files are counted: its sockets are open all the time.
+		db := newDB(t)
 		before := open()
-		code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags(append([]string{"-data", data}, tt.args...)...)...)
+		code, stdout, stderr := initDB(t, db, initPassword+"\n", tt.args...)
 		if code != tt.code {
 			t.Fatalf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s", tt.what, code, stdout, stderr)
 		}
-		if after := open(); after != before {
+		// The daemon sees the end of a connection a moment after the client has closed it.
+		deadline := time.Now().Add(5 * time.Second)
+		after := open()
+		for after != before && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+			after = open()
+		}
+		if after != before {
 			t.Errorf("%s: %d files are open, want %d, as before", tt.what, after, before)
 		}
 	}

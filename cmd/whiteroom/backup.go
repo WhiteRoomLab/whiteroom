@@ -8,29 +8,35 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const backupUsage = `Usage: whiteroom backup [flags] DEST
 
-Copy the data directory to DEST, which must be missing or an empty directory, and
-whose parent must exist. The copy is the data directory as it was at the last
-commit that was durable when the command began: a whiteroom serve admin may go on
-writing the data directory meanwhile, and the command writes nothing in it. The
-copy is a data directory too, which whiteroom build -data and whiteroom serve
-admin work on. To restore it, put it where the data directory is.
+Copy the data directory of the daemon whiteroom-db whose sockets are in the
+directory of -db to DEST, which must be missing or an empty directory, and whose
+parent must exist. The copy is the data directory as it was at the last commit
+that was durable when the command began: a whiteroom serve admin may go on writing
+meanwhile, and the command writes nothing in the store. The daemon copies it, and
+the command writes DEST.
+
+The copy is a data directory, which a whiteroom-db serve can run on: to check it,
+run one on it with another directory of sockets, and give that to whiteroom
+doctor. To restore it, stop the daemon, put the copy where its data directory is,
+and start the daemon.
 
 The copy holds all that the data directory holds, the hashes of the passwords and
 the audit logs included: keep it as private as the data directory.
 
-The command prints "backed up DIR to DEST", and then the heads of the chains of the
-audit logs of the copy, a line each, which hold no personal information: keep them
-apart from the copy.
+The command prints "backed up the store of DIR to DEST", and then the heads of the
+chains of the audit logs of the copy, a line each, which hold no personal
+information: keep them apart from the copy.
 
-With -config, the item data of the YAML file gives what -data leaves out; the
-other items are checked and not used. Without it, no config file is read.
+With -config, the item db of the YAML file gives what -db leaves out; the other
+items are checked and not used: one file may be shared with whiteroom-db. Without
+it, no config file is read.
 
 Flags:
 `
@@ -43,9 +49,9 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		printf(flags.Output(), "%s", backupUsage)
 		flags.PrintDefaults()
 	}
-	var configFile, dataDir string
+	var configFile, dbDir string
 	flags.StringVar(&configFile, "config", "", "read the settings from the YAML file `FILE`; the flags override them")
-	flags.StringVar(&dataDir, "data", "", "copy the data directory `DIR` (default data of the config file)")
+	flags.StringVar(&dbDir, "db", "", "connect to the daemon whose sockets are in the directory `DIR` (default db of the config file)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -64,18 +70,14 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		printConfigError(e.stderr, flags.Name(), err)
 		return 2
 	}
-	data := cmp.Or(dataDir, cfg.data)
-	if data == "" {
-		return usageError(flags, "no data directory: give -data DIR, or data in the config file")
+	db := cmp.Or(dbDir, cfg.db)
+	if db == "" {
+		return usageError(flags, errNoDB)
 	}
 	dest := flags.Arg(0)
 	p := errorPrinter{w: e.stderr, command: flags.Name()}
 
-	if err := checkDataDir(data); err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-	missing, err := checkBackupDest(data, dest)
+	missing, err := checkBackupDest(dest)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
@@ -91,7 +93,7 @@ func runBackup(ctx context.Context, args []string, e env) int {
 	// From here on, what the command has made in DEST is removed when it fails: DEST was missing or empty.
 	fail := func(err error) int {
 		p.printError(ctx, err)
-		if err := cleanupNewDataDir(nil, dest, missing); err != nil {
+		if err := cleanupNewDataDir(dest, missing); err != nil {
 			printf(e.stderr, "%s: cleaning up %s: %v\n", flags.Name(), dest, err)
 		}
 		return 1
@@ -101,70 +103,28 @@ func runBackup(ctx context.Context, args []string, e env) int {
 			return fail(err)
 		}
 	}
-	heads, err := backupStore(ctx, data, dest)
+	heads, err := store.Backup(ctx, dbDialer(db), dest)
 	if err != nil {
 		return fail(err)
 	}
-	printf(e.stdout, "backed up %s to %s\n", data, dest)
+	printf(e.stdout, "backed up the store of %s to %s\n", db, dest)
 	for _, h := range heads {
 		printf(e.stdout, "%s\n", h)
 	}
 	return 0
 }
 
-// checkDataDir checks that dir is a data directory that Backup can copy: it has logdb/ and files/, which are not
-// symbolic links. It looks in the directory that the kernel takes the path dir for.
-func checkDataDir(dir string) error {
-	if _, err := os.Stat(dir); err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	for _, name := range []string{"logdb", "files"} {
-		path := fspath.Join(dir, name)
-		info, err := root.Lstat(name)
-		var pe *fs.PathError
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return fmt.Errorf("%s: missing directory", path)
-		case errors.As(err, &pe):
-			return &fs.PathError{Op: "lstat", Path: path, Err: pe.Err}
-		case err != nil:
-			return err
-		case info.Mode()&fs.ModeSymlink != 0:
-			return fmt.Errorf("%s: symbolic links are not allowed", path)
-		case !info.IsDir():
-			return fmt.Errorf("%s: must be a directory", path)
-		}
-	}
-	return nil
-}
-
-// checkBackupDest checks that dest can take the backup of the data directory data: it is not that directory, nor in it,
-// and it is a missing directory, which has a parent, or an empty directory. It reports whether dest is missing.
-func checkBackupDest(data, dest string) (missing bool, err error) {
+// checkBackupDest checks that dest can take the backup: it is a missing directory, which has a parent, or an empty
+// directory. It reports whether dest is missing.
+func checkBackupDest(dest string) (missing bool, err error) {
 	info, err := os.Stat(dest)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		missing = true
+		return true, nil
 	case err != nil:
 		return false, err
 	case !info.IsDir():
 		return false, fmt.Errorf("%s: not a directory; DEST must be missing or an empty directory", dest)
-	}
-	inside, err := insideDir(data, dest)
-	switch {
-	case err != nil:
-		return false, err
-	case inside == ".":
-		return false, fmt.Errorf("%s: DEST is the data directory", dest)
-	case inside != "":
-		return false, fmt.Errorf("%s: DEST is in the data directory %s", dest, data)
-	case missing:
-		return true, nil
 	}
 	entries, err := os.ReadDir(dest)
 	switch {
@@ -176,20 +136,23 @@ func checkBackupDest(data, dest string) (missing bool, err error) {
 	return false, nil
 }
 
-// insideDir returns "." if dest is the directory dir, and its path from dir if it is in dir, and "" if it is neither, with
-// the paths as the kernel resolves them.
-func insideDir(dir, dest string) (string, error) {
-	dirPath, err := fspath.Resolve(dir)
-	if err != nil {
-		return "", err
+// cleanupNewDataDir removes what whiteroom backup has made in the directory dir, the directory that the kernel takes the
+// path dir for: logdb/ and files/, and dir itself if it was missing. It leaves the parents that making dir has made.
+func cleanupNewDataDir(dir string, missing bool) error {
+	var errs []error
+	// Not filepath.Join(dir, ...): it drops a ".." after a symbolic link, and names another directory than the one that was made.
+	root, err := os.OpenRoot(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		errs = append(errs, err)
+	default:
+		errs = append(errs, root.RemoveAll("logdb"), root.RemoveAll("files"), root.Close())
 	}
-	destPath, err := fspath.Resolve(dest)
-	if err != nil {
-		return "", err
+	if missing {
+		if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
 	}
-	// Paths without a relative path between them, as those of two volumes, are not one in the other.
-	if rel, err := filepath.Rel(dirPath, destPath); err == nil && filepath.IsLocal(rel) {
-		return rel, nil
-	}
-	return "", nil
+	return errors.Join(errs...)
 }

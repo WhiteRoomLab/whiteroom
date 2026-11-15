@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
@@ -1187,6 +1188,130 @@ func TestImportRetry(t *testing.T) {
 			sameIndex(t, "after the failed Import", indexOf(t, s), indexOf(t, other))
 		})
 	}
+}
+
+// trialState describes what a trial import must leave as it was: the documents and the revisions, the heads of the audit
+// logs, which every commit moves, the actions of the activity log and the rows of operation IDs.
+func trialState(t *testing.T, s *store.Store) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString(snapshot(t, s))
+	heads, err := s.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range heads {
+		b.WriteString("head " + h.String() + "\n")
+	}
+	err = s.ReadAudit(t.Context(), audit.Filter{Log: audit.ActivityLog}, func(r audit.Record) bool {
+		b.WriteString("record " + string(r.Action) + "\n")
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.View(t.Context(), func(tx *store.Tx) error {
+		return tx.Operations(func(id string, _ []byte) bool {
+			b.WriteString("operation " + id + "\n")
+			return true
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// TestImportTrial checks that a trial import runs the stages and the Update of an import and commits nothing: it returns
+// the warnings of the import, leaves the documents, the revisions, the audit logs and the rows of operation IDs as they were,
+// and the import that follows it succeeds; and that a problem that only the last check finds, which is in the Update, is the
+// trial's too.
+func TestImportTrial(t *testing.T) {
+	t.Parallel()
+	t.Run("the sample site", func(t *testing.T) {
+		t.Parallel()
+		s := newStore(t)
+		before := trialState(t, s)
+		if !strings.Contains(before, "record store.create\n") || strings.Contains(before, "site.import") {
+			t.Fatalf("the state of a new store:\n%s\nwant the record of its making and no import", before)
+		}
+		want := sampleRedirectWarnings(t)
+		warnings, err := ImportWith(t.Context(), s, openSample(t), userID, ImportOptions{Trial: true})
+		if err != nil || len(want) == 0 || !slices.Equal(lines(warnings), want) {
+			t.Fatalf("a trial import = %v, %v\nwant the warnings of the import:\n%s", lines(warnings), err, strings.Join(want, "\n"))
+		}
+		if after := trialState(t, s); after != before {
+			t.Errorf("a trial import has changed the store:\n%s\nwas:\n%s", after, before)
+		}
+		checkNoImport(t, s)
+		// The stage of the originals has put them, and they stay, as the doc comment of Trial says.
+		_, jpegFile := sampleMedium(t, jpegMedium)
+		if !hasOriginal(t, s, fileHash(jpegFile)) {
+			t.Error("the originals that the stage of the originals has put are gone after the trial")
+		}
+
+		// Again: a trial can be repeated, and the import after it succeeds with the same warnings.
+		if _, err := ImportWith(t.Context(), s, openSample(t), userID, ImportOptions{Trial: true}); err != nil {
+			t.Fatalf("a second trial import = %v", err)
+		}
+		warnings, err = Import(t.Context(), s, openSample(t), userID)
+		if err != nil || !slices.Equal(lines(warnings), want) {
+			t.Fatalf("Import() after a trial = %v, %v, want the warnings of the trial", lines(warnings), err)
+		}
+		sameFiles(t, storedFiles(t, s), siteFiles(t, sampleDir))
+		if after := trialState(t, s); !strings.Contains(after, "record site.import\n") {
+			t.Errorf("the state after the import:\n%s\nwant the record site.import", after)
+		}
+	})
+
+	t.Run("a problem that the Update finds", func(t *testing.T) {
+		t.Parallel()
+		dir := copySite(t)
+		changeSite(t, dir, revisionName(contactRev), `"slug": "contact"`, `"slug": "about"`)
+		want := importMatchesBuild(t, dir, `/slug: slug "about" is also used by`)
+		s := newStore(t)
+		before := trialState(t, s)
+		warnings, err := ImportWith(t.Context(), s, openSite(t, dir), userID, ImportOptions{Trial: true})
+		if got := problemLines(t, err); !slices.Equal(got, want) || warnings != nil {
+			t.Errorf("a trial import of the site with a duplicate slug = %v, with the problems:\n%s\nwant\n%s", warnings,
+				strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		if after := trialState(t, s); after != before {
+			t.Errorf("the store has changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
+
+	t.Run("a problem of an earlier stage", func(t *testing.T) {
+		t.Parallel()
+		dir := copySite(t)
+		changeSite(t, dir, revisionName(servicesRev), `"slug": "services"`, `"slug": "a b"`)
+		s := newStore(t)
+		before := trialState(t, s)
+		warnings, err := ImportWith(t.Context(), s, openSite(t, dir), userID, ImportOptions{Trial: true})
+		if got := problemLines(t, err); len(got) == 0 || !strings.Contains(got[0], "/slug: character ' ' is not allowed in slugs") ||
+			warnings != nil {
+			t.Errorf("a trial import of the site with a bad slug = %v, %v", warnings, err)
+		}
+		if after := trialState(t, s); after != before {
+			t.Errorf("the store has changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
+
+	t.Run("a store that has documents", func(t *testing.T) {
+		t.Parallel()
+		s := newStore(t)
+		put(t, s, content.RefTerm, testID(content.RefTerm, 1),
+			termJSON("tag", "ja", testID(content.RefTranslationGroup, 1), "お祭り", "festival"))
+		before := trialState(t, s)
+		spy := &spySource{Source: openSample(t)}
+		warnings, err := ImportWith(t.Context(), s, spy, userID, ImportOptions{Trial: true})
+		if err == nil || err.Error() != errNotEmpty.Error() || warnings != nil || len(spy.calls) != 0 {
+			t.Errorf("a trial import = %v, %v after the calls %v; want the error %q and no read", warnings, err, spy.calls, errNotEmpty)
+		}
+		if after := trialState(t, s); after != before {
+			t.Errorf("the store has changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
 }
 
 // TestImportContext checks that an Import stops when its context is done, and stores no document.

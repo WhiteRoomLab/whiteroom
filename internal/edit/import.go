@@ -36,11 +36,18 @@ var importKinds = []content.RefKind{
 
 var errNotEmpty = errors.New("the store is not empty: Import needs a store without documents")
 
+// errTrial ends the Update of a trial import, which commits nothing.
+var errTrial = errors.New("the trial import stops before it commits")
+
 // ImportOptions are the options of ImportWith.
 type ImportOptions struct {
 	// URL is the URL of the site that replaces that of the settings in the checks, which ImportWith checks as the settings
 	// do; "" keeps it.
 	URL string
+	// Trial runs every stage and the Update of the import, and commits nothing: no document, no record and no row of an
+	// operation. It returns the warnings and nil if the import would succeed, or its problems. The originals that its
+	// stage of the originals puts stay in the store, where nothing uses them until a document does.
+	Trial bool
 }
 
 // Import is ImportWith without options.
@@ -84,7 +91,7 @@ func ImportWith(ctx context.Context, s *store.Store, src Source, by string, opts
 	if err := s.View(ctx, checkEmpty); err != nil {
 		return nil, err
 	}
-	im := &importer{ctx: ctx, store: s, src: src, by: by, url: opts.URL}
+	im := &importer{ctx: ctx, store: s, src: src, by: by, url: opts.URL, trial: opts.Trial}
 	if err := im.read(); err != nil {
 		return nil, err
 	}
@@ -129,6 +136,7 @@ type importer struct {
 	src   Source
 	by    string
 	url   string // ImportOptions.URL
+	trial bool   // ImportOptions.Trial
 
 	settings, schema content.SiteFile
 	files            map[content.RefKind]map[string]content.SiteFile
@@ -460,9 +468,12 @@ func (im *importer) write() (content.Errors, error) {
 			return Result{}, problems
 		}
 		warnings = redirects
+		if im.trial {
+			return Result{}, errTrial
+		}
 		return Result{}, nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errTrial) {
 		return nil, err
 	}
 	return warnings, nil

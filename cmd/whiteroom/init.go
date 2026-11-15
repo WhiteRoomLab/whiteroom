@@ -3,13 +3,13 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
@@ -19,28 +19,41 @@ import (
 
 const initUsage = `Usage: whiteroom init [flags] [SITE]
 
-Make the data directory, which must be missing or empty, with the first
-administrator, and import the site in the directory SITE if it is given.
+Initialize the store of the daemon whiteroom-db whose sockets are in the directory
+of -db, which is running on a data directory that whiteroom-db init has made: init
+writes the first commit of the store, makes the first administrator and, with SITE,
+imports the site in the directory SITE. The store must have no account and no
+document: init refuses one that has, and changes nothing in it. A store that an
+earlier init left without an administrator is used.
+
+SITE is read and checked with a trial import, which stores no document and no
+record, before the password is asked for: the problems of the site are the problems
+of the trial, and init stops there.
 
 The password of the administrator is read from the standard input only. On a
 terminal, it is asked for twice, without echo; otherwise it is the first line of
 the input, which must not be empty and has at most 8192 bytes.
+
+If init fails after the administrator is made, which is when the import of SITE
+fails, the store has the administrator and no site, unless the daemon stored the
+import as the command stopped: it tells how to start over. init removes no file.
 
 With -url, or url in the config file, the site in SITE is checked with URL as the
 url of its settings, for the site of another environment, such as
 https://staging.example.com. The settings that init stores keep the url that
 they have. URL is checked as the url of the settings is.
 
-With -config, the items data, theme and url of the YAML file give what -data,
--theme and -url leave out; theme and url are used only with SITE. Without it, no
-config file is read.
+With -config, the items db, theme and url of the YAML file give what -db, -theme
+and -url leave out; theme and url are used only with SITE. The other items are
+checked and not used: one file may be shared with whiteroom-db. Without -config,
+no config file is read.
 
 Flags:
 `
 
 // initFlags are the values of the flags of whiteroom init.
 type initFlags struct {
-	config, data, login, name, email, theme, url string
+	config, db, login, name, email, theme, url string
 }
 
 func newInitFlags(stderr io.Writer) (*flag.FlagSet, *initFlags) {
@@ -52,7 +65,7 @@ func newInitFlags(stderr io.Writer) (*flag.FlagSet, *initFlags) {
 	}
 	var f initFlags
 	flags.StringVar(&f.config, "config", "", "read the settings from the YAML file `FILE`; the flags override them")
-	flags.StringVar(&f.data, "data", "", "make the data directory `DIR` (default data of the config file)")
+	flags.StringVar(&f.db, "db", "", "connect to the daemon whose sockets are in the directory `DIR` (default db of the config file)")
 	flags.StringVar(&f.login, "login", "", "the login name `LOGIN` of the first administrator (required)")
 	flags.StringVar(&f.name, "name", "", "the name `NAME` of the first administrator, to show (required)")
 	flags.StringVar(&f.email, "email", "", "the email address `ADDRESS` of the first administrator (required)")
@@ -60,6 +73,13 @@ func newInitFlags(stderr io.Writer) (*flag.FlagSet, *initFlags) {
 	flags.StringVar(&f.url, "url", "", "check SITE as if the url of its settings were `URL`; they are stored as they are (default "+
 		"url of the config file)")
 	return flags, &f
+}
+
+// newStoreKinds are the kinds of the documents that a store has none of when whiteroom init may use it, as edit.Import
+// requires: the settings and the kinds that it imports.
+var newStoreKinds = []content.RefKind{
+	store.SettingsKind, content.RefEntry, content.RefTerm, content.RefMedia, content.RefAuthor, content.RefMenu,
+	content.RefForm, content.RefRedirect,
 }
 
 // runInit runs whiteroom init with args, those after init.
@@ -91,9 +111,9 @@ func runInit(ctx context.Context, args []string, e env) int {
 		printConfigError(e.stderr, flags.Name(), err)
 		return 2
 	}
-	data := cmp.Or(f.data, cfg.data)
-	if data == "" {
-		return usageError(flags, "no data directory: give -data DIR, or data in the config file")
+	db := cmp.Or(f.db, cfg.db)
+	if db == "" {
+		return usageError(flags, errNoDB)
 	}
 	site, theme, override := flags.Arg(0), "", ""
 	if importing {
@@ -105,85 +125,38 @@ func runInit(ctx context.Context, args []string, e env) int {
 	}
 	p := errorPrinter{w: e.stderr, command: flags.Name(), site: site, theme: theme}
 
-	// Before the password is read, so that nothing is asked for that cannot be used.
-	missing, err := checkNewDataDir(data)
-	if err != nil {
-		p.printError(ctx, err)
-		return 1
-	}
-	var src edit.Source
-	if importing {
-		opened, closeSite, err := openSite(site, theme)
-		if err != nil {
-			p.printError(ctx, err)
-			return 1
-		}
-		defer closeSite()
-		src = opened
-	}
+	// Before the store is made, so that an interrupted command makes nothing.
 	if err := ctx.Err(); err != nil {
 		p.printError(ctx, err)
 		return 1
 	}
-
-	var s *store.Store
-	made := false // whether there may be something of init's to clean up: store.Create has been called
-	// fail prints err, if there is one, and undoes what init has made, and returns the exit code of a failure.
-	fail := func(err error) int {
-		if err != nil {
-			p.printError(ctx, err)
-		}
-		if made {
-			if err := cleanupNewDataDir(s, data, missing); err != nil {
-				printf(e.stderr, "%s: cleaning up %s: %v\n", flags.Name(), data, err)
-			}
+	s, err := openNewStore(db)
+	if err != nil {
+		p.printError(ctx, err)
+		return 1
+	}
+	r := initRun{e: e, p: p, db: db, store: s, site: site, theme: theme, url: override,
+		in: account.Input{Login: f.login, Name: f.name, Email: f.email, Role: account.RoleAdmin}}
+	admin, err := r.do(ctx)
+	if err == nil {
+		err = s.Close()
+	} else {
+		_ = s.Close()
+	}
+	switch {
+	case errors.Is(err, errProblemsTold):
+		return 1
+	case err != nil:
+		p.printError(ctx, err)
+		if r.stranded {
+			printf(e.stderr, "%s: the store of %s now has the administrator %s, and no site, unless the daemon stored the import "+
+				"as the command stopped; to start over, stop whiteroom-db, remove its data directory, make it again with "+
+				"whiteroom-db init, start it, and run whiteroom init again\n", flags.Name(), db, admin.Login)
 		}
 		return 1
 	}
-	in := account.Input{Login: f.login, Name: f.name, Email: f.email, Role: account.RoleAdmin}
-	var accounts *account.Manager
-	var admin account.Account
-	err = askPassword(ctx, e, flags.Name(), "Password", func(password string) error {
-		if accounts == nil {
-			// Again, as another process may have made the directory meanwhile, whose files are not ours to remove.
-			var err error
-			if missing, err = checkNewDataDir(data); err != nil {
-				return err
-			}
-			made = true
-			if s, err = createStore(data); err != nil {
-				return err
-			}
-			if accounts, err = e.newAccounts(s); err != nil {
-				return err
-			}
-		}
-		var err error
-		admin, err = accounts.CreateFirst(ctx, in, password)
-		return err
-	})
-	switch {
-	case errors.Is(err, errProblemsTold):
-		return fail(nil)
-	case err != nil:
-		return fail(err)
-	}
-	if importing {
-		warnings, err := edit.ImportWith(ctx, s, src, admin.ID, edit.ImportOptions{URL: override})
-		for _, w := range warnings {
-			p.printProblem(w)
-		}
-		if err != nil {
-			return fail(err)
-		}
-	}
-	err = s.Close()
-	s = nil
-	if err != nil {
-		return fail(err)
-	}
 
-	printf(e.stdout, "created the data directory %s\n", data)
+	printf(e.stdout, "initialized the store of %s\n", db)
 	printf(e.stdout, "created the administrator %s (%s)\n", admin.Login, admin.ID)
 	if importing {
 		printf(e.stdout, "imported the site %s\n", site)
@@ -191,51 +164,104 @@ func runInit(ctx context.Context, args []string, e env) int {
 	return 0
 }
 
-// checkNewDataDir checks that dir can be made a data directory, which must be missing or an empty directory, and
-// reports whether it is missing.
-func checkNewDataDir(dir string) (missing bool, err error) {
-	info, err := os.Stat(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return true, nil
-	case err != nil:
-		return false, err
-	case !info.IsDir():
-		return false, fmt.Errorf("%s: not a directory; the data directory must be missing or an empty directory", dir)
+// openNewStore opens the store of the daemon whose sockets are in the directory db as its writer, and makes it, with its
+// first commit, if it has none. It is closed if it is refused.
+func openNewStore(db string) (*store.Store, error) {
+	s, err := store.Open(dbDialer(db))
+	if errors.Is(err, store.ErrNoStore) {
+		return store.Create(dbDialer(db))
 	}
-	entries, err := os.ReadDir(dir)
-	switch {
-	case err != nil:
-		return false, err
-	case len(entries) > 0:
-		return false, fmt.Errorf("%s: not empty; the data directory must be missing or an empty directory", dir)
-	}
-	return false, nil
+	return s, err
 }
 
-// cleanupNewDataDir closes the store s, unless it is nil, and removes what init or backup has made in the data directory
-// dir, the directory that the kernel takes the path dir for: logdb/ and files/, and dir itself if it was missing. It leaves
-// the parents that making dir has made.
-func cleanupNewDataDir(s *store.Store, dir string, missing bool) error {
-	var errs []error
-	if s != nil {
-		errs = append(errs, s.Close())
+// initRun is what whiteroom init does with its store, in the order that its usage tells.
+type initRun struct {
+	e          env
+	p          errorPrinter
+	db         string
+	store      *store.Store
+	site       string
+	theme, url string
+	in         account.Input
+
+	stranded bool // the administrator is made and the import of the site has failed
+}
+
+// do checks that the store is new, and then, for a site, that it imports, with a trial import that commits nothing; it asks
+// for the password, makes the administrator and imports the site. The error is that to print, or errProblemsTold for
+// problems that have been printed.
+func (r *initRun) do(ctx context.Context) (account.Account, error) {
+	if err := r.checkNew(ctx); err != nil {
+		return account.Account{}, err
 	}
-	// Not filepath.Join(dir, ...): it drops a ".." after a symbolic link, and names another directory than the one that was made.
-	root, err := os.OpenRoot(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		errs = append(errs, err)
-	default:
-		errs = append(errs, root.RemoveAll("logdb"), root.RemoveAll("files"), root.Close())
-	}
-	if missing {
-		if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			errs = append(errs, err)
+	var src edit.Source
+	if r.site != "" {
+		opened, closeSite, err := openSite(r.site, r.theme)
+		if err != nil {
+			return account.Account{}, err
+		}
+		defer closeSite()
+		src = opened
+		trialUser, err := content.NewIDSource(rand.Reader).NewID(content.RefUser, time.Now())
+		if err != nil {
+			return account.Account{}, err
+		}
+		// Before the password is read, so that nothing is asked for that cannot be used; its warnings are those of the import.
+		if _, err := edit.ImportWith(ctx, r.store, src, trialUser, edit.ImportOptions{URL: r.url, Trial: true}); err != nil {
+			return account.Account{}, err
 		}
 	}
-	return errors.Join(errs...)
+	if err := ctx.Err(); err != nil {
+		return account.Account{}, err
+	}
+
+	accounts, err := r.e.newAccounts(r.store)
+	if err != nil {
+		return account.Account{}, err
+	}
+	var admin account.Account
+	err = askPassword(ctx, r.e, r.p.command, "Password", func(password string) error {
+		var err error
+		admin, err = accounts.CreateFirst(ctx, r.in, password)
+		return err
+	})
+	if err != nil {
+		return account.Account{}, err
+	}
+	if src == nil {
+		return admin, nil
+	}
+	warnings, err := edit.ImportWith(ctx, r.store, src, admin.ID, edit.ImportOptions{URL: r.url})
+	for _, w := range warnings {
+		r.p.printProblem(w)
+	}
+	if err != nil {
+		r.stranded = true
+	}
+	return admin, err
+}
+
+// checkNew refuses a store that has an account or a document, before anything is written or asked for.
+func (r *initRun) checkNew(ctx context.Context) error {
+	return r.store.View(ctx, func(tx *store.Tx) error {
+		rows, err := tx.Accounts()
+		switch {
+		case err != nil:
+			return err
+		case len(rows) > 0:
+			return fmt.Errorf("the store of %s has accounts: init is for a new store", r.db)
+		}
+		for _, kind := range newStoreKinds {
+			docs, err := tx.Documents(kind)
+			switch {
+			case err != nil:
+				return err
+			case len(docs) > 0:
+				return fmt.Errorf("the store of %s has documents: init is for a new store", r.db)
+			}
+		}
+		return nil
+	})
 }
 
 // printInitProblems prints on w the problems that the account operation finds in the flags and in the password, a line for

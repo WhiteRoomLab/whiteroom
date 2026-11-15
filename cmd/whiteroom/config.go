@@ -7,6 +7,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/configfile"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
 )
 
 // config holds the items of a config file that whiteroom uses; those that the file does not give are zero. The paths that
@@ -37,6 +38,12 @@ func loadConfig(file string) (config, error) {
 		workers: f.Workers, memory: f.Memory,
 	}, nil
 }
+
+// errNoDB is the usage error of a command that needs the daemon of the store and is given none.
+const errNoDB = "no database: give -db DIR, the directory of the sockets of whiteroom-db, or db in the config file"
+
+// dbDialer is the Dialer of the sockets that whiteroom-db serve makes in the directory dir.
+func dbDialer(dir string) dbclient.Dialer { return dbclient.SocketDir(dir) }
 
 // flagGiven reports whether the command line gave the flag name, also with its default value.
 func flagGiven(flags *flag.FlagSet, name string) bool {

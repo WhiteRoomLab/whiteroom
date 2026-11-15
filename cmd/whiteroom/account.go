@@ -23,8 +23,9 @@ const accountUsage = `Usage:
   whiteroom account delete [flags] ID
         delete the account with the ID, also if its row cannot be read
 
-These commands change the data directory itself, so they fail while a
-whiteroom serve admin has it open: stop that first.
+These commands connect to the daemon whiteroom-db as the writer of the store, so
+they fail while a whiteroom serve admin is connected as the writer: stop that
+first. The daemon stays running.
 
 Run "whiteroom account reset -h" or "whiteroom account delete -h" for the
 flags.
@@ -44,16 +45,19 @@ and again if the two are not the same or the password is refused, at most 3
 times; otherwise it is the first line of the input, which must not be empty and
 has at most 8192 bytes. The command prints no password and no token.
 
-The command changes the data directory itself, so it fails while a whiteroom
-serve admin has it open: stop that first. If another administrator can log in,
-the admin API resets a password without that. If the command fails once it has
-removed the old password, the account has no password: run the command again.
+The command connects to the daemon whiteroom-db whose sockets are in the
+directory of -db as the writer of the store, so it fails while a whiteroom serve
+admin is connected as the writer: stop that first, and leave the daemon running.
+If another administrator can log in, the admin API resets a password without that.
+If the command fails once it has removed the old password, the account has no
+password: run the command again.
 
 A row of the accounts that cannot be read stops the command, which names it:
 delete it with whiteroom account delete.
 
-With -config, the item data of the YAML file gives what -data leaves out; the
-other items are checked and not used. Without it, no config file is read.
+With -config, the item db of the YAML file gives what -db leaves out; the other
+items are checked and not used: one file may be shared with whiteroom-db. Without
+it, no config file is read.
 
 Flags:
 `
@@ -68,11 +72,13 @@ deleted, and a row that cannot be read is in the way. The sessions of the
 account end. No document changes: who created or saved one stays as it was. The
 standard input is not read.
 
-The command changes the data directory itself, so it fails while a whiteroom
-serve admin has it open: stop that first.
+The command connects to the daemon whiteroom-db whose sockets are in the
+directory of -db as the writer of the store, so it fails while a whiteroom serve
+admin is connected as the writer: stop that first, and leave the daemon running.
 
-With -config, the item data of the YAML file gives what -data leaves out; the
-other items are checked and not used. Without it, no config file is read.
+With -config, the item db of the YAML file gives what -db leaves out; the other
+items are checked and not used: one file may be shared with whiteroom-db. Without
+it, no config file is read.
 
 Flags:
 `
@@ -96,10 +102,11 @@ func runAccount(ctx context.Context, args []string, e env) int {
 	return 2
 }
 
-// accountTarget is what whiteroom account reset and delete are given: the data directory and their one argument.
+// accountTarget is what whiteroom account reset and delete are given: the directory of the sockets of the daemon and their
+// one argument.
 type accountTarget struct {
-	name      string // of the command, such as "whiteroom account reset"
-	data, arg string
+	name    string // of the command, such as "whiteroom account reset"
+	db, arg string
 }
 
 // parseAccountArgs parses the arguments of the command name, which has the usage usage and takes one argument, called
@@ -112,9 +119,9 @@ func parseAccountArgs(args []string, e env, name, usage, what, argument string) 
 		printf(flags.Output(), "%s", usage)
 		flags.PrintDefaults()
 	}
-	var configFile, dataDir string
+	var configFile, dbDir string
 	flags.StringVar(&configFile, "config", "", "read the settings from the YAML file `FILE`; the flags override them")
-	flags.StringVar(&dataDir, "data", "", "use the data directory `DIR` (default data of the config file)")
+	flags.StringVar(&dbDir, "db", "", "connect to the daemon whose sockets are in the directory `DIR` (default db of the config file)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return t, 0, false
@@ -133,16 +140,16 @@ func parseAccountArgs(args []string, e env, name, usage, what, argument string) 
 		printConfigError(e.stderr, flags.Name(), err)
 		return t, 2, false
 	}
-	data := cmp.Or(dataDir, cfg.data)
-	if data == "" {
-		return t, usageError(flags, "no data directory: give -data DIR, or data in the config file"), false
+	db := cmp.Or(dbDir, cfg.db)
+	if db == "" {
+		return t, usageError(flags, errNoDB), false
 	}
-	return accountTarget{name: flags.Name(), data: data, arg: flags.Arg(0)}, 0, true
+	return accountTarget{name: flags.Name(), db: db, arg: flags.Arg(0)}, 0, true
 }
 
-// openAccounts opens the data directory data as its writer, with the accounts of its store.
-func openAccounts(e env, data string) (*store.Store, *account.Manager, error) {
-	s, err := openStore(data)
+// openAccounts opens the store of the daemon whose sockets are in the directory db as its writer, with its accounts.
+func openAccounts(e env, db string) (*store.Store, *account.Manager, error) {
+	s, err := store.Open(dbDialer(db))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -153,11 +160,11 @@ func openAccounts(e env, data string) (*store.Store, *account.Manager, error) {
 	return s, m, nil
 }
 
-// adviseOnLock tells on w, if err is that of a store that another process has open as its writer, to stop the server
+// adviseOnLock tells on w, if err is that of a store that another process is connected to as its writer, to stop the server
 // that it is, and what the admin API does instead.
 func adviseOnLock(w io.Writer, command string, err error, api string) {
 	if strings.HasSuffix(err.Error(), ": another process is connected as the writer") {
-		printf(w, "%s: stop whiteroom serve admin on this data directory, and run the command again; if another "+
+		printf(w, "%s: stop whiteroom serve admin on this store, and run the command again; if another "+
 			"administrator can log in, the admin API does without that: %s\n", command, api)
 	}
 }
@@ -169,7 +176,7 @@ func accountReset(ctx context.Context, args []string, e env) int {
 		return code
 	}
 	p := errorPrinter{w: e.stderr, command: t.name}
-	s, m, err := openAccounts(e, t.data)
+	s, m, err := openAccounts(e, t.db)
 	if err != nil {
 		p.printError(ctx, err)
 		adviseOnLock(e.stderr, t.name, err, "POST /api/accounts/{id}/reset")
@@ -210,13 +217,13 @@ func shellQuote(s string) string {
 // unreadableRow matches the error of an operation on all the accounts that a row that cannot be read fails.
 var unreadableRow = regexp.MustCompile(`^accounts "([^"\\]+)": invalid value$`)
 
-// resetAccount does what whiteroom account reset does with the accounts m of the data directory: it finds the account
+// resetAccount does what whiteroom account reset does with the accounts m of the store: it finds the account
 // with the login name that t has, asks for a password for it, and resets it. It returns the account as it was found.
 // Every failure is an error that is printed, but errProblemsTold, which has been told.
 func resetAccount(ctx context.Context, e env, m *account.Manager, t accountTarget) (account.Account, error) {
 	if _, err := m.List(ctx); err != nil {
 		if match := unreadableRow.FindStringSubmatch(err.Error()); match != nil && content.CheckID(content.RefUser, match[1]) == nil {
-			err = errors.Join(err, fmt.Errorf("delete it with: whiteroom account delete -data %s %s", shellQuote(t.data), match[1]))
+			err = errors.Join(err, fmt.Errorf("delete it with: whiteroom account delete -db %s %s", shellQuote(t.db), match[1]))
 		}
 		return account.Account{}, err
 	}
@@ -271,7 +278,7 @@ func accountDelete(ctx context.Context, args []string, e env) int {
 		return code
 	}
 	p := errorPrinter{w: e.stderr, command: t.name}
-	s, m, err := openAccounts(e, t.data)
+	s, m, err := openAccounts(e, t.db)
 	if err != nil {
 		p.printError(ctx, err)
 		adviseOnLock(e.stderr, t.name, err, "DELETE /api/accounts/{id}, for an account whose row can be read")
