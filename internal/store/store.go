@@ -202,9 +202,9 @@ func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
 // another process fails after 2 seconds, and other processes read the store with OpenReader. Open removes the
 // temporary files in files/ that a process that has ended left (PutOriginal makes them); if it cannot
 // remove one, it fails with an error that names the file, and the store is unchanged. A store of the table schema 1 to
-// 5 gets the schema 6 in one Update, with the record store.upgrade (7.4): one of the schema 1 gets its index too (it
-// has none), and one of the schema 2 to 5 gets nothing else and has no document read; if that fails, so does Open, and
-// the store is unchanged.
+// 6 gets the schema 7 in one Update, with the record store.upgrade (7.4) and the rows of heads of its audit logs: one
+// of the schema 1 gets its index too (it has none), and one of the schema 2 to 6 gets nothing else and has no document
+// read; if that fails, so does Open, and the store is unchanged.
 func Open(dir string) (*Store, error) {
 	return open(dir, options{})
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -731,7 +732,8 @@ func TestCheckWritesNothing(t *testing.T) {
 	})
 }
 
-// TestDropIndexRow checks that DropIndexRow deletes the row of summaries and nothing else.
+// TestDropIndexRow checks that DropIndexRow deletes the row of summaries and nothing else of the index, and adds the
+// record store.write.
 func TestDropIndexRow(t *testing.T) {
 	eachStore(t, func(t *testing.T, s *Store) {
 		fillChecked(t, s)
@@ -766,7 +768,7 @@ func TestDropIndexRow(t *testing.T) {
 			Problem{AreaIndex, "summaries settings", "the row is missing"})
 	})
 
-	t.Run("no record", func(t *testing.T) {
+	t.Run("the record", func(t *testing.T) {
 		forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 			s, dir := newStore(t, tb)
 			fillChecked(t, s)
@@ -774,14 +776,43 @@ func TestDropIndexRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("AuditHeads() = %v", err)
 			}
+			records := allRecords(t, s)
 			events := len(rawEvents(t, s))
 			if err := DropIndexRow(t.Context(), s, content.RefTerm, termID); err != nil {
 				t.Fatalf("DropIndexRow() = %v", err)
 			}
-			after, err := s.AuditHeads(t.Context())
-			if err != nil || !slices.Equal(heads, after) || len(rawEvents(t, s)) != events {
-				t.Errorf("DropIndexRow() has changed the audit log: the heads %v, then %v (%v); the events %d, then %d", heads,
-					after, err, events, len(rawEvents(t, s)))
+			// One record more, store.write of the system, which is the only change of the audit log.
+			after := allRecords(t, s)
+			if len(after) != len(records)+1 || !slices.Equal(recordLines(after[:len(records)]), recordLines(records)) {
+				t.Fatalf("the records after DropIndexRow() = %d, want the %d from before and one more", len(after), len(records))
+			}
+			last := after[len(after)-1]
+			var wantN uint64 = 1
+			for _, h := range heads {
+				if h.Log == audit.ActivityLog {
+					wantN = h.N + 1
+				}
+			}
+			if last.Log != audit.ActivityLog || last.Actor != audit.System || last.Action != audit.StoreWrite ||
+				last.N != wantN || last.Target != (audit.Target{}) || len(last.Detail) != 0 {
+				t.Errorf("the record of DropIndexRow() = %+v, want store.write of the system, number %d, with no target and no "+
+					"detail", last, wantN)
+			}
+			if got := len(rawEvents(t, s)); got != events+1 {
+				t.Errorf("DropIndexRow() has added %d events, want 1", got-events)
+			}
+			newHeads, err := s.AuditHeads(t.Context())
+			if err != nil || len(newHeads) != len(heads) {
+				t.Fatalf("AuditHeads() after DropIndexRow() = %v, %v", newHeads, err)
+			}
+			for i, h := range newHeads {
+				if (h.Log == audit.ActivityLog) == (h == heads[i]) {
+					t.Errorf("the head of the %s log after DropIndexRow() is %+v, was %+v: only the activity log's changes",
+						h.Log, h, heads[i])
+				}
+			}
+			if err := s.VerifyAudit(t.Context(), heads); err != nil {
+				t.Errorf("VerifyAudit() after DropIndexRow() = %v", err)
 			}
 			r, err := openLogReader(dir, tb.options())
 			if err != nil {

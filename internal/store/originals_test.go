@@ -636,6 +636,7 @@ func TestOpenTempsErrors(t *testing.T) {
 	}{
 		{"remove", 0, removeTemp, "data/files/" + temp + ": cannot remove: input/output error"},
 		{"remove, schema 5", 5, removeTemp, "data/files/" + temp + ": cannot remove: input/output error"},
+		{"remove, schema 6", 6, removeTemp, "data/files/" + temp + ": cannot remove: input/output error"},
 		{"read", 0, func(op simfs.Op) bool { return op.Kind == simfs.OpReadDir && op.Path == "files" },
 			"data/files: cannot read: input/output error"},
 	} {

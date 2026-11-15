@@ -963,7 +963,10 @@ func TestExt4Extraction(t *testing.T) {
 		})
 	}))
 	noIndex := broken("no-index", 10, with(func(s *Store) error {
-		return DropIndexRow(t.Context(), s, content.RefMedia, workloadMedia(10))
+		// Past the store, whose Update adds a record that the workload does not have.
+		return logDB(t, s).Update(t.Context(), func(tx *logdb.Tx) error {
+			return tx.Delete(tableSummaries, docKey(content.RefMedia, workloadMedia(10)))
+		})
 	}))
 	noUpdate := broken("no-update", 9, func(dir string) error { return os.Chmod(filepath.Join(dir, "files"), 0o500) })
 	// A new store.

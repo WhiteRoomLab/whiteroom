@@ -17,6 +17,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -39,25 +40,32 @@ import (
 //	operations (8)      operation ID -> the data that the caller of PutOperation keeps
 //	accounts (9)        user ID -> the row of a login account, which internal/account writes and the store does not read
 //	sessions (10)       session key -> the row of a session, which internal/account writes and the store does not read
+//	heads (11)          the name of an audit log, "login" or "activity" -> the line of the head of its chain
+//	                    (audit.Head.String), which the daemon writes out without reading it; none while the log has no
+//	                    record
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 6 (upgradeLog). The
-// schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
-// summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
-// the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a store of an older
-// schema has no rows of. The schema 6 adds the audit log: the heads in meta, and the audit events that hold its
-// records. Open sets the schema 6 in a store of the schema 1 to 5 together with the record store.upgrade, which is the
-// first of its activity log, and the head; one of the schema 2 to 5 gets nothing else and has no document read, and
-// the index of one of the schema 1 is built as before.
-const logSchemaVersion = 6
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema logSchemaVersion
+// (upgradeLog). The schema 2 has the index without the role scheduled in references and without the scheduled items in
+// the entries of summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its
+// index is that of the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a
+// store of an older schema has no rows of. The schema 6 adds the audit log: the heads in meta, and the audit events that
+// hold its records. The schema 7 adds the table heads, and lets the daemon add its marks to the events, which the reads
+// of the audit log skip (audit.go). Open sets the schema 7 in a store of the schema 1 to 6 together with the record
+// store.upgrade (the first of the activity log, with its head, for one of the schema 1 to 5) and the rows of heads of
+// the logs that have a head; one of the schema 2 to 6 gets nothing else and has no document read, and the index of one
+// of the schema 1 is built as before.
+const logSchemaVersion = dbwire.TableVersion
 
-// indexSchema is the first schema that has the index tables, and auditSchema the first that has the audit log.
+// indexSchema is the first schema that has the index tables, auditSchema the first that has the audit log, and
+// exportSchema the first that has the table heads.
 const (
-	indexSchema = 2
-	auditSchema = 6
+	indexSchema  = 2
+	auditSchema  = 6
+	exportSchema = 7
 )
 
 const (
@@ -73,10 +81,12 @@ const (
 	tableSessions
 )
 
+const tableHeads = dbwire.TableHeads
+
 var tableNames = map[uint32]string{
 	tableMeta: "meta", tableDocuments: "documents", tableHistory: "history", tableRevisions: "revisions",
 	tableEntryRevisions: "entryRevisions", tableSummaries: "summaries", tableReferences: "references",
-	tableOperations: "operations", tableAccounts: "accounts", tableSessions: "sessions",
+	tableOperations: "operations", tableAccounts: "accounts", tableSessions: "sessions", tableHeads: "heads",
 }
 
 // indexTableIDs are the tables of the engine that keep the index tables.
@@ -173,10 +183,10 @@ func checkSchema(name string) func(*logdb.Tx) error {
 }
 
 // upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
-// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 6 and the record
-// store.upgrade. One of the schema 2 to 5 has the index of the schema 6 already: it gets only the schema 6 and the
-// record, and no document, revision or object is read, so a damaged one does not stop Open, and only the reads that use
-// it fail. name is that of its logdb/ in errors, and the record has the time of now.
+// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 7 and the record
+// store.upgrade. One of the schema 2 to 6 has the index of the schema 7 already: it gets only the schema 7, the record
+// and the rows of heads, and no document, revision or object is read, so a damaged one does not stop Open, and only the
+// reads that use it fail. name is that of its logdb/ in errors, and the record has the time of now.
 func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 	var version uint64
 	upgrade := false
@@ -194,14 +204,31 @@ func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
-		// The index of the schema 2 to 5 is that of the schema 6, and making it again would read every document.
+		// The index of the schema 2 to 6 is that of the schema 7, and making it again would read every document.
 		if version < indexSchema {
 			if err := (&Tx{b: &logTx{tx: tx, db: b.db}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
 				return err
 			}
 		}
-		return recordIn(b.db, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
-			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}})
+		upgrade := audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
+			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}}
+		if err := recordIn(b.db, tx, now, upgrade); err != nil {
+			return err
+		}
+		// The heads of a store of the schema 6 have no rows yet; the record has put that of its log.
+		t := &logTx{tx: tx, db: b.db}
+		for _, log := range auditLogs {
+			h, ok, err := t.auditHead(log)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if err := t.putHeadLine(h); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name,
 			logSchemaVersion, err)
@@ -469,7 +496,21 @@ func (t *logTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 }
 
 func (t *logTx) setAuditHead(h audit.Head) error {
-	return t.tx.Put(tableMeta, []byte(metaHeads[h.Log]), append(binary.AppendUvarint(nil, h.N), h.Hash[:]...))
+	value := append(binary.AppendUvarint(nil, h.N), h.Hash[:]...)
+	if err := t.tx.Put(tableMeta, []byte(metaHeads[h.Log]), value); err != nil {
+		return err
+	}
+	return t.putHeadLine(h)
+}
+
+// putHeadLine puts the line of h in heads, where the daemon finds it to write it out.
+func (t *logTx) putHeadLine(h audit.Head) error {
+	return t.tx.Put(tableHeads, []byte(h.Log), []byte(h.String()))
+}
+
+func (t *logTx) headLine(log audit.Log) (string, bool, error) {
+	v, ok := t.tx.Get(tableHeads, []byte(log))
+	return string(v), ok, nil
 }
 
 func (t *logTx) auditReady() (bool, error) {
@@ -479,6 +520,15 @@ func (t *logTx) auditReady() (bool, error) {
 		return false, invalidValue(tableMeta, []byte(metaSchema))
 	}
 	return version >= auditSchema, nil
+}
+
+func (t *logTx) exportReady() (bool, error) {
+	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	version, valid := decodeUint(v)
+	if !ok || !valid {
+		return false, invalidValue(tableMeta, []byte(metaSchema))
+	}
+	return version >= exportSchema, nil
 }
 
 func (t *logTx) changed() bool {

@@ -7,13 +7,16 @@ import (
 	"fmt"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
 // The store keeps the login history and the activity log (7.4) as the audit events of the engine: each record is one
 // event, to which the store gives its number in its log, the hash of the record before it, and the time of the Update.
-// The head of each log, the number and the hash of its last record, is in meta. A record is added in the Update of the
-// change that it tells of (an Update that changes anything and adds none fails with ErrUnrecorded), and the store has no
-// way to change or remove one.
+// The head of each log, the number and the hash of its last record, is in meta, and its line for the export is in heads
+// (the schema 7), which VerifyAudit checks. A record is added in the Update of the change that it tells of (an Update
+// that changes anything and adds none fails with ErrUnrecorded), and the store has no way to change or remove one. The
+// daemon adds events of its own, its marks (dbwire.AppendMark), between the records: the reads skip them, and an event
+// that starts as a mark does and is not one is broken, as is one that is not a record.
 
 // ErrNoAuditLog is the error of the reads of the audit log in a store of the table schema before 6, which has none:
 // opening it as its writer once gives it one.
@@ -32,6 +35,18 @@ func (brokenError) Unwrap() error { return audit.ErrBroken }
 
 func brokenEvent(number uint64) error {
 	return brokenError(fmt.Sprintf("audit event %d: not a record of the audit log", number))
+}
+
+// skipEvent reports whether the event number, data, is a mark of the daemon, which the reads of the audit log skip. It
+// returns the error of brokenEvent for another event of the daemon.
+func skipEvent(number uint64, data []byte) (skip bool, err error) {
+	if !dbwire.IsDaemonEvent(data) {
+		return false, nil
+	}
+	if _, ok := dbwire.ParseMark(data); !ok {
+		return false, brokenEvent(number)
+	}
+	return true, nil
 }
 
 func brokenRecord(log audit.Log, n, number uint64, reason string) error {
@@ -113,7 +128,8 @@ func (t *Tx) auditHeads() ([]audit.Head, error) {
 
 // ReadAudit calls fn with each record that f selects, from the oldest, until fn returns false. A store that OpenReader
 // has opened first reads the commits that have become durable, as a View does. A store of the table schema before 6
-// fails with ErrNoAuditLog, and an event that is not a record with an error that wraps audit.ErrBroken.
+// fails with ErrNoAuditLog, and an event that is neither a record nor a mark of the daemon with an error that wraps
+// audit.ErrBroken; the marks are not passed to fn.
 func (s *Store) ReadAudit(ctx context.Context, f audit.Filter, fn func(audit.Record) bool) error {
 	if err := f.Check(); err != nil {
 		return err
@@ -124,6 +140,14 @@ func (s *Store) ReadAudit(ctx context.Context, f audit.Filter, fn func(audit.Rec
 		}
 		var broken error
 		if err := t.b.events(ctx, func(number uint64, data []byte) bool {
+			skip, err := skipEvent(number, data)
+			if err != nil {
+				broken = err
+				return false
+			}
+			if skip {
+				return true
+			}
 			r, err := audit.Decode(data)
 			if err != nil {
 				broken = brokenEvent(number)
@@ -184,13 +208,15 @@ func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte) 
 }
 
 // VerifyAudit reads every record of the audit log, and checks that it is as the store has written it: that each
-// record can be read, that the numbers of a log are 1, 2 and so on, that each record has the hash of the one before it,
-// and that the last of each log is the head in the table. The activity log has a record, since every store of the table
-// schema 6 or later has store.create or store.upgrade in it (which of them it has is not looked at); the login history
-// may have none. It fails with an error that wraps audit.ErrBroken, and names the log, the number of the record and that
-// of the event, if one of them is not. A rewrite of the records that also makes the chain and the heads of the table
-// agree is found only by anchors, the heads that were kept outside the store (audit.ParseHead): each must be the hash of
-// the record of its number. It returns the errors of the reads, and the end of ctx, as they are.
+// record can be read (the marks of the daemon are skipped), that the numbers of a log are 1, 2 and so on, that each
+// record has the hash of the one before it, and that the last of each log is the head in the table. In a store of the
+// table schema 7 or later it also checks that the row of heads of each log is the line of that head, and that a log
+// without a head has none. The activity log has a record, since every store of the table schema 6 or later has
+// store.create or store.upgrade in it (which of them it has is not looked at); the login history may have none. It
+// fails with an error that wraps audit.ErrBroken, and names the log, the number of the record and that of the event, if
+// one of them is not. A rewrite of the records that also makes the chain, the heads of the table and their rows agree
+// is found only by anchors, the heads that were kept outside the store (audit.ParseHead): each must be the hash of the
+// record of its number. It returns the errors of the reads, and the end of ctx, as they are.
 func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 	byRecord := map[anchorKey][][sha256.Size]byte{}
 	for i, a := range anchors {
@@ -211,6 +237,14 @@ func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 		ends := map[audit.Log]*chainEnd{}
 		var broken error
 		if err := t.b.events(ctx, func(number uint64, data []byte) bool {
+			skip, err := skipEvent(number, data)
+			if err != nil {
+				broken = err
+				return false
+			}
+			if skip {
+				return true
+			}
 			r, err := audit.Decode(data)
 			if err != nil {
 				broken = brokenEvent(number)
@@ -238,8 +272,36 @@ func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 		if broken != nil {
 			return broken
 		}
-		return checkEnds(ends, heads, anchors)
+		if err := checkEnds(ends, heads, anchors); err != nil {
+			return err
+		}
+		return t.checkHeadLines(heads)
 	})
+}
+
+// checkHeadLines checks that heads, the heads in meta, have each a row in heads of their line, and that no other log
+// has one. A store of a table schema before 7 has none.
+func (t *Tx) checkHeadLines(heads []audit.Head) error {
+	ready, err := t.b.exportReady()
+	if err != nil || !ready {
+		return err
+	}
+	byLog := map[audit.Log]audit.Head{}
+	for _, h := range heads {
+		byLog[h.Log] = h
+	}
+	for _, log := range auditLogs {
+		line, hasLine, err := t.b.headLine(log)
+		if err != nil {
+			return err
+		}
+		head, hasHead := byLog[log]
+		if hasLine != hasHead || hasHead && line != head.String() {
+			return brokenError(fmt.Sprintf("audit log %q: the row of the head for the export is not the head in the table",
+				log))
+		}
+	}
+	return nil
 }
 
 // checkEnds checks the last record of each log, ends, against its head in the table, in heads, and against anchors.

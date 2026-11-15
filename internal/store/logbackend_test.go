@@ -25,6 +25,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -734,6 +735,11 @@ func TestLogTables(t *testing.T) {
 		}
 		return string(headValue(h))
 	}
+	// The line of that head, which the daemon writes out: the name of the log, the number and the hash.
+	activityLine := func() string {
+		h, _ := headOf(t, s, audit.ActivityLog)
+		return fmt.Sprintf("audit head activity %d sha256:%x", h.N, h.Hash)
+	}
 	// Fields of fewer than 128 bytes: their lengths are a byte.
 	field := func(b string) string { return string([]byte{byte(len(b))}) + b }
 	hash := func(b []byte) string {
@@ -751,7 +757,7 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x06"},
+		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x07"},
 			{"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
@@ -776,10 +782,11 @@ func TestLogTables(t *testing.T) {
 		tableOperations: {{"op_1", "done"}},
 		tableAccounts:   {{userID, "row"}},
 		tableSessions:   {{session, "session"}},
+		tableHeads:      {{"activity", activityLine()}},
 	}
 	check := func(when string) {
 		t.Helper()
-		for table := range uint32(11) {
+		for table := range uint32(12) {
 			if got := rawTable(t, s, table); !slices.Equal(got, want[table]) {
 				t.Errorf("table %d %s = %q, want %q", table, when, got, want[table])
 			}
@@ -792,6 +799,7 @@ func TestLogTables(t *testing.T) {
 		return err
 	})
 	want[tableMeta][0][1], want[tableMeta][4][1] = activityHead(), "\x03"
+	want[tableHeads][0][1] = activityLine()
 	want[tableDocuments] = want[tableDocuments][1:]
 	deletion := [2]string{"entry\x00" + entryID + "\x00" + seq(3), "\x03\x00" + tail}
 	want[tableHistory] = append([][2]string{want[tableHistory][0], deletion}, want[tableHistory][1:]...)
@@ -1171,21 +1179,47 @@ func snapshot(t *testing.T, dir string) map[string]string {
 	return m
 }
 
+// TestTablesAreThoseOfDbwire checks that the numbers and names that the daemon acts on are the store's.
+func TestTablesAreThoseOfDbwire(t *testing.T) {
+	if tableMeta != dbwire.TableMeta || tableHistory != dbwire.TableHistory || tableRevisions != dbwire.TableRevisions ||
+		tableEntryRevisions != dbwire.TableEntryRevisions || tableHeads != dbwire.TableHeads {
+		t.Errorf("the tables meta, history, revisions, entryRevisions and heads are %d, %d, %d, %d and %d; dbwire has "+
+			"%d, %d, %d, %d and %d", tableMeta, tableHistory, tableRevisions, tableEntryRevisions, tableHeads,
+			dbwire.TableMeta, dbwire.TableHistory, dbwire.TableRevisions, dbwire.TableEntryRevisions, dbwire.TableHeads)
+	}
+	if tableHeads != 11 {
+		t.Errorf("the table heads is %d, want 11", tableHeads)
+	}
+	if metaSchema != dbwire.MetaSchema || logSchemaVersion != dbwire.TableVersion {
+		t.Errorf("the schema is %q at %d, dbwire has %q at %d", metaSchema, logSchemaVersion, dbwire.MetaSchema,
+			dbwire.TableVersion)
+	}
+	if tableNames[tableHeads] != "heads" {
+		t.Errorf("the name of the table heads is %q", tableNames[tableHeads])
+	}
+	for _, log := range auditLogs {
+		line := audit.Head{Log: log, N: 1<<64 - 1}.String()
+		if !dbwire.ValidHeadRow([]byte(log), []byte(line)) {
+			t.Errorf("the row of the head of the log %q is not one that the daemon accepts", log)
+		}
+	}
+}
+
 // TestLogSchemaVersion checks that open and openLogReader refuse a store without the schema of the log backend, or of
-// another one, and change no file. The schema is 6, whose rows of meta TestLogTables checks, and whose upgrade of the
-// older ones TestIndexUpgrade checks.
+// another one, and change no file. The schema is 7, whose rows of meta and heads TestLogTables checks, and whose
+// upgrade of the older ones TestIndexUpgrade checks.
 func TestLogSchemaVersion(t *testing.T) {
-	if logSchemaVersion != 6 {
-		t.Fatalf("logSchemaVersion = %d, want 6: change the tests of the schema with it", logSchemaVersion)
+	if logSchemaVersion != 7 {
+		t.Fatalf("logSchemaVersion = %d, want 7: change the tests of the schema with it", logSchemaVersion)
 	}
 	for _, tt := range []struct {
 		name  string
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{7}, "the store schema is of version 7, newer than this program knows (6)"},
+		{"newer", []byte{8}, "the store schema is of version 8, newer than this program knows (7)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (6)"},
+			"the store schema is of version 300, newer than this program knows (7)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},

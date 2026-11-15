@@ -56,12 +56,16 @@ type backendTx interface {
 	// The audit events, which are the records of the audit log (audit.go). addEvent adds one in the Update. events calls
 	// fn with the number and the data of each audit event of the commits that the transaction sees, in order, until fn
 	// returns false. auditHead returns the head of the chain of log, which a record sets with setAuditHead, and false if
-	// the log has none; auditReady returns false only for a store of a table schema before 6, which has no audit log.
+	// the log has none; setAuditHead also sets the line of the head for the export, which headLine returns (false if
+	// none). auditReady returns false only for a store of a table schema before 6, which has no audit log, and
+	// exportReady false only for one before 7, which has no line of a head for the export.
 	addEvent(data []byte) error
 	events(ctx context.Context, fn func(number uint64, data []byte) bool) error
 	auditHead(log audit.Log) (audit.Head, bool, error)
 	setAuditHead(h audit.Head) error
+	headLine(log audit.Log) (line string, ok bool, err error)
 	auditReady() (bool, error)
+	exportReady() (bool, error)
 	changed() bool // whether the transaction has written anything but audit events and heads
 
 	// The rows of the index tables, by key. indexScan calls fn with the keys that start with prefix, and their values,

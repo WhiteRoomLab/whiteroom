@@ -48,6 +48,7 @@ type modelState struct {
 	revByID   map[string]int64 // the seq of each revision
 	events    [][]byte
 	heads     map[audit.Log]audit.Head          // of the audit logs that have records
+	lines     map[audit.Log]string              // the lines of the heads for the export
 	index     [numIndexTables]map[string][]byte // the rows of the index tables
 	number    int64                             // the last number
 }
@@ -57,7 +58,7 @@ func (s *modelState) clone() *modelState {
 	c := &modelState{
 		objects: maps.Clone(s.objects), versions: slices.Clone(s.versions), current: maps.Clone(s.current),
 		revisions: slices.Clone(s.revisions), revByID: maps.Clone(s.revByID), events: slices.Clone(s.events),
-		heads: maps.Clone(s.heads), number: s.number,
+		heads: maps.Clone(s.heads), lines: maps.Clone(s.lines), number: s.number,
 	}
 	for i, rows := range s.index {
 		c.index[i] = maps.Clone(rows)
@@ -67,7 +68,7 @@ func (s *modelState) clone() *modelState {
 
 func newModelBackend() *modelBackend {
 	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{},
-		heads: map[audit.Log]audit.Head{}}
+		heads: map[audit.Log]audit.Head{}, lines: map[audit.Log]string{}}
 	for i := range st.index {
 		st.index[i] = map[string][]byte{}
 	}
@@ -317,10 +318,20 @@ func (t *modelTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 
 func (t *modelTx) setAuditHead(h audit.Head) error {
 	t.st.heads[h.Log] = h
+	t.st.lines[h.Log] = h.String()
 	return nil
 }
 
+func (t *modelTx) headLine(log audit.Log) (string, bool, error) {
+	line, ok := t.st.lines[log]
+	return line, ok, nil
+}
+
 func (t *modelTx) auditReady() (bool, error) {
+	return true, nil
+}
+
+func (t *modelTx) exportReady() (bool, error) {
 	return true, nil
 }
 
