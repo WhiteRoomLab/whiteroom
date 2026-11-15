@@ -35,7 +35,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
-	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 	"github.com/WhiteRoomLab/whiteroom/internal/unixsock"
 )
 
@@ -408,7 +408,7 @@ func runAdminCmd(t *testing.T, args ...string) (code int, stdout, stderr string)
 // has not closed it.
 func checkUnlocked(t *testing.T, what, data string) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Errorf("%s: %v", what, err)
 		return
@@ -419,7 +419,9 @@ func checkUnlocked(t *testing.T, what, data string) {
 }
 
 // manifestOf returns the manifest of the files of dir, as the manifest.txt of the golden files has it: a line for each
-// file, with its size and its SHA-256.
+// file, with its size and its SHA-256. The line of logdb/head has no SHA-256: until the commands connect to whiteroom-db,
+// a command that opens a data directory starts a daemon in its process, whose engine rewrites that file when it opens
+// and when it closes, and nothing else of the directory.
 func manifestOf(t *testing.T, dir string) string {
 	t.Helper()
 	var names []string
@@ -439,6 +441,10 @@ func manifestOf(t *testing.T, dir string) string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if name == "logdb/head" {
+			fmt.Fprintf(&b, "%s %d\n", name, len(data))
+			continue
+		}
 		fmt.Fprintf(&b, "%s %d %x\n", name, len(data), sha256.Sum256(data))
 	}
 	return b.String()
@@ -447,7 +453,7 @@ func manifestOf(t *testing.T, dir string) string {
 // activityActions returns the actions of the records of the activity log in the data directory, which no process has open.
 func activityActions(t *testing.T, data string) []audit.Action {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +473,7 @@ func activityActions(t *testing.T, data string) []audit.Action {
 // directory, which a server may have open.
 func loginClients(t *testing.T, data string) []string {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +569,7 @@ func TestServeAdminEmpty(t *testing.T) {
 	}
 
 	data := filepath.Join(t.TempDir(), "data")
-	st, err := store.Create(data)
+	st, err := storetest.Create(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1595,14 +1601,14 @@ func TestServeAdminErrors(t *testing.T) {
 
 	// What fails when it opens what it needs, in the order that it opens it.
 	missing := filepath.Join(t.TempDir(), "missing")
-	_, dataErr := store.Open(missing)
+	_, dataErr := storetest.Open(missing)
 	notStore := t.TempDir()
-	_, notStoreErr := store.Open(notStore)
+	_, notStoreErr := storetest.Open(notStore)
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, fileErr := store.Open(file)
+	_, fileErr := storetest.Open(file)
 	_, rootErr := os.OpenRoot(missing)
 	if dataErr == nil || notStoreErr == nil || fileErr == nil || rootErr == nil {
 		t.Fatalf("the errors of the missing things are %v, %v, %v and %v", dataErr, notStoreErr, fileErr, rootErr)
@@ -1664,7 +1670,7 @@ func TestServeAdminErrors(t *testing.T) {
 	first := startAdmin(t, t.Context(), s.args()...)
 	for _, addr := range []string{first.addr, "127.0.0.1:0"} {
 		code, stdout, stderr := runAdminCmd(t, s.args("-addr", addr)...)
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process holds the writer lock\n") ||
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process is connected as the writer\n") ||
 			!strings.HasPrefix(stderr, "whiteroom serve admin: ") || strings.Count(stderr, "\n") != 1 {
 			t.Errorf("a second server with -addr %s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer lock",
 				addr, code, stdout, stderr)
@@ -1685,7 +1691,7 @@ func TestServeAdminErrors(t *testing.T) {
 	another := socketPath(t)
 	for _, path := range []string{sock, another} {
 		code, stdout, stderr := runAdminCmd(t, s.args("-socket", path, "-origin", "http://localhost")...)
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process holds the writer lock\n") ||
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process is connected as the writer\n") ||
 			!strings.HasPrefix(stderr, "whiteroom serve admin: ") || strings.Count(stderr, "\n") != 1 {
 			t.Errorf("a second server with -socket %s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer lock",
 				path, code, stdout, stderr)
@@ -1883,7 +1889,7 @@ func TestRunAdminServeEndsFirst(t *testing.T) {
 func TestRunAdminRecordFailures(t *testing.T) {
 	var logged syncBuffer
 	a := openForRunLogging(t, initEmpty(t), log.New(&logged, "", 0))
-	dead, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	dead, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2074,7 +2080,7 @@ func lastHeads(heads []audit.Head) map[audit.Log]audit.Head {
 // read as another process reads it.
 func storedHeads(t *testing.T, data string) map[audit.Log]audit.Head {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2090,7 +2096,7 @@ func storedHeads(t *testing.T, data string) map[audit.Log]audit.Head {
 // heads, which a server has written, say.
 func verifyHeads(t *testing.T, what, data string, heads []audit.Head) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2104,7 +2110,7 @@ func verifyHeads(t *testing.T, what, data string, heads []audit.Head) {
 // refused for a password that is too long: those recorded one by one, and those that login.suppressed records count.
 func tooLongLogins(t *testing.T, data string) (recorded, counted int) {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}

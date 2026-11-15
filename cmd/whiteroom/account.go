@@ -142,7 +142,7 @@ func parseAccountArgs(args []string, e env, name, usage, what, argument string) 
 
 // openAccounts opens the data directory data as its writer, with the accounts of its store.
 func openAccounts(e env, data string) (*store.Store, *account.Manager, error) {
-	s, err := store.Open(data)
+	s, err := openStore(data)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -156,7 +156,7 @@ func openAccounts(e env, data string) (*store.Store, *account.Manager, error) {
 // adviseOnLock tells on w, if err is that of a store that another process has open as its writer, to stop the server
 // that it is, and what the admin API does instead.
 func adviseOnLock(w io.Writer, command string, err error, api string) {
-	if strings.HasSuffix(err.Error(), ": another process holds the writer lock") {
+	if strings.HasSuffix(err.Error(), ": another process is connected as the writer") {
 		printf(w, "%s: stop whiteroom serve admin on this data directory, and run the command again; if another "+
 			"administrator can log in, the admin API does without that: %s\n", command, api)
 	}

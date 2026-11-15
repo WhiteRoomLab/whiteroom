@@ -20,6 +20,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // A Source is a build.Source.
@@ -51,7 +52,7 @@ func openSample(t *testing.T) source {
 
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

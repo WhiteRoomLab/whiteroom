@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
 // The environment of the helper process: its mode, the data directory, and the name of its backend.
@@ -29,6 +31,9 @@ const (
 	envMode    = "WHITEROOM_STORE_HELPER"
 	envDir     = "WHITEROOM_STORE_DIR"
 	envBackend = "WHITEROOM_STORE_BACKEND"
+	// envSockets is the directory of the sockets of the daemon of the test, to which the helper in the mode reader
+	// connects as a reader.
+	envSockets = "WHITEROOM_STORE_SOCKETS"
 )
 
 // marker starts the lines that the helper process prints to stdout to tell where it is.
@@ -58,7 +63,13 @@ func TestHelperProcess(t *testing.T) {
 		t.Fatalf("no backend %q", os.Getenv(envBackend))
 	}
 	if mode == "reader" {
-		s, err := openLogReader(os.Getenv(envDir), tb.options())
+		var s *Store
+		var err error
+		if sockets := os.Getenv(envSockets); sockets != "" {
+			s, err = openOn(dbclient.SocketDir(sockets), dbwire.RoleReader, time.Now, dbclient.Options{})
+		} else {
+			s, err = openLogReader(os.Getenv(envDir), tb.options())
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,12 +182,12 @@ type helper struct {
 // startHelper runs TestHelperProcess in the mode on the data directory dir of tb, and returns once it has printed want
 // after marker. It kills a helper that runs for 30 seconds. The end of the test kills it, and logs its output if the
 // test has failed.
-func startHelper(t *testing.T, tb testBackend, dir, mode, want string) *helper {
+func startHelper(t *testing.T, tb testBackend, dir, mode, want string, env ...string) *helper {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
 	// With -race, a process sleeps for a second before it exits unless atexit_sleep_ms is 0.
-	cmd.Env = append(os.Environ(), envMode+"="+mode, envDir+"="+dir, envBackend+"="+tb.name,
-		"GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
+	cmd.Env = append(append(os.Environ(), envMode+"="+mode, envDir+"="+dir, envBackend+"="+tb.name,
+		"GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0")), env...)
 	return startProcess(t, cmd, mode, want, 30*time.Second)
 }
 
@@ -420,9 +431,18 @@ func TestReadersWhileWriting(t *testing.T) {
 			t.Fatalf("create() = %v", err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
+		// The readers are clients of the daemon of the test, which listens on sockets for them.
+		sockets, err := os.MkdirTemp("", "wr")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(sockets) })
+		if err := daemonOf(t, s).Listen(sockets); err != nil {
+			t.Fatalf("Listen() = %v", err)
+		}
 		var readers []*helper
 		for range 2 {
-			readers = append(readers, startHelper(t, tb, dir, "reader", "ready"))
+			readers = append(readers, startHelper(t, tb, dir, "reader", "ready", envSockets+"="+sockets))
 		}
 		for n := 1; n <= updates; n++ {
 			update(t, s, func(tx *Tx) error { return putPair(tx, n) })

@@ -87,39 +87,39 @@ func TestExportedHeadsFindARewrite(t *testing.T) {
 		anchored string // the error of VerifyAudit with the heads that Export wrote; "" for none
 	}{
 		{"nothing rewritten", false, func(t *testing.T, events []logdb.Event) logdb.Rewrite {
-			return rewriteEvents(nil, nil, nil)
+			return rewriteRecords(nil, nil, nil)
 		}, ""},
 		{"the last record of the activity log dropped, with its head set back", false,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				h := audit.Head{Log: audit.ActivityLog, N: 5, Hash: sha256.Sum256(events[6].Data)}
-				return rewriteEvents(nil, []uint64{8}, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
+				return rewriteRecords(nil, []uint64{8}, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
 			},
 			`audit log "activity": the head kept outside the store is record 6, but the log ends with record 5 (event 7)`},
 		{"the login history dropped, with its head", false, func(t *testing.T, events []logdb.Event) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil})
+			return rewriteRecords(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil})
 		}, `audit log "login": the head kept outside the store is record 3, but the log has no record`},
 		{"the activity log made again from its third record", false,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				replace, head := rechain(t, events, audit.ActivityLog, 3, forge)
-				return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
+				return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
 			},
 			`audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		{"the activity log made again from its first record", false,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				replace, head := rechain(t, events, audit.ActivityLog, 1, func(r *audit.Record) { r.At = r.At.Add(time.Hour) })
-				return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
+				return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
 			},
 			`audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		{"the login history made again from its second record", false,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				replace, head := rechain(t, events, audit.LoginLog, 2, forge)
-				return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head})
+				return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head})
 			},
 			`audit log "login": record 3 (event 9): its hash is not that of the head kept outside the store`},
 		{"a record before the last head made again, with those after it", true,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				replace, head := rechain(t, events, audit.ActivityLog, 3, forge)
-				return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
+				return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
 			},
 			`audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		// The limit: the records that were added after the last head was written are in no head outside the store.
@@ -127,13 +127,13 @@ func TestExportedHeadsFindARewrite(t *testing.T) {
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				activity := audit.Head{Log: audit.ActivityLog, N: 6, Hash: sha256.Sum256(events[7].Data)}
 				login := audit.Head{Log: audit.LoginLog, N: 3, Hash: sha256.Sum256(events[8].Data)}
-				return rewriteEvents(nil, []uint64{10, 11}, map[audit.Log]*audit.Head{audit.ActivityLog: &activity, audit.LoginLog: &login})
+				return rewriteRecords(nil, []uint64{10, 11}, map[audit.Log]*audit.Head{audit.ActivityLog: &activity, audit.LoginLog: &login})
 			}, ""},
 		{"the records added after the last head made again", true,
 			func(t *testing.T, events []logdb.Event) logdb.Rewrite {
 				activity, activityHead := rechain(t, events, audit.ActivityLog, 7, forge)
 				login, loginHead := rechain(t, events, audit.LoginLog, 4, forge)
-				return rewriteEvents(merge(activity, login), nil,
+				return rewriteRecords(merge(activity, login), nil,
 					map[audit.Log]*audit.Head{audit.ActivityLog: &activityHead, audit.LoginLog: &loginHead})
 			}, ""},
 	} {
@@ -153,7 +153,9 @@ func TestExportedHeadsFindARewrite(t *testing.T) {
 					return errors.Join(tx.Record(eventRecord("after")), tx.Record(loginRecord(audit.Logout, "after")))
 				})
 			}
-			s = closeAndRewrite(t, s, dir, tt.rewrite(t, rawEvents(t, s)))
+			events := rawEvents(t, s)
+			s = closeAndRewrite(t, s, dir, tt.rewrite(t, events))
+			tt.anchored = renumber(events, tt.anchored)
 			if err := s.VerifyAudit(t.Context(), nil); err != nil {
 				t.Errorf("VerifyAudit() without the heads = %v, want nil: the rewrite is one that the store alone cannot find", err)
 			}

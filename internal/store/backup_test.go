@@ -86,7 +86,7 @@ func TestBackupWhileWriting(t *testing.T) {
 			}
 			before := committed.Load()
 			copied := filepath.Join(t.TempDir(), "copy")
-			if err := Backup(t.Context(), dir, copied); err != nil {
+			if _, err := backup(t.Context(), dir, nil, copied, nil); err != nil {
 				t.Fatalf("Backup() %d = %v", i+1, err)
 			}
 			after := committed.Load()

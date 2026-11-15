@@ -73,9 +73,11 @@ func (s *Server) replaceMediumFile(w http.ResponseWriter, r *http.Request, p acc
 
 // upload receives the body of r, a file, and gives it to save, which saves it as an original and makes or changes the medium.
 // The request counts among the heavy requests of its account, but does not take the place of heavy work: the body is not
-// kept in memory, but goes to the store as it comes. Only its first bytes are looked at before that, to refuse a file in no
-// known format before anything is written; save finds out what else is wrong with it, and the file is what its contents
-// are, whatever the upload says. The answer is 201 with the Location of the new medium if created, and else 200.
+// kept in memory, but goes to a temporary file of the server first (a spool), and only when it has come whole is it saved,
+// so that a slow sender does not hold the writer connection of the daemon, which every change of the store waits for. Its
+// first bytes are looked at before that, to refuse a file in no known format before anything is received; save finds out
+// what else is wrong with it, and the file is what its contents are, whatever the upload says. The answer is 201 with the
+// Location of the new medium if created, and else 200.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request, p account.Principal, created bool,
 	save func(ctx context.Context, file io.Reader, declaredType string) (edit.Result, error)) {
 	release := s.countAccount(w, p)
@@ -105,13 +107,25 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, p account.Princi
 		writeInvalid(w, content.Errors{{Msg: "cannot read the file: " + err.Error()}})
 		return
 	}
-	res, err := save(r.Context(), io.MultiReader(bytes.NewReader(head), body), declaredType(r))
-	if err != nil {
+	in := newSpool(s.tmp)
+	defer func() { _ = in.Close() }()
+	if _, err := io.Copy(in, io.MultiReader(bytes.NewReader(head), body)); err != nil {
 		if body.err != nil {
 			refuseBody(w, body.err)
 		} else {
-			s.answerError(w, r, p, err, attempt{})
+			s.fail(w, r, err)
 		}
+		return
+	}
+	file, err := in.Reader()
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	res, err := save(r.Context(), file, declaredType(r))
+	_ = in.Close() // the answer may take long to send, and the file is saved or refused
+	if err != nil {
+		s.answerError(w, r, p, err, attempt{})
 		return
 	}
 	out := newSpool(s.tmp)

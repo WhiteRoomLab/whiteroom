@@ -18,6 +18,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -162,7 +163,7 @@ func TestBenchmarks(t *testing.T) {
 func benchSite(t *testing.T, posts int, bl *benchLog) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

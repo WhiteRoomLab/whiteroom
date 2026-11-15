@@ -12,6 +12,9 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
 
@@ -22,6 +25,8 @@ type modelBackend struct {
 	mu  sync.Mutex  // guards st
 	upd sync.Mutex  // one Update at a time
 	st  *modelState // the committed state, which an Update replaces and never changes
+
+	orig *dbclient.Client // of the daemon that keeps the originals of the store, which close ends
 }
 
 type modelKey struct {
@@ -77,7 +82,28 @@ func newModelBackend() *modelBackend {
 
 // newModelStore returns a store on a new model, with its originals in a world of simfs.
 func newModelStore() *Store {
-	return &Store{b: newModelBackend(), files: simfs.New("files"), now: func() time.Time { return testTime }}
+	s := newModelStoreOn(newModelBackend())
+	s.now = func() time.Time { return testTime }
+	return s
+}
+
+// newModelStoreOn returns a store on the model b, with its originals in a new world of simfs, which a daemon of the
+// harness serves: the model keeps the tables and the objects, and no commit goes to the daemon.
+func newModelStoreOn(b *modelBackend) *Store {
+	fsys := simfs.New("files")
+	if err := dbtest.Init("model", dbtest.Options{FS: fsys}); err != nil {
+		panic(err)
+	}
+	_, d, err := acquire("model", options{fs: fsys})
+	if err != nil {
+		panic(err)
+	}
+	c, err := dbclient.Open(context.Background(), d, dbwire.RoleWriter, dbclient.Options{})
+	if err != nil {
+		panic(err)
+	}
+	b.orig = c
+	return &Store{b: b, c: c, now: time.Now}
 }
 
 func (b *modelBackend) committed() *modelState {
@@ -121,7 +147,12 @@ func (b *modelBackend) verify(context.Context) error {
 
 // close keeps the state, so that a new Store on the same model is the store opened again.
 func (b *modelBackend) close() error {
-	return nil
+	if b.orig == nil {
+		return nil
+	}
+	err := b.orig.Close()
+	b.orig = nil
+	return err
 }
 
 type modelTx struct {

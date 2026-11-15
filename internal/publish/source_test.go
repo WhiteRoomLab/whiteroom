@@ -24,6 +24,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -70,7 +71,7 @@ func openSite(t *testing.T, dir string) siteDir {
 
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
-	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // mgrSecret is a text that nothing but the test may have, and the name by which a failure refers to it.
@@ -23,7 +23,7 @@ type mgrSecret struct{ name, text string }
 // names the secret and never prints it.
 func TestSecretsNotStored(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

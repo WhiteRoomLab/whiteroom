@@ -8,7 +8,6 @@ import (
 	"io/fs"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/publish"
-	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 // buildFromStore runs whiteroom build for the data directory data as s says, and returns the exit code. The data directory
@@ -22,7 +21,7 @@ func buildFromStore(ctx context.Context, stdout io.Writer, p errorPrinter, data 
 		return 1
 	}
 	defer closeSite()
-	st, err := store.OpenReader(data)
+	st, err := openStoreReader(data)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1

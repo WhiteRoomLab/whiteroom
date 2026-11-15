@@ -1,221 +1,97 @@
 // Package store is the Content Store (3.4), which keeps the documents of a site with every version that has been
-// saved, the revisions of the entries and the originals of the media, in a data directory:
+// saved, the revisions of the entries and the originals of the media. The tables, the objects and the originals are in a
+// data directory that only the DB daemon (3.6) opens, and the store talks to the daemon through internal/dbclient: the
+// tables and the objects are those of the engine of internal/logdb (3.5) in logdb/ of the data directory, with the tables
+// of logbackend.go, and the originals are files in files/:
 //
-//	logdb/                   the directory of the engine of internal/logdb (3.5), with the tables of logbackend.go
 //	files/<2 hex>/<64 hex>   the originals, by the 64 lower case hex digits of their SHA-256, in directories named by
 //	                         the first 2 of them
-//	files/.tmp-<16 hex>      a temporary file of the writer: an original being written; it stays only after a crash,
-//	                         and the process that opens the store as its writer removes it
+//	files/.tmp-<16 hex>      a temporary file of the daemon: an original being written; it stays only after a crash, and
+//	                         the daemon removes it when it opens the data directory
 //
-// The directories have the mode 0700, and the files 0600. The files of the developers, such as the schema file and the
-// theme, are not in it.
+// The files of the developers, such as the schema file and the theme, are not in the data directory.
 package store
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
-	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
 // SettingsKind is the kind of the settings document (6.6.8) in the store; its ID is "".
 const SettingsKind content.RefKind = "settings"
 
-// Store is the Content Store of a data directory. Its methods may be called concurrently.
+// ErrNoStore is the error of Open and OpenReader for a data directory that has no store in it: the daemon of a directory
+// that whiteroom-db init has just made, whose first writer has not made the store yet.
+var ErrNoStore = errors.New("not a store of whiteroom (no schema version)")
+
+// Store is the Content Store of the data directory of a DB daemon. Its methods may be called concurrently.
 type Store struct {
-	b                backend
-	files            vfs.FS       // files/
-	dirs             sync.Map     // the directories of files/ whose names are durable, as keys
-	syncs            sync.RWMutex // read-locked by each sync of PutOriginal, and locked before PutOriginal returns nil
-	originalsStopped atomic.Bool  // a sync of PutOriginal has failed: errOriginalsStopped
-	now              func() time.Time
-	hook             func(point string) error // nil outside the tests, which make it fail at points such as "commit"
-	readOnly         bool                     // opened by OpenReader or openLogReader
+	b        backend
+	c        *dbclient.Client
+	now      func() time.Time
+	hook     func(point string) error // nil outside the tests, which make it fail at points such as "commit"
+	readOnly bool                     // opened by OpenReader
 }
 
-// options are those of the stores that the tests make with create, open and openLogReader: the engine of
-// internal/logdb with *log, or with defaultLog if log is nil, whose Hook and Accept are those of the store
-// (logbackend.go); the data directory is fs if it is not nil, in place of dir on the OS, which then only names it in
-// errors; now is the clock of the versions (nil: time.Now).
-type options struct {
-	log *logdb.Options
-	fs  vfs.FS
-	now func() time.Time
+// Create makes the store in the data directory that the daemon of d serves, which must be new: one that whiteroom-db init
+// has just made, without a commit. It connects as the writer, and commits the schema and the record store.create in one
+// commit. For a store that has commits, Create fails and writes nothing. While the store is open, no other process
+// connects as the writer.
+func Create(d dbclient.Dialer) (*Store, error) {
+	return createOn(d, time.Now, dbclient.Options{})
 }
 
-// defaultLog are the options of the engine of Create, Open and OpenReader (3.4): objects of 64 KiB or more in files,
-// and the defaults of the engine for the rest (segments and checkpoints every 64 MiB, 2 seconds for the writer lock).
-var defaultLog = logdb.Options{Placement: logdb.Hybrid}
-
-func (o options) engine() logdb.Options {
-	if o.log != nil {
-		return *o.log
-	}
-	return defaultLog
-}
-
-func (o options) clock() func() time.Time {
-	if o.now != nil {
-		return o.now
-	}
-	return time.Now
-}
-
-// Create makes a data directory at dir, which must be missing or an empty directory, and opens its store. If it fails
-// after making something in dir, Create needs dir emptied before it can try again.
-func Create(dir string) (*Store, error) {
-	return create(dir, options{})
-}
-
-func create(dir string, o options) (*Store, error) {
-	if err := newDataDir(dir, o.fs); err != nil {
-		return nil, err
-	}
-	s := &Store{now: o.clock()}
-	root, done, err := dataRoot(dir, o.fs)
+// createOn is Create with the clock now and the options o of the client.
+func createOn(d dbclient.Dialer, now func() time.Time, o dbclient.Options) (*Store, error) {
+	s, err := connect(d, dbwire.RoleWriter, now, o)
 	if err != nil {
 		return nil, err
 	}
-	defer done()
-	for _, name := range []string{"files", "logdb"} {
-		if err := root.Mkdir(name, 0o700); err != nil {
-			return nil, err
-		}
-	}
-	if err := root.SyncDir("."); err != nil {
+	if err := createLog(s.c, dialerName(d), s.now); err != nil {
+		_ = s.Close()
 		return nil, err
 	}
-	b, err := createLog(root, s.logOptions(o.engine(), nil), s.now)
-	if err != nil {
-		return nil, err
-	}
-	return s.withFiles(root, b)
-}
-
-// newDataDir checks that dir, a new data directory, is empty: fsys if it is not nil, else the directory on the OS,
-// which it makes if it is missing (fspath.MakeDirs).
-func newDataDir(dir string, fsys vfs.FS) error {
-	var entries []fs.DirEntry
-	var err error
-	if fsys != nil {
-		entries, err = fsys.ReadDir(".")
-	} else if err = fspath.MakeDirs(dir); err == nil {
-		entries, err = os.ReadDir(dir)
-	}
-	if err != nil {
-		return err
-	}
-	if len(entries) > 0 {
-		return fmt.Errorf("%s: not empty; a new data directory needs a missing or empty directory", dir)
-	}
-	return nil
-}
-
-// dataRoot returns fsys, or if it is nil, the directory dir on the OS; done closes what dataRoot has opened.
-func dataRoot(dir string, fsys vfs.FS) (root vfs.FS, done func(), err error) {
-	if fsys != nil {
-		return fsys, func() {}, nil
-	}
-	// logdb joins the names of its files to the name of the root as text, which drops a ".." after a symbolic link:
-	// such a root is opened by its resolved path.
-	if fspath.Clean(dir) != filepath.Clean(dir) {
-		if dir, err = fspath.Resolve(dir); err != nil {
-			return nil, nil, err
-		}
-	}
-	if root, err = vfs.OpenRoot(dir); err != nil {
-		return nil, nil, err
-	}
-	return root, func() { _ = root.Close() }, nil
-}
-
-// logOptions returns o with accept, and with the hook of s, which the engine calls with "logdb:" before its points.
-func (s *Store) logOptions(o logdb.Options, accept func(*logdb.Tx) error) logdb.Options {
-	o.Hook = func(point string) error { return s.call("logdb:" + point) }
-	o.Accept = accept
-	return o
-}
-
-// withFiles gives s the backend b and files/ of root, its data directory. If it fails, it closes b.
-func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
-	files, err := root.Sub("files")
-	if err != nil {
-		_ = b.close()
-		return nil, err
-	}
-	s.b, s.files = b, files
 	return s, nil
 }
 
-// Open opens the store of the data directory dir, which Create has made, as its writer. While it is open, Open in
-// another process fails after 2 seconds, and other processes read the store with OpenReader. Open removes the
-// temporary files in files/ that a process that has ended left (PutOriginal makes them); if it cannot
-// remove one, it fails with an error that names the file, and the store is unchanged. A store of the table schema 1 to
-// 6 gets the schema 7 in one Update, with the record store.upgrade (7.4) and the rows of heads of its audit logs: one
-// of the schema 1 gets its index too (it has none), and one of the schema 2 to 6 gets nothing else and has no document
-// read; if that fails, so does Open, and the store is unchanged.
-func Open(dir string) (*Store, error) {
-	return open(dir, options{})
+// Open opens the store that the daemon of d serves, as its writer. While it is open, Open in another process fails
+// with an error that says that another process is connected as the writer, after the connection has been tried again
+// for 2 seconds, and other processes read the store with OpenReader. A store of the table schema 1 to 6 gets the schema 7
+// in one Update, with the record store.upgrade (7.4) and the rows of heads of its audit logs: one of the schema 1 gets
+// its index too (it has none), and one of the schema 2 to 6 gets nothing else and has no document read; if that fails,
+// so does Open, and the store is unchanged. A daemon whose store has no schema is an error that wraps ErrNoStore.
+func Open(d dbclient.Dialer) (*Store, error) {
+	return openOn(d, dbwire.RoleWriter, time.Now, dbclient.Options{})
 }
 
-func open(dir string, o options) (*Store, error) {
-	return openDir(dir, o, false)
+// OpenReader opens the store that the daemon of d serves to read it, in a process other than its writer, which may run
+// or not. Its Views see the commits that are durable when they begin. It changes nothing: Update fails with "read-only
+// transaction", and PutOriginal fails too. A store of the table schema 1 has no index until its writer opens it: a
+// reader reads it, but Summary and the other reads of the index fail with ErrNoIndex. A store of the table schema 1 to 5
+// has no audit log until its writer opens it: ReadAudit, AuditHeads and VerifyAudit fail with ErrNoAuditLog.
+func OpenReader(d dbclient.Dialer) (*Store, error) {
+	return openOn(d, dbwire.RoleReader, time.Now, dbclient.Options{})
 }
 
-// OpenReader opens the store of the data directory dir to read it, in a process other than its writer, which may run
-// or not. Its Views see the commits that are durable when they begin. It changes no file of the store, and removes no
-// temporary file: Update fails with "read-only transaction", and PutOriginal fails too. A store of the
-// table schema 1 has no index until its writer opens it: a reader reads it, but Summary and the other reads of the
-// index fail with ErrNoIndex. A store of the table schema 1 to 5 has no audit log until its writer opens it: ReadAudit,
-// AuditHeads and VerifyAudit fail with ErrNoAuditLog.
-func OpenReader(dir string) (*Store, error) {
-	return openLogReader(dir, options{})
-}
-
-// openLogReader is OpenReader with o.
-func openLogReader(dir string, o options) (*Store, error) {
-	return openDir(dir, o, true)
-}
-
-// openDir is open, or openLogReader if reader is true.
-func openDir(dir string, o options, reader bool) (*Store, error) {
-	root, done, err := dataRoot(dir, o.fs)
+// openOn connects as role and checks the schema, and upgrades an older one if the role is the writer.
+func openOn(d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
+	s, err := connect(d, role, now, o)
 	if err != nil {
 		return nil, err
 	}
-	defer done()
-	for _, name := range []string{"logdb", "files"} {
-		if err := checkDir(root, dir, name); err != nil {
-			return nil, err
-		}
-	}
-	s := &Store{now: o.clock(), readOnly: reader}
-	logName := fspath.Join(dir, "logdb")
-	b, err := openLog(root, s.logOptions(o.engine(), checkSchema(logName)), reader)
-	if err != nil {
+	name := dialerName(d)
+	if err := checkSchema(context.Background(), s.c, name); err != nil {
+		_ = s.Close()
 		return nil, err
 	}
-	if _, err := s.withFiles(root, b); err != nil {
-		return nil, err
-	}
-	if !reader {
-		// The writer lock is held: no temporary file of files/ is in use. Before the upgrade, so that a failure leaves the
-		// table schema as it was.
-		if err := s.removeTemps(dir); err != nil {
-			_ = s.Close()
-			return nil, err
-		}
-		if err := upgradeLog(b, logName, s.now); err != nil {
+	if role == dbwire.RoleWriter {
+		if err := upgradeLog(s.c, name, s.now); err != nil {
 			_ = s.Close()
 			return nil, err
 		}
@@ -223,28 +99,26 @@ func openDir(dir string, o options, reader bool) (*Store, error) {
 	return s, nil
 }
 
-// checkDir checks that name in root, the data directory dir, is a directory, without following a symbolic link.
-func checkDir(root vfs.FS, dir, name string) error {
-	path := fspath.Join(dir, name)
-	info, err := root.Lstat(name)
-	var pe *fs.PathError
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("%s: missing directory", path)
-	case errors.As(err, &pe):
-		return fmt.Errorf("%s: cannot read: %w", path, pe.Err)
-	case err != nil:
-		return err
-	case info.Mode()&fs.ModeSymlink != 0:
-		return fmt.Errorf("%s: symbolic links are not allowed", path)
-	case !info.IsDir():
-		return fmt.Errorf("%s: must be a directory", path)
+// connect opens a client of d as role, with the options o, and makes the store of it, with the clock now for the
+// versions. It takes d, and closes it if it fails.
+func connect(d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
+	c, err := dbclient.Open(context.Background(), d, role, o)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return &Store{b: &logBackend{c: c}, c: c, now: now, readOnly: role == dbwire.RoleReader}, nil
+}
+
+// dialerName is the name of d in errors.
+func dialerName(d dbclient.Dialer) string {
+	if s, ok := d.(fmt.Stringer); ok {
+		return s.String()
+	}
+	return fmt.Sprintf("%T", d)
 }
 
 func (s *Store) Close() error {
-	return errors.Join(s.b.close(), s.files.Close())
+	return s.b.close()
 }
 
 // call calls the hook of the tests at point.

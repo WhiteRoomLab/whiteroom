@@ -158,7 +158,7 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	}
 
 	rep := &report{w: e.stdout, limit: limit}
-	st, err := store.OpenReader(data)
+	st, err := openStoreReader(data)
 	if err != nil {
 		rep.add("open: " + err.Error())
 		return rep.finish(data)

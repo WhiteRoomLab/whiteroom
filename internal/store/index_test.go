@@ -2222,8 +2222,8 @@ func TestIndexUpgrade(t *testing.T) {
 			}
 			dropAudit(t, dir)
 			// The error says where the upgrade failed, and wraps the cause.
-			upgrade := fmt.Sprintf("%s: cannot upgrade the table schema to %d, so the store is unchanged: ",
-				filepath.Join(dir, "logdb"), logSchemaVersion)
+			upgrade := fmt.Sprintf("%s: cannot upgrade the table schema to %d, so the store is unchanged: ", dir,
+				logSchemaVersion)
 			var first string
 			for i := range 2 {
 				c, err := open(dir, logOpts(o))
@@ -2311,10 +2311,12 @@ func TestIndexUpgrade(t *testing.T) {
 					if u := errors.Unwrap(err); u != nil {
 						cause = u.Error()
 					}
-					upgrade := fmt.Sprintf("data/logdb: cannot upgrade the table schema to %d, so the store is unchanged: ",
+					upgrade := fmt.Sprintf("data: cannot upgrade the table schema to %d, so the store is unchanged: ",
 						logSchemaVersion)
-					if err == nil || !errors.Is(err, syscall.EIO) || err.Error() != upgrade+cause {
-						t.Fatalf("open() with a write that fails = %v, want the error of its upgrade, which wraps EIO", err)
+					// The daemon's text of a failed write, which names the file and the error of the file system.
+					if err == nil || err.Error() != upgrade+cause || !strings.HasSuffix(cause, ": "+syscall.EIO.Error()) {
+						t.Fatalf("open() with a write that fails = %v, want the error of its upgrade, and after it the text "+
+							"of the daemon about EIO", err)
 					}
 
 					// A reader sees the store as it was.

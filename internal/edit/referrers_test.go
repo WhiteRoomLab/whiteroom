@@ -12,6 +12,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // changedTerm returns the JSON of the term whose document is data, after change.
@@ -235,7 +236,7 @@ func newSmallSite(t *testing.T, settings string, files map[string]string) *small
 	for name, data := range all {
 		writeSite(t, x.dir, name, data)
 	}
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

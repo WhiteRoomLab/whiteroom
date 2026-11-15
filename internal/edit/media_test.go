@@ -28,6 +28,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/mediafile"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // Media of the sample site that the tests use.
@@ -408,7 +409,7 @@ func TestAddMediaFileName(t *testing.T) {
 // TestAddMediaOriginalFirst checks the order of 3.4: the file is saved before the document, so that a store that cannot
 // take the document, as it has no settings, has the file and no document.
 func TestAddMediaOriginalFirst(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +437,7 @@ func TestAddMediaOriginalFirst(t *testing.T) {
 // of the store that fails is an error of the store.
 func TestProbe(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

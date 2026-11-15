@@ -892,7 +892,7 @@ func TestExt4Extraction(t *testing.T) {
 	if err := runWorkload(t.Context(), dirCopy, 0, 9, none); err != nil {
 		t.Fatal(err)
 	}
-	if err := Backup(t.Context(), dirCopy, filepath.Join(rootCopy, filepath.FromSlash(workloadBackup))); err != nil {
+	if _, err := backup(t.Context(), dirCopy, nil, filepath.Join(rootCopy, filepath.FromSlash(workloadBackup)), nil); err != nil {
 		t.Fatalf("Backup() = %v", err)
 	}
 	copy9 := image("copy-9", rootCopy)
@@ -1132,6 +1132,12 @@ func TestExt4Extraction(t *testing.T) {
 
 		"a commit after the checkpoint of Close": reader + `after Close, open has found `,
 	}
+	// The cases that tell a reader from a writer by what each opens: a reader is a client of the daemon, which opens the
+	// engine as a writer, and has no engine of its own.
+	pending := map[string]string{
+		"a store that its writer cannot open":    "the daemon opens the engine as a writer, so a reader that opens where the writer cannot is no case",
+		"a commit after the checkpoint of Close": "the reader is a client of the daemon, which has no open of its own to check after Close",
+	}
 	// As root, a process opens and writes what the modes do not allow.
 	needsUser := map[string]bool{"a store that its writer cannot open": true, "a store that takes no Update": true}
 	// The cases whose failure is not a problem of the store: the file system, or the device, is not read.
@@ -1186,6 +1192,9 @@ func TestExt4Extraction(t *testing.T) {
 			"the device after the log: it differs from "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			if reason, ok := pending[c.name]; ok {
+				pendingDaemon(t, reason)
+			}
 			t.Parallel()
 			rec := recording(t, c.steps...)
 			if c.data != nil {

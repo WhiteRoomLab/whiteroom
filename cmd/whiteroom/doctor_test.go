@@ -19,6 +19,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // noteLine starts the line that whiteroom doctor writes on stderr when it has not checked the published documents.
@@ -91,7 +92,7 @@ func checkProblems(t *testing.T, what, data string, code int, stdout, stderr str
 // entryIDs returns the IDs of the entries of the data directory, which no process writes, in order.
 func entryIDs(t *testing.T, data string) []string {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func entryIDs(t *testing.T, data string) []string {
 // dropEntryRows deletes the rows of the index of the entries ids, as a writer of the data directory, which it closes.
 func dropEntryRows(t *testing.T, data string, ids ...string) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,20 +78,24 @@ func (b *bucket) take(ctx context.Context) error {
 var (
 	verifyObjectText = regexp.MustCompile(`^object [0-9a-f]{64}: the data has the hash [0-9a-f]{64}$`)
 	transactionText  = regexp.MustCompile(`^the transaction is too large: [0-9]+ bytes \(max [0-9]+\)$`)
+	// missingFileText is the sentence of the engine for a file of its own that is gone (its error is no typed one): it
+	// names a path of logdb/, and has no quote, which a key would need.
+	missingFileText = regexp.MustCompile(`^[^\x00-\x1f"]*/logdb/(log|objects|lock)/[^\x00-\x1f"]*: missing file$`)
 )
 
 const verifyDiffers = "the state in memory differs from the log"
 
 // safeText returns the text of err for a reply or a log line. It is the text of an error of the OS, of a damaged file
 // or of a file of a newer format, which name paths, sizes and offsets; of a sync that failed, the same for its cause; or
-// one of the sentences of the engine's Verify, whose detail, which may hold values of rows, is cut; or a sentence of the
-// daemon's own (a refusal), or the end of a context. Any other error becomes a fixed sentence.
+// one of the sentences of the engine's Verify, whose detail, which may hold values of rows, is cut; or the sentence of
+// a file of the engine that is gone; or a sentence of the daemon's own (a refusal), or the end of a context. Any other
+// error becomes a fixed sentence.
 func safeText(err error) string {
 	if err == nil {
 		return ""
 	}
 	text := err.Error()
-	if verifyObjectText.MatchString(text) || transactionText.MatchString(text) {
+	if verifyObjectText.MatchString(text) || transactionText.MatchString(text) || missingFileText.MatchString(text) {
 		return text
 	}
 	if i := strings.Index(text, verifyDiffers); i >= 0 {

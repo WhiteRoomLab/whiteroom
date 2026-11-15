@@ -85,9 +85,19 @@ linters:
           list-mode: lax
           files:
             - "!$test"
+            - "!**/internal/store/storetest/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
               desc: dbtest は、プロセスの中でデーモンを動かす、テストの土台で、テストだけが使う
+        to-storetest:
+          list-mode: lax
+          files:
+            - "!$test"
+            # Until phase 14 of the plan of issue 109, the commands reach the data directory through a daemon in their process.
+            - "!**/cmd/whiteroom/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
+              desc: storetest は、データのディレクトリから保存先を開く、テストの土台で、テストだけが使う
         stdlib-only:
           list-mode: strict
           # Every package with a rule of its own is excluded here; other files may import only the standard library.
@@ -117,6 +127,7 @@ linters:
             - "!**/internal/sitedir/*.go"
             - "!**/internal/siteplan/*.go"
             - "!**/internal/store/*.go"
+            - "!**/internal/store/storetest/*.go"
             - "!**/internal/theme/*.go"
             - "!**/internal/wpimport/*.go"
           allow:
@@ -290,6 +301,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/theme$
         publish:
           list-mode: strict
@@ -316,6 +328,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/theme$
         store:
           list-mode: strict
@@ -326,10 +339,20 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
             - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
-            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        storetest:
+          list-mode: strict
+          files:
+            - "**/internal/store/storetest/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
         store-test:
           list-mode: strict
           files:
@@ -338,6 +361,9 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
             - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
@@ -438,6 +464,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
         admin:
           list-mode: strict
           files:
@@ -470,6 +497,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/publish$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
         wpimport:
           list-mode: strict
           files:
@@ -522,6 +550,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
         cmd/whiteroom-db:

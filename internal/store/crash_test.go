@@ -536,7 +536,11 @@ func readsText(tx *Tx, r diffReads) string {
 func hasObject(tx *Tx, hash string) (bool, error) {
 	if lt, ok := tx.b.(*logTx); ok {
 		d, err := digest(hash)
-		return err == nil && lt.tx.HasObject(d), err
+		if err != nil {
+			return false, err
+		}
+		_, ok, err := lt.tx.Object(d)
+		return ok, err
 	}
 	_, err := tx.Object(hash)
 	if errors.Is(err, fs.ErrNotExist) {

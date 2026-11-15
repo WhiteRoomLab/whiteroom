@@ -10,9 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
-	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 const backupUsage = `Usage: whiteroom backup [flags] DEST
@@ -103,10 +101,7 @@ func runBackup(ctx context.Context, args []string, e env) int {
 			return fail(err)
 		}
 	}
-	if err := store.Backup(ctx, data, dest); err != nil {
-		return fail(err)
-	}
-	heads, err := copiedHeads(ctx, dest)
+	heads, err := backupStore(ctx, data, dest)
 	if err != nil {
 		return fail(err)
 	}
@@ -197,15 +192,4 @@ func insideDir(dir, dest string) (string, error) {
 		return rel, nil
 	}
 	return "", nil
-}
-
-// copiedHeads returns the heads of the audit logs of the data directory dir, which nothing has open, as a process that
-// reads it sees them.
-func copiedHeads(ctx context.Context, dir string) ([]audit.Head, error) {
-	s, err := store.OpenReader(dir)
-	if err != nil {
-		return nil, err
-	}
-	heads, err := s.AuditHeads(ctx)
-	return heads, errors.Join(err, s.Close())
 }

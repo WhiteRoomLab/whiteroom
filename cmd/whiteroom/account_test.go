@@ -18,6 +18,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -48,7 +49,7 @@ func accountData(t *testing.T) string {
 // accounts, which have cheap password hashes, and closes it: the commands of the tests fail while it is open.
 func withAccounts(t *testing.T, data string, f func(s *store.Store, m *account.Manager)) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ type logRecords struct{ activity, logins []audit.Record }
 
 func logsOf(t *testing.T, data string) logRecords {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +705,7 @@ func TestAccountBesideAdmin(t *testing.T) {
 		name := "whiteroom " + tt.args[0] + " " + tt.args[1]
 		lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
 		if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
-			!strings.HasSuffix(lines[0], ": another process holds the writer lock") ||
+			!strings.HasSuffix(lines[0], ": another process is connected as the writer") ||
 			!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
 			t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the writer lock and the advice", name, code,
 				stdout, stderr)

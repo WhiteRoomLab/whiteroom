@@ -253,13 +253,22 @@ func benchUpdate(t *testing.T, s *Store, saves ...benchSave) time.Duration {
 	return d
 }
 
-// benchCount returns the documents, versions, revisions, audit events and objects of s, with the Stats of its engine.
+// benchCount returns the documents, versions, revisions, audit events and objects of s, with the Stats of its engine. The
+// events are those of the records: each commit of the daemon has a mark more, which the count leaves out.
 func benchCount(t *testing.T, s *Store) (map[string]int64, *logdb.Stats) {
 	t.Helper()
-	st := logDB(t, s).Stats()
+	d := logDB(t, s)
+	st := d.Stats()
+	var commits uint64
+	if err := d.View(t.Context(), func(tx *logdb.Tx) error {
+		commits = tx.Seq()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return map[string]int64{
 		"documents": int64(st.Keys[tableDocuments]), "versions": int64(st.Keys[tableHistory]),
-		"revisions": int64(st.Keys[tableRevisions]), "events": int64(st.Events),
+		"revisions": int64(st.Keys[tableRevisions]), "events": int64(st.Events - commits),
 		"objects": int64(st.InlineObjects + st.FileObjects),
 	}, &st
 }
@@ -521,7 +530,7 @@ func benchBackup(t *testing.T, tb testBackend, res *benchResult) {
 	dir := res.Job.Dir
 	dst := filepath.Join(filepath.Dir(dir), "backup")
 	start := time.Now()
-	err := Backup(t.Context(), dir, dst)
+	_, err := backup(t.Context(), dir, nil, dst, nil)
 	res.Durations["backup"] = int64(time.Since(start))
 	if err != nil {
 		t.Fatal(err)

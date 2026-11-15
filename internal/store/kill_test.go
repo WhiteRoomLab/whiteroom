@@ -72,10 +72,14 @@ func TestStoreKillMatrix(t *testing.T) {
 // the number of crashes that it has checked.
 func killAndOpen(t *testing.T, base *simfs.FS, o logdb.Options, refs *matrixRefs, ops []simfs.Op, k int, opener string,
 	subsets int) int {
-	sc := theScenario()
-	if opener == killHung && k == 0 {
-		t.Skip("no process hangs before it begins")
+	switch opener {
+	case killHung:
+		pendingDaemon(t, "a reader beside a hung process is a client of the daemon that hangs, not an engine of its own; "+
+			"its reads need the files that the hung daemon has not released")
+	case killBefore:
+		pendingDaemon(t, "a reader that refreshes after the kill of the process is a client of a daemon that is gone")
 	}
+	sc := theScenario()
 	sim := copyWorld(base)
 	var before *Store // of killBefore
 	defer func() {

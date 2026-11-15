@@ -15,13 +15,14 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // auditHeadsOf returns the heads of the audit logs of the data directory dir, which a server may have open, as a process
 // that reads it sees them, in the order of the store.
 func auditHeadsOf(t *testing.T, dir string) []audit.Head {
 	t.Helper()
-	s, err := store.OpenReader(dir)
+	s, err := storetest.OpenReader(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func checkModes(t *testing.T, what, dir string, dirToo bool) {
 // chains of its audit logs agree with heads, and a writer can open it, and adds no record.
 func checkCopy(t *testing.T, what, dir string, heads []audit.Head) {
 	t.Helper()
-	r, err := store.OpenReader(dir)
+	r, err := storetest.OpenReader(dir)
 	if err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
@@ -334,7 +335,7 @@ func TestBackupBuildsSameRelease(t *testing.T) {
 	if got := buildReleaseFrom(t, live, s.site); got != second {
 		t.Errorf("the build from the copy that was taken beside the server makes the release %s, the server has published %s", got, second)
 	}
-	r2, err := store.OpenReader(live)
+	r2, err := storetest.OpenReader(live)
 	if err != nil {
 		t.Fatal(err)
 	}

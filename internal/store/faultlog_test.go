@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"strings"
 	"sync"
@@ -70,16 +71,18 @@ func tempNames(fsys *simfs.FS) []string {
 	return names
 }
 
-// TestOriginalAfterFailedSync checks that a failed sync of PutOriginal stops saving originals (F2 in concept section
-// 3.5): the sync may drop the names that it would have made durable, which the page cache still has, and which later
-// syncs do not write. Without the stop, a PutOriginal in the same boot found the directory whose name a failed sync of
-// files/ had dropped, synced files/ again, which succeeded without the name, and returned nil for an original that
-// every crash then lost. Every PutOriginal after the failed sync fails, also one that runs at the same time, and
-// Updates go on; after a restart of the machine, which a crash models, PutOriginal saves the original again.
+// TestOriginalAfterFailedSync checks the rule after a failed sync of PutOriginal (F2 in concept section 3.5): the sync
+// may drop the names that it would have made durable, which the page cache still has, and which later syncs do not
+// write. Without a stop, a PutOriginal in the same boot found the directory whose name a failed sync of files/ had
+// dropped, synced files/ again, which succeeded without the name, and returned nil for an original that every crash then
+// lost. The daemon stops: every PutOriginal and every Update of it fails with the stop and writes nothing, until a new
+// daemon opens the directory after a restart of the machine, which a crash models; then PutOriginal saves the original,
+// which a crash does not lose. A PutOriginal and an Update of one store do not run at the same time: they take turns on
+// the connection of the writer (dbserver.TestOriginalAfterFailedSync has a request that began before the stop).
 func TestOriginalAfterFailedSync(t *testing.T) {
 	data, other := []byte("GIF89a"), []byte("GIF87a")
 	isTemp := func(op simfs.Op) bool { return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, "files/.tmp-") }
-	// newLog makes a store of the log backend in a new world.
+	// newLog makes a store in a new world.
 	newLog := func(t *testing.T) (*simfs.FS, *Store) {
 		t.Helper()
 		fsys := simfs.New("data")
@@ -89,6 +92,32 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = s.Close() })
 		return fsys, s
+	}
+	// restart restarts the machine with s open in fsys: a new daemon, and a store of it that has no original but that
+	// PutOriginal saves, whose name a crash that loses what is not durable keeps.
+	restart := func(t *testing.T, fsys *simfs.FS, s *Store) {
+		t.Helper()
+		restarted := fsys.Crash(keepAll(fsys))
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() of the stopped store = %v", err)
+		}
+		r, err := open("data", options{log: &logdb.Options{}, fs: restarted})
+		if err != nil {
+			t.Fatalf("open() after a restart = %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		putOriginal(t, r, data)
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		c, err := open("data", options{log: &logdb.Options{}, fs: restarted.Crash(loseAll)})
+		if err != nil {
+			t.Fatalf("open() after a crash = %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		if ok, err := hasOriginal(c, data); !ok || err != nil {
+			t.Errorf("after a restart, the original that PutOriginal has saved is not there after a crash: %v, %v", ok, err)
+		}
 	}
 	for _, tt := range []struct {
 		name  string
@@ -103,80 +132,30 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 		t.Run("the sync "+tt.name, func(t *testing.T) {
 			fsys, s := newLog(t)
 			fsys.Inject(simfs.Fault{Match: tt.match, Err: syscall.EIO, Drop: true, Times: 1})
-			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, errOriginalsStopped) ||
-				!errors.Is(err, syscall.EIO) {
-				t.Fatalf("PutOriginal() with a sync that fails = %+v, %v; want an error that wraps %q and EIO", o, err,
-					errOriginalsStopped)
+			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !isStopped(err) {
+				t.Fatalf("PutOriginal() with a sync that fails = %+v, %v; want the stop of the daemon", o, err)
 			}
 			before := fsys.Counted()
 			for _, d := range [][]byte{data, other} {
-				if o, err := s.PutOriginal(t.Context(), bytes.NewReader(d)); !errors.Is(err, errOriginalsStopped) ||
-					errors.Is(err, syscall.EIO) {
-					t.Errorf("PutOriginal() after the failed sync = %+v, %v; want %q", o, err, errOriginalsStopped)
+				if o, err := s.PutOriginal(t.Context(), bytes.NewReader(d)); !isStopped(err) {
+					t.Errorf("PutOriginal() after the failed sync = %+v, %v; want the stop of the daemon", o, err)
 				}
+			}
+			err := s.Update(t.Context(), withRecord(putDoc(content.RefEntry, entryID, docJSON(content.RefEntry, entryID))))
+			if !isStopped(err) {
+				t.Errorf("Update() after the failed sync = %v, want the stop of the daemon", err)
 			}
 			if n := fsys.Counted() - before; n != 0 {
-				t.Errorf("PutOriginal() after the failed sync has made %d operations, want none", n)
+				t.Errorf("PutOriginal() and Update() after the failed sync have made %d operations, want none", n)
 			}
-			update(t, s, putDoc(content.RefEntry, entryID, docJSON(content.RefEntry, entryID)))
-			restarted := fsys.Crash(keepAll(fsys))
-			r, err := open("data", options{log: &logdb.Options{}, fs: restarted})
-			if err != nil {
-				t.Fatalf("open() after a restart = %v", err)
-			}
-			t.Cleanup(func() { _ = r.Close() })
-			putOriginal(t, r, data)
-			files, err := restarted.Crash(loseAll).Sub("files")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok, err := hasOriginal(&Store{files: files}, data); !ok || err != nil {
-				t.Errorf("after a restart, the original that PutOriginal has saved is not there after a crash: %v, %v",
-					ok, err)
-			}
-		})
-	}
-	for _, point := range []string{"original:synced", "original:renamed"} {
-		t.Run("at the same time, at "+point, func(t *testing.T) {
-			fsys, s := newLog(t)
-			var first atomic.Bool
-			waiting, release := make(chan struct{}), make(chan struct{})
-			s.hook = func(p string) error {
-				if p == point && first.CompareAndSwap(false, true) {
-					close(waiting)
-					<-release
+			// Reads go on.
+			view(t, s, func(tx *Tx) error {
+				if _, err := tx.Document(content.RefEntry, entryID); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("Document() = %v, want an error that wraps fs.ErrNotExist: the Update has written nothing", err)
 				}
 				return nil
-			}
-			errc := make(chan error, 1)
-			go func() {
-				_, err := s.PutOriginal(t.Context(), bytes.NewReader(other))
-				errc <- err
-			}()
-			<-waiting
-			fsys.Inject(simfs.Fault{Match: isTemp, Err: syscall.EIO, Drop: true, Times: 1})
-			if o, err := s.PutOriginal(t.Context(), bytes.NewReader(data)); !errors.Is(err, syscall.EIO) {
-				t.Fatalf("PutOriginal() with a sync of its temporary file that fails = %+v, %v; want an error that "+
-					"wraps EIO", o, err)
-			}
-			var syncs atomic.Int64
-			fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
-				if op.Kind == simfs.OpSync || op.Kind == simfs.OpSyncDir {
-					syncs.Add(1)
-				}
-				return false
-			}, Err: syscall.EIO})
-			close(release)
-			if err := <-errc; !errors.Is(err, errOriginalsStopped) || errors.Is(err, syscall.EIO) {
-				t.Errorf("the PutOriginal that ran at the same time = %v, want %q", err, errOriginalsStopped)
-			}
-			if n := syncs.Load(); n != 0 {
-				t.Errorf("the PutOriginal that ran at the same time has synced %d times after the failed sync, want never",
-					n)
-			}
-			if temps := tempNames(fsys); temps != nil {
-				t.Errorf("the PutOriginals have left %q", temps)
-			}
+			})
+			restart(t, fsys, s)
 		})
 	}
 }
@@ -184,8 +163,8 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 // TestStoreFaultMatrix runs the steps of the scenario of the matrices on the log backend in each placement with one
 // fault (storeFaults) at one of their counted operations, for each operation and fault. A PutOriginal or an Update
 // that the fault fails leaves no temporary file and is not seen, and the store goes on: the same step again succeeds.
-// An Update fails with ErrFailed if the fault must stop the store (stopsStore), and only then; a stopped store fails
-// every Update and its Close writes nothing. A PutOriginal fails with errOriginalsStopped if the fault is of a sync,
+// An Update fails with the stop of the daemon if the fault must stop the store (stopsStore), and only then; a stopped store fails
+// every Update and its Close writes nothing. A PutOriginal fails with the stop of the daemon if the fault is of a sync,
 // and only then, and so does the same step again, with no operation (TestOriginalAfterFailedSync). After a failed sync,
 // of an Update, an open or a PutOriginal, the machine is restarted before the store goes on, as the errors ask: a crash
 // that keeps what is pending.
@@ -311,6 +290,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		if err == nil {
 			break // the fault of a write of head, which fails nothing
 		}
+		// The engine of the daemon fails to open: its own error, which the harness returns as it is.
 		if !errors.Is(err, logdb.ErrFailed) || !synced {
 			fail("open() returned %v; ErrFailed is the error of a failed sync, and only of that", err)
 		}
@@ -324,14 +304,14 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		if _, herr := hasOriginal(r.s, step.original); herr != nil {
 			fail("PutOriginal returned %v; after it: %v", err, herr)
 		}
-		if errors.Is(err, errOriginalsStopped) != synced {
-			fail("PutOriginal returned %v; errOriginalsStopped is the error of a failed sync, and only of that", err)
+		if isStopped(err) != synced {
+			fail("PutOriginal returned %v; the stop of the daemon is the error of a failed sync, and only of that", err)
 		}
 		if synced {
 			before := fsys.Counted()
-			if err2 := r.do(ctx, step); !errors.Is(err2, errOriginalsStopped) || fsys.Counted() != before {
-				fail("PutOriginal returned %v, and then %v after %d operations; want %q after none", err, err2,
-					fsys.Counted()-before, errOriginalsStopped)
+			if err2 := r.do(ctx, step); !isStopped(err2) || fsys.Counted() != before {
+				fail("PutOriginal returned %v, and then %v after %d operations; want the stop after none", err, err2,
+					fsys.Counted()-before)
 			}
 			crashes("after the failed PutOriginal", false, stateAt(refs, at, at))
 			restart("after the failed PutOriginal")
@@ -343,13 +323,13 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		stops := stopsStore(op)
 		if err == nil {
 			if stops {
-				fail("the Update returned nil, want ErrFailed")
+				fail("the Update returned nil, want the stop of the daemon")
 			}
 			break // the fault of a write of head or of an automatic checkpoint, which fail nothing
 		}
-		if errors.Is(err, logdb.ErrFailed) != stops {
-			fail("the Update returned %v; ErrFailed is the error of a failed sync of the log or the objects, and "+
-				"only of that", err)
+		if isStopped(err) != stops {
+			fail("the Update returned %v; the stop of the daemon is the error of a failed sync of the log or the objects, "+
+				"and only of that", err)
 		}
 		if _, _, verr := checkState(t, r.s, stateAt(refs, at, at)); verr != nil {
 			fail("the Update returned %v; after it: %v", err, verr)
@@ -361,8 +341,8 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 			}
 			break
 		}
-		if uerr := r.s.Update(ctx, func(*Tx) error { return errors.New("called") }); !errors.Is(uerr, logdb.ErrFailed) {
-			fail("an Update of the stopped store returned %v, want ErrFailed", uerr)
+		if uerr := r.s.Update(ctx, func(tx *Tx) error { return tx.Record(eventRecord("stopped")) }); !isStopped(uerr) {
+			fail("an Update of the stopped store returned %v, want the stop of the daemon", uerr)
 		}
 		before := fsys.Counted()
 		cerr := r.s.Close()

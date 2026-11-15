@@ -24,6 +24,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -149,7 +150,7 @@ func documentsOf(t *testing.T, s *store.Store) map[string]string {
 // must be that of its login name.
 func inspect(t *testing.T, dir, password string) initialized {
 	t.Helper()
-	s, err := store.Open(dir)
+	s, err := storetest.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +323,7 @@ func TestInitImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeSite()
-	ref, err := store.Create(filepath.Join(t.TempDir(), "ref"))
+	ref, err := storetest.Create(filepath.Join(t.TempDir(), "ref"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +745,7 @@ func TestInitDataChanged(t *testing.T) {
 	}
 	anotherStore := func(t *testing.T, data string) {
 		t.Helper()
-		s, err := store.Create(data)
+		s, err := storetest.Create(data)
 		if err != nil {
 			t.Fatal(err)
 		}

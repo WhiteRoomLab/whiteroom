@@ -5,25 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
 	"math"
-	"os"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// The log backend keeps a store in the engine of internal/logdb (3.5), in logdb/ of its data directory, beside files/.
-// The tables of its schema, logSchemaVersion:
+// The log backend keeps a store in the engine of internal/logdb (3.5), which the DB daemon opens in logdb/ of its data
+// directory, beside files/, and which the backend reaches through the client of internal/dbclient. The tables of its
+// schema, logSchemaVersion:
 //
 //	meta (1)            "schema", "versions", "revisions", "numbers" -> uvarint: the schema; the last seq of a
 //	                    version, of a revision; the largest number that an entry has had (none: 0)
@@ -106,92 +102,75 @@ const (
 	metaActivityLog = "activityLog"
 )
 
-// logBackend is the backend of the engine in logdb/.
+// logBackend is the backend of the daemon's engine, which the client of internal/dbclient reaches.
 type logBackend struct {
-	db   *logdb.DB
-	fsys vfs.FS // logdb/, which db does not close
+	c *dbclient.Client
 }
 
-// createLog makes the engine with o in logdb/ of root, which is empty, and puts the schema in meta, with the first
-// record of the activity log, store.create, at the time of now, in one commit.
-func createLog(root vfs.FS, o logdb.Options, now func() time.Time) (*logBackend, error) {
-	fsys, err := root.Sub("logdb")
-	if err != nil {
-		return nil, err
-	}
-	d, err := logdb.Create(fsys, o)
-	if err == nil {
-		if err = d.Update(context.Background(), func(tx *logdb.Tx) error {
-			if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
-				return err
-			}
-			return recordIn(d, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreCreate})
-		}); err != nil {
-			_ = d.Close()
+var schemaKey = []byte(metaSchema)
+
+// createLog puts the schema in meta, with the first record of the activity log, store.create, at the time of now, in
+// one commit of the store that c is connected to, which must have no commit. name is that of the daemon in errors.
+func createLog(c *dbclient.Client, name string, now func() time.Time) error {
+	return c.Update(context.Background(), func(tx *dbclient.Tx) error {
+		_, ok, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
 		}
-	}
-	if err != nil {
-		_ = fsys.Close()
-		return nil, err
-	}
-	return &logBackend{db: d, fsys: fsys}, nil
+		if ok || tx.Seq() != 0 {
+			return fmt.Errorf("%s: the store is not new; a new store needs a data directory that whiteroom-db init has just made",
+				name)
+		}
+		if err := tx.Put(tableMeta, schemaKey, binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
+			return err
+		}
+		return recordIn(tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreCreate})
+	})
 }
 
-// recordIn adds r to the audit log in tx, a transaction of the engine db, as Tx.Record does in an Update that begins at
+// recordIn adds r to the audit log in tx, a transaction of the client, as Tx.Record does in an Update that begins at
 // the time of now.
-func recordIn(db *logdb.DB, tx *logdb.Tx, now func() time.Time, r audit.Record) error {
-	t := &Tx{b: &logTx{tx: tx, db: db}, savedAt: now().UTC().Format(savedAtLayout)}
+func recordIn(tx *dbclient.Tx, now func() time.Time, r audit.Record) error {
+	t := &Tx{b: &logTx{tx: tx}, savedAt: now().UTC().Format(savedAtLayout)}
 	return t.run(func(t *Tx) error { return t.Record(r) })
 }
 
-// openLog opens the engine in logdb/ of root with o: as its writer, or as a reader in another process if reader is
-// true.
-func openLog(root vfs.FS, o logdb.Options, reader bool) (*logBackend, error) {
-	fsys, err := root.Sub("logdb")
-	if err != nil {
-		return nil, err
-	}
-	openFS := logdb.Open
-	if reader {
-		openFS = logdb.OpenReader
-	}
-	d, err := openFS(fsys, o)
-	if err != nil {
-		_ = fsys.Close()
-		return nil, err
-	}
-	return &logBackend{db: d, fsys: fsys}, nil
-}
-
-// checkSchema returns the Accept of openLog for the store whose logdb/ is at name: it refuses a store without the
-// schema, or of a newer one, before the engine changes a file.
-func checkSchema(name string) func(*logdb.Tx) error {
-	return func(tx *logdb.Tx) error {
-		v, ok := tx.Get(tableMeta, []byte(metaSchema))
+// checkSchema checks that the store of c has a schema that this program knows, and refuses one without the schema, or
+// of a newer one. name is that of the daemon in errors.
+func checkSchema(ctx context.Context, c *dbclient.Client, name string) error {
+	return c.View(ctx, func(tx *dbclient.Tx) error {
+		v, ok, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
+		}
 		if !ok {
-			return fmt.Errorf("%s: not a store of whiteroom (no schema version)", name)
+			return fmt.Errorf("%s: %w", name, ErrNoStore)
 		}
 		switch version, ok := decodeUint(v); {
 		case !ok || version == 0:
-			return fmt.Errorf("%s: %w", name, invalidValue(tableMeta, []byte(metaSchema)))
+			return fmt.Errorf("%s: %w", name, invalidValue(tableMeta, schemaKey))
 		case version > logSchemaVersion:
 			return fmt.Errorf("%s: the store schema is of version %d, newer than this program knows (%d)", name,
 				version, logSchemaVersion)
 		}
 		return nil
-	}
+	})
 }
 
-// upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
+// upgradeLog brings the store of c, which its writer has just opened, to the schema logSchemaVersion in one Update, so
 // that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 7 and the record
 // store.upgrade. One of the schema 2 to 6 has the index of the schema 7 already: it gets only the schema 7, the record
 // and the rows of heads, and no document, revision or object is read, so a damaged one does not stop Open, and only the
-// reads that use it fail. name is that of its logdb/ in errors, and the record has the time of now.
-func upgradeLog(b *logBackend, name string, now func() time.Time) error {
+// reads that use it fail. name is that of the daemon in errors, and the record has the time of now.
+func upgradeLog(c *dbclient.Client, name string, now func() time.Time) error {
+	ctx := context.Background()
 	var version uint64
 	upgrade := false
-	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
-		v, _ := tx.Get(tableMeta, []byte(metaSchema))
+	if err := c.View(ctx, func(tx *dbclient.Tx) error {
+		v, _, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
+		}
 		var ok bool
 		version, ok = decodeUint(v)
 		upgrade = ok && version < logSchemaVersion
@@ -199,24 +178,24 @@ func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 	}); err != nil || !upgrade {
 		return err
 	}
-	if err := b.db.Update(context.Background(), func(tx *logdb.Tx) error {
+	if err := c.Update(ctx, func(tx *dbclient.Tx) error {
 		// The schema first, so that the index methods find the schema that they need.
-		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
+		if err := tx.Put(tableMeta, schemaKey, binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
 		// The index of the schema 2 to 6 is that of the schema 7, and making it again would read every document.
 		if version < indexSchema {
-			if err := (&Tx{b: &logTx{tx: tx, db: b.db}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
+			if err := (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
 				return err
 			}
 		}
 		upgrade := audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
 			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}}
-		if err := recordIn(b.db, tx, now, upgrade); err != nil {
+		if err := recordIn(tx, now, upgrade); err != nil {
 			return err
 		}
 		// The heads of a store of the schema 6 have no rows yet; the record has put that of its log.
-		t := &logTx{tx: tx, db: b.db}
+		t := &logTx{tx: tx}
 		for _, log := range auditLogs {
 			h, ok, err := t.auditHead(log)
 			if err != nil {
@@ -237,32 +216,31 @@ func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 }
 
 func (b *logBackend) view(ctx context.Context, f func(backendTx) error) error {
-	return b.db.View(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
+	return b.c.View(ctx, func(tx *dbclient.Tx) error { return f(&logTx{tx: tx}) })
 }
 
 func (b *logBackend) update(ctx context.Context, f func(backendTx) error) error {
-	return b.db.Update(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
+	return b.c.Update(ctx, func(tx *dbclient.Tx) error { return f(&logTx{tx: tx}) })
 }
 
 func (b *logBackend) close() error {
-	return errors.Join(b.db.Close(), b.fsys.Close())
+	return b.c.Close()
 }
 
 func (b *logBackend) verify(ctx context.Context) error {
-	return b.db.Verify(ctx)
+	return b.c.Verify(ctx)
 }
 
 type logTx struct {
-	tx    *logdb.Tx
-	db    *logdb.DB // of tx
-	wrote bool      // a write other than those of the audit log has been made
+	tx    *dbclient.Tx
+	wrote bool // a write other than those of the audit log has been made
 }
 
 func (t *logTx) current(kind content.RefKind, id string) (Version, bool, error) {
 	key := docKey(kind, id)
-	v, ok := t.tx.Get(tableDocuments, key)
-	if !ok {
-		return Version{}, false, nil
+	v, ok, err := t.tx.Get(tableDocuments, key)
+	if err != nil || !ok {
+		return Version{}, false, err
 	}
 	ver, err := decodeCurrent(key, v, kind, id)
 	if err != nil {
@@ -277,14 +255,10 @@ func (t *logTx) addObject(hash string, data []byte) error {
 		return err
 	}
 	t.wrote = true
-	got, err := t.tx.PutObject(data)
-	if err != nil {
-		return err
-	}
-	if got != want {
+	if got := sha256.Sum256(data); got != want {
 		return fmt.Errorf("object %s: the data has the hash %s", hash, hashText(got[:]))
 	}
-	return nil
+	return t.tx.PutObject(want, data)
 }
 
 func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (int64, error) {
@@ -310,8 +284,11 @@ func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (
 func (t *logTx) setCurrent(kind content.RefKind, id string, seq int64) error {
 	t.wrote = true
 	key := historyKey(kind, id, seq)
-	v, ok := t.tx.Get(tableHistory, key)
-	if !ok {
+	v, ok, err := t.tx.Get(tableHistory, key)
+	switch {
+	case err != nil:
+		return err
+	case !ok:
 		return fmt.Errorf("%s %q: missing", tableNames[tableHistory], key)
 	}
 	return t.tx.Put(tableDocuments, docKey(kind, id), v)
@@ -338,7 +315,7 @@ func (t *logTx) documents(kind content.RefKind) ([]Document, error) {
 	prefix := docKey(kind, "")
 	var docs []Document
 	var err error
-	t.tx.Scan(tableDocuments, prefix, func(key, value []byte) bool {
+	if serr := t.tx.Scan(tableDocuments, prefix, func(key, value []byte) bool {
 		var v Version
 		if v, err = decodeCurrent(key, value, kind, string(key[len(prefix):])); err != nil {
 			return false
@@ -349,21 +326,25 @@ func (t *logTx) documents(kind content.RefKind) ([]Document, error) {
 		}
 		docs = append(docs, Document{Version: v, Data: data})
 		return true
-	})
+	}); err == nil {
+		err = serr
+	}
 	return docs, err
 }
 
 func (t *logTx) history(kind content.RefKind, id string) ([]Version, error) {
 	var versions []Version
 	var err error
-	t.tx.Scan(tableHistory, append(docKey(kind, id), 0), func(key, value []byte) bool {
+	if serr := t.tx.Scan(tableHistory, append(docKey(kind, id), 0), func(key, value []byte) bool {
 		var v Version
 		if v, err = decodeVersion(tableHistory, key, value, kind, id); err != nil {
 			return false
 		}
 		versions = append(versions, v)
 		return true
-	})
+	}); err == nil {
+		err = serr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -376,14 +357,7 @@ func (t *logTx) object(hash string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if !t.tx.HasObject(d) {
-		return nil, false, nil
-	}
-	data, err := t.tx.Object(d)
-	if err != nil {
-		return nil, false, err
-	}
-	return data, true, nil
+	return t.tx.Object(d)
 }
 
 // data returns the data of the object hash, which the value of key in table names, and which the store must have.
@@ -399,8 +373,8 @@ func (t *logTx) data(table uint32, key []byte, hash string) ([]byte, error) {
 }
 
 func (t *logTx) revisionExists(id string) (bool, error) {
-	_, ok := t.tx.Get(tableRevisions, []byte(id))
-	return ok, nil
+	_, ok, err := t.tx.Get(tableRevisions, []byte(id))
+	return ok, err
 }
 
 func (t *logTx) addRevision(id, entry, hash, savedAt, by string) (int64, error) {
@@ -435,9 +409,9 @@ func (t *logTx) revision(id string) (Revision, bool, error) {
 
 // revisionInfo returns the revision with id without Data.
 func (t *logTx) revisionInfo(id string) (Revision, bool, error) {
-	v, ok := t.tx.Get(tableRevisions, []byte(id))
-	if !ok {
-		return Revision{}, false, nil
+	v, ok, err := t.tx.Get(tableRevisions, []byte(id))
+	if err != nil || !ok {
+		return Revision{}, false, err
 	}
 	r, err := decodeRevision(id, v)
 	if err != nil {
@@ -449,7 +423,7 @@ func (t *logTx) revisionInfo(id string) (Revision, bool, error) {
 func (t *logTx) revisions(entry string) ([]Revision, error) {
 	var revs []Revision
 	var err error
-	t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
+	if serr := t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
 		var r Revision
 		var ok bool
 		if r, ok, err = t.revisionInfo(string(id)); err == nil && !ok {
@@ -460,7 +434,9 @@ func (t *logTx) revisions(entry string) ([]Revision, error) {
 		}
 		revs = append(revs, r)
 		return true
-	})
+	}); err == nil {
+		err = serr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -471,20 +447,19 @@ func (t *logTx) addEvent(data []byte) error {
 	return t.tx.AppendEvent(data)
 }
 
-// events reads the events of the commits up to that of the snapshot of t, which the engine reads from the log, and not
-// those that a later commit has added, so that the heads that t reads are those of the events.
+// events reads the events of the commits up to that of the snapshot of t, and not those that a later commit has added, so
+// that the heads that t reads are those of the events. The marks of the daemon are among them.
 func (t *logTx) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
-	seq := t.tx.Seq()
-	return t.db.Events(ctx, func(e logdb.Event) bool { return e.Seq <= seq && fn(e.Number, e.Data) })
+	return t.tx.Events(ctx, fn)
 }
 
 var metaHeads = map[audit.Log]string{audit.LoginLog: metaLoginLog, audit.ActivityLog: metaActivityLog}
 
 func (t *logTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 	key := metaHeads[log]
-	v, ok := t.tx.Get(tableMeta, []byte(key))
-	if !ok {
-		return audit.Head{}, false, nil
+	v, ok, err := t.tx.Get(tableMeta, []byte(key))
+	if err != nil || !ok {
+		return audit.Head{}, false, err
 	}
 	r := valueReader{b: v}
 	h := audit.Head{Log: log, N: r.uvarint()}
@@ -509,24 +484,30 @@ func (t *logTx) putHeadLine(h audit.Head) error {
 }
 
 func (t *logTx) headLine(log audit.Log) (string, bool, error) {
-	v, ok := t.tx.Get(tableHeads, []byte(log))
-	return string(v), ok, nil
+	v, ok, err := t.tx.Get(tableHeads, []byte(log))
+	return string(v), ok, err
 }
 
 func (t *logTx) auditReady() (bool, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
 	version, valid := decodeUint(v)
 	if !ok || !valid {
-		return false, invalidValue(tableMeta, []byte(metaSchema))
+		return false, invalidValue(tableMeta, schemaKey)
 	}
 	return version >= auditSchema, nil
 }
 
 func (t *logTx) exportReady() (bool, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
 	version, valid := decodeUint(v)
 	if !ok || !valid {
-		return false, invalidValue(tableMeta, []byte(metaSchema))
+		return false, invalidValue(tableMeta, schemaKey)
 	}
 	return version >= exportSchema, nil
 }
@@ -536,8 +517,7 @@ func (t *logTx) changed() bool {
 }
 
 func (t *logTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
-	v, ok := t.tx.Get(indexTableIDs[table], key)
-	return v, ok, nil
+	return t.tx.Get(indexTableIDs[table], key)
 }
 
 func (t *logTx) indexPut(table indexTable, key, value []byte) error {
@@ -551,23 +531,25 @@ func (t *logTx) indexDelete(table indexTable, key []byte) error {
 }
 
 func (t *logTx) indexScan(table indexTable, prefix []byte, fn func(key, value []byte) bool) error {
-	t.tx.Scan(indexTableIDs[table], prefix, fn)
-	return nil
+	return t.tx.Scan(indexTableIDs[table], prefix, fn)
 }
 
 func (t *logTx) indexReady() (bool, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
 	version, valid := decodeUint(v)
 	if !ok || !valid {
-		return false, invalidValue(tableMeta, []byte(metaSchema))
+		return false, invalidValue(tableMeta, schemaKey)
 	}
 	return version >= indexSchema, nil
 }
 
 func (t *logTx) lastNumber() (int64, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaNumbers))
-	if !ok {
-		return 0, nil
+	v, ok, err := t.tx.Get(tableMeta, []byte(metaNumbers))
+	if err != nil || !ok {
+		return 0, err
 	}
 	n, valid := decodeUint(v)
 	if !valid || n > math.MaxInt64 {
@@ -585,7 +567,11 @@ func (t *logTx) setLastNumber(n int64) error {
 // puts it there.
 func (t *logTx) next(key string) (int64, error) {
 	var last uint64
-	if v, ok := t.tx.Get(tableMeta, []byte(key)); ok {
+	v, ok, err := t.tx.Get(tableMeta, []byte(key))
+	if err != nil {
+		return 0, err
+	}
+	if ok {
 		if last, ok = decodeUint(v); !ok || last == math.MaxInt64 {
 			return 0, invalidValue(tableMeta, []byte(key))
 		}
@@ -751,105 +737,4 @@ func digest(hash string) ([sha256.Size]byte, error) {
 // hashText returns the hash of Version.Hash and Revision.Hash of the SHA-256 sum.
 func hashText(sum []byte) string {
 	return "sha256:" + hex.EncodeToString(sum)
-}
-
-// Backup copies the data directory srcDir of a store, whose writer may go on writing, to dstDir, which must be missing or
-// an empty directory: logdb/ as it is at the last commit that is durable when Backup begins (logdb.Backup), and then
-// files/, which has the originals of that commit by then, while the engine keeps maintenance away. If it fails, dstDir
-// must be emptied before it can try again.
-func Backup(ctx context.Context, srcDir, dstDir string) error {
-	return backup(ctx, srcDir, nil, dstDir, nil)
-}
-
-// backup is Backup of the data directories src and dst, or of srcDir and dstDir on the OS if they are nil; srcDir and
-// dstDir name them in errors.
-func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst vfs.FS) error {
-	if err := newDataDir(dstDir, dst); err != nil {
-		return err
-	}
-	src, doneSrc, err := dataRoot(srcDir, src)
-	if err != nil {
-		return err
-	}
-	defer doneSrc()
-	if err := checkDir(src, srcDir, "logdb"); err != nil {
-		return err
-	}
-	if err := checkDir(src, srcDir, "files"); err != nil {
-		return err
-	}
-	srcLog, err := src.Sub("logdb")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = srcLog.Close() }()
-	dst, doneDst, err := dataRoot(dstDir, dst)
-	if err != nil {
-		return err
-	}
-	defer doneDst()
-	for _, name := range []string{"files", "logdb"} {
-		if err := dst.Mkdir(name, 0o700); err != nil {
-			return err
-		}
-	}
-	dstLog, err := dst.Sub("logdb")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dstLog.Close() }()
-	if _, err := logdb.Backup(ctx, srcLog, dstLog, func(logdb.Position) error {
-		return copyFiles(ctx, src, dst, "files")
-	}); err != nil {
-		return err
-	}
-	return dst.SyncDir(".")
-}
-
-// copyFiles copies the directory dir of src, with every directory and regular file in it but the temporary files of
-// PutOriginal, to dst, which has dir. It syncs each file, and each directory after what it has copied in it.
-func copyFiles(ctx context.Context, src, dst vfs.FS, dir string) error {
-	entries, err := src.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		name := path.Join(dir, e.Name())
-		switch {
-		case strings.HasPrefix(e.Name(), ".tmp-"):
-		case e.IsDir():
-			if err := dst.Mkdir(name, 0o700); err != nil {
-				return err
-			}
-			if err := copyFiles(ctx, src, dst, name); err != nil {
-				return err
-			}
-		case e.Type().IsRegular():
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := copyFile(src, dst, name); err != nil {
-				return err
-			}
-		}
-	}
-	return dst.SyncDir(dir)
-}
-
-// copyFile copies the file name of src to dst, and syncs it.
-func copyFile(src, dst vfs.FS, name string) error {
-	r, err := src.Open(name)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = r.Close() }()
-	w, err := dst.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(w, r)
-	if err == nil {
-		err = w.Sync()
-	}
-	return errors.Join(err, w.Close())
 }

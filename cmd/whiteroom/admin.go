@@ -374,7 +374,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	}
 	a.closers = append(a.closers, closeSite)
 	a.logger, a.heads, a.ticks = logger, e.stderr, e.ticks
-	st, err := store.Open(s.data)
+	st, err := openStore(s.data)
 	if err != nil {
 		return err
 	}

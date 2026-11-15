@@ -24,6 +24,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -95,7 +96,7 @@ type testIn struct {
 func testStore(tb testing.TB) (*store.Store, string) {
 	tb.Helper()
 	dir := filepath.Join(tb.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		tb.Fatal(err)
 	}

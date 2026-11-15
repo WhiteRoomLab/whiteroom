@@ -151,7 +151,7 @@ func runInit(ctx context.Context, args []string, e env) int {
 				return err
 			}
 			made = true
-			if s, err = store.Create(data); err != nil {
+			if s, err = createStore(data); err != nil {
 				return err
 			}
 			if accounts, err = e.newAccounts(s); err != nil {

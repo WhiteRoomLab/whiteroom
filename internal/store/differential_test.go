@@ -215,7 +215,7 @@ func (d *diffStore) open(t *testing.T, fresh bool) {
 		if fresh {
 			d.model = newModelBackend()
 		}
-		s = &Store{b: d.model, files: simfs.New("files")}
+		s = newModelStoreOn(d.model)
 	case fresh:
 		s, err = create(d.dir, d.options())
 	default:
@@ -240,6 +240,29 @@ func (d *diffStore) close(t *testing.T) {
 	d.s = nil
 	if err != nil {
 		t.Fatalf("%s: Close() = %v", d.name, err)
+	}
+}
+
+// closeReader closes the reader of d, a store of the log backend, which keeps the daemon of the data directory open as
+// long as it is open: its engine writes the checkpoint when the last store of it is closed.
+func (d *diffStore) closeReader(t *testing.T) {
+	t.Helper()
+	if d.reader == nil {
+		return
+	}
+	err := d.reader.Close()
+	d.reader = nil
+	if err != nil {
+		t.Fatalf("%s: Close() of the reader = %v", d.name, err)
+	}
+}
+
+// openReader opens the reader of d, which then is open since it has been opened.
+func (d *diffStore) openReader(t *testing.T) {
+	t.Helper()
+	var err error
+	if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
+		t.Fatalf("%s: openLogReader() = %v", d.name, err)
 	}
 }
 
@@ -397,11 +420,12 @@ func newDiffRun(t *testing.T, change func(o *logdb.Options), sim bool) *diffRun 
 		if d.log == nil {
 			continue
 		}
-		var err error
-		if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
-			t.Fatalf("%s: openLogReader() = %v", d.name, err)
-		}
-		t.Cleanup(func() { _ = d.reader.Close() })
+		d.openReader(t)
+		t.Cleanup(func() {
+			if d.reader != nil {
+				_ = d.reader.Close()
+			}
+		})
 	}
 	return r
 }
@@ -506,10 +530,12 @@ func (r *diffRun) reopen(step string, replay bool) {
 			d.open(r.t, false)
 			continue
 		}
+		d.closeReader(r.t) // the engine of the daemon is closed with the last store, and opens again with the next
 		if replay {
 			d.removeCheckpoint(r.t)
 		}
 		d.open(r.t, false)
+		d.openReader(r.t)
 		if got := logDB(r.t, d.s).Recovery().Checkpoint; got != want {
 			r.t.Fatalf("%s, %s: %s has opened with the checkpoint %q, want %q", r.about, step, d.name, got, want)
 		}
@@ -547,15 +573,10 @@ func (r *diffRun) crash(step, model string) {
 		}
 		world := d.fsys.Crash(simfs.Model{Name: model, Keep: keep})
 		d.close(r.t)
-		if err := d.reader.Close(); err != nil {
-			r.t.Fatalf("%s, %s: Close() of the reader of %s = %v", r.about, step, d.name, err)
-		}
+		d.closeReader(r.t)
 		d.fsys = world
 		d.open(r.t, false)
-		var err error
-		if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
-			r.t.Fatalf("%s, %s: openLogReader() of %s = %v", r.about, step, d.name, err)
-		}
+		d.openReader(r.t)
 		switch info := logDB(r.t, d.s).Recovery(); {
 		case info.Checkpoint != "used" && info.Checkpoint != "none":
 			r.t.Fatalf("%s, %s: %s has opened after the crash with the checkpoint %q", r.about, step, d.name,

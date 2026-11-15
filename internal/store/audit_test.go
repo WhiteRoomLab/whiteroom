@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +31,21 @@ func createRecordSum() []byte {
 	return sum[:]
 }
 
-// rawEvents returns the audit events of the engine of s as it keeps them.
+// rawEvents returns the events of the audit records of the engine of s as it keeps them, without the marks of the daemon,
+// which allEvents has too. The Number of an event counts the marks.
 func rawEvents(t *testing.T, s *Store) []logdb.Event {
+	t.Helper()
+	var got []logdb.Event
+	for _, e := range allEvents(t, s) {
+		if !dbwire.IsDaemonEvent(e.Data) {
+			got = append(got, e)
+		}
+	}
+	return got
+}
+
+// allEvents returns the events of the engine of s as it keeps them: the audit records and the marks of the daemon.
+func allEvents(t *testing.T, s *Store) []logdb.Event {
 	t.Helper()
 	var got []logdb.Event
 	if err := logDB(t, s).Events(t.Context(), func(e logdb.Event) bool {
@@ -368,8 +383,8 @@ func TestRecordAtomic(t *testing.T) {
 		}},
 		{"the engine fails before its commit point", func(t *testing.T, s *Store, records func(tx *Tx) error) {
 			failAt(s, "logdb:update:written", errTest)
-			if err := s.Update(t.Context(), records); !errors.Is(err, errTest) {
-				t.Errorf("Update() = %v, want the error of the hook", err)
+			if err := s.Update(t.Context(), records); !failedAtHook(err, errTest, "logdb:update:written") {
+				t.Errorf("Update() = %v, want the refusal of the daemon, whose engine's hook has failed", err)
 			}
 			s.hook = nil
 		}},
@@ -741,10 +756,11 @@ func TestReadAudit(t *testing.T) {
 	})
 
 	t.Run("an event that is no record", func(t *testing.T) {
+		next := nextEvent(t, s)
 		rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.AppendEvent([]byte("not a record")) })
 		n := 0
 		err := s.ReadAudit(t.Context(), audit.Filter{}, func(audit.Record) bool { n++; return true })
-		want := "audit event 10: not a record of the audit log"
+		want := fmt.Sprintf("audit event %d: not a record of the audit log", next)
 		if !errors.Is(err, audit.ErrBroken) || err == nil || err.Error() != want || n != 9 {
 			t.Errorf("ReadAudit() = %v after %d records, want %q that wraps audit.ErrBroken after 9", err, n, want)
 		}
@@ -929,7 +945,12 @@ func TestUpgradeTrialEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	rewriteEngine(t, dir, logdb.Rewrite{
-		Event: func(logdb.Event) ([]byte, bool) { return []byte("pair 1"), true },
+		Event: func(e logdb.Event) ([]byte, bool) {
+			if dbwire.IsDaemonEvent(e.Data) {
+				return e.Data, true
+			}
+			return []byte("pair 1"), true
+		},
 		Value: dropHeads,
 	})
 
@@ -984,8 +1005,10 @@ func testMark(second int) []byte {
 	return dbwire.AppendMark(nil, testTime.Add(time.Duration(second)*time.Second))
 }
 
-// markedStore makes a store whose events are 1 a mark, 2 store.create (activity 1), 3 activity 2, 4 login 1, 5 and 6
-// marks, 7 activity 3 and 8 a mark. It returns it with its data directory and its heads.
+// markedStore makes a store whose events are 1 a mark, 2 store.create (activity 1), 3 a mark, 4 activity 2, 5 login 1,
+// 6, 7 and 8 marks, 9 activity 3, and 10 and 11 marks. The daemon has added the marks 1 (after store.create, before the
+// swap below), 6 and 10, one after each commit, and the others are those of appendRawEvents. It returns it with its data
+// directory and its heads.
 func markedStore(t *testing.T) (s *Store, dir string, heads []audit.Head) {
 	t.Helper()
 	s, dir = newLogStore(t, logdb.Options{})
@@ -1002,13 +1025,13 @@ func markedStore(t *testing.T) (s *Store, dir string, heads []audit.Head) {
 	}
 	// The engine has the mark where store.create was, and store.create after it: that changes places with the mark that
 	// was the second event, so that a mark is the first event and the last.
-	events := rawEvents(t, s)
-	if len(events) != 8 {
-		t.Fatalf("the events = %d, want 8", len(events))
+	events := allEvents(t, s)
+	if len(events) != 11 {
+		t.Fatalf("the events = %d, want 11", len(events))
 	}
 	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{1: events[1].Data, 2: events[0].Data}, nil, nil))
-	got := rawEvents(t, s)
-	for i, mark := range []bool{true, false, false, false, true, true, false, true} {
+	got := allEvents(t, s)
+	for i, mark := range []bool{true, false, true, false, false, true, true, true, false, true, true} {
 		if dbwire.IsDaemonEvent(got[i].Data) != mark {
 			t.Fatalf("the event %d is a mark: %v, want %v", i+1, !mark, mark)
 		}
@@ -1047,33 +1070,41 @@ func TestMarksAreSkipped(t *testing.T) {
 		}
 	})
 
-	// The numbers of the events in an error count the marks: the record 3 of the activity log is the event 7, and a
-	// change of the record 2, the event 3, makes the prev of the record 3 wrong.
+	// The numbers of the events in an error count the marks: the record 3 of the activity log is the event 9, and a
+	// change of the record 2, the event 4, makes the prev of the record 3 wrong.
 	for _, tt := range []struct {
 		name   string
-		number uint64
+		number uint64 // of the record of the activity log that changes
 		old    string
-		want   string
+		want   string // with the %d of the event of the record 3
 	}{
-		{"the last record of a log changed", 7, `"event":"b"`,
-			`audit log "activity": record 3 (event 7): its hash is not that of the head in the table`},
-		{"a record before it changed", 3, `"event":"a"`,
-			`audit log "activity": record 3 (event 7): prev is not the hash of record 2`},
+		{"the last record of a log changed", 3, `"event":"b"`,
+			`audit log "activity": record 3 (event %d): its hash is not that of the head in the table`},
+		{"a record before it changed", 2, `"event":"a"`,
+			`audit log "activity": record 3 (event %d): prev is not the hash of record 2`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, dir, _ := markedStore(t)
-			data := replaced(t, rawEvents(t, s)[tt.number-1].Data, tt.old, `"event":"X"`)
-			s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{tt.number: data}, nil, nil))
+			number := eventOf(t, s, audit.ActivityLog, tt.number)
+			var old []byte
+			for _, e := range allEvents(t, s) {
+				if e.Number == number {
+					old = e.Data
+				}
+			}
+			want := fmt.Sprintf(tt.want, eventOf(t, s, audit.ActivityLog, 3))
+			data := replaced(t, old, tt.old, `"event":"X"`)
+			s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{number: data}, nil, nil))
 			for who, st := range map[string]*Store{"the writer": s, "a reader": openReaderOf(t, dir)} {
 				err := st.VerifyAudit(t.Context(), nil)
-				if err == nil || err.Error() != tt.want || !errors.Is(err, audit.ErrBroken) {
-					t.Errorf("VerifyAudit() of %s = %v, want %q that wraps audit.ErrBroken", who, err, tt.want)
+				if err == nil || err.Error() != want || !errors.Is(err, audit.ErrBroken) {
+					t.Errorf("VerifyAudit() of %s = %v, want %q that wraps audit.ErrBroken", who, err, want)
 				}
 			}
 		})
 	}
 
-	// An event of the daemon that is not a mark, after a mark and a record: the 4th event.
+	// An event of the daemon that is not a mark, after a mark and a record, and the marks of the commits.
 	withNanos := func(nanos uint32) []byte {
 		b := testMark(1)
 		binary.BigEndian.PutUint32(b[10:], nanos)
@@ -1095,8 +1126,8 @@ func TestMarksAreSkipped(t *testing.T) {
 			s, dir := newLogStore(t, logdb.Options{})
 			appendRawEvents(t, s, testMark(1))
 			update(t, s, func(tx *Tx) error { return tx.Record(eventRecord("a")) })
+			want := fmt.Sprintf("audit event %d: not a record of the audit log", nextEvent(t, s))
 			appendRawEvents(t, s, tt.data)
-			const want = "audit event 4: not a record of the audit log"
 			for who, st := range map[string]*Store{"the writer": s, "a reader": openReaderOf(t, dir)} {
 				n := 0
 				err := st.ReadAudit(t.Context(), audit.Filter{}, func(audit.Record) bool { n++; return true })
@@ -1110,6 +1141,48 @@ func TestMarksAreSkipped(t *testing.T) {
 			}
 		})
 	}
+
+	// The marks that the daemon adds to the commits of a store: one valid mark, after the records, in each commit.
+	t.Run("the marks of the daemon", func(t *testing.T) {
+		s, dir := newLogStore(t, logdb.Options{})
+		update(t, s, func(tx *Tx) error {
+			return errors.Join(tx.Record(eventRecord("a")), tx.Record(loginRecord(audit.Login, "x")))
+		})
+		update(t, s, func(tx *Tx) error { return tx.Record(eventRecord("b")) })
+		update(t, s, putDoc(content.RefEntry, entryID, docJSON(content.RefEntry, entryID)))
+		events := allEvents(t, s)
+		// store.create, a, login x, b and the record of the Put, and a mark at the end of each of the four commits.
+		var records, marks []uint64
+		for i, e := range events {
+			if _, ok := dbwire.ParseMark(e.Data); ok {
+				marks = append(marks, e.Seq)
+				if i == 0 || events[i-1].Seq != e.Seq || dbwire.IsDaemonEvent(events[i-1].Data) {
+					t.Errorf("the mark %d is not after a record of its commit: %+v", i+1, events)
+				}
+				if i+1 < len(events) && events[i+1].Seq == e.Seq {
+					t.Errorf("the mark %d is not the last event of its commit: %+v", i+1, events)
+				}
+				continue
+			}
+			if dbwire.IsDaemonEvent(e.Data) {
+				t.Errorf("the event %d is of the daemon, and no mark: %q", i+1, e.Data)
+			}
+			records = append(records, e.Seq)
+		}
+		if !slices.Equal(marks, []uint64{1, 2, 3, 4}) || !slices.Equal(records, []uint64{1, 2, 2, 3, 4}) {
+			t.Errorf("the commits of the marks are %v and those of the records %v, want 1 to 4 and 1, 2, 2, 3, 4", marks, records)
+		}
+		want := []string{"activity 1 store.create ", "activity 2 store.write a", "login 1 login ", "activity 3 store.write b",
+			"activity 4 store.write "}
+		for who, st := range map[string]*Store{"the writer": s, "a reader": openReaderOf(t, dir)} {
+			if got := recordLines(allRecords(t, st)); !slices.Equal(got, want) {
+				t.Errorf("ReadAudit() of %s = %q, want %q: the records, and no mark", who, got, want)
+			}
+			if err := st.VerifyAudit(t.Context(), nil); err != nil {
+				t.Errorf("VerifyAudit() of %s = %v", who, err)
+			}
+		}
+	})
 
 	// A mark of any time is a mark: the seconds are not looked at.
 	t.Run("marks of any time", func(t *testing.T) {
@@ -1298,7 +1371,7 @@ func TestHeadsRows(t *testing.T) {
 		h := heads[1]
 		h.N = 5
 		rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaActivityLog), headValue(h)) })
-		const want = `audit log "activity": the head in the table is record 5, but the last record is record 6 (event 8)`
+		want := renumber(rawEvents(t, s), `audit log "activity": the head in the table is record 5, but the last record is record 6 (event 8)`)
 		if err := s.VerifyAudit(t.Context(), nil); err == nil || err.Error() != want {
 			t.Errorf("VerifyAudit() = %v, want %q", err, want)
 		}
@@ -1421,15 +1494,75 @@ func rewriteEvents(replace map[uint64][]byte, drop []uint64, heads map[audit.Log
 	}
 }
 
+// rewriteRecords is rewriteEvents with the records, and not the events, counted from 1 in the order of the log: a mark
+// of the daemon is kept, and has no position, so that a test says "the third record" as it did when the log had none.
+func rewriteRecords(replace map[uint64][]byte, drop []uint64, heads map[audit.Log]*audit.Head) logdb.Rewrite {
+	r := rewriteEvents(nil, nil, heads)
+	pos := uint64(0)
+	r.Event = func(e logdb.Event) ([]byte, bool) {
+		if dbwire.IsDaemonEvent(e.Data) {
+			return e.Data, true
+		}
+		pos++
+		if slices.Contains(drop, pos) {
+			return nil, false
+		}
+		if data, ok := replace[pos]; ok {
+			return data, true
+		}
+		return e.Data, true
+	}
+	return r
+}
+
+var eventNumber = regexp.MustCompile(`\(event ([0-9]+)\)|audit event ([0-9]+):`)
+
+// renumber returns text, an error of the audit log whose numbers of events are those of a log that has no marks, with
+// the numbers of events of the log of events, which are the records of a store, as the engine numbers them with the
+// marks of the daemon in between.
+func renumber(events []logdb.Event, text string) string {
+	return eventNumber.ReplaceAllStringFunc(text, func(m string) string {
+		sub := eventNumber.FindStringSubmatch(m)
+		digits := sub[1] + sub[2]
+		k, err := strconv.Atoi(digits)
+		if err != nil || k < 1 || k > len(events) {
+			return m
+		}
+		return strings.Replace(m, digits, strconv.FormatUint(events[k-1].Number, 10), 1)
+	})
+}
+
+// nextEvent returns the number that the next event of s will have.
+func nextEvent(t *testing.T, s *Store) uint64 {
+	t.Helper()
+	events := allEvents(t, s)
+	if len(events) == 0 {
+		return 1
+	}
+	return events[len(events)-1].Number + 1
+}
+
+// eventOf returns the number of the event of the record n of log in s.
+func eventOf(t *testing.T, s *Store, log audit.Log, n uint64) uint64 {
+	t.Helper()
+	for _, e := range rawEvents(t, s) {
+		if r, err := audit.Decode(e.Data); err == nil && r.Log == log && r.N == n {
+			return e.Number
+		}
+	}
+	t.Fatalf("no event of the record %d of the %s log", n, log)
+	return 0
+}
+
 // rechain returns the events with the records of log from the number from on made again by change, as a chain that
 // holds: each has the hash of the one before it, which is a new one after the first that change has made. It returns
-// the head of log that goes with them.
+// the head of log that goes with them. The keys of replace are the positions of the records, as rewriteRecords has them.
 func rechain(t *testing.T, events []logdb.Event, log audit.Log, from uint64, change func(r *audit.Record)) (
 	replace map[uint64][]byte, head audit.Head) {
 	t.Helper()
 	replace = map[uint64][]byte{}
 	var prev *[sha256.Size]byte
-	for _, e := range events {
+	for i, e := range events {
 		r, err := audit.Decode(e.Data)
 		if err != nil {
 			t.Fatal(err)
@@ -1447,7 +1580,7 @@ func rechain(t *testing.T, events []logdb.Event, log audit.Log, from uint64, cha
 			if data, err = audit.Encode(r); err != nil {
 				t.Fatal(err)
 			}
-			replace[e.Number] = data
+			replace[uint64(i+1)] = data
 		}
 		sum := sha256.Sum256(data)
 		prev, head = &sum, audit.Head{Log: log, N: r.N, Hash: sum}
@@ -1469,35 +1602,35 @@ func TestVerifyAudit(t *testing.T) {
 	}{
 		{"a record changed", func(t *testing.T, f fixture) logdb.Rewrite {
 			data := replaced(t, f.events[3].Data, `"event":"1"`, `"event":"X"`)
-			return rewriteEvents(map[uint64][]byte{4: data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{4: data}, nil, nil)
 		}, `audit log "activity": record 4 (event 5): prev is not the hash of record 3`, same},
 		{"the last record of a log changed", func(t *testing.T, f fixture) logdb.Rewrite {
 			data := replaced(t, f.events[7].Data, `"event":"4"`, `"event":"Z"`)
-			return rewriteEvents(map[uint64][]byte{8: data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{8: data}, nil, nil)
 		}, `audit log "activity": record 6 (event 8): its hash is not that of the head in the table`,
 			`audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		{"the last record of the other log changed", func(t *testing.T, f fixture) logdb.Rewrite {
 			data := replaced(t, f.events[8].Data, `"login":"4"`, `"login":"Z"`)
-			return rewriteEvents(map[uint64][]byte{9: data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{9: data}, nil, nil)
 		}, `audit log "login": record 3 (event 9): its hash is not that of the head in the table`,
 			`audit log "login": record 3 (event 9): its hash is not that of the head kept outside the store`},
 		{"a record dropped", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{4}, nil)
+			return rewriteRecords(nil, []uint64{4}, nil)
 		}, `audit log "activity": record 4 (event 5): the number does not follow that of record 2`, same},
 		{"a record dropped from the other log", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{6}, nil)
+			return rewriteRecords(nil, []uint64{6}, nil)
 		}, `audit log "login": record 3 (event 9): the number does not follow that of record 1`, same},
 		{"the first record dropped", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{1}, nil)
+			return rewriteRecords(nil, []uint64{1}, nil)
 		}, `audit log "activity": record 2 (event 2): the first record of a log is number 1`, same},
 		{"the last record dropped", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{9}, nil)
+			return rewriteRecords(nil, []uint64{9}, nil)
 		}, `audit log "login": the head in the table is record 3, but the last record is record 2 (event 6)`, same},
 		{"records out of order", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(map[uint64][]byte{4: f.events[4].Data, 5: f.events[3].Data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{4: f.events[4].Data, 5: f.events[3].Data}, nil, nil)
 		}, `audit log "activity": record 4 (event 4): the number does not follow that of record 2`, same},
 		{"a record twice", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(map[uint64][]byte{5: f.events[3].Data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{5: f.events[3].Data}, nil, nil)
 		}, `audit log "activity": record 3 (event 5): the number does not follow that of record 3`, same},
 		{"the first record with a prev", func(t *testing.T, f fixture) logdb.Rewrite {
 			r, err := audit.Decode(f.events[2].Data)
@@ -1509,66 +1642,67 @@ func TestVerifyAudit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			return rewriteEvents(map[uint64][]byte{3: data}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{3: data}, nil, nil)
 		}, `audit log "login": record 1 (event 3): the first record has the hash of one before it`, same},
 		{"the hash of the head changed", func(t *testing.T, f fixture) logdb.Rewrite {
 			h := f.heads[1]
 			h.Hash[0] ^= 1
-			return rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
+			return rewriteRecords(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
 		}, `audit log "activity": record 6 (event 8): its hash is not that of the head in the table`, same},
 		{"the number of the head changed", func(t *testing.T, f fixture) logdb.Rewrite {
 			h := f.heads[1]
 			h.N = 5
-			return rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
+			return rewriteRecords(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
 		}, `audit log "activity": the head in the table is record 5, but the last record is record 6 (event 8)`, same},
 		{"the number of the head raised", func(t *testing.T, f fixture) logdb.Rewrite {
 			h := f.heads[0]
 			h.N = 4
-			return rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.LoginLog: &h})
+			return rewriteRecords(nil, nil, map[audit.Log]*audit.Head{audit.LoginLog: &h})
 		}, `audit log "login": the head in the table is record 4, but the last record is record 3 (event 9)`, same},
 		{"the head dropped", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: nil})
+			return rewriteRecords(nil, nil, map[audit.Log]*audit.Head{audit.ActivityLog: nil})
 		}, `audit log "activity": the table has no head, but the log has records, the last of which is record 6 (event 8)`,
 			same},
 		{"the head of a log without records", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{3, 6, 9}, nil)
+			return rewriteRecords(nil, []uint64{3, 6, 9}, nil)
 		}, `audit log "login": the table has the head of record 3, but the log has no record`, same},
 		{"an event that is no record", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(map[uint64][]byte{5: []byte("junk")}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{5: []byte("junk")}, nil, nil)
 		}, `audit event 5: not a record of the audit log`, same},
 		{"an event with a JSON that is not a record", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(map[uint64][]byte{5: []byte(`{"log":"activity","n":4}`)}, nil, nil)
+			return rewriteRecords(map[uint64][]byte{5: []byte(`{"log":"activity","n":4}`)}, nil, nil)
 		}, `audit event 5: not a record of the audit log`, same},
 		{"the last record dropped with the head", func(t *testing.T, f fixture) logdb.Rewrite {
 			h := audit.Head{Log: audit.ActivityLog, N: 5, Hash: sha256.Sum256(f.events[6].Data)}
-			return rewriteEvents(nil, []uint64{8}, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
+			return rewriteRecords(nil, []uint64{8}, map[audit.Log]*audit.Head{audit.ActivityLog: &h})
 		}, "", `audit log "activity": the head kept outside the store is record 6, but the log ends with record 5 (event 7)`},
 		{"the records of a log dropped with the head", func(t *testing.T, f fixture) logdb.Rewrite {
-			return rewriteEvents(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil})
+			return rewriteRecords(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil})
 		}, "", `audit log "login": the head kept outside the store is record 3, but the log has no record`},
 		{"the chain made again from a record on", func(t *testing.T, f fixture) logdb.Rewrite {
 			replace, head := rechain(t, f.events, audit.ActivityLog, 3, func(r *audit.Record) {
 				r.Detail = map[string]string{"event": "forged"}
 			})
-			return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
+			return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
 		}, "", `audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		{"the chain made again from the first", func(t *testing.T, f fixture) logdb.Rewrite {
 			replace, head := rechain(t, f.events, audit.ActivityLog, 1, func(r *audit.Record) {
 				r.At = r.At.Add(time.Hour)
 			})
-			return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
+			return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.ActivityLog: &head})
 		}, "", `audit log "activity": record 6 (event 8): its hash is not that of the head kept outside the store`},
 		{"the chain of the login history made again from its second record", func(t *testing.T, f fixture) logdb.Rewrite {
 			replace, head := rechain(t, f.events, audit.LoginLog, 2, func(r *audit.Record) {
 				r.Login = "forged"
 			})
-			return rewriteEvents(replace, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head})
+			return rewriteRecords(replace, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head})
 		}, "", `audit log "login": record 3 (event 9): its hash is not that of the head kept outside the store`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, dir, heads := auditFixture(t)
 			events := rawEvents(t, s)
 			s = closeAndRewrite(t, s, dir, tt.rewrite(t, fixture{events, heads}))
+			tt.want, tt.anchored = renumber(events, tt.want), renumber(events, tt.anchored)
 			reader, err := openLogReader(dir, options{})
 			if err != nil {
 				t.Fatalf("openLogReader() = %v", err)
@@ -1645,12 +1779,12 @@ func TestVerifyAuditNeedsTheActivityLog(t *testing.T) {
 	}{
 		{"every record and both heads dropped", dropAuditRewrite(), missing},
 		{"the activity log dropped with its head",
-			rewriteEvents(nil, []uint64{1, 2, 4, 5, 7, 8}, map[audit.Log]*audit.Head{audit.ActivityLog: nil}), missing},
+			rewriteRecords(nil, []uint64{1, 2, 4, 5, 7, 8}, map[audit.Log]*audit.Head{audit.ActivityLog: nil}), missing},
 		{"the activity log dropped, and its head kept",
-			rewriteEvents(nil, []uint64{1, 2, 4, 5, 7, 8}, nil),
+			rewriteRecords(nil, []uint64{1, 2, 4, 5, 7, 8}, nil),
 			`audit log "activity": the table has the head of record 6, but the log has no record`},
 		{"the login history dropped with its head",
-			rewriteEvents(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil}), ""},
+			rewriteRecords(nil, []uint64{3, 6, 9}, map[audit.Log]*audit.Head{audit.LoginLog: nil}), ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, dir, heads := auditFixture(t)
@@ -1670,6 +1804,7 @@ func TestVerifyAuditNeedsTheActivityLog(t *testing.T) {
 
 func TestVerifyAuditAnchors(t *testing.T) {
 	s, _, heads := auditFixture(t)
+	events := rawEvents(t, s)
 	wrong := sha256.Sum256([]byte("another record"))
 	for _, tt := range []struct {
 		name    string
@@ -1695,6 +1830,7 @@ func TestVerifyAuditAnchors(t *testing.T) {
 		{"the number 0", []audit.Head{{Log: audit.LoginLog}}, "anchor 1: not the head of an audit log"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.want = renumber(events, tt.want)
 			err := s.VerifyAudit(t.Context(), tt.anchors)
 			switch {
 			case tt.want == "" && err != nil:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -54,7 +55,14 @@ func wantProblems(t *testing.T, what string, got []Problem, want ...Problem) {
 // damage runs f in an update of the backend of s, past the shared code and its records.
 func damage(t *testing.T, s *Store, f func(b backendTx) error) {
 	t.Helper()
-	if err := s.b.update(t.Context(), f); err != nil {
+	// The daemon commits only what carries an event: the record of the damage, which is a valid one.
+	if err := s.b.update(t.Context(), func(b backendTx) error {
+		if err := f(b); err != nil {
+			return err
+		}
+		tx := &Tx{b: b, savedAt: testTime.UTC().Format(savedAtLayout)}
+		return tx.run(func(tx *Tx) error { return tx.Record(eventRecord("damage")) })
+	}); err != nil {
 		t.Fatalf("damaging the store = %v", err)
 	}
 }
@@ -453,16 +461,6 @@ func writeFile(t *testing.T, path string, data []byte) {
 	}
 }
 
-// logFS returns the directory logdb/ of s, a store of the log backend.
-func logFS(t *testing.T, s *Store) vfs.FS {
-	t.Helper()
-	b, ok := s.b.(*logBackend)
-	if !ok {
-		t.Fatalf("the backend of the store is %T, want the log backend", s.b)
-	}
-	return b.fsys
-}
-
 // TestCheckEngine checks that Check gives the one problem of the engine when its files are damaged, and goes on to the
 // next areas.
 func TestCheckEngine(t *testing.T) {
@@ -597,16 +595,26 @@ func TestCheckStop(t *testing.T) {
 	})
 }
 
-// cancelOnRead is a file system whose files cancel a context when they are first read.
+// cancelOnRead is a file system whose files in files/ cancel a context when they are read, once armed.
 type cancelOnRead struct {
 	vfs.FS
 	cancel context.CancelFunc
+	armed  *atomic.Bool
+	inside bool // the directory files/
 }
 
-func (f cancelOnRead) Open(name string) (vfs.File, error) {
+func (f *cancelOnRead) Sub(name string) (vfs.FS, error) {
+	sub, err := f.FS.Sub(name)
+	if err != nil || f.inside || name != "files" {
+		return sub, err
+	}
+	return &cancelOnRead{FS: sub, cancel: f.cancel, armed: f.armed, inside: true}, nil
+}
+
+func (f *cancelOnRead) Open(name string) (vfs.File, error) {
 	file, err := f.FS.Open(name)
-	if err != nil {
-		return nil, err
+	if err != nil || !f.inside || !f.armed.Load() {
+		return file, err
 	}
 	return cancelFile{File: file, cancel: f.cancel}, nil
 }
@@ -674,18 +682,32 @@ func TestCheckContext(t *testing.T) {
 	})
 
 	t.Run("in an original", func(t *testing.T) {
-		s, _ := newStore(t, oneBackend[0])
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		dir := filepath.Join(t.TempDir(), "data")
+		mkdir(t, dir)
+		root, err := vfs.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = root.Close() })
+		var armed atomic.Bool
+		o := oneBackend[0].options()
+		o.fs = &cancelOnRead{FS: root, cancel: cancel, armed: &armed}
+		s, err := create(dir, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
 		data := bytes.Repeat([]byte("the original "), 5000)
 		putOriginal(t, s, data)
 		update(t, s, func(tx *Tx) error {
 			_, err := tx.Put(content.RefMedia, mediaID, mediaJSON(mediaID, data), userID)
 			return err
 		})
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		s.files = cancelOnRead{FS: s.files, cancel: cancel}
+		armed.Store(true)
 		calls := 0
-		err := s.Check(ctx, func(Problem) bool {
+		err = s.Check(ctx, func(Problem) bool {
 			calls++
 			return true
 		})

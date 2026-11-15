@@ -26,6 +26,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/nfc"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 var (
@@ -73,7 +74,7 @@ type mgrEnv struct {
 func newMgr(t *testing.T) *mgrEnv {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +445,7 @@ func mgrNotAllowed(a Account, phrase string) string {
 }
 
 func TestNew(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +519,7 @@ func (c *mgrCountingReader) Read(p []byte) (int, error) {
 // TestNewManager checks, with a low count and known bytes, what the constructor makes: the hash for nobody is of the
 // text of a token and a salt, which are the only 48 bytes that it reads, and has the count that it is given.
 func TestNewManager(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +566,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestNewFailures(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2068,7 +2069,7 @@ func mgrReplaceTwice(t *testing.T, s, old, new string) string {
 
 func TestPersistence(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2093,7 +2094,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s2, err := store.Open(dir)
+	s2, err := storetest.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2124,7 +2125,7 @@ func TestPersistence(t *testing.T) {
 }
 
 func TestDefaultIterations(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

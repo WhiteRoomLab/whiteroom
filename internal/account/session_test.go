@@ -27,6 +27,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // sessKey is a key of the table sessions: the 64 lower case hexadecimal digits of the SHA-256 of a text. Of a token it is
@@ -2003,7 +2004,8 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 
 // gateProbe is a context that tells when the hash gate begins to wait on it: the gate asks for the Done channel of its
 // context in the select that takes a place, even when one is free; the tests take every place first, so that this is
-// when it waits. With endOnWait the context ends itself then, so that the wait ends at once.
+// when it waits. With endOnWait the context ends itself then, so that the wait ends at once. The store asks for the
+// channel too, to end a request of its client with the context (context.AfterFunc), which does not count.
 type gateProbe struct {
 	context.Context
 	cancel    context.CancelFunc
@@ -2018,12 +2020,14 @@ func newGateProbe(parent context.Context, endOnWait bool) *gateProbe {
 }
 
 func (p *gateProbe) Done() <-chan struct{} {
-	p.once.Do(func() {
-		close(p.reached)
-		if p.endOnWait {
-			p.cancel()
-		}
-	})
+	if pc, _, _, ok := runtime.Caller(1); ok && strings.HasSuffix(runtime.FuncForPC(pc).Name(), ".(*Manager).gated") {
+		p.once.Do(func() {
+			close(p.reached)
+			if p.endOnWait {
+				p.cancel()
+			}
+		})
+	}
 	return p.Context.Done()
 }
 
@@ -2061,7 +2065,7 @@ func TestHashGate(t *testing.T) {
 	}
 
 	t.Run("the number of places", func(t *testing.T) {
-		s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+		s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2300,7 +2304,7 @@ func TestHashGate(t *testing.T) {
 }
 
 func TestNewWithIterations(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2357,7 +2361,7 @@ func TestNewWithIterations(t *testing.T) {
 // server does, with the time of its last request.
 func TestSessionsPersist(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2378,7 +2382,7 @@ func TestSessionsPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s2, err := store.Open(dir)
+	s2, err := storetest.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
