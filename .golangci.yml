@@ -93,6 +93,7 @@ linters:
             - "!**/internal/build/*.go"
             - "!**/internal/build/gen/*.go"
             - "!**/internal/content/*.go"
+            - "!**/internal/dbserver/*.go"
             - "!**/internal/edit/*.go"
             - "!**/internal/imaging/*.go"
             - "!**/internal/logdb/*.go"
@@ -321,6 +322,26 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+        dbserver:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        dbserver-test:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
         logdb:
           list-mode: strict
           files:
@@ -448,6 +469,9 @@ linters:
         - pattern: ^store\.DropIndexRow$
           pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/store$
           msg: テストだけが使う（わざと索引の行を消す）
+        - pattern: ^dbserver\.EngineOf$
+          pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/dbserver$
+          msg: テストだけが使う（エンジンを直接触る）
         - pattern: ^filepath\.Abs$
           pkg: ^path/filepath$
           msg: fspath.Abs を使う（filepath.Abs は、シンボリックリンクの後ろの .. を、文字の上で消す）
