@@ -1368,10 +1368,10 @@ func TestEntriesNotPlanned(t *testing.T) {
 					imp.DropRef(id)
 				}
 			}
-		}, "item 1 (post) is not planned as an entry; call PlanEntries before Site"},
+		}, "item 1 (post) is not planned as an entry; call PlanEntries before Site, and Entries once for an import"},
 		{"an item that is not in the table", func(t *testing.T, imp *Import, _ *content.Site) {
 			imp.IDs.Drop(PostObject(imp.WXR.Post(2)))
-		}, "item 2 (page) is not planned as an entry; call PlanEntries before Site"},
+		}, "item 2 (page) is not planned as an entry; call PlanEntries before Site, and Entries once for an import"},
 		{"an item without a reference", func(t *testing.T, imp *Import, _ *content.Site) {
 			imp.DropRef(idOf(t, imp, 1))
 		}, "item 1 (post) is not planned as an entry"},
@@ -1413,6 +1413,58 @@ func TestEntriesNotPlanned(t *testing.T) {
 			}
 		})
 	}
+
+	// The plan had a schema file with the type works, and the site has not: the links and the fields of the other entries
+	// would refer to an entry that is never made.
+	t.Run("an item whose type the plan had and the site has not", func(t *testing.T) {
+		imp, _ := planEntries(t, nil, nil, entriesWXR("",
+			wxrEntry{id: 1, title: "A", name: "a"}, wxrEntry{id: 5, typ: "works", title: "W", name: "w"}, wxrEntry{id: 6, typ: "works", status: "trash"}))
+		s := entrySettings()
+		s.URLs.Types = nil
+		site, err := imp.Site(s, new(content.Site))
+		if err != nil {
+			t.Fatalf("Site = %v", err)
+		}
+		before, report := entryState(imp), reportLines(t, imp.Report)
+		docs, err := collectEntries(context.Background(), imp, s, site)
+		const want = "item 5 (works) is planned as an entry, but the site does not have its post type; give PlanEntries and Site the same schema file"
+		if err == nil || err.Error() != want || len(docs) != 0 {
+			t.Errorf("Entries = %d entries, %v; want none and %q", len(docs), err, want)
+		}
+		if got := entryState(imp); got != before {
+			t.Errorf("the table and the references changed:\n%s\nwas\n%s", got, before)
+		}
+		if got := reportLines(t, imp.Report); !slices.Equal(got, report) {
+			t.Errorf("the report changed:\n%q\nwas\n%q", got, report)
+		}
+	})
+	// Entries has left an item out of the table: a second call for the import finds that it is not planned.
+	t.Run("a second call after an item was left out", func(t *testing.T) {
+		imp, site := planEntries(t, nil, nil, entriesWXR("",
+			wxrEntry{id: 1, title: "A", name: "a"},
+			wxrEntry{id: 2, title: "B", name: "b", date: zeroDate, dateGMT: zeroDate, modified: zeroDate, modifiedGMT: zeroDate}))
+		if docs, err := collectEntries(context.Background(), imp, nil, site); err != nil || len(docs) != 1 {
+			t.Fatalf("Entries = %d entries, %v; want one", len(docs), err)
+		}
+		_, err := collectEntries(context.Background(), imp, nil, site)
+		if want := "item 2 (post) is not planned as an entry; call PlanEntries before Site, and Entries once for an import"; err == nil || err.Error() != want {
+			t.Errorf("the second Entries = %v, want %q", err, want)
+		}
+	})
+}
+
+// countdownCtx is a context that is done after its Err was asked left times.
+type countdownCtx struct {
+	context.Context
+	left int
+}
+
+func (c *countdownCtx) Err() error {
+	if c.left <= 0 {
+		return context.Canceled
+	}
+	c.left--
+	return nil
 }
 
 func TestEntriesStops(t *testing.T) {
@@ -1453,6 +1505,31 @@ func TestEntriesStops(t *testing.T) {
 		})
 		if !errors.Is(err, context.Canceled) || !slices.Equal(posts, []int64{1}) {
 			t.Errorf("Entries = %v after the entries %v; want context.Canceled after the first", err, posts)
+		}
+	})
+	// The conversion of the item 3 records that its title lost a tag.
+	marked := entriesWXR("", wxrEntry{id: 1, title: "One", name: "one"}, wxrEntry{id: 2, title: "Two", name: "two"},
+		wxrEntry{id: 3, title: "<b>Three</b>", name: "three"}, wxrEntry{id: 4, title: "Four", name: "four"}, wxrEntry{id: 5, title: "Five", name: "five"})
+	t.Run("ctx is done while the items are converted", func(t *testing.T) {
+		imp, site := planEntries(t, nil, nil, marked)
+		// Err is asked once at the start, and then before each item.
+		docs, err := collectEntries(&countdownCtx{Context: context.Background(), left: 2}, imp, nil, site)
+		if !errors.Is(err, context.Canceled) || len(docs) != 0 {
+			t.Errorf("Entries = %d entries, %v; want context.Canceled and no entries", len(docs), err)
+		}
+		if lines := itemLines(imp.Report, 3); len(lines) != 0 {
+			t.Errorf("the item 3 was converted after ctx was done: %q", lines)
+		}
+	})
+	t.Run("ctx is done while the entries are made to pass the validation", func(t *testing.T) {
+		imp, site := planEntries(t, nil, nil, marked)
+		// Err is asked once at the start, five times for the items, and then before each entry.
+		docs, err := collectEntries(&countdownCtx{Context: context.Background(), left: 7}, imp, nil, site)
+		if !errors.Is(err, context.Canceled) || len(docs) != 0 {
+			t.Errorf("Entries = %d entries, %v; want context.Canceled and no entries", len(docs), err)
+		}
+		if lines := itemLines(imp.Report, 3); len(lines) != 1 {
+			t.Errorf("the report about the item 3 is %q, want its conversion", lines)
 		}
 	})
 	t.Run("emit fails", func(t *testing.T) {

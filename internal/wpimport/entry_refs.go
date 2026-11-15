@@ -114,6 +114,7 @@ func (c *entryConv) setTerms(ei *entryItem) {
 	typ := c.site.Type(ei.entry.Type)
 	picks := make(map[string][]termPick)
 	counted := make(map[string]bool)
+	picked := make(map[string]bool) // by the ID of the term
 	for _, ref := range it.Terms {
 		name := taxonomyName(ref.Taxonomy, c.site)
 		if name == "" {
@@ -137,7 +138,8 @@ func (c *entryConv) setTerms(ei *entryItem) {
 			c.revisionNote(Skipped, ei, pointer, "the term %q of %s is not imported; it is left out", ref.Slug, typeText(ref.Taxonomy))
 			continue
 		}
-		if !slices.ContainsFunc(picks[name], func(p termPick) bool { return p.id == id }) {
+		if !picked[id] {
+			picked[id] = true
 			picks[name] = append(picks[name], termPick{id: id, t: t})
 		}
 	}

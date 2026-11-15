@@ -354,6 +354,16 @@ func TestEntriesFieldValues(t *testing.T) {
 		{name: "text of three postmeta", meta: metas("client", "first", "client", "second", "client", "third"), want: `{"client":"first"}`,
 			lines: []string{`skipped: the custom field "client" has 3 values; the first is imported -> ` + r + "client"}},
 		{name: "text of a postmeta that is empty and one that is not", meta: metas("client", " ", "client", "second"), want: `{"client":"second"}`},
+		// The first postmeta that has a value is the one that is imported: a serialized value that is none does not count.
+		{name: "text of postmeta that serialize no value and one that has one", want: `{"client":"Real"}`,
+			meta: metas("client", "a:0:{}", "client", "N;", "client", phpBool(false), "client", "Real")},
+		{name: "text of postmeta that serialize no value and two that have one", want: `{"client":"Real"}`,
+			meta:  metas("client", "a:0:{}", "client", "Real", "client", "N;", "client", "Other"),
+			lines: []string{`skipped: the custom field "client" has 2 values; the first is imported -> ` + r + "client"}},
+		{name: "text of a postmeta that cannot be read and one that can", want: `{"client":"Real"}`,
+			meta:  metas("client", `a:1:{i:0;s:3:"ab";}`, "client", "Real"),
+			lines: []string{notImported("client", "client", `the value of "client": byte 17: expected '"', found ';'`)}},
+		{name: "text of postmeta that serialize no value", meta: metas("client", "a:0:{}", "client", "N;")},
 
 		// textarea
 		{name: "textarea", meta: metas("memo", "one\ntwo\n\nthree"), want: `{"memo":"one\ntwo\n\nthree"}`},
@@ -615,6 +625,19 @@ func TestEntriesFieldLists(t *testing.T) {
 		{name: "list of one link that is a list of the link", meta: metas("links", phpLink("https://example.org/a", "Docs", "_blank")),
 			want:  `{"links":[{"href":"https://example.org/a","newTab":true}]}`,
 			lines: []string{`skipped: the title "Docs" of the link of the custom field "links" is not imported -> ` + r + "links"}},
+		// The titles of the links of a field are recorded once, however many there are.
+		{name: "list of links of which one has a title", meta: metas("links", phpList(phpLink("https://example.org/a", "", ""), phpLink("https://example.org/b", "B", ""))),
+			want:  `{"links":[{"href":"https://example.org/a"},{"href":"https://example.org/b"}]}`,
+			lines: []string{`skipped: the title "B" of the link of the custom field "links" is not imported -> ` + r + "links"}},
+		{name: "list of links of which two have a title", want: `{"links":[{"href":"https://example.org/a"},{"href":"https://example.org/b"},{"href":"https://example.org/c"}]}`,
+			meta:  metas("links", phpList(phpLink("https://example.org/a", "A", ""), phpLink("https://example.org/b", "", ""), phpLink("https://example.org/c", "C", ""))),
+			lines: []string{`skipped: the titles of 2 links of the custom field "links" are not imported -> ` + r + "links"}},
+		{name: "links with titles in two fields", want: `{"links":[{"href":"https://example.org/a"},{"href":"https://example.org/b"}],"website":{"href":"https://example.org/w"}}`,
+			meta: metas("links", phpLink("https://example.org/a", "A", ""), "links", phpLink("https://example.org/b", "B", ""), "website", phpLink("https://example.org/w", "W", "")),
+			lines: []string{
+				`skipped: the titles of 2 links of the custom field "links" are not imported -> ` + r + "links",
+				`skipped: the title "W" of the link of the custom field "website" is not imported -> ` + r + "website",
+			}},
 		{name: "list of links and one that is not", meta: metas("links", phpList(phpLink("https://example.org/a", "", ""), phpString("javascript:x"))),
 			want:  `{"links":[{"href":"https://example.org/a"}]}`,
 			lines: []string{`skipped: 1 of the 2 values of the custom field "links" is not imported: value 2: the link to "javascript:x" is not accepted: scheme "javascript" is not allowed -> ` + r + "links"}},
@@ -1154,11 +1177,18 @@ func TestEntriesFieldsLarge(t *testing.T) {
 		}
 	})
 	t.Run("keys that look like rows", func(t *testing.T) {
-		// A key with many numbers between underscores is read once for each, not for each pair of them.
-		key := "a" + strings.Repeat("_1", 20_000) + "_x"
-		_, _, took := run(t, wxr.MetaList{pair("items", "1"), pair(key, "x"), pair("items_0_title", "t")})
+		// What is before each number between underscores is looked up as a key, which takes the square of the length of the
+		// key: a key that is longer than a key of WordPress can be is not looked at, and a megabyte of it costs nothing.
+		long := "a" + strings.Repeat("_1", 500_000) + "_x"
+		short := "b" + strings.Repeat("_1", (maxRowKeyBytes-3)/2) + "_x"
+		imp, _, took := run(t, wxr.MetaList{pair("items", "1"), pair(long, "x"), pair(short, "x"), pair("b", "x"), pair("items_0_title", "t")})
 		if took > limit {
 			t.Errorf("Entries took %v, want less than %v", took, limit)
+		}
+		// The long key is not that of a row, so it is a custom field that is not imported; the short one is a row of b.
+		lines := fieldsLines(t, imp)
+		if len(lines) != 1 || !strings.Contains(lines[0], `"a_1_1_`) || !strings.Contains(lines[0], `"b" (1 item)`) || strings.Contains(lines[0], `"b_1_1_`) {
+			t.Errorf("the lines about the custom fields that are not imported are %.300q", lines)
 		}
 	})
 }
@@ -1249,6 +1279,17 @@ func TestRowSplits(t *testing.T) {
 		}
 		if !slices.Equal(got, tt.want) {
 			t.Errorf("rowSplits(%q) = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+	// A key that is longer than a key of WordPress can be has no places.
+	for extra, want := range map[int]int{0: 1, 1: 0} {
+		key := "a_1_" + strings.Repeat("b", maxRowKeyBytes-len("a_1_")+extra)
+		got := 0
+		for range rowSplits(key) {
+			got++
+		}
+		if got != want {
+			t.Errorf("a key of %d bytes has %d places, want %d", len(key), got, want)
 		}
 	}
 	// The loop of a caller that stops ends it.

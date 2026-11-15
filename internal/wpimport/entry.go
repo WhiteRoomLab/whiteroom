@@ -142,6 +142,9 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 		}
 	}
 	for _, ei := range live {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c.convert(ei)
 	}
 	c.setParents(live)
@@ -149,6 +152,9 @@ func (imp *Import) Entries(ctx context.Context, opts EntryOptions, emit func(*En
 	c.reportSEO()
 	c.reportFields()
 	for _, ei := range live {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c.tidy(ei)
 	}
 	c.draftUnderUnpublished(live)
@@ -209,6 +215,11 @@ func (c *entryConv) collect() (items []*entryItem, discarded []discardedItem, er
 	for i := range c.imp.WXR.Items {
 		it := &c.imp.WXR.Items[i]
 		if typeName(it.Type, c.site) == "" {
+			// The plan had another schema file: what refers to the entry would find it, and it is never made.
+			if kind, _, ok := c.imp.IDs.Lookup(PostObject(it)); ok && kind == content.RefEntry {
+				return nil, nil, fmt.Errorf("item %d (%s) is planned as an entry, but the site does not have its post type; give PlanEntries and Site the same schema file",
+					it.ID, typeText(it.Type))
+			}
 			continue
 		}
 		if why := discardedStatus(it.Status); why != "" {
@@ -217,7 +228,7 @@ func (c *entryConv) collect() (items []*entryItem, discarded []discardedItem, er
 		}
 		id, ref, ok := c.planned(it)
 		if !ok {
-			return nil, nil, fmt.Errorf("item %d (%s) is not planned as an entry; call PlanEntries before Site", it.ID, typeText(it.Type))
+			return nil, nil, fmt.Errorf("item %d (%s) is not planned as an entry; call PlanEntries before Site, and Entries once for an import", it.ID, typeText(it.Type))
 		}
 		items = append(items, &entryItem{
 			it: it, id: id, revID: c.imp.IDs.NewID(content.RefRevision, PostObject(it).key()),

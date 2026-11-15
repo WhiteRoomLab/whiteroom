@@ -251,15 +251,23 @@ func (p *seoPlugin) keys() []string {
 	return keys
 }
 
-// hasSettings reports whether the item has a value for a key of the plugin.
+// hasSettings reports whether the item has a value for a key of the plugin that tells that the site had the plugin: not
+// for a key such as "redirect", which is a custom field on a site without it.
 func (p *seoPlugin) hasSettings(it *wxr.Item) bool {
+	has := func(key string) bool {
+		if (keyRules{}).custom(key) {
+			return false
+		}
+		_, v := seoMeta(it, key)
+		return v != ""
+	}
 	for _, k := range [...]string{p.title, p.description, p.canonical, p.noindex.key, p.imageID, p.imageURL, p.primary} {
-		if _, v := seoMeta(it, k); v != "" {
+		if has(k) {
 			return true
 		}
 	}
 	for _, k := range p.notImported {
-		if _, v := seoMeta(it, k.key); v != "" {
+		if has(k.key) {
 			return true
 		}
 	}

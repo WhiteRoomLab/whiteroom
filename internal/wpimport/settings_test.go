@@ -1688,6 +1688,24 @@ func TestProposeSEO(t *testing.T) {
 			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items) and Rank Math (1 item); seo.plugin is "yoast"` + tail},
 		},
 		{
+			// redirect and the like are custom fields on a site without The SEO Framework: they do not tell that it was there.
+			name: "the keys of The SEO Framework that are plain words tell nothing",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "redirect", "https://example.org/"), item(2, "publish", "post", "exclude_local_search", "1"),
+				item(3, "publish", "post", "exclude_from_archive", "1"),
+			}),
+		},
+		{
+			name: "the keys of The SEO Framework that are plain words are not counted with its others",
+			in: build([]bodyXML{
+				item(1, "publish", "post", "redirect", "https://example.org/"), item(2, "publish", "post", "redirect", "https://example.org/"),
+				item(3, "publish", "post", "_genesis_title", "A title", "redirect", "https://example.org/"),
+				item(4, "publish", "post", "_yoast_wpseo_title", "A"), item(5, "publish", "post", "_yoast_wpseo_title", "B"),
+			}),
+			plugin: "yoast",
+			want:   []string{`review: the items have the SEO settings of Yoast SEO (2 items) and The SEO Framework (1 item); seo.plugin is "yoast"` + tail},
+		},
+		{
 			// Without it, a site that wrote no SEO settings by hand would lose the primary categories from its addresses.
 			name: "the primary category of Yoast SEO alone tells that the site had it",
 			in: build([]bodyXML{
@@ -1722,20 +1740,30 @@ func TestProposeSEO(t *testing.T) {
 		})
 	}
 
-	t.Run("every key of a plugin counts, one item for each", func(t *testing.T) {
+	t.Run("every key of a plugin that is not a plain word counts, one item for each", func(t *testing.T) {
+		var plain []string
 		for _, p := range seoPlugins {
 			var items []bodyXML
+			n := 0
 			for i, k := range p.keys() {
 				items = append(items, item(i+1, "publish", "post", k, "x"))
+				if (keyRules{}).custom(k) {
+					plain = append(plain, p.name+" "+k)
+				} else {
+					n++
+				}
 			}
 			s, imp := proposeFrom(t, bodiesWXR(items...), nil, nil)
 			if s.SEO.Plugin != p.name {
 				t.Errorf("the plugin of the items with the keys of %s is %q", p.name, s.SEO.Plugin)
 			}
-			want := fmt.Sprintf(`review: the items have the SEO settings of %s (%d items); seo.plugin is %q`, p.label, len(items), p.name)
+			want := fmt.Sprintf(`review: the items have the SEO settings of %s (%d items); seo.plugin is %q`, p.label, n, p.name)
 			if got := seoEntries(imp.Report); !slices.ContainsFunc(got, func(l string) bool { return strings.HasPrefix(l, want) }) {
 				t.Errorf("the entries about %s are %q, want one that starts with %q", p.name, got, want)
 			}
+		}
+		if want := []string{"tsf redirect", "tsf exclude_local_search", "tsf exclude_from_archive"}; !slices.Equal(plain, want) {
+			t.Errorf("the keys that are plain words are %q, want %q", plain, want)
 		}
 	})
 	t.Run("the proposal is written and read back", func(t *testing.T) {

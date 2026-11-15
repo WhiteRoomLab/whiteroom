@@ -137,10 +137,17 @@ func rowNumber(s string) (n, rest int, ok bool) {
 	return n, j + 1, true
 }
 
+// maxRowKeyBytes is the longest key that is looked at as the key of a row: WordPress keeps the key of a postmeta in 255
+// characters. The callers look up what is before each place of a key, so a longer key would cost the square of its length.
+const maxRowKeyBytes = 4 * 255
+
 // rowSplits returns the places in key that have the form _<number>_, where the number is one that rowNumber reads. The
-// first character of key is never the "_".
+// first character of key is never the "_". A key longer than maxRowKeyBytes has none.
 func rowSplits(key string) iter.Seq[rowSplit] {
 	return func(yield func(rowSplit) bool) {
+		if len(key) > maxRowKeyBytes {
+			return
+		}
 		for i := 1; i < len(key); i++ {
 			if key[i] != '_' {
 				continue
@@ -332,6 +339,7 @@ func (c *entryConv) setFields(ei *entryItem) {
 			ei.rev.Fields[f.Name] = v
 		}
 		x.reportUnknown(key)
+		x.reportTitles()
 	}
 	if keys := x.rules.candidates(ei.it, x.handled, &x.index); len(keys) > 0 {
 		u := c.unreadOf(ei)
@@ -391,6 +399,11 @@ type fieldConv struct {
 	// fails are the values of the field being converted that are not imported, and values how many it had.
 	fails  []itemFailure
 	values int
+	// titles counts the links of the field being made that have a title, which is not imported: title is the first, in the
+	// postmeta titleMeta.
+	titles    int
+	title     string
+	titleMeta wxr.Meta
 }
 
 // itemFailure is a value of a field with many values that is not imported, and why.
@@ -516,8 +529,22 @@ func (x *fieldConv) reportUnknown(key string) {
 	x.unknown, x.unknownSeen = nil, nil
 }
 
+// reportTitles records the titles of the links of the field that was made, which are not imported, once.
+func (x *fieldConv) reportTitles() {
+	if x.titles == 0 {
+		return
+	}
+	x.m = x.titleMeta
+	if x.titles == 1 {
+		x.note(Skipped, "the title %q of the link of the custom field %q is not imported", clip(x.title, maxQuoted), x.m.Key)
+	} else {
+		x.note(Skipped, "the titles of %d links of the custom field %q are not imported", x.titles, x.topKey)
+	}
+	x.titles, x.title = 0, ""
+}
+
 // leaf makes the value of f, a field that is not a group or a list of groups, from the postmeta with the key. If f has one
-// value, the first that is not empty is it.
+// value, the first that can be read and is not empty is it.
 func (x *fieldConv) leaf(f *content.FieldDef, key string) jsontext.Value {
 	at := x.index.values(key)
 	if len(at) == 0 {
@@ -525,15 +552,25 @@ func (x *fieldConv) leaf(f *content.FieldDef, key string) jsontext.Value {
 	}
 	x.handle(key)
 	if !isMulti(f) {
-		x.m = x.index.metas[at[0]]
-		if len(at) > 1 {
-			x.note(Skipped, "the custom field %q has %d values; the first is imported", key, len(at))
+		var first fieldItem
+		n := 0
+		for _, i := range at {
+			m := x.index.metas[i]
+			if v, ok := x.parse(m); ok && !blankValue(v) {
+				if n == 0 {
+					first = fieldItem{v, m}
+				}
+				n++
+			}
 		}
-		v, ok := x.parse(x.m)
-		if !ok || blankValue(v) {
+		if n == 0 {
 			return nil
 		}
-		out, why := x.one(f, v)
+		x.m = first.m
+		if n > 1 {
+			x.note(Skipped, "the custom field %q has %d values; the first is imported", key, n)
+		}
+		out, why := x.one(f, first.v)
 		if why != "" {
 			x.note(Skipped, "the custom field %q is not imported: %s", key, why)
 		}
@@ -985,7 +1022,10 @@ func (x *fieldConv) link(v phpserialize.Value) (jsontext.Value, string) {
 	}
 	l.NewTab = strings.EqualFold(strings.TrimSpace(target), "_blank")
 	if title = strings.TrimSpace(title); title != "" {
-		x.note(Skipped, "the title %q of the link of the custom field %q is not imported", clip(title, maxQuoted), x.m.Key)
+		if x.titles == 0 {
+			x.title, x.titleMeta = title, x.m
+		}
+		x.titles++
 	}
 	return jsonValue(l), ""
 }
