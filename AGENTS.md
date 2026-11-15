@@ -83,7 +83,7 @@ WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「
 - `internal/render/testdata/out/`：`TestGolden` の正解（`internal/render/classes.css` を変えると、`site.css` が変わる）。見本のテーマ（`internal/theme/testdata/example/`）を変えたときは、`internal/theme/testdata/example-out/` と `internal/build/testdata/out/` と `internal/wpimport/testdata/out-blocks/`・`out-classic/`（`render.txt`）の作り直しも要ることがある（`assets/css/style.css` を変えると、`?v=` が変わる。構想書の 5.4.7 と 6.12 の 80 の例の版も合わせる）。構想書の 5.4.9 の例は、見本のテーマのファイルの写しなので、どちらかを変えたら、両方を変える。
 - `internal/build/testdata/out/`：`TestSampleSite` の正解で、`cmd/whiteroom`・`internal/serve`・`internal/edit`・`internal/publish` のテストも使う。Go のマイナー版を上げると、ビルドが作る画像の `?v=` が変わり、`manifest.txt` とほとんどのページが変わることがある。そのときも作り直し、それだけが変わったことを確かめる（サイトの CSS・ページの CSS・PDF・テーマの assets は変わらない）。構想書の 6.8 の例は、この出力の写しなので、どちらかを変えたら、両方を変える。
 - `internal/wxr/testdata/*.json`：`TestRead` の正解。
-- `internal/wpimport/testdata/` の `out/`・`out-blocks/`・`out-classic/`：`TestImportSample`・`TestBodies`・`TestClassicBodies` の正解。`-run` を付けないと、3つとも書き直す。
+- `internal/wpimport/testdata/` の `out/`・`out-blocks/`・`out-classic/`・`out-entries/`：`TestImportSample`・`TestBodies`・`TestClassicBodies`・`TestEntriesSample` の正解。`-run` を付けないと、4つとも書き直す。
 - テストの WXR などは手で書き、WordPress の書き出し・応答と、WordPress（と Contact Form 7）のコードの文は写さない（第三者のデータを使わない。仕様から作った第三者のデータの扱いは、構想書の 1.2）。
 
 ## 規約
