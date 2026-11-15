@@ -139,6 +139,16 @@ func TestBuildDefaults(t *testing.T) {
 	dir := copySample(t)
 	out := filepath.Join(dir, "out")
 	warnings := sampleWarnings(t, dir, "")
+	// The temporary directory of whiteroom serve admin, with what a killed server may have left in it, is not read.
+	tmp := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(filepath.Join(tmp, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".tmp-0123456789abcdef", "note.json", "sub/entry.json"} {
+		if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(name)), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, published := range []bool{true, false} {
 		code, stdout, stderr := runCmd(t, "build", dir)
 		if code != 0 {

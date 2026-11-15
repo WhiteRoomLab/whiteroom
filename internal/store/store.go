@@ -4,9 +4,8 @@
 //	logdb/                   the directory of the engine of internal/logdb (3.5), with the tables of logbackend.go
 //	files/<2 hex>/<64 hex>   the originals, by the 64 lower case hex digits of their SHA-256, in directories named by
 //	                         the first 2 of them
-//	files/.tmp-<16 hex>      a temporary file of the writer: an original being written, or a file that CreateTemp
-//	                         made; it stays only after a crash, and the process that opens the store as its writer
-//	                         removes it
+//	files/.tmp-<16 hex>      a temporary file of the writer: an original being written; it stays only after a crash,
+//	                         and the process that opens the store as its writer removes it
 //
 // The directories have the mode 0700, and the files 0600. The files of the developers, such as the schema file and the
 // theme, are not in it.
@@ -201,7 +200,7 @@ func (s *Store) withFiles(root vfs.FS, b backend) (*Store, error) {
 
 // Open opens the store of the data directory dir, which Create has made, as its writer. While it is open, Open in
 // another process fails after 2 seconds, and other processes read the store with OpenReader. Open removes the
-// temporary files in files/ that a process that has ended left (PutOriginal and CreateTemp make them); if it cannot
+// temporary files in files/ that a process that has ended left (PutOriginal makes them); if it cannot
 // remove one, it fails with an error that names the file, and the store is unchanged. A store of the table schema 1 to
 // 5 gets the schema 6 in one Update, with the record store.upgrade (7.4): one of the schema 1 gets its index too (it
 // has none), and one of the schema 2 to 5 gets nothing else and has no document read; if that fails, so does Open, and
@@ -216,7 +215,7 @@ func open(dir string, o options) (*Store, error) {
 
 // OpenReader opens the store of the data directory dir to read it, in a process other than its writer, which may run
 // or not. Its Views see the commits that are durable when they begin. It changes no file of the store, and removes no
-// temporary file: Update fails with "read-only transaction", and PutOriginal and CreateTemp fail too. A store of the
+// temporary file: Update fails with "read-only transaction", and PutOriginal fails too. A store of the
 // table schema 1 has no index until its writer opens it: a reader reads it, but Summary and the other reads of the
 // index fail with ErrNoIndex. A store of the table schema 1 to 5 has no audit log until its writer opens it: ReadAudit,
 // AuditHeads and VerifyAudit fail with ErrNoAuditLog.

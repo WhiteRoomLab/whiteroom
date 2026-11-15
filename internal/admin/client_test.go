@@ -250,7 +250,7 @@ func refClientAddr(s *Server, remote string, unix bool, lines []string) netip.Ad
 // the long way gives.
 func FuzzClientAddr(f *testing.F) {
 	m, _ := testAccounts(f)
-	s, err := New(testConfig(m, httpsOrigin,
+	s, err := New(testConfig(f, m, httpsOrigin,
 		netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8:ffff::/48"), netip.MustParsePrefix("192.0.2.0/24")))
 	if err != nil {
 		f.Fatal(err)

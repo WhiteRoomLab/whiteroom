@@ -132,8 +132,10 @@ func storeWrite(f func(*store.Tx) error) func(*store.Tx) error {
 	}
 }
 
-func testConfig(m *account.Manager, origin string, proxies ...netip.Prefix) Config {
-	return Config{Origin: origin, TrustedProxies: proxies, Accounts: m}
+// testConfig returns the Config for origin, with a new directory of the temporary files.
+func testConfig(tb testing.TB, m *account.Manager, origin string, proxies ...netip.Prefix) Config {
+	tb.Helper()
+	return Config{Origin: origin, TrustedProxies: proxies, Accounts: m, TempDir: tb.TempDir()}
 }
 
 // testServer is a Server with routes for the tests, the buffer of its log, and the store of its Manager.
@@ -160,7 +162,7 @@ func newTestServer(t *testing.T, origin string, proxies ...string) *testServer {
 	}
 	db, dir := testStore(t)
 	ts := newTestBase()
-	ts.serve(t, testConfig(testManager(t, db), origin, prefixes...), db, dir)
+	ts.serve(t, testConfig(t, testManager(t, db), origin, prefixes...), db, dir)
 	return ts
 }
 
@@ -175,6 +177,9 @@ func (ts *testServer) serve(t *testing.T, c Config, db *store.Store, dir string)
 	t.Helper()
 	c.Accounts.SetClock(ts.clock.now)
 	ts.db, ts.dir = db, dir
+	if c.TempDir == "" {
+		c.TempDir = t.TempDir()
+	}
 	c.ErrorLog = log.New(ts.logs, "", 0)
 	c.Now = ts.clock.now
 	s, err := New(c)
@@ -470,7 +475,7 @@ func TestNewOrigins(t *testing.T) {
 		{"http://[::1]:8081", "http://[::1]:8081"},
 		{"http://[0:0:0:0:0:0:0:1]", "http://[::1]"},
 	} {
-		s, err := New(testConfig(m, tt.in))
+		s, err := New(testConfig(t, m, tt.in))
 		if err != nil {
 			t.Errorf("New(%q) failed: %v", tt.in, err)
 			continue
@@ -564,7 +569,7 @@ func TestNewOrigins(t *testing.T) {
 		{"http://localhost:99999", port},
 		{"http://admin.example.com:99999", port},
 	} {
-		_, err := New(testConfig(m, tt.in))
+		_, err := New(testConfig(t, m, tt.in))
 		want := fmt.Sprintf("admin: invalid origin %q: %s", tt.in, tt.reason)
 		if err == nil || err.Error() != want {
 			t.Errorf("New(%q) = %v, want the error %q", tt.in, err, want)
@@ -574,14 +579,14 @@ func TestNewOrigins(t *testing.T) {
 
 func TestNewTrustedProxies(t *testing.T) {
 	m, _ := testAccounts(t)
-	_, err := New(testConfig(m, httpsOrigin, netip.MustParsePrefix("10.0.0.0/8"), netip.Prefix{}))
+	_, err := New(testConfig(t, m, httpsOrigin, netip.MustParsePrefix("10.0.0.0/8"), netip.Prefix{}))
 	if want := "admin: invalid trusted proxy invalid Prefix"; err == nil || err.Error() != want {
 		t.Errorf("New with an invalid prefix = %v, want the error %q", err, want)
 	}
 
 	// The Server has its own copy.
 	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
-	s, err := New(testConfig(m, httpsOrigin, proxies...))
+	s, err := New(testConfig(t, m, httpsOrigin, proxies...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,14 +608,14 @@ func TestNewPublisher(t *testing.T) {
 	}
 
 	own, _ := newTestPublisher(t, base, db)
-	s, err := New(Config{Origin: httpsOrigin, Accounts: m, Publisher: own})
+	s, err := New(Config{Origin: httpsOrigin, Accounts: m, Publisher: own, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("New with a Publisher of the store of the Accounts = %v", err)
 	}
 	if s.publisher != own || s.editor != own.Editor() || s.store != db {
 		t.Error("the Server does not keep the Publisher, its Editor and the store of the Accounts")
 	}
-	s, err = New(Config{Origin: httpsOrigin, Accounts: m})
+	s, err = New(Config{Origin: httpsOrigin, Accounts: m, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("New without a Publisher = %v", err)
 	}
@@ -1206,7 +1211,7 @@ func TestPanic(t *testing.T) {
 
 	// Without a log, a panic is answered all the same.
 	m, _ := testAccounts(t)
-	s, err := New(testConfig(m, httpsOrigin))
+	s, err := New(testConfig(t, m, httpsOrigin))
 	if err != nil {
 		t.Fatal(err)
 	}

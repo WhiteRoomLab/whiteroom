@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/v2"
 	"errors"
 	"image"
 	"image/jpeg"
@@ -278,7 +279,7 @@ func TestMediaUpload(t *testing.T) {
 	if logged := a.logs.String(); logged != "" {
 		t.Errorf("the log is %q, want nothing", logged)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 }
@@ -350,7 +351,7 @@ func TestMediaUploadRefused(t *testing.T) {
 	if got := a.originals(t); !slices.Equal(got, originals) {
 		t.Errorf("the uploads that were refused have written originals: %v, want %v", got, originals)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 
@@ -431,7 +432,7 @@ func TestMediaTooLarge(t *testing.T) {
 	if got := a.originals(t); !slices.Equal(got, originals) {
 		t.Errorf("the upload that was refused has left an original: %v, want %v", got, originals)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 
@@ -471,7 +472,7 @@ func TestMediaBodyFails(t *testing.T) {
 	if got := a.originals(t); !slices.Equal(got, originals) {
 		t.Errorf("the uploads that failed have written originals: %v, want %v", got, originals)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 	if logged := a.logs.String(); logged != "" {
@@ -480,29 +481,60 @@ func TestMediaBodyFails(t *testing.T) {
 }
 
 // TestMissingFilesDirectory shows that a data directory that has lost files/ is a fault of the server, and not a resource that
-// is not there: the answer that is longer than the memory of a spool, which goes to a temporary file, and the upload of a
-// file are 500, and the log has the cause.
+// is not there: the upload of a file is 500, and the log has the cause. A big answer does not need files/: it goes through a
+// temporary file of the server, outside the data directory.
 func TestMissingFilesDirectory(t *testing.T) {
 	a := newAPIServer(t)
 	as := a.as("editor")
 	e := a.newEntry(t, "editor", "post", "ja")
-	saved := a.addRevision(t, "editor", e.ID, bigRevision("大きい", 600_000))
+	big := bigRevision("大きい", 600_000)
+	saved := a.addRevision(t, "editor", e.ID, big)
 	a.waitBuilds(t)
 	if err := os.RemoveAll(filepath.Join(a.dir, "files")); err != nil {
 		t.Fatal(err)
 	}
 	a.logs.Reset()
 
-	checkProblem(t, "GET of a revision of more than 256 KiB without files/", as.get("/api/revisions/"+saved.Revision), "internal")
+	var one revisionAnswerBody
+	if got := body(t, "GET of a revision of more than 256 KiB without files/", as.get("/api/revisions/"+saved.Revision), http.StatusOK); len(got) <= spoolMemory ||
+		json.Unmarshal([]byte(got), &one) != nil || string(one.Document) != big {
+		t.Errorf("GET of a revision of more than 256 KiB without files/ answers %d bytes, want the revision as it is", len(got))
+	}
 	checkProblem(t, "an upload without files/", as.upload("lost.png", "image/png", testPNG(t, 8, 8)), "internal")
+	lines := strings.Split(strings.TrimSuffix(a.logs.String(), "\n"), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], `POST "/api/media?fileName=lost.png"`) || !strings.Contains(lines[0], syscall.ENOENT.Error()) {
+		t.Errorf("the log is %q, want a line for the upload, with the error of the file system", a.logs.String())
+	}
+}
+
+// TestMissingTempDirectory shows that a temporary directory that is gone is a fault of the server too: the answer that is
+// longer than the memory of a spool, and the body that is, are 500, and the log has the error of the file system; and the
+// requests that need no temporary file go on.
+func TestMissingTempDirectory(t *testing.T) {
+	a := newAPIServer(t)
+	as := a.as("editor")
+	e := a.newEntry(t, "editor", "post", "ja")
+	loc := "/api/entries/" + e.ID
+	saved := a.addRevision(t, "editor", e.ID, bigRevision("大きい", 600_000))
+	a.waitBuilds(t)
+	if err := os.RemoveAll(a.tmp); err != nil {
+		t.Fatal(err)
+	}
+	a.logs.Reset()
+
+	checkProblem(t, "GET of a revision of more than 256 KiB without the directory of the temporary files", as.get("/api/revisions/"+saved.Revision), "internal")
+	checkProblem(t, "POST of a revision of more than 256 KiB without it", as.post(loc+"/revisions", revisionBody(saved.Revision, bigRevision("大きい", 600_000))), "internal")
 	lines := strings.Split(strings.TrimSuffix(a.logs.String(), "\n"), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("the log is %q, want a line for each of the two faults", a.logs.String())
 	}
-	for i, want := range []string{`GET "/api/revisions/` + saved.Revision + `"`, `POST "/api/media?fileName=lost.png"`} {
+	for i, want := range []string{`GET "/api/revisions/` + saved.Revision + `"`, `POST "` + loc + `/revisions"`} {
 		if !strings.HasPrefix(lines[i], want) || !strings.Contains(lines[i], syscall.ENOENT.Error()) {
 			t.Errorf("line %d of the log is %q, want the request %s and the error of the file system", i+1, lines[i], want)
 		}
+	}
+	if res := as.get("/api/entries?limit=1"); res.StatusCode != http.StatusOK {
+		t.Errorf("GET of the list of entries, which needs no temporary file, = %d, want 200", res.StatusCode)
 	}
 }
 

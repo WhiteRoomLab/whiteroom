@@ -89,8 +89,9 @@ type workServer struct {
 	begun  atomic.Int32
 	tokens map[string]string
 	people map[string]account.Account
-	// duringWork is the number of temporary files that the last POST /api/work saw when its work began.
-	duringWork atomic.Int32
+	// duringWork is the number of temporary files in the directory of the temporary files that the last POST /api/work saw when
+	// its work began, and duringStore that of the temporary files of PutOriginal in files/ of the data directory.
+	duringWork, duringStore atomic.Int32
 }
 
 const bigAnswer = 3 * spoolMemory // an answer that does not stay in memory
@@ -112,6 +113,7 @@ func newWorkServer(t *testing.T, ts *testServer, bodyLimit int64) *workServer {
 		ts.heavyWork(w, r, p, bodyLimit, func(_ context.Context, in, out *spool) (int, http.Header, error) {
 			ws.begun.Add(1)
 			ws.duringWork.Store(int32(len(ts.tempFiles(t))))
+			ws.duringStore.Store(int32(len(ts.originalTemps(t))))
 			var body testIn
 			if err := readDocument(in, &body); err != nil {
 				return 0, nil, err

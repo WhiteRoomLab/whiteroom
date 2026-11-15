@@ -1306,8 +1306,9 @@ func TestServeAdminOriginLine(t *testing.T) {
 	// -addr 127.0.0.1:80 without -origin: the origin that listenOrigin makes is made so too. Only the opening is run, as the
 	// port 80 is not for a test to listen on.
 	settings := adminSettings{
-		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
-		addr: "127.0.0.1:0", origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data,
+		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
+		origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
 	}
 	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
 	if err != nil {
@@ -1715,8 +1716,8 @@ func openForRun(t *testing.T, s adminSite) *adminServer {
 func openForRunLogging(t *testing.T, s adminSite, logger *log.Logger) *adminServer {
 	t.Helper()
 	settings := adminSettings{
-		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
-		addr: "127.0.0.1:0",
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data,
+		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
 	}
 	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
 	if err != nil {
@@ -2585,4 +2586,246 @@ func TestServeAdminURL(t *testing.T) {
 			checkUnlocked(t, what+" of "+tt.value, s.data)
 		}
 	}
+}
+
+// tempNamesIn returns the names of the files of the directory dir that start with .tmp-.
+func tempNamesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// checkTempDir checks that dir is a directory with the mode 0700, and returns the names of the temporary files in it.
+func checkTempDir(t *testing.T, what, dir string) []string {
+	t.Helper()
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s: %s is %v (%v), want a directory with the mode 0700", what, dir, info, err)
+	}
+	return tempNamesIn(t, dir)
+}
+
+// slowRevision starts the POST of a revision of the entry of more than the memory of a spool, 256 KiB, whose body stops
+// before its end until the function that it returns is called: that sends the rest and returns the status of the answer.
+func (a *adminProc) slowRevision(t *testing.T, cookie, entry string) (sendRest func() int) {
+	t.Helper()
+	var head strings.Builder
+	head.WriteString(`{"base":"","revision":{"schemaVersion":1,"title":"Big","slug":"big","body":[{"type":"paragraph","id":"b_big00000",` +
+		`"content":[{"type":"text","text":"first"}]}`)
+	for i := 1; head.Len() < 400<<10; i++ {
+		fmt.Fprintf(&head, `,{"type":"paragraph","id":"b_big%05d","content":[{"type":"text","text":"%s"}]}`, i, strings.Repeat("a", 100))
+	}
+	pr, pw := io.Pipe()
+	req, err := a.newRequest(t.Context(), http.MethodPost, "/api/entries/"+entry+"/revisions", pr, "Content-Type", "application/json",
+		"Cookie", cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan int, 1)
+	go func() {
+		res, err := a.client.Do(req)
+		if err != nil {
+			answered <- -1
+			return
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		answered <- res.StatusCode
+	}()
+	if _, err := io.WriteString(pw, head.String()); err != nil {
+		t.Fatal(err)
+	}
+	return func() int {
+		t.Helper()
+		_, _ = io.WriteString(pw, `]}}`)
+		_ = pw.Close()
+		select {
+		case status := <-answered:
+			return status
+		case <-time.After(adminWait):
+			t.Fatalf("the request has not been answered in %v", adminWait)
+			return 0
+		}
+	}
+}
+
+// bigPNG returns a PNG of more than 256 KiB.
+func bigPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 300, 300))
+	rng := rand.New(rand.NewPCG(300, 300))
+	for i := range img.Pix {
+		img.Pix[i] = byte(rng.UintN(256))
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	if b.Len() <= 256<<10 {
+		t.Fatalf("the PNG has %d bytes", b.Len())
+	}
+	return b.Bytes()
+}
+
+// TestServeAdminTmp checks the directory of the temporary files of the large bodies and answers: SITE/tmp unless -tmp or tmp of
+// the config file gives another, made with the mode 0700 without its parents, and kept when the server stops; what is in it
+// while a request runs, and that nothing of it is in files/ of the data directory; the files that a server that was killed
+// left in it are removed when the next one starts; and a directory that cannot be made or read fails the start.
+func TestServeAdminTmp(t *testing.T) {
+	t.Run("the default", func(t *testing.T) {
+		s := initSample(t)
+		tmp := filepath.Join(s.site, "tmp")
+		checkMissing(t, "before the start", tmp)
+		a := startAdmin(t, t.Context(), s.args()...)
+		if got := checkTempDir(t, "the default", tmp); got != nil {
+			t.Errorf("SITE/tmp has %q after the start, want nothing", got)
+		}
+		cookie := a.login(t)
+		a.waitBuilt(t, cookie)
+
+		// A body of more than 256 KiB is in a file of the directory while the request runs, and not in files/.
+		status, answer := a.exchange(t, http.MethodPost, "/api/entries", `{"type":"page","language":"ja"}`, "Cookie", cookie)
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(answer, &created); status != http.StatusCreated || err != nil {
+			t.Fatalf("POST /api/entries = %d (%v), with the body %s, want 201", status, err, answer)
+		}
+		sendRest := a.slowRevision(t, cookie, created.ID)
+		var info fs.FileInfo
+		a.waitFor(t, adminWait, "the body to be in a temporary file", func() bool {
+			temps := tempNamesIn(t, tmp)
+			if len(temps) != 1 {
+				return false
+			}
+			var err error
+			info, err = os.Stat(filepath.Join(tmp, temps[0]))
+			return err == nil && info.Size() > 256<<10
+		})
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("the temporary file has the mode %v, want -rw-------", info.Mode())
+		}
+		if got := tempNamesIn(t, filepath.Join(s.data, "files")); got != nil {
+			t.Errorf("files/ of the data directory has %q while the body is received, want nothing", got)
+		}
+		if status := sendRest(); status != http.StatusCreated {
+			t.Errorf("the revision of more than 256 KiB = %d, want 201\nstderr:\n%s", status, a.stderr)
+		}
+		a.waitFor(t, adminWait, "the temporary file to be removed", func() bool { return len(tempNamesIn(t, tmp)) == 0 })
+
+		// An upload of more than 256 KiB.
+		file := bigPNG(t)
+		req, err := a.newRequest(t.Context(), http.MethodPost, "/api/media?fileName=big.png", bytes.NewReader(file),
+			"Content-Type", "image/png", "Cookie", cookie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Errorf("the upload of %d bytes = %d, want 201\nstderr:\n%s", len(file), res.StatusCode, a.stderr)
+		}
+		for _, dir := range []string{tmp, filepath.Join(s.data, "files")} {
+			if got := tempNamesIn(t, dir); got != nil {
+				t.Errorf("%s has %q after the requests, want nothing", dir, got)
+			}
+		}
+		if code := a.stop(t); code != 0 {
+			t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+		}
+		if got := checkTempDir(t, "after the stop", tmp); got != nil {
+			t.Errorf("SITE/tmp has %q after the stop, want nothing", got)
+		}
+	})
+
+	t.Run("a directory that is missing, and what a killed server left", func(t *testing.T) {
+		s := initSample(t)
+		dir := filepath.Join(t.TempDir(), "spool")
+		a := startAdmin(t, t.Context(), s.args("-tmp", dir)...)
+		checkTempDir(t, "-tmp", dir)
+		checkMissing(t, "-tmp", filepath.Join(s.site, "tmp"))
+		if code := a.stop(t); code != 0 {
+			t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+		}
+		if got := checkTempDir(t, "after the stop", dir); got != nil {
+			t.Errorf("the directory has %q after the stop, want nothing", got)
+		}
+
+		const leftover, other = ".tmp-0123456789abcdef", "keep.txt"
+		for _, name := range []string{leftover, other} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("half"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b := startAdmin(t, t.Context(), s.args("-tmp", dir)...)
+		if _, err := os.Lstat(filepath.Join(dir, leftover)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the file that a server left is %v after the next start, want it removed", err)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, other)); err != nil {
+			t.Errorf("%s after the start is %v, want it kept", other, err)
+		}
+		stopsWith(t, "the second server", b)
+	})
+
+	t.Run("the config file", func(t *testing.T) {
+		s := initSample(t)
+		conf := t.TempDir()
+		file := s.configIn(t, conf, "tmp: spool")
+		a := startAdmin(t, t.Context(), "-config", file)
+		checkTempDir(t, "tmp of the config file", filepath.Join(conf, "spool"))
+		checkMissing(t, "tmp of the config file", filepath.Join(s.site, "tmp"))
+		stopsWith(t, "the server of the config file", a)
+
+		// -tmp wins over it.
+		flagDir := filepath.Join(t.TempDir(), "flag")
+		other := t.TempDir()
+		b := startAdmin(t, t.Context(), "-config", s.configIn(t, other, "tmp: spool"), "-tmp", flagDir)
+		checkTempDir(t, "-tmp over tmp", flagDir)
+		checkMissing(t, "-tmp over tmp", filepath.Join(other, "spool"))
+		stopsWith(t, "the server with -tmp and tmp", b)
+	})
+
+	t.Run("a directory that cannot be made or read", func(t *testing.T) {
+		s := initSample(t)
+		gone := filepath.Join(t.TempDir(), "gone", "tmp")
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cases := []struct{ what, path, want string }{
+			{"a missing parent", gone, "mkdir " + gone + ": no such file or directory"},
+			{"a file", file, file + ": not a directory"},
+		}
+		if os.Geteuid() != 0 {
+			locked := filepath.Join(t.TempDir(), "locked")
+			if err := os.Mkdir(locked, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			cases = append(cases, struct{ what, path, want string }{"a directory that cannot be read", locked,
+				"open " + locked + ": permission denied"})
+		}
+		for _, tt := range cases {
+			code, stdout, stderr := runAdminCmd(t, onSystemPort(s.args("-tmp", tt.path))...)
+			if want := "whiteroom serve admin: " + tt.want + "\n"; code != 1 || stdout != "" || stderr != want {
+				t.Errorf("%s: whiteroom serve admin -tmp %s = %d, with stdout %q and stderr:\n%s\nwant 1, and stderr:\n%s", tt.what, tt.path, code,
+					stdout, stderr, want)
+			}
+			checkUnlocked(t, tt.what, s.data)
+		}
+		checkMissing(t, "a missing parent", filepath.Dir(gone))
+	})
 }

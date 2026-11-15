@@ -68,6 +68,7 @@ site: ../site
 theme: %s
 out: out/releases
 cache: ./cache
+tmp: spool/tmp
 addr: 127.0.0.1:8081
 socket: %s
 origin: https://admin.example.com
@@ -88,12 +89,14 @@ memory: 512
 			"every item", all,
 			config{
 				data: in("data"), site: filepath.Join(root, "site"), theme: abs, out: in("out/releases"), cache: in("cache"),
-				addr: "127.0.0.1:8081", socket: filepath.Join(abs, "admin.sock"), origin: "https://admin.example.com",
+				tmp: in("spool/tmp"), addr: "127.0.0.1:8081", socket: filepath.Join(abs, "admin.sock"), origin: "https://admin.example.com",
 				url: "https://staging.example.com", trustedProxies: []string{"10.0.0.0/8", "::1"}, workers: 4, memory: 512,
 			},
 		},
 		{"a url as written", "url: \"HTTPS://Example.com/\"\n", config{url: "HTTPS://Example.com/"}},
 		{"one item", "out: o\n", config{out: in("o")}},
+		{"tmp, from the directory of the file", "tmp: t\n", config{tmp: in("t")}},
+		{"tmp, an absolute path", "tmp: " + strconv.Quote(abs) + "\n", config{tmp: abs}},
 		{"an address with brackets", "addr: \"[::1]:8081\"\n", config{addr: "[::1]:8081"}},
 		{"numbers of 0", "workers: 0\nmemory: 0\n", config{}},
 		{"the largest memory", fmt.Sprintf("memory: %d\n", maxMemory), config{memory: maxMemory}},
@@ -206,6 +209,9 @@ memory: 512
 		{"an unknown item", "unknown: 1\n", []string{"1:1: /unknown: unknown item"}, nil},
 		{"an unknown item with a slash", "a: 1\n\"b/c~d\": 1\n", []string{"1:1: /a: unknown item", "2:1: /b~1c~0d: unknown item"}, nil},
 		{"a number for a path", "data: 123\n", []string{"1:1: /data: " + notString}, []string{"123"}},
+		{"a number for tmp", "tmp: 123\n", []string{"1:1: /tmp: " + notString}, []string{"123"}},
+		{"a list for tmp", "tmp: [secret]\n", []string{"1:1: /tmp: " + notString}, []string{"secret"}},
+		{"an empty tmp", "tmp: \"\"\n", []string{"1:1: /tmp: " + empty}, nil},
 		{"a number for an address", "addr: 8081\n", []string{"1:1: /addr: " + notString}, []string{"8081"}},
 		{"a list for an origin", "origin: [secret]\n", []string{"1:1: /origin: " + notString}, []string{"secret"}},
 		{"a number for a url", "url: 123\n", []string{"1:1: /url: " + notString}, []string{"123"}},
@@ -569,6 +575,51 @@ func TestConfigURLOfOtherCommands(t *testing.T) {
 		if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", strings.Join(args[:2], " "), code,
 				stdout, stderr, want)
+		}
+	}
+}
+
+// TestConfigTmpOfOtherCommands checks that the commands which do not make the directory of the temporary files of serve admin
+// take the item tmp of a config file as a path and no more: they make no directory for it, and a value that is not a string,
+// or is empty, is a problem of the file for each of them.
+func TestConfigTmpOfOtherCommands(t *testing.T) {
+	root := storedRoot(t)
+	conf := filepath.Join(root, "conf")
+	tmp := filepath.Join(root, "tmp")
+	file := writeConfig(t, conf, "tmp.yaml", "data: ../data\nsite: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\ntmp: ../tmp\n")
+
+	if code, _, stderr := runCmd(t, "backup", "-config", file, filepath.Join(t.TempDir(), "copy")); code != 0 || stderr != "" {
+		t.Errorf("whiteroom backup -config with tmp = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
+	}
+	code, stdout, stderr := runCmd(t, "doctor", "-config", file)
+	checkClean(t, "doctor, with tmp", filepath.Join(root, "data"), code, stdout, stderr, false)
+	if code, _, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin); code != 0 || stderr != "" {
+		t.Errorf("whiteroom account reset -config with tmp = %d, with stderr:\n%s\nwant 0, and none", code, stderr)
+	}
+	if code, _, stderr := runCmd(t, "build", "-config", file); code != 0 {
+		t.Errorf("whiteroom build -config with tmp = %d, with stderr:\n%s\nwant 0", code, stderr)
+	}
+	data := filepath.Join(t.TempDir(), "data")
+	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", file, "-data", data)...); code != 0 {
+		t.Errorf("whiteroom init -config with tmp = %d, with stderr:\n%s\nwant 0", code, stderr)
+	}
+	checkMissing(t, "the commands that do not serve", tmp)
+
+	for _, value := range []string{"123", `""`} {
+		bad := writeConfig(t, conf, "bad-tmp.yaml", "data: ../data\ntmp: "+value+"\n")
+		want := bad + ":2:1: /tmp: must be a string\n"
+		if value == `""` {
+			want = bad + ":2:1: /tmp: must not be empty\n"
+		}
+		for _, args := range [][]string{
+			{"backup", "-config", bad, filepath.Join(t.TempDir(), "copy")}, {"doctor", "-config", bad}, {"build", "-config", bad},
+			{"account", "reset", "-config", bad, initLogin}, {"account", "delete", "-config", bad, "usr_x"},
+			append([]string{"init"}, adminFlags("-config", bad, "-data", filepath.Join(t.TempDir(), "data"))...),
+		} {
+			if code, stdout, stderr := runCmd(t, args...); code != 2 || stdout != "" || stderr != want {
+				t.Errorf("whiteroom %s with tmp: %s = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", args[0], value, code,
+					stdout, stderr, want)
+			}
 		}
 	}
 }

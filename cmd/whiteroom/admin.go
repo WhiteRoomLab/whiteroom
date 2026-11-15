@@ -22,6 +22,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/admin"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/publish"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
@@ -52,9 +53,14 @@ settings, for its builds and for the checks of what the API saves, and leaves th
 settings as they are: the API shows and saves the url that is written in them.
 URL is checked as the url of the settings is.
 
-With -config, the items data, site, theme, out, cache, workers, memory, url, addr,
-socket, origin and trustedProxies of the YAML file give what the flags and SITE
-leave out. Without it, no config file is read.
+While a request runs, a large body or answer is kept in a file of the directory of
+-tmp, and not in memory. By default the directory is SITE/tmp: the server makes it
+if it is missing, and removes the files that a server that was killed left in it
+when it starts. Give a directory on a disk, which no other server uses.
+
+With -config, the items data, site, theme, out, cache, tmp, workers, memory, url,
+addr, socket, origin and trustedProxies of the YAML file give what the flags and
+SITE leave out. Without it, no config file is read.
 
 Flags:
 `
@@ -70,8 +76,8 @@ const (
 // serveAdminFlags are the values of the flags of whiteroom serve admin, those of whiteroom build among them.
 type serveAdminFlags struct {
 	*buildFlags
-	data, addr, socket, origin string
-	proxies                    []netip.Prefix // -trusted-proxy
+	data, tmp, addr, socket, origin string
+	proxies                         []netip.Prefix // -trusted-proxy
 }
 
 func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
@@ -83,6 +89,9 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 	}
 	f := &serveAdminFlags{buildFlags: addBuildFlags(flags)}
 	flags.StringVar(&f.data, "data", "", "open the data directory `DIR` (required unless the config file has data)")
+	flags.StringVar(&f.tmp, "tmp", "",
+		"keep the temporary files of large requests in the directory `DIR`, which no other server uses (default tmp of the "+
+			"config file, else SITE/tmp)")
 	flags.StringVar(&f.addr, "addr", "",
 		"listen on the loopback TCP address `ADDR`, an IP address and a port; not with -socket (default addr of the config "+
 			"file, else "+defaultAdminAddr+")")
@@ -110,6 +119,7 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 type adminSettings struct {
 	buildSettings
 	data    string
+	tmp     string // the directory of the temporary files of large requests
 	network string // "tcp" or "unix"
 	addr    string // to listen on: a host:port, or the path of the socket
 	origin  string // "" for the one that the listening address makes, which only a TCP address can
@@ -126,6 +136,7 @@ func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Wri
 		usageError(flags, "no data directory: give -data DIR, or data in the config file")
 		return s, false
 	}
+	s.tmp = cmp.Or(f.tmp, cfg.tmp, fspath.Join(s.site, "tmp"))
 	var ok bool
 	if s.url, ok = siteURLOverride(stderr, flags.Name(), f.url, cfg); !ok {
 		return s, false
@@ -372,6 +383,9 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 			logger.Printf("closing the data directory: %v", err)
 		}
 	})
+	if err := makeTempDir(s.tmp); err != nil {
+		return err
+	}
 	if s.network == "unix" {
 		a.listener, err = listenSocket(s.addr)
 	} else {
@@ -402,6 +416,7 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	}
 	handler, err := admin.New(admin.Config{
 		Origin: a.origin, TrustedProxies: s.proxies, Accounts: a.accounts, ErrorLog: logger, Publisher: a.publisher,
+		TempDir: s.tmp,
 	})
 	if err != nil {
 		return err
@@ -410,6 +425,22 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 	a.origin = handler.Origin()
 	a.http = admin.NewHTTPServer(handler, logger)
 	return nil
+}
+
+// makeTempDir makes the directory dir of the temporary files of the server with the mode 0700, but not its parents, unless it
+// is there, and removes the files that a server that was killed left in it. The directory stays when the server stops.
+func makeTempDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		if info, err := os.Stat(dir); err != nil {
+			return err
+		} else if !info.IsDir() {
+			return fmt.Errorf("%s: not a directory", dir)
+		}
+	}
+	return admin.RemoveTemps(dir)
 }
 
 // maxSocketPath is the most bytes of the path of a Unix domain socket: 107 on Linux, whose address has room for 108 with the

@@ -156,7 +156,7 @@ func (s *Server) heavyWork(w http.ResponseWriter, r *http.Request, p account.Pri
 		}
 		defer func() { _ = in.Close() }()
 	}
-	out := newSpool(s.store)
+	out := newSpool(s.tmp)
 	defer func() { _ = out.Close() }()
 	var status int
 	var header http.Header
@@ -217,7 +217,7 @@ func (s *Server) receiveBody(w http.ResponseWriter, r *http.Request, limit int64
 		s.fail(w, r, err)
 		return nil
 	}
-	in := newSpool(s.store)
+	in := newSpool(s.tmp)
 	body := &readFailure{r: http.MaxBytesReader(unwrap(w), r.Body, limit)}
 	if _, err := io.Copy(in, body); err != nil {
 		_ = in.Close()

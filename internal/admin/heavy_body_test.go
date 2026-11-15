@@ -184,6 +184,9 @@ func TestHeavyBodyIsSpooled(t *testing.T) {
 	if n := ws.duringWork.Load(); n != 1 {
 		t.Errorf("a body of %d bytes was in %d temporary files when the work began, want 1", len(big), n)
 	}
+	if n := ws.duringStore.Load(); n != 0 {
+		t.Errorf("a body of %d bytes made %d temporary files in files/ of the data directory, want none", len(big), n)
+	}
 	if files := ts.tempFiles(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay after the request: %v", len(files), files)
 	}

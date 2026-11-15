@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
@@ -45,7 +44,7 @@ func (s *Store) PutOriginal(ctx context.Context, r io.Reader) (Original, error) 
 	if s.originalsStopped.Load() {
 		return Original{}, errOriginalsStopped
 	}
-	f, tmp, err := s.createTemp(os.O_WRONLY)
+	f, tmp, err := s.createTemp()
 	if err != nil {
 		return Original{}, err
 	}
@@ -111,16 +110,16 @@ func notMissing(err error) error {
 	return err
 }
 
-// createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, opened with access, os.O_WRONLY or
-// os.O_RDWR, and returns it with its name.
-func (s *Store) createTemp(access int) (vfs.File, string, error) {
+// createTemp creates a new temporary file in files/, .tmp-<16 random hex digits>, opened to write, and returns it with its
+// name.
+func (s *Store) createTemp() (vfs.File, string, error) {
 	var err error
 	for range 10 {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
 		tmp := tempPrefix + hex.EncodeToString(b[:])
 		var f vfs.File
-		if f, err = s.files.OpenFile(tmp, access|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
+		if f, err = s.files.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); !errors.Is(err, fs.ErrExist) {
 			return f, tmp, notMissing(err)
 		}
 	}
@@ -142,49 +141,6 @@ func isTempName(name string) bool {
 		}
 	}
 	return true
-}
-
-// TempFile is a temporary file of the writer of the store, in files/ beside the originals: a file that the process uses
-// for what does not fit in memory and does not need to keep. It is not synced. If the process ends without closing it,
-// the file stays until the process that opens the store as its writer next removes it (Open). A TempFile is not for
-// concurrent use.
-type TempFile struct {
-	f      vfs.File
-	files  vfs.FS
-	name   string
-	closed atomic.Bool
-}
-
-// CreateTemp makes a new empty temporary file in files/, to read and write: it is named like the temporary file of
-// PutOriginal, .tmp-<16 random hex digits>, and has the mode 0600. A store that is opened to read only makes none. The
-// error of the file system, as when files/ is gone, does not wrap fs.ErrNotExist, which is for a document or an original
-// that is not there.
-func (s *Store) CreateTemp() (*TempFile, error) {
-	if s.readOnly {
-		return nil, errReadOnly
-	}
-	f, name, err := s.createTemp(os.O_RDWR)
-	if err != nil {
-		return nil, err
-	}
-	return &TempFile{f: f, files: s.files, name: name}, nil
-}
-
-func (t *TempFile) Read(p []byte) (int, error)  { return t.f.Read(p) }
-func (t *TempFile) Write(p []byte) (int, error) { return t.f.Write(p) }
-
-func (t *TempFile) Seek(offset int64, whence int) (int64, error) { return t.f.Seek(offset, whence) }
-
-// Close closes the file and removes it. Only the first call does: the others do nothing.
-func (t *TempFile) Close() error {
-	if t.closed.Swap(true) {
-		return nil
-	}
-	err := t.f.Close()
-	if rerr := t.files.Remove(t.name); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-		err = errors.Join(err, rerr)
-	}
-	return err
 }
 
 // removeTemps removes the temporary files in files/ that a process has left by ending without removing them: the

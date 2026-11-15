@@ -22,7 +22,7 @@ func TestNewTrustedProxiesNeedFixedBits(t *testing.T) {
 		p := netip.MustParsePrefix(tt.prefix)
 		valid := netip.MustParsePrefix("10.0.0.0/8")
 		for _, proxies := range [][]netip.Prefix{{p}, {valid, p}, {p, valid}} {
-			_, err := New(testConfig(m, httpsOrigin, proxies...))
+			_, err := New(testConfig(t, m, httpsOrigin, proxies...))
 			if err == nil || err.Error() != tt.want {
 				t.Errorf("New with the trusted proxies %v = %v, want the error %q", proxies, err, tt.want)
 			}
@@ -30,16 +30,16 @@ func TestNewTrustedProxiesNeedFixedBits(t *testing.T) {
 	}
 
 	// A prefix that is not valid is refused first, in the order of the list, and the prefixes of one fixed bit and more are fine.
-	_, err := New(testConfig(m, httpsOrigin, netip.MustParsePrefix("0.0.0.0/0"), netip.Prefix{}))
+	_, err := New(testConfig(t, m, httpsOrigin, netip.MustParsePrefix("0.0.0.0/0"), netip.Prefix{}))
 	if want := "admin: invalid trusted proxy 0.0.0.0/0: it covers every address"; err == nil || err.Error() != want {
 		t.Errorf("New with 0.0.0.0/0 and a prefix that is not valid = %v, want the error %q", err, want)
 	}
-	_, err = New(testConfig(m, httpsOrigin, netip.Prefix{}, netip.MustParsePrefix("0.0.0.0/0")))
+	_, err = New(testConfig(t, m, httpsOrigin, netip.Prefix{}, netip.MustParsePrefix("0.0.0.0/0")))
 	if want := "admin: invalid trusted proxy invalid Prefix"; err == nil || err.Error() != want {
 		t.Errorf("New with a prefix that is not valid and 0.0.0.0/0 = %v, want the error %q", err, want)
 	}
 	for _, prefix := range []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1", "10.0.0.0/8", "192.0.2.1/32", "2001:db8::/32", "::1/128"} {
-		if _, err := New(testConfig(m, httpsOrigin, netip.MustParsePrefix(prefix))); err != nil {
+		if _, err := New(testConfig(t, m, httpsOrigin, netip.MustParsePrefix(prefix))); err != nil {
 			t.Errorf("New with the trusted proxy %s = %v, want it to be accepted", prefix, err)
 		}
 	}

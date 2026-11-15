@@ -53,9 +53,9 @@ func TestMediaPerAccount(t *testing.T) {
 	up1 := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=one.png", "image/png", first[:100])
 	up2 := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=two.png", "image/png", second[:700])
 	waitFor(t, "four requests of the author to be counted", func() bool { return a.inflight.count(author) == heavyPerAccount })
-	// What has come of the second upload is in a temporary file of the store, and not kept in memory.
+	// What has come of the second upload is in a temporary file of PutOriginal, in files/, and not kept in memory.
 	waitFor(t, "the part of the upload that has come to be in a temporary file", func() bool {
-		files := a.tempFiles(t)
+		files := a.originalTemps(t)
 		if len(files) != 1 {
 			return false
 		}
@@ -119,7 +119,7 @@ func TestMediaPerAccount(t *testing.T) {
 	if res := a.as("author").get("/api/entries?limit=1"); res.StatusCode != http.StatusOK {
 		t.Errorf("a request of the author after them has the status %d, want 200", res.StatusCode)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 	if logged := a.logs.String(); logged != "" {
@@ -203,7 +203,7 @@ func TestMediaDownloadNotRead(t *testing.T) {
 	if n := held.Load(); n != 0 {
 		t.Errorf("the hook \"sending\" found the place taken %d times", n)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 	if logged := a.logs.String(); logged != "" {

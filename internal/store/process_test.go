@@ -46,9 +46,8 @@ var enginePoints = []string{"logdb:update:objects", "logdb:update:written", "log
 // the modes commit, original:synced and original:renamed, it blocks at that point of the hook, where the test kills
 // it, and so it does in the modes of enginePoints in an Update that puts the pair after the one in the store; in loop,
 // it puts the pair until it is killed; in open, it prints the result of opening the store and ends; in hold, it keeps
-// the store open until it is killed; in temp, it makes a temporary file with CreateTemp, writes to it and waits to be
-// killed; in reader, it opens the store with openLogReader and checks the pair in Views until it is killed
-// (readerLoop). On its own, it does nothing.
+// the store open until it is killed; in reader, it opens the store with openLogReader and checks the pair in Views until
+// it is killed (readerLoop). On its own, it does nothing.
 func TestHelperProcess(t *testing.T) {
 	mode := os.Getenv(envMode)
 	if mode == "" {
@@ -124,14 +123,6 @@ func TestHelperProcess(t *testing.T) {
 	case "hold":
 		fmt.Println(marker + "hold")
 		time.Sleep(time.Minute)
-	case "temp":
-		var f *TempFile
-		if f, err = s.CreateTemp(); err == nil {
-			if _, err = f.Write(crashOriginal); err == nil {
-				fmt.Println(marker + "temp")
-				time.Sleep(time.Minute)
-			}
-		}
 	}
 	t.Fatalf("not killed in the mode %s: %v", mode, err)
 }
@@ -351,39 +342,6 @@ func TestCrashOriginal(t *testing.T) {
 				t.Errorf("files/ has %q, want %q", got, want)
 			}
 		})
-	})
-}
-
-// TestCrashTemp kills the helper that has made a temporary file with CreateTemp, and checks that the file stays until
-// the writer opens the store, and then is removed.
-func TestCrashTemp(t *testing.T) {
-	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
-		dir := newDir(t, tb)
-		kill(t, startHelper(t, tb, dir, "temp", "temp"))
-		files := filepath.Join(dir, "files")
-		got := names(t, files)
-		if len(got) != 1 || !tempName.MatchString(got[0]) {
-			t.Fatalf("files/ has %q, want a temporary file alone", got)
-		}
-		if data, err := os.ReadFile(filepath.Join(files, got[0])); err != nil || !bytes.Equal(data, crashOriginal) {
-			t.Errorf("the temporary file has %d bytes, %v; want the %d bytes that the helper wrote", len(data), err,
-				len(crashOriginal))
-		}
-		// A reader leaves it.
-		r, err := openLogReader(dir, tb.options())
-		if err != nil {
-			t.Fatalf("openLogReader() = %v", err)
-		}
-		if after := names(t, files); !slices.Equal(after, got) {
-			t.Errorf("files/ has %q after openLogReader(), want %q", after, got)
-		}
-		if err := r.Close(); err != nil {
-			t.Fatal(err)
-		}
-		reopen(t, tb, dir)
-		if after := names(t, files); after != nil {
-			t.Errorf("files/ has %q after open(), want the temporary file removed", after)
-		}
 	})
 }
 

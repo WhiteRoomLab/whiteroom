@@ -27,6 +27,7 @@ const maxConfigSize = 1 << 20
 // are relative to its directory, so that they are the paths to open from the working directory, or absolute.
 type config struct {
 	data, site, theme, out, cache string
+	tmp                           string
 	addr, socket, origin          string
 	url                           string // as written: the rule of the URL is checked where it is used
 	trustedProxies                []string
@@ -122,6 +123,8 @@ func (r *configReader) read(data []byte) error {
 			r.cfg.out = r.path(ptr, raw)
 		case "cache":
 			r.cfg.cache = r.path(ptr, raw)
+		case "tmp":
+			r.cfg.tmp = r.path(ptr, raw)
 		case "socket":
 			r.cfg.socket = r.socketPath(ptr, raw)
 		case "addr":

@@ -108,7 +108,7 @@ func TestMediaFile(t *testing.T) {
 	if logged := a.logs.String(); logged != "" {
 		t.Errorf("the log is %q, want nothing", logged)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 }

@@ -263,16 +263,35 @@ func (ts *testServer) records(t *testing.T, action audit.Action) []audit.Record 
 	return out
 }
 
-// tempFiles returns the names of the temporary files in files/ of the data directory.
+// tempFiles returns the names of the temporary files of the spools, in the directory of the temporary files of the server.
 func (ts *testServer) tempFiles(t *testing.T) []string {
 	t.Helper()
-	return tempFilesIn(t, ts.dir)
+	return tempFilesIn(t, ts.tmp)
 }
 
-// tempFilesIn returns the names of the temporary files in files/ of the data directory dir.
+// originalTemps returns the names of the temporary files of PutOriginal, in files/ of the data directory.
+func (ts *testServer) originalTemps(t *testing.T) []string {
+	t.Helper()
+	return tempFilesIn(t, filepath.Join(ts.dir, "files"))
+}
+
+// leftovers returns the temporary files that stay in the two places that a request may make them in, with the directory.
+func (ts *testServer) leftovers(t *testing.T) []string {
+	t.Helper()
+	var all []string
+	for _, name := range ts.tempFiles(t) {
+		all = append(all, "tmp/"+name)
+	}
+	for _, name := range ts.originalTemps(t) {
+		all = append(all, "files/"+name)
+	}
+	return all
+}
+
+// tempFilesIn returns the names of the temporary files, those that start with .tmp-, in the directory dir.
 func tempFilesIn(t *testing.T, dir string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(dir, "files"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

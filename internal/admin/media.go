@@ -114,7 +114,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, p account.Princi
 		}
 		return
 	}
-	out := newSpool(s.store)
+	out := newSpool(s.tmp)
 	defer func() { _ = out.Close() }()
 	if err := writeResult(out, res); err != nil {
 		s.fail(w, r, err)
