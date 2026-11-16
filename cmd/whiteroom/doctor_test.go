@@ -586,9 +586,9 @@ func TestDoctorSite(t *testing.T) {
 	t.Run("no settings", func(t *testing.T) {
 		s := initEmpty(t)
 		code, stdout, stderr := doctorOn(t, s.database(), "", "-theme", s.theme, s.site)
-		problems := checkProblems(t, "a data directory without settings", s.db, code, stdout, stderr, false, "site")
-		if len(problems) == 1 && !strings.Contains(problems[0], "no site settings") {
-			t.Errorf("the problem %q does not tell that the data directory has no settings", problems[0])
+		problems := checkProblems(t, "a store without settings", s.db, code, stdout, stderr, false, "site")
+		if want := "site: the store has no site settings"; len(problems) == 1 && problems[0] != want {
+			t.Errorf("the problem is %q, want %q", problems[0], want)
 		}
 	})
 

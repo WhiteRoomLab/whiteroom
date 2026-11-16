@@ -206,7 +206,7 @@ func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, th
 	}
 	// Not left to Check, which returns this error as it is, with those that a failing source has.
 	if _, _, err := src.Settings(); errors.Is(err, fs.ErrNotExist) {
-		rep.add("site: the data directory has no site settings")
+		rep.add("site: the store has no site settings")
 		return nil
 	}
 	var es content.Errors

@@ -1555,6 +1555,19 @@ func TestBackup(t *testing.T) {
 		}
 	})
 
+	// A data directory that has no store yet is not a store of an old schema: nothing is copied either.
+	t.Run("a data directory without a store", func(t *testing.T) {
+		newDir := newDaemonDir(t, options{})
+		dst := filepath.Join(t.TempDir(), "copy")
+		_, err := backup(t.Context(), newDir, nil, dst, nil)
+		if want := newDir + ": not a store of whiteroom (no schema version)"; !errors.Is(err, ErrNoStore) || err.Error() != want {
+			t.Errorf("Backup() of a data directory without a store = %v, want an error that wraps ErrNoStore, with the text %q", err, want)
+		}
+		if _, err := os.Lstat(dst); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("Backup() of a data directory without a store has made %s: %v", dst, err)
+		}
+	})
+
 	t.Run("durable", func(t *testing.T) {
 		src := simfs.New("data")
 		s, err := create("data", options{log: &o, fs: src})

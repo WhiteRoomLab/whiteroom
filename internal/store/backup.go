@@ -17,24 +17,28 @@ import (
 // Backup copies the store that the daemon of d serves, whose writer may go on writing, to the data directory dstDir,
 // which must be missing or an empty directory: the daemon's copy of its data directory at the last commit that is
 // durable when its Backup begins, which has the originals of that commit. It returns the heads of the audit logs of the
-// copy. A store of a table schema before 7 has no rows of the heads, and is refused before anything is copied. If Backup
-// fails, dstDir must be emptied before it can try again.
+// copy. A store of a table schema before 7 has no rows of the heads, and is refused before anything is copied, as is a
+// data directory that has no store yet, with an error that wraps ErrNoStore. If Backup fails, dstDir must be emptied before
+// it can try again.
 func Backup(ctx context.Context, d dbclient.Dialer, dstDir string) ([]audit.Head, error) {
 	c, err := dbclient.Open(ctx, d, dbwire.RoleReader, dbclient.Options{})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	return backupTo(ctx, c, dstDir, nil)
+	return backupTo(ctx, c, dialerName(d), dstDir, nil)
 }
 
-// backupTo is Backup with the client c of a reader, to dstDir on the OS, or to dst if it is not nil, which dstDir only
-// names in errors.
-func backupTo(ctx context.Context, c *dbclient.Client, dstDir string, dst vfs.FS) ([]audit.Head, error) {
+// backupTo is Backup with the client c of a reader of the daemon that the errors call name, to dstDir on the OS, or to dst
+// if it is not nil, which dstDir only names in errors.
+func backupTo(ctx context.Context, c *dbclient.Client, name, dstDir string, dst vfs.FS) ([]audit.Head, error) {
 	if err := c.View(ctx, func(tx *dbclient.Tx) error {
-		v, _, err := tx.Get(tableMeta, schemaKey)
+		v, ok, err := tx.Get(tableMeta, schemaKey)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return fmt.Errorf("%s: %w", name, ErrNoStore)
 		}
 		if version, ok := decodeUint(v); !ok || version < exportSchema {
 			return fmt.Errorf("the store has a table schema before %d, which has no rows of the heads; "+

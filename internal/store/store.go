@@ -26,7 +26,7 @@ import (
 // SettingsKind is the kind of the settings document (6.6.8) in the store; its ID is "".
 const SettingsKind content.RefKind = "settings"
 
-// ErrNoStore is the error of Open and OpenReader for a data directory that has no store in it: the daemon of a directory
+// ErrNoStore is the error of Open, OpenReader and Backup for a data directory that has no store in it: the daemon of a directory
 // that whiteroom-db init has just made, whose first writer has not made the store yet.
 var ErrNoStore = errors.New("not a store of whiteroom (no schema version)")
 
