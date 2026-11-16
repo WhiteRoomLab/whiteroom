@@ -29,9 +29,9 @@ WordPress の代替となる CMS を Go で作る。設計は `docs/` の構想�
 
 保存の層（構想書の 3.5・3.6）の長いテストとベンチマークは、CI では動かさない。
 
-- `WHITEROOM_LONG_TESTS=1`：`internal/logdb`・`internal/store`・`internal/dbclient` の、クラッシュ・強制終了・失敗の差し込みの行列と、差分テスト（`TestDifferential`）を長くする。`internal/store` のテストは、プロセスの中のデーモンを通すので、遅い。開発のマシン（16の CPU）で、`-race` なしで、3つを一緒に動かして約10分かかる（`internal/store` が約9.5分、`internal/dbclient` が約3.5分、`internal/logdb` が約20秒）。`go test` の既定の上限（10分）に近いので、`-timeout 120m` を付けて動かす。
+- `WHITEROOM_LONG_TESTS=1`：`internal/logdb`・`internal/store`・`internal/dbclient` の、クラッシュ・強制終了・失敗の差し込みの行列と、差分テスト（`TestDifferential`）を長くする。`internal/store` のテストは、プロセスの中のデーモンを通すので、遅い。開発のマシン（16の CPU）で、`-race` なしで、3つを一緒に動かして約7分かかる（`internal/store` が約7.0分、`internal/dbclient` が約3.0分、`internal/logdb` が約21秒）。`go test` の既定の上限（10分）に近いので、`-timeout 120m` を付けて動かす。
 - `WHITEROOM_BENCH`：保存の層のベンチマーク（開発のマシンで約2時間）。動かし方は、構想書の 3.5 の「ベンチマークの条件」。ストアは、テストのプロセスの中のデーモンに、`net.Pipe` で繋ぐ（ソケットのファイルではない）。
-- `WHITEROOM_DAEMON_BENCH=<結果のディレクトリ> go test -count=1 -v -run '^TestBenchmarks$' -timeout 0 ./internal/dbclient`：DB のデーモン（テストのプロセスの中。ソケットのファイルで繋ぐ）の速さのベンチマーク（`Get`・`Update`・`Scan`・オブジェクトと原本・`Backup`・`Verify`・デーモンを止めて始める時間）。開発のマシンで約25秒。`-race` は付けず（付けると、失敗する）、`TMPDIR` を実際のディスクの、短いパスに置く（ソケットのパスは107バイトまで）。結果のディレクトリに、`results.md`・`raw.jsonl` を書く。
+- `WHITEROOM_DAEMON_BENCH=<結果のディレクトリ> go test -count=1 -v -run '^TestBenchmarks$' -timeout 0 ./internal/dbclient`：DB のデーモン（テストのプロセスの中。ソケットのファイルで繋ぐ）の速さのベンチマーク（`Get`・`Update`・`Scan`・オブジェクトと原本・`Backup`・`Verify`・デーモンを止めて始める時間）。開発のマシンで約23秒。`-race` は付けず（付けると、失敗する）、`TMPDIR` を実際のディスクの、短いパスに置く（ソケットのパスは107バイトまで）。結果のディレクトリに、`results.md`・`raw.jsonl` を書く。
 - dm-log-writes（電源断の記録）：`nix build -L .#dmlog` で、記録と確かめを、仮想マシンの中で動かす（root は要らず、KVM が要る。開発のマシンで約10分。ワークロードは、プロセスの中のデーモンを通す）。実機での記録（root が要る）と、記録の確かめ（`WHITEROOM_DMLOG`）の動かし方は、構想書の 3.5 の「テスト」。
 
 WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「テスト」）も、CI では動かさない。WordPress 7.1.4 のファイルを、リポジトリの外のディレクトリ（`<dir>`）に置いて環境変数で渡し、開発シェルの PHP で動かす。WordPress のファイル（GPL）とその出力は、リポジトリに入れない。
@@ -45,7 +45,7 @@ WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「
 ビルド（構想書の 4.3 の「メモリ」）と保存の操作（構想書の 6.12 の 150）のベンチマークも、CI では動かさない。
 
 - `WHITEROOM_BUILD_BENCH=<結果のディレクトリ> go test -count=1 -run '^TestBenchmarks$' -timeout 0 ./internal/build`：開発のマシンで約75秒（Linux だけ）。段階ごとのヒーププロファイルも書く。`GOGC`・`GOMEMLIMIT`・`GODEBUG` は、ビルドのプロセスに渡り、`results.md` に残る。
-- `WHITEROOM_EDIT_BENCH=<結果のディレクトリ> go test -count=1 -v -run '^TestBenchmarks$' -timeout 0 ./internal/edit`：開発のマシンで約345秒。`WHITEROOM_EDIT_BENCH_POSTS=0,1000` で、試す件数を決められる（約15秒）。ストアは、テストのプロセスの中のデーモンに、ソケットのファイルで繋ぐので、`TMPDIR` は、短いパスにする（ソケットのパスは107バイトまで）。
+- `WHITEROOM_EDIT_BENCH=<結果のディレクトリ> go test -count=1 -v -run '^TestBenchmarks$' -timeout 0 ./internal/edit`：開発のマシンで約216秒。`WHITEROOM_EDIT_BENCH_POSTS=0,1000` で、試す件数を決められる（約10秒）。ストアは、テストのプロセスの中のデーモンに、ソケットのファイルで繋ぐので、`TMPDIR` は、短いパスにする（ソケットのパスは107バイトまで）。
 - どちらも、`-race` は付けず（付けると、失敗する）、`TMPDIR` を実際のディスクに置く。結果のディレクトリに、`results.md`・`raw.jsonl` を書く。
 
 見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。
