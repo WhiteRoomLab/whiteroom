@@ -31,8 +31,24 @@ func reproduce(t *testing.T, seed int64) string {
 
 // interp runs the steps of a program on a transaction and logs what each call gave.
 type interp struct {
-	prog *program
-	log  []string
+	prog  *program
+	log   []string
+	hints hintCounts
+}
+
+// hintCounts counts the calls of the hints that a program ran, and the keys, hashes and prefixes that they named.
+type hintCounts struct {
+	getMany, getManyKeys, prefetchObjects, prefetchObjectHashes, prefetchScans, prefetchPrefixes, dropPrefetched int
+}
+
+func (h *hintCounts) add(o hintCounts) {
+	h.getMany += o.getMany
+	h.getManyKeys += o.getManyKeys
+	h.prefetchObjects += o.prefetchObjects
+	h.prefetchObjectHashes += o.prefetchObjectHashes
+	h.prefetchScans += o.prefetchScans
+	h.prefetchPrefixes += o.prefetchPrefixes
+	h.dropPrefetched += o.dropPrefetched
 }
 
 func (in *interp) logf(format string, args ...any) {
@@ -121,6 +137,29 @@ func (in *interp) call(tx txn, p string, c call) {
 			return true
 		})
 		in.logf("%sEvents -> %s, %s", p, sum(datas), errText(err))
+	case opGetMany:
+		in.hints.getMany++
+		in.hints.getManyKeys += len(c.keys)
+		in.logf("%sGetMany %d %d keys -> %s", p, c.table, len(c.keys), errText(tx.GetMany(c.table, c.keys)))
+	case opPrefetchObjects:
+		hashes := make([][32]byte, len(c.objects))
+		for i, o := range c.objects {
+			hashes[i] = hashOfObject([]byte("an object that nothing puts"))
+			if o >= 0 {
+				hashes[i] = hashOfObject(in.prog.objects[o])
+			}
+		}
+		in.hints.prefetchObjects++
+		in.hints.prefetchObjectHashes += len(hashes)
+		in.logf("%sPrefetchObjects %d hashes -> %s", p, len(hashes), errText(tx.PrefetchObjects(hashes)))
+	case opPrefetchScans:
+		in.hints.prefetchScans++
+		in.hints.prefetchPrefixes += len(c.keys)
+		in.logf("%sPrefetchScans %d %d prefixes -> %s", p, c.table, len(c.keys), errText(tx.PrefetchScans(c.table, c.keys)))
+	case opDropPrefetched:
+		in.hints.dropPrefetched++
+		tx.DropPrefetched()
+		in.logf("%sDropPrefetched", p)
 	}
 }
 
@@ -164,33 +203,50 @@ func (in *interp) actions(tx txn, p string, cur []byte, acts []action) {
 				return len(rows) < 8
 			})
 			in.logf("%s    Scan %d %q -> %s, %s", p, a.table, a.prefix, strings.Join(rows, " "), errText(err))
-		case opPutObject, opObject, opEvent, opSeq, opEvents: // not made for an action
+		case opGetMany:
+			keys := append([][]byte{key}, a.keys...)
+			in.hints.getMany++
+			in.hints.getManyKeys += len(keys)
+			in.logf("%s    GetMany %d %d keys -> %s", p, a.table, len(keys), errText(tx.GetMany(a.table, keys)))
+		case opPutObject, opObject, opEvent, opSeq, opEvents, opPrefetchObjects, opPrefetchScans, opDropPrefetched: // not made for an action
 		}
 	}
 }
 
 // diffStats counts what the programs did, so that the test can tell that they have used each rule.
-var diffStats struct {
+type diffCounts struct {
 	seeds, committed, aborted, noOp, scans, scanWrites, nested, stopped, deletes, deleteMissing, pages int
+	hints                                                                                              hintCounts
+	// windows are the Write calls of the client with more than one request, and requests the requests in them.
+	windows, windowRequests int
 }
+
+var diffStats diffCounts
 
 func TestDifferential(t *testing.T) {
 	seeds, steps := 200, 40
 	if longTests() {
 		seeds = 2000
 	}
-	diffStats = struct {
-		seeds, committed, aborted, noOp, scans, scanWrites, nested, stopped, deletes, deleteMissing, pages int
-	}{}
+	diffStats = diffCounts{}
 	for seed := range seeds {
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) { differential(t, int64(seed), steps) })
 	}
 	s := diffStats
 	t.Logf("%d seeds: %d commits, %d Updates aborted, %d Updates with no op, %d Scans (%d stopped, %d writes in fn, %d nested), %d pages, %d deletes (%d of missing keys)",
 		s.seeds, s.committed, s.aborted, s.noOp, s.scans, s.stopped, s.scanWrites, s.nested, s.pages, s.deletes, s.deleteMissing)
+	h := s.hints
+	t.Logf("hints: %d GetMany (%d keys), %d PrefetchObjects (%d hashes), %d PrefetchScans (%d prefixes), %d DropPrefetched; %d windows of %d requests",
+		h.getMany, h.getManyKeys, h.prefetchObjects, h.prefetchObjectHashes, h.prefetchScans, h.prefetchPrefixes, h.dropPrefetched,
+		s.windows, s.windowRequests)
 	if s.seeds == seeds && (s.committed < seeds || s.aborted < seeds/2 || s.noOp < seeds || s.scanWrites < seeds || s.nested < seeds ||
 		s.stopped < seeds/2 || s.pages < s.scans+seeds || s.deleteMissing < seeds) {
 		t.Error("the programs did not use every case often enough")
+	}
+	// A kind of hint that never ran would leave the differential test with nothing to say about it.
+	if s.seeds == seeds && (h.getMany < 2*seeds || h.getManyKeys < 4*seeds || h.prefetchObjects < seeds || h.prefetchObjectHashes < 2*seeds ||
+		h.prefetchScans < seeds || h.prefetchPrefixes < 2*seeds || h.dropPrefetched < seeds || s.windows < seeds || s.windowRequests < 3*s.windows) {
+		t.Error("the programs did not run every hint often enough, or sent no windows")
 	}
 }
 
@@ -255,6 +311,7 @@ func differential(t *testing.T, seed int64, steps int) {
 			}
 		}
 
+		diffStats.hints.add(cin.hints)
 		for _, line := range cin.log {
 			switch {
 			case strings.Contains(line, "Scan ") && !strings.Contains(line, "    Scan") && strings.Contains(line, " rows, "):
@@ -288,6 +345,12 @@ func differential(t *testing.T, seed int64, steps int) {
 		}
 	}
 	diffStats.seeds++
+	for _, w := range rec.writeCalls() {
+		if len(w.kinds) >= 2 {
+			diffStats.windows++
+			diffStats.windowRequests += len(w.kinds)
+		}
+	}
 
 	direct, err := readState(db)
 	must(t, err)

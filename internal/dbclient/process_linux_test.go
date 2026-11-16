@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -97,11 +98,69 @@ func (r *blockingReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// writeWindowAndSleep is a client that speaks dbwire by hand on the reader socket: it takes a snapshot, writes a window of
+// Gets of the large row with one Write call, which the daemon answers with more bytes than a socket holds, and does not
+// read a reply.
+func writeWindowAndSleep(sockets string) error {
+	nc, err := dbclient.SocketDir(sockets).Dial(bg, dbwire.RoleReader)
+	if err != nil {
+		return err
+	}
+	rd, wr := dbwire.NewReader(nc, 1<<20), dbwire.NewWriter(nc, 1<<20)
+	call := func(kind dbwire.Kind, request func(e *dbwire.Enc), reply func(d *dbwire.Dec) error) error {
+		wr.Begin(kind)
+		e := &dbwire.Enc{W: wr}
+		if request != nil {
+			request(e)
+		}
+		if err := wr.End(); err != nil || e.Err != nil {
+			return errors.Join(err, e.Err)
+		}
+		if err := rd.Reply(); err != nil {
+			return err
+		}
+		return reply(&dbwire.Dec{R: rd})
+	}
+	var h dbwire.HelloReply
+	err = call(dbwire.KindHello, func(e *dbwire.Enc) { e.HelloRequest() }, func(d *dbwire.Dec) (err error) {
+		h, err = dbwire.ReadHelloReply(d)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	rd.SetMaxFrame(h.Frame)
+	wr.SetMaxFrame(h.Frame)
+	err = call(dbwire.KindSnapshot, nil, func(d *dbwire.Dec) error {
+		_, err := dbwire.ReadSnapshotReply(d)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	wr.SetHold(dbwire.WindowBytes + 1)
+	for range dbwire.WindowRequests {
+		wr.Begin(dbwire.KindGet)
+		e := &dbwire.Enc{W: wr}
+		e.GetRequest(2, []byte("big"))
+		if err := wr.End(); err != nil || e.Err != nil {
+			return errors.Join(err, e.Err)
+		}
+	}
+	wr.SetHold(0)
+	if err := wr.Flush(); err != nil {
+		return err
+	}
+	fmt.Println(helperMark + "window")
+	time.Sleep(time.Minute)
+	return errors.New("not killed")
+}
+
 // TestHelperProcess is the process that the tests below run, with the environment above. In the mode daemon, it is a
 // daemon on the data directory, with sockets, that stops at the hook point of the environment; in the mode client it
 // is a client of the daemon of the sockets, that stops at its point: object (after the PutObject of an Update), commit
-// (in a Commit that the daemon has read a part of), original (in a PutOriginal) and view (in a View that has read). On its
-// own it does nothing.
+// (in a Commit that the daemon has read a part of), original (in a PutOriginal), view (in a View that has read) and
+// window (after it has written a window of reads and before it reads a reply). On its own it does nothing.
 func TestHelperProcess(t *testing.T) {
 	mode := os.Getenv(envHelper)
 	if mode == "" {
@@ -171,6 +230,8 @@ func TestHelperProcess(t *testing.T) {
 				time.Sleep(time.Minute)
 				return errors.New("not killed")
 			})
+		case "window":
+			err = writeWindowAndSleep(sockets)
 		}
 		t.Fatalf("not killed at %s: %v", point, err)
 	}
@@ -331,6 +392,7 @@ const (
 	sessionMarker  = "internal/dbserver.(*session).serve"
 	snapshotMarker = "internal/dbserver.(*Server).openSnapshot"
 	commitMarker   = "internal/dbserver.(*session).commitRequest"
+	writeMarker    = "internal/dbserver.(*timedConn).Write"
 )
 
 // dirFiles returns the regular files under dir: the paths relative to dir, and what they hold.
@@ -678,6 +740,82 @@ func killDaemon(t *testing.T, point string, isCommit bool, want string, back boo
 	}
 }
 
+// TestKillDaemonReading kills a daemon in another process while a client reads thousands of rows through windows. The
+// client's error says that the daemon cannot be reached, it never gets a wrong value, and it reads every row again once a
+// new daemon serves the directory.
+func TestKillDaemonReading(t *testing.T) {
+	noLeaks(t)
+	const n = 3000
+	dir, sockets := t.TempDir(), socketDir(t)
+	o := helperOptions()
+	must(t, dbtest.Init(dir, o))
+	root, err := dbtest.Acquire(dir, o)
+	must(t, err)
+	handle, err := dbtest.Acquire(dir, o)
+	must(t, err)
+	w, err := dbclient.Open(bg, handle.Dialer(), dbwire.RoleWriter, dbclient.Options{})
+	must(t, err)
+	seed(t, w)
+	keys := make([][]byte, n)
+	for from := 0; from < n; from += 1000 {
+		commit(t, w, func(tx *dbclient.Tx) {
+			for i := from; i < from+1000; i++ {
+				keys[i] = fmt.Appendf(nil, "r%05d", i)
+				put(t, tx, 2, string(keys[i]), fmt.Sprintf("v%05d", i))
+			}
+		})
+	}
+	must(t, w.Close())
+	must(t, root.Release())
+
+	d1 := startHelper(t, "daemon", dir, sockets, "")
+	c, err := dbclient.Open(bg, dbclient.SocketDir(sockets), dbwire.RoleReader, dbclient.Options{DialWait: 200 * time.Millisecond})
+	must(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	readAllRows := func(ctx context.Context) error {
+		return c.View(ctx, func(tx *dbclient.Tx) error {
+			if err := tx.GetMany(2, keys); err != nil {
+				return err
+			}
+			for i, k := range keys {
+				v, ok, err := tx.Get(2, k)
+				if err != nil {
+					return err
+				}
+				if want := fmt.Sprintf("v%05d", i); !ok || string(v) != want {
+					return fmt.Errorf("the row %s is %q (found %v), want %q", k, v, ok, want)
+				}
+			}
+			return nil
+		})
+	}
+	var rounds atomic.Int64
+	done := make(chan error, 1)
+	go func() {
+		for {
+			if err := readAllRows(bg); err != nil {
+				done <- err
+				return
+			}
+			rounds.Add(1)
+		}
+	}()
+	eventually(t, "the client to read the rows a few times", func() bool { return rounds.Load() >= 3 })
+	d1.kill(t)
+	select {
+	case err := <-done:
+		t.Logf("the daemon was killed after %d full reads of the rows, and the client ended with: %v", rounds.Load(), err)
+		if !errors.Is(err, dbclient.ErrUnavailable) {
+			t.Errorf("the client ended with %v, want an error that says that the daemon cannot be reached", err)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("the client is still reading after the daemon was killed")
+	}
+
+	startHelper(t, "daemon", dir, sockets, "")
+	must(t, readAllRows(bg))
+}
+
 func readAll(t testing.TB, o *dbclient.Original) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -689,8 +827,9 @@ func readAll(t testing.TB, o *dbclient.Original) []byte {
 }
 
 // TestKillClient runs a client in another process and kills it where it is: after a PutObject, in a Commit that the daemon
-// has read a part of, in a PutOriginal, and in a View with a snapshot. The daemon has made no commit of it, has no
-// temporary file, has let go of what the connection had, and takes a new writer.
+// has read a part of, in a PutOriginal, in a View with a snapshot, and after it has written a window of reads and before it
+// reads their replies. The daemon has made no commit of it, has no temporary file, has let go of what the connection had,
+// and takes a new writer.
 func TestKillClient(t *testing.T) {
 	for _, c := range []struct {
 		name, point string
@@ -716,13 +855,23 @@ func TestKillClient(t *testing.T) {
 		{"in a View", "view", func(t *testing.T, f *fixture) {
 			eventually(t, "the daemon to hold the snapshot", func() bool { return stackCount(snapshotMarker) == 1 })
 		}},
+		{"after a window that it does not read", "window", func(t *testing.T, f *fixture) {
+			// The replies are 50 MiB: the daemon is in a write that nobody takes.
+			eventually(t, "the daemon to hold the snapshot and to be writing replies", func() bool {
+				return stackCount(snapshotMarker) == 1 && stackCount(writeMarker) >= 1
+			})
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t, nil)
 			sockets := socketDir(t)
 			must(t, f.root.Listen(sockets))
 			w, _ := f.writer(dbclient.Options{})
-			commit(t, w, func(tx *dbclient.Tx) { put(t, tx, 2, "a", "1"); put(t, tx, 2, "b", "2") })
+			commit(t, w, func(tx *dbclient.Tx) {
+				put(t, tx, 2, "a", "1")
+				put(t, tx, 2, "b", "2")
+				put(t, tx, 2, "big", strings.Repeat("x", 200<<10))
+			})
 			old := putOriginal(t, w, data(5000, 9))
 			must(t, w.Close())
 			eventually(t, "the sessions of the seeding client to end", func() bool { return stackCount(sessionMarker) == 0 })

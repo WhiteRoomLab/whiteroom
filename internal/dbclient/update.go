@@ -34,7 +34,7 @@ func (c *Client) View(ctx context.Context, f func(*Tx) error) error {
 	finished := false
 	defer func() {
 		if !finished { // f has panicked
-			t.ended = true
+			t.end()
 			if t.cn != nil {
 				t.cn.close()
 			}
@@ -42,7 +42,7 @@ func (c *Client) View(ctx context.Context, f func(*Tx) error) error {
 	}()
 	err := f(t)
 	finished = true
-	t.ended = true
+	t.end()
 	if t.cn != nil {
 		c.endReader(ctx, t.cn)
 	}
@@ -79,14 +79,14 @@ func (c *Client) Update(ctx context.Context, f func(*Tx) error) error {
 	finished := false
 	defer func() {
 		if !finished { // f has panicked
-			t.ended = true
+			t.end()
 			cn.close()
 			c.wconn = nil
 		}
 	}()
 	ferr := f(t)
 	finished = true
-	t.ended = true
+	t.end()
 	switch {
 	case ferr != nil:
 		c.endWriter(ctx, cn)

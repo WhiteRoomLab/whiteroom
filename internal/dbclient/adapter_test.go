@@ -24,6 +24,11 @@ type txn interface {
 	Object(hash [32]byte) ([]byte, bool, error)
 	AppendEvent(data []byte) error
 	Events(ctx context.Context, fn func(number uint64, data []byte) bool) error
+	// The hints of a client: they change no result, and the engine has nothing to ask for.
+	GetMany(table uint32, keys [][]byte) error
+	PrefetchObjects(hashes [][32]byte) error
+	PrefetchScans(table uint32, prefixes [][]byte) error
+	DropPrefetched()
 }
 
 var _ txn = (*dbclient.Tx)(nil)
@@ -66,6 +71,11 @@ func (e engineTx) Object(hash [32]byte) ([]byte, bool, error) {
 }
 
 func (e engineTx) AppendEvent(data []byte) error { return e.tx.AppendEvent(data) }
+
+func (engineTx) GetMany(uint32, [][]byte) error       { return nil }
+func (engineTx) PrefetchObjects([][32]byte) error     { return nil }
+func (engineTx) PrefetchScans(uint32, [][]byte) error { return nil }
+func (engineTx) DropPrefetched()                      {}
 
 func (e engineTx) Events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
 	seq := e.tx.Seq()

@@ -152,7 +152,7 @@ func fmtScan(tx txn, table uint32, prefix string) string {
 	var parts []string
 	err := tx.Scan(table, []byte(prefix), func(k, v []byte) bool {
 		parts = append(parts, fmt.Sprintf("%q=%s", k, digest(v)))
-		return true
+		return len(parts) < 10_000 // a Scan that does not end fails the test, and does not fill the memory
 	})
 	if err != nil {
 		return "error"

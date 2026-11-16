@@ -3,7 +3,10 @@
 // A Client has the shape of the engine's DB: View and Update run a function with a Tx that reads one snapshot of the
 // daemon, and Update sends the writes of the function to the daemon as one Commit, after the function has returned.
 // Reads go to the daemon, except those that the transaction can answer itself: it reads its own writes, and keeps what
-// the daemon has answered for a key. No error text of this package holds a key, a value or the bytes of an object.
+// the daemon has answered for a key. GetMany, PrefetchObjects and PrefetchScans ask for many keys, objects and first pages
+// of scans with a few round trips: the requests go out in windows, before their replies are read, and what comes back is
+// kept for the reads that follow, which return what they would have returned without them. No error text of this
+// package holds a key, a value or the bytes of an object.
 package dbclient
 
 import (

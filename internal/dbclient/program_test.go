@@ -24,9 +24,15 @@ const (
 	opEvent
 	opSeq
 	opEvents
+	// The hints of a client change no result; an engine has nothing to ask for, and does nothing.
+	opGetMany
+	opPrefetchObjects
+	opPrefetchScans
+	opDropPrefetched
 )
 
-var opNames = [...]string{"Get", "Put", "Delete", "Scan", "PutObject", "Object", "AppendEvent", "Seq", "Events"}
+var opNames = [...]string{"Get", "Put", "Delete", "Scan", "PutObject", "Object", "AppendEvent", "Seq", "Events", "GetMany",
+	"PrefetchObjects", "PrefetchScans", "DropPrefetched"}
 
 func (o op) String() string { return opNames[o] }
 
@@ -47,7 +53,8 @@ type action struct {
 	rel    rel
 	key    []byte // for relOther
 	value  []byte
-	prefix []byte // of a Scan that fn starts
+	prefix []byte   // of a Scan that fn starts
+	keys   [][]byte // of a GetMany, after the key that rel says
 }
 
 func (a action) keyAt(cur []byte) []byte {
@@ -75,12 +82,14 @@ type scanScript struct {
 }
 
 type call struct {
-	op     op
-	table  uint32
-	key    []byte // the prefix of a Scan
-	value  []byte
-	object int // of a PutObject and an Object: the index in the objects of the program, or -1 for one that nothing put
-	script *scanScript
+	op      op
+	table   uint32
+	key     []byte // the prefix of a Scan
+	value   []byte
+	object  int // of a PutObject and an Object: the index in the objects of the program, or -1 for one that nothing put
+	script  *scanScript
+	keys    [][]byte // of a GetMany; the prefixes of a PrefetchScans
+	objects []int    // of a PrefetchObjects, as object
 }
 
 type step struct {
@@ -113,13 +122,17 @@ type generator struct {
 	fresh   int // the fresh keys of the tables that only grow, so far
 	missing int
 	prog    *program
+	// hint decides the hints and their arguments, so that the rest of a program is what it was without them.
+	hint   *rand.Rand
+	hinted int
 }
 
 // genProgram makes the program of a seed. The calls follow the rules of the daemon, so that an engine and a daemon commit
 // the same: no change of the schema row, no change or delete of a row of an append-only table, only valid rows in the
 // heads, an event in each Update that writes.
 func genProgram(seed int64, steps int) *program {
-	g := &generator{rng: rand.New(rand.NewPCG(uint64(seed), 0x5eed)), prog: &program{seed: seed}}
+	g := &generator{rng: rand.New(rand.NewPCG(uint64(seed), 0x5eed)), prog: &program{seed: seed},
+		hint: rand.New(rand.NewPCG(uint64(seed), 0x41a7))}
 	// Half of the daemons have small frames, which make pages of a few rows.
 	g.prog.frame = []int{1 << 20, testFrame, 1 << 20, 1024}[seed%4]
 	for _, size := range []int{0, 1, 7, 49, 50, 51, 200, 1000, 70_000, 200_000} {
@@ -234,6 +247,9 @@ func (g *generator) action(table uint32) action {
 		}
 	case r < 85:
 		a.op = opGet
+		if g.hint.IntN(100) < 25 {
+			a.op, a.keys = opGetMany, g.hintKeys(table, 1+g.hint.IntN(4))
+		}
 	default:
 		a.op, a.prefix = opScan, []byte(prefixes[g.rng.IntN(len(prefixes))])
 	}
@@ -329,7 +345,79 @@ func (g *generator) updateCall() call {
 	return g.read()
 }
 
+// step returns a step of the program, with hints among its calls: the calls that are not hints are those that the program
+// has without them.
 func (g *generator) step() step {
+	st := g.baseStep()
+	if g.hint.IntN(100) < 70 {
+		for range 1 + g.hint.IntN(3) {
+			st.calls = slices.Insert(st.calls, g.hint.IntN(len(st.calls)+1), g.hintCall())
+		}
+	}
+	return st
+}
+
+func (g *generator) hintTable() uint32 { return tables[g.hint.IntN(len(tables))] }
+
+// hintKeys returns n keys for a GetMany: those that the program writes and reads, keys that nothing puts, keys twice, and
+// now and then one that is over the limit of a key.
+func (g *generator) hintKeys(table uint32, n int) [][]byte {
+	h := g.hint
+	var keys [][]byte
+	for range n {
+		switch r := h.IntN(100); {
+		case r < 12:
+			g.hinted++
+			keys = append(keys, fmt.Appendf(nil, "zz-hint-%d", g.hinted))
+		case r < 15:
+			keys = append(keys, bytes.Repeat([]byte("k"), 4097))
+		case r < 22 && len(keys) > 0:
+			keys = append(keys, keys[h.IntN(len(keys))])
+		case table == 3 || table == 4 || table == 5:
+			keys = append(keys, fmt.Appendf(nil, "%c%04d", 'a'+h.IntN(3), h.IntN(g.fresh+2)))
+		case table == 11:
+			keys = append(keys, []byte(heads[h.IntN(len(heads))]))
+		default:
+			keys = append(keys, []byte(keyPool[h.IntN(len(keyPool))]))
+		}
+	}
+	return keys
+}
+
+// hintCall returns a call of GetMany, PrefetchObjects, PrefetchScans or DropPrefetched.
+func (g *generator) hintCall() call {
+	h := g.hint
+	switch r := h.IntN(100); {
+	case r < 40:
+		table := g.hintTable()
+		return call{op: opGetMany, table: table, keys: g.hintKeys(table, 1+h.IntN(12))}
+	case r < 60:
+		c := call{op: opPrefetchObjects}
+		for range 1 + h.IntN(4) {
+			switch r := h.IntN(100); {
+			case r < 20:
+				c.objects = append(c.objects, -1)
+			case r < 85:
+				c.objects = append(c.objects, h.IntN(7))
+			default:
+				c.objects = append(c.objects, h.IntN(len(g.prog.objects)))
+			}
+		}
+		return c
+	case r < 85:
+		c := call{op: opPrefetchScans, table: g.hintTable()}
+		for range 1 + h.IntN(4) {
+			c.keys = append(c.keys, []byte(prefixes[h.IntN(len(prefixes))]))
+		}
+		if h.IntN(100) < 4 {
+			c.keys = append(c.keys, bytes.Repeat([]byte("k"), 4097))
+		}
+		return c
+	}
+	return call{op: opDropPrefetched}
+}
+
+func (g *generator) baseStep() step {
 	switch r := g.rng.IntN(100); {
 	case r < 25: // a View, with a few writes that it refuses
 		st := step{kind: "view"}

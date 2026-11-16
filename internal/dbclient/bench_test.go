@@ -32,26 +32,30 @@ import (
 const envBench = "WHITEROOM_DAEMON_BENCH" // the directory of the results
 
 const (
-	benchTable        uint32 = 2 // of the rows that the measurements put
-	benchEcho                = 16
-	benchEchoes              = 100_000
-	benchGets                = 100_000
-	benchGetValue            = 200
-	benchUpdates             = 3000
-	benchDefaultRun          = 300 // Updates under the default limit of commits
-	benchBurst               = 50  // of that limit
-	benchRow                 = 100 // bytes of the row of an Update
-	benchEvent               = 400 // bytes of its event
-	benchScanRows            = 20_000
-	benchScanValue           = 1 << 10
-	benchScanRuns            = 20
-	benchOriginals           = 3
-	benchMaintenance         = 3 // runs of Backup and of Verify
-	benchRestarts            = 3
-	benchProbeEvery          = 10 * time.Millisecond
-	benchProbeBefore         = 20 // Updates of the probe before a Backup or a Verify starts
-	mib                      = 1 << 20
-	benchOriginalSize        = 64 * mib
+	benchTable            uint32 = 2 // of the rows that the measurements put
+	benchEcho                    = 16
+	benchEchoes                  = 100_000
+	benchGets                    = 100_000
+	benchGetValue                = 200
+	benchUpdates                 = 3000
+	benchDefaultRun              = 300 // Updates under the default limit of commits
+	benchBurst                   = 50  // of that limit
+	benchRow                     = 100 // bytes of the row of an Update
+	benchEvent                   = 400 // bytes of its event
+	benchScanRows                = 20_000
+	benchScanValue               = 1 << 10
+	benchScanRuns                = 20
+	benchWindowKeys              = 256 // a call of GetMany, and of PrefetchObjects
+	benchWindowObjects           = 1024
+	benchWindowObjectSize        = 4 << 10
+	benchWindowPasses            = 5 // Views of the objects
+	benchOriginals               = 3
+	benchMaintenance             = 3 // runs of Backup and of Verify
+	benchRestarts                = 3
+	benchProbeEvery              = 10 * time.Millisecond
+	benchProbeBefore             = 20 // Updates of the probe before a Backup or a Verify starts
+	mib                          = 1 << 20
+	benchOriginalSize            = 64 * mib
 )
 
 // benchSeries is a measurement: its name, the unit of its values, and every value.
@@ -354,6 +358,29 @@ func benchWindow(samples []probeSample, from, to time.Time) probeWindow {
 	return w
 }
 
+// benchClock is how the machine reads the clock: the clock source of the kernel, if it can be read, and the cost of time.Now.
+type benchClock struct {
+	source string
+	nowNs  float64 // the mean of benchClockReads calls of time.Now; 0: not measured
+}
+
+const (
+	benchClockSource = "/sys/devices/system/clocksource/clocksource0/current_clocksource"
+	benchClockReads  = 100_000
+)
+
+func measureClock() benchClock {
+	c := benchClock{source: benchFirst(benchClockSource, "")}
+	var last time.Time
+	start := time.Now()
+	for range benchClockReads {
+		last = time.Now()
+	}
+	c.nowNs = float64(time.Since(start).Nanoseconds()) / benchClockReads
+	_ = last
+	return c
+}
+
 // bench is the state of TestBenchmarks.
 type bench struct {
 	t    *testing.T
@@ -362,6 +389,10 @@ type bench struct {
 	main *benchDaemon
 	md   strings.Builder
 	src  *rand.ChaCha8
+
+	clock    benchClock
+	getKeys  [][]byte // of gets(), which GetMany reads again
+	getOrder []int
 }
 
 // series writes the series to raw.jsonl and returns its numbers.
@@ -424,7 +455,7 @@ func TestBenchmarks(t *testing.T) {
 	work, err = filepath.EvalSymlinks(work)
 	must(t, err)
 
-	b := &bench{t: t, raw: raw, work: work, src: rand.NewChaCha8([32]byte{'d', 'a', 'e', 'm', 'o', 'n'})}
+	b := &bench{t: t, raw: raw, work: work, src: rand.NewChaCha8([32]byte{'d', 'a', 'e', 'm', 'o', 'n'}), clock: measureClock()}
 	started, load := time.Now(), [2]string{benchLoad(), ""}
 	b.main = newBenchDaemon(t, filepath.Join(work, "data"), nil)
 	b.main.start()
@@ -438,6 +469,8 @@ func TestBenchmarks(t *testing.T) {
 
 	b.echo()
 	b.gets()
+	b.getMany()
+	b.objectWindows()
 	b.updates()
 	b.defaultLimits()
 	b.scan()
@@ -458,7 +491,8 @@ func TestBenchmarks(t *testing.T) {
 func TestBenchmarkNote(t *testing.T) {
 	b := &bench{}
 	md := b.markdown("", time.Time{}, 0, [2]string{})
-	for _, want := range []string{"over Unix domain socket files", "in one process"} {
+	for _, want := range []string{"over Unix domain socket files", "in one process", "includes one such read of the clock",
+		"Clock source of the kernel (" + benchClockSource + ")", "time.Now takes"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("results.md does not say %q:\n%s", want, md)
 		}
@@ -472,13 +506,23 @@ func (b *bench) markdown(work string, started time.Time, elapsed time.Duration, 
 		"in one process, over Unix domain socket files that the daemon listens on (writer.sock and reader.sock), on a data "+
 		"directory on the disk. The numbers are those of the socket, the protocol, the daemon and the client together; "+
 		"the process of the daemon and that of the client are not separate, so the resident set is of both. Each call is "+
-		"timed with time.Now around it (about 40 ns each side). The daemon has the limits of dbtest (%+v), except in the "+
+		"timed with time.Now before it and time.Since after it, so the time of a call includes one such read of the clock "+
+		"(its cost is in the list below). The daemon has the limits of dbtest (%+v), except in the "+
 		"measurement that says that it has the defaults. Started %s; %.0f s.\n\n",
 		dbwire.Limits{CommitsPerSecond: -1, MinFree: -1}.WithDefaults(), started.Format(time.RFC3339), elapsed.Seconds())
 	memory, _ := strconv.ParseInt(strings.TrimSuffix(benchFirst("/proc/meminfo", "MemTotal"), " kB"), 10, 64)
 	fmt.Fprintf(&h, "- %s %s/%s\n- %s, %d CPUs, %d MiB of memory, Linux %s\n- Work directory %s (%s)\n",
 		runtime.Version(), runtime.GOOS, runtime.GOARCH, benchFirst("/proc/cpuinfo", "model name"), runtime.NumCPU(),
 		memory>>10, benchFirst("/proc/sys/kernel/osrelease", ""), work, benchMount(work))
+	source, now := b.clock.source, "unknown (not measured)"
+	if source == "" {
+		source = "unknown (cannot be read)"
+	}
+	if b.clock.nowNs > 0 {
+		now = benchNum(b.clock.nowNs) + " ns each"
+	}
+	fmt.Fprintf(&h, "- Clock source of the kernel (%s): %s; time.Now takes %s (the mean of %d calls, measured at the start)\n",
+		benchClockSource, source, now, benchClockReads)
 	h.WriteString("- Settings of the runtime:")
 	for _, name := range []string{"GOGC", "GOMEMLIMIT", "GODEBUG"} {
 		v, ok := os.LookupEnv(name)
@@ -567,6 +611,7 @@ func (b *bench) gets() {
 		}))
 	}
 	order := rand.New(rand.NewPCG(1, 2)).Perm(benchGets)
+	b.getKeys, b.getOrder = keys, order
 	times := make([]float64, 0, benchGets)
 	must(t, b.main.r.View(bg, func(tx *dbclient.Tx) error {
 		// The first read takes the snapshot.
@@ -590,6 +635,139 @@ func (b *bench) gets() {
 		"The time of each call.", benchGetValue, benchGets))
 	b.head("calls", "median (us)", "99th percentile (us)", "max (us)", "calls per second")
 	b.row(strconv.Itoa(st.N), benchNum(st.P50), benchNum(st.P99), benchNum(st.Max), benchNum(float64(st.N)/(st.Sum/1e6)))
+}
+
+// getMany measures Get through windows: Tx.GetMany of benchWindowKeys keys a call, over the rows of gets(), in the order of
+// gets(), in a View of its own.
+func (b *bench) getMany() {
+	t := b.t
+	t.Helper()
+	keys, order := b.getKeys, b.getOrder
+	var calls, perKey, withGets []float64
+	must(t, b.main.r.View(bg, func(tx *dbclient.Tx) error {
+		// The first read takes the snapshot.
+		if _, _, err := tx.Get(benchTable, []byte("missing")); err != nil {
+			return err
+		}
+		batch := make([][]byte, 0, benchWindowKeys)
+		for from := 0; from < len(order); from += benchWindowKeys {
+			ids := order[from:min(from+benchWindowKeys, len(order))]
+			batch = batch[:0]
+			for _, i := range ids {
+				batch = append(batch, keys[i])
+			}
+			at := time.Now()
+			err := tx.GetMany(benchTable, batch)
+			many := time.Since(at)
+			if err != nil {
+				return err
+			}
+			at = time.Now()
+			bad := -1
+			for _, i := range ids {
+				v, ok, err := tx.Get(benchTable, keys[i])
+				if err != nil || !ok || len(v) != benchGetValue || binary.BigEndian.Uint64(v) != uint64(i) {
+					bad = i
+				}
+			}
+			gets := time.Since(at)
+			if bad >= 0 {
+				t.Fatalf("Get(%s) after GetMany is not the row that was put", keys[bad])
+			}
+			calls = append(calls, benchUs(many))
+			perKey = append(perKey, benchUs(many)/float64(len(ids)))
+			withGets = append(withGets, benchUs(many+gets)/float64(len(ids)))
+		}
+		return nil
+	}))
+	st, pk, wg := b.series("GetMany", "us", calls), b.series("GetMany per key", "us", perKey),
+		b.series("GetMany and Get per key", "us", withGets)
+	b.section("GetMany", fmt.Sprintf("Get through windows: the same %d rows as Get, read in the same random order in a View of its "+
+		"own, with Tx.GetMany of %d keys a call (the last call has %d), which sends the requests of a call in windows of at most "+
+		"%d requests and %d bytes before it reads their replies. The time of each call of GetMany; the time for a key is the time "+
+		"of a call divided by its keys. Then each key is read with Get, which asks nothing, and the last row has the time of "+
+		"GetMany and of those Gets together, for a key.", benchGets, benchWindowKeys, benchGets%benchWindowKeys,
+		dbwire.WindowRequests, dbwire.WindowBytes))
+	b.head("calls", "keys a call", "median of a call (us)", "99th percentile of a call (us)", "max of a call (us)",
+		"median for a key (us)", "99th percentile for a key (us)", "median for a key with the Gets (us)")
+	b.row(strconv.Itoa(st.N), strconv.Itoa(benchWindowKeys), benchNum(st.P50), benchNum(st.P99), benchNum(st.Max), benchNum(pk.P50),
+		benchNum(pk.P99), benchNum(wg.P50))
+}
+
+// objectWindows measures Object through windows: benchWindowObjects objects of benchWindowObjectSize bytes, read in Views
+// with Tx.PrefetchObjects of benchWindowKeys hashes and the calls of Object that take them, and, for comparison, with
+// Object one at a time.
+func (b *bench) objectWindows() {
+	t := b.t
+	t.Helper()
+	hashes := make([][32]byte, benchWindowObjects)
+	datas := make([][]byte, benchWindowObjects)
+	const batch = 128
+	for from := 0; from < benchWindowObjects; from += batch {
+		must(t, b.main.w.Update(bg, func(tx *dbclient.Tx) error {
+			for i := from; i < from+batch; i++ {
+				datas[i] = b.random(benchWindowObjectSize)
+				hashes[i] = sha256.Sum256(datas[i])
+				if err := tx.PutObject(hashes[i], datas[i]); err != nil {
+					return err
+				}
+			}
+			return tx.AppendEvent(benchEventData())
+		}))
+	}
+	var calls, perObject, single []float64
+	for range benchWindowPasses {
+		must(t, b.main.r.View(bg, func(tx *dbclient.Tx) error {
+			if _, _, err := tx.Get(benchTable, []byte("missing")); err != nil { // the snapshot
+				return err
+			}
+			got := make([][]byte, benchWindowKeys)
+			for from := 0; from < benchWindowObjects; from += benchWindowKeys {
+				at := time.Now()
+				err := tx.PrefetchObjects(hashes[from : from+benchWindowKeys])
+				for i := range got {
+					if err == nil {
+						got[i], _, err = tx.Object(hashes[from+i])
+					}
+				}
+				d := time.Since(at)
+				if err != nil {
+					return err
+				}
+				for i := range got {
+					if !bytes.Equal(got[i], datas[from+i]) {
+						t.Fatalf("Object %d after PrefetchObjects is not the object that was put", from+i)
+					}
+				}
+				calls = append(calls, benchUs(d))
+				perObject = append(perObject, benchUs(d)/benchWindowKeys)
+			}
+			return nil
+		}))
+		must(t, b.main.r.View(bg, func(tx *dbclient.Tx) error {
+			for i, h := range hashes {
+				at := time.Now()
+				data, ok, err := tx.Object(h)
+				d := time.Since(at)
+				if err != nil || !ok || !bytes.Equal(data, datas[i]) {
+					t.Fatalf("Object %d = %d bytes, %v, %v", i, len(data), ok, err)
+				}
+				single = append(single, benchUs(d))
+			}
+			return nil
+		}))
+	}
+	st, po, sg := b.series("PrefetchObjects and Object", "us", calls), b.series("PrefetchObjects and Object per object", "us", perObject),
+		b.series("Object 4 KiB", "us", single)
+	b.section("Objects through windows", fmt.Sprintf("%d objects of %d bytes were put in Updates before the time. In a View, "+
+		"Tx.PrefetchObjects of %d hashes and the %d calls of Object that take them are timed together, a call for each %d "+
+		"objects in turn, so %d calls for each View; there are %d such Views, each with a snapshot of its own (%d calls in all). "+
+		"For comparison, %d more Views read each object on its own with Object (%d calls). The data are compared with what "+
+		"was put after the time.", benchWindowObjects, benchWindowObjectSize, benchWindowKeys, benchWindowKeys, benchWindowKeys,
+		benchWindowObjects/benchWindowKeys, benchWindowPasses, st.N, benchWindowPasses, sg.N))
+	b.head("calls", "median of a call of 256 objects (us)", "99th percentile of a call (us)", "median for an object (us)",
+		"99th percentile for an object (us)", "Object on its own: median (us)", "Object on its own: 99th percentile (us)")
+	b.row(strconv.Itoa(st.N), benchNum(st.P50), benchNum(st.P99), benchNum(po.P50), benchNum(po.P99), benchNum(sg.P50), benchNum(sg.P99))
 }
 
 // updates measures Update with no limit of commits per second.

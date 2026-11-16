@@ -154,6 +154,10 @@ func wantEnded(t *testing.T, tx *dbclient.Tx) {
 	check("Object", err)
 	check("AppendEvent", tx.AppendEvent([]byte("e")))
 	check("Events", tx.Events(bg, func(uint64, []byte) bool { t.Error("Events called fn after the end"); return true }))
+	check("GetMany", tx.GetMany(2, [][]byte{[]byte("k")}))
+	check("PrefetchObjects", tx.PrefetchObjects([][32]byte{{}}))
+	check("PrefetchScans", tx.PrefetchScans(2, [][]byte{nil}))
+	tx.DropPrefetched()
 }
 
 func TestTxAfterTheEnd(t *testing.T) {

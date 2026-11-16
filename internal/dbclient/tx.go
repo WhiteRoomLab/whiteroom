@@ -36,6 +36,10 @@ type Tx struct {
 	answers    map[uint32]map[string]answer
 	sent       map[[32]byte]struct{} // the objects put
 	stagedSize int64
+
+	objects map[[32]byte][]byte   // prefetched, each until Object returns it
+	pages   map[scanKey]firstPage // prefetched, until DropPrefetched
+	kept    int64                 // the bytes of objects and pages that are kept
 }
 
 // pendingWrite is the last write of a key.
@@ -128,6 +132,12 @@ func (t *Tx) begin() error {
 	return t.take()
 }
 
+// end ends the transaction and drops what it keeps of prefetched objects and pages.
+func (t *Tx) end() {
+	t.ended = true
+	t.DropPrefetched()
+}
+
 // Seq returns the sequence number of the last commit in the snapshot of t, which a View takes if it has none, or 0 after t
 // has ended or if the snapshot cannot be taken.
 func (t *Tx) Seq() uint64 {
@@ -166,20 +176,14 @@ func (t *Tx) get(table uint32, key []byte) (value []byte, found bool, err error)
 			return nil, false, err
 		}
 	}
-	if t.answers == nil {
-		t.answers = map[uint32]map[string]answer{}
-	}
-	if t.answers[table] == nil {
-		t.answers[table] = map[string]answer{}
-	}
-	t.answers[table][string(key)] = answer{value, found}
+	t.keep(table, key, value, found)
 	return value, found, nil
 }
 
 // Scan calls fn with each key of table that starts with prefix, and its value, which must not be changed, in ascending
 // order of the keys, until fn returns false. It scans the table as it is when Scan is called, also if fn writes: the rows
 // of the snapshot, with the writes of t at that time, are given, and the daemon is asked for a page of rows only when the
-// next one is due.
+// next one is due; the first page is the one that PrefetchScans has kept for the prefix, if it has.
 func (t *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool) error {
 	if err := t.begin(); err != nil {
 		return err
@@ -194,7 +198,8 @@ func (t *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool) 
 		after   []byte
 		started bool
 		more    bool
-		i, j    int // the next row of page, and the next write of pend
+		kept    bool // page is one that t keeps for the next Scan
+		i, j    int  // the next row of page, and the next write of pend
 	)
 	for {
 		if err := t.ctx.Err(); err != nil {
@@ -202,7 +207,10 @@ func (t *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool) 
 		}
 		if i >= len(page) && (!started || more) {
 			var err error
-			if page, more, err = t.page(table, prefix, after, started); err != nil {
+			var first firstPage
+			if first, kept = t.keptPage(table, prefix, started); kept {
+				page, more = first.rows, first.more
+			} else if page, more, err = t.page(table, prefix, after, started); err != nil {
 				return err
 			}
 			i, started = 0, true
@@ -218,6 +226,9 @@ func (t *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool) 
 			return nil
 		case haveRow && (!haveWrite || bytes.Compare(page[i].key, pend[j].key) < 0):
 			k, v = page[i].key, page[i].value
+			if kept {
+				k = bytes.Clone(k) // fn may change the key
+			}
 			i++
 		default:
 			w := pend[j]
@@ -236,18 +247,20 @@ func (t *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool) 
 	}
 }
 
+// keptPage returns the first page of a Scan that PrefetchScans has kept, if the Scan has not read a page yet.
+func (t *Tx) keptPage(table uint32, prefix []byte, started bool) (firstPage, bool) {
+	if started || len(t.pages) == 0 {
+		return firstPage{}, false
+	}
+	p, ok := t.pages[scanKey{table, string(prefix)}]
+	return p, ok
+}
+
 // page asks the daemon for the rows of the table after the key after, if hasAfter.
 func (t *Tx) page(table uint32, prefix, after []byte, hasAfter bool) (rows []row, more bool, err error) {
 	req := dbwire.ScanRequest{Table: table, Prefix: prefix, HasAfter: hasAfter, After: after}
 	err = t.cn.call(t.ctx, dbwire.KindScan, func(e *dbwire.Enc) { e.ScanRequest(req) }, func(d *dbwire.Dec) (err error) {
-		for {
-			k, v, ok := dbwire.ReadScanRow(d, int64(t.maxKey), maxValue)
-			if !ok {
-				break
-			}
-			rows = append(rows, row{k, v})
-		}
-		more, err = dbwire.ReadScanEnd(d)
+		rows, more, err = readPage(d, t.maxKey)
 		return err
 	})
 	return rows, more, err
@@ -366,10 +379,16 @@ func (t *Tx) PutObject(hash [32]byte, data []byte) error {
 	return nil
 }
 
-// Object returns the data of the object hash, which an Update has put or the store has, and whether there is one.
+// Object returns the data of the object hash, which an Update has put or the store has, and whether there is one. The
+// data are the caller's: an object that PrefetchObjects has kept is returned once, without a request.
 func (t *Tx) Object(hash [32]byte) (data []byte, found bool, err error) {
 	if err := t.begin(); err != nil {
 		return nil, false, err
+	}
+	if data, ok := t.objects[hash]; ok {
+		delete(t.objects, hash)
+		t.kept -= int64(len(data))
+		return data, true, nil
 	}
 	err = t.cn.call(t.ctx, dbwire.KindObject, func(e *dbwire.Enc) { e.ObjectRequest(hash) }, func(d *dbwire.Dec) (err error) {
 		found, data, err = dbwire.ReadObjectReply(d, maxObject)
