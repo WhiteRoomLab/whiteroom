@@ -359,10 +359,12 @@ func writeHeads(t *testing.T, text string) string {
 	return writeConfig(t, t.TempDir(), "heads.txt", text)
 }
 
-// servedLog runs a whiteroom serve admin on the data directory of s until a login and the first build have been done, and
-// the function more, if there is one, has used the server; it stops the server and returns what it has written on stderr.
+// servedLog runs a whiteroom serve admin on the store of s until a login and the first build have been done, and the function
+// more, if there is one, has used the server; it stops the server and returns what the daemon has written on its standard
+// error, which are the heads of the audit logs, as the export of whiteroom-db serve writes them at its start and at its stop.
 func servedLog(t *testing.T, s adminSite, more func(a *adminProc, cookie string)) string {
 	t.Helper()
+	export := exportHeads(t, s.database())
 	a := startAdmin(t, t.Context(), s.args()...)
 	cookie := a.login(t)
 	if built := a.waitBuilt(t, cookie); failedBuild(built) || built.Last.Release == "" {
@@ -374,14 +376,15 @@ func servedLog(t *testing.T, s adminSite, more func(a *adminProc, cookie string)
 	if code := a.stop(t); code != 0 {
 		t.Fatalf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
-	return a.stderr.String()
+	export.finish()
+	return export.out.String()
 }
 
-// TestDoctorHeads gives whiteroom doctor the heads of the audit logs that a server has written, as they are and with the
+// TestDoctorHeads gives whiteroom doctor the heads of the audit logs that the daemon has written, as they are and with the
 // lines of a logger around them: the data directory is right. A head that is not the hash of its record, and a head of a
 // record that is not there, are problems of the part audit; a line that has "audit head " and no head, and a file without
 // a head, are problems of the part heads, which have nothing of the line; the standard input can be the file; and the
-// heads that a server writes after a backup are not those of the copy.
+// heads that the daemon writes after a backup are not those of the copy.
 func TestDoctorHeads(t *testing.T) {
 	s := initSample(t)
 	served := servedLog(t, s, nil)
@@ -404,7 +407,7 @@ func TestDoctorHeads(t *testing.T) {
 		}
 	}
 	if len(headAt) < 2 {
-		t.Fatalf("the server wrote %d lines of heads, want one for each log that has records:\n%s", len(headAt), served)
+		t.Fatalf("the daemon wrote %d lines of heads, want one for each log that has records:\n%s", len(headAt), served)
 	}
 	changed := func(at int, edit func(line string) string) string {
 		out := slices.Clone(lines)
@@ -422,9 +425,9 @@ func TestDoctorHeads(t *testing.T) {
 	}
 
 	code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", writeHeads(t, good), s.site)
-	checkClean(t, "the heads as the server wrote them", s.db, code, stdout, stderr, false)
+	checkClean(t, "the heads as the daemon wrote them", s.db, code, stdout, stderr, false)
 	code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", writeHeads(t, served))
-	checkClean(t, "the stderr of the server as it is, without SITE", s.db, code, stdout, stderr, true)
+	checkClean(t, "the stderr of the daemon as it is, without SITE", s.db, code, stdout, stderr, true)
 	code, stdout, stderr = doctorOn(t, s.database(), good, "-heads", "-", s.site)
 	checkClean(t, "the heads on the standard input", s.db, code, stdout, stderr, false)
 	code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", writeHeads(t, good+good), s.site)
@@ -608,7 +611,9 @@ func TestDoctorSite(t *testing.T) {
 // item theme is used with a SITE only; the item data, which is the daemon's, is not used; a problem in the file is a usage
 // error with no output.
 func TestDoctorConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("db alone", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "# the settings of every command\ndb: ../run\n"+
 			"addr: 127.0.0.1:8081\nworkers: 2\n")
@@ -617,6 +622,7 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("db, site and theme", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		conf := filepath.Join(root, "conf")
 		file := writeConfig(t, conf, "whiteroom.yaml", "db: ../run\nsite: ../site\ntheme: ../theme\n")
@@ -642,6 +648,7 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("the flag wins over the item", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		bad := writeConfig(t, filepath.Join(root, "conf"), "bad.yaml", "db: ../no-such-run\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", bad, "-db", db.sockets)
@@ -651,6 +658,7 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("a theme without a SITE", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "db: ../run\ntheme: ../no-such-theme\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
@@ -662,6 +670,7 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("the item data is not used", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "data.yaml", "data: "+strconv.Quote(db.data)+"\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
@@ -671,6 +680,7 @@ func TestDoctorConfig(t *testing.T) {
 	})
 
 	t.Run("a problem in the file", func(t *testing.T) {
+		t.Parallel()
 		root, _ := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "unknown.yaml", "db: ../run\nsnack: 1\n")
 		code, stdout, stderr := runCmd(t, "doctor", "-config", file)
@@ -711,6 +721,7 @@ func TestDoctorBesideAdmin(t *testing.T) {
 // stderr, before the data directory is opened, with nothing on stdout; a data directory that cannot be opened is the
 // problem open; and a context that is done is "interrupted".
 func TestDoctorErrors(t *testing.T) {
+	t.Parallel()
 	s := initSample(t)
 	missing := filepath.Join(shortDir(t), "missing")
 	none := testDB{data: missing, sockets: missing}
@@ -753,13 +764,16 @@ func TestDoctorErrors(t *testing.T) {
 			t.Run(filepath.Base(dir), func(t *testing.T) {
 				t.Parallel()
 				db := testDB{data: s.data, sockets: dir}
-				for _, args := range [][]string{{s.site}, nil} {
-					code, stdout, stderr := doctorOn(t, db, "", args...)
-					problems := checkProblems(t, "a daemon that cannot be reached", dir, code, stdout, stderr, false, "open")
-					if len(problems) == 1 && (!strings.HasPrefix(problems[0], "open: "+dir+": "+dbclient.ErrUnavailable.Error()+": ") ||
-						!strings.Contains(problems[0], filepath.Join(dir, "reader.sock"))) {
-						t.Errorf("the problem %q does not tell that the daemon cannot be reached, with the name of the socket", problems[0])
-					}
+				for name, args := range map[string][]string{"with SITE": {s.site}, "without SITE": nil} {
+					t.Run(name, func(t *testing.T) {
+						t.Parallel()
+						code, stdout, stderr := doctorOn(t, db, "", args...)
+						problems := checkProblems(t, "a daemon that cannot be reached", dir, code, stdout, stderr, false, "open")
+						if len(problems) == 1 && (!strings.HasPrefix(problems[0], "open: "+dir+": "+dbclient.ErrUnavailable.Error()+": ") ||
+							!strings.Contains(problems[0], filepath.Join(dir, "reader.sock"))) {
+							t.Errorf("the problem %q does not tell that the daemon cannot be reached, with the name of the socket", problems[0])
+						}
+					})
 				}
 			})
 		}

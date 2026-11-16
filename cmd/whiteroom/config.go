@@ -12,16 +12,16 @@ import (
 
 // config holds the items of a config file that whiteroom uses; those that the file does not give are zero. The paths that
 // the file gives are relative to its directory, so that they are the paths to open from the working directory, or absolute.
-// The items of whiteroom-db, which the same file may hold, are checked by configfile and not kept.
+// The items of whiteroom-db, which the same file may hold, data among them, are checked by configfile and not kept.
 type config struct {
-	data, site, theme, out, cache string
-	tmp                           string
-	db                            string
-	addr, socket, origin          string
-	url                           string // as written: the rule of the URL is checked where it is used
-	trustedProxies                []string
-	workers                       int
-	memory                        int64 // MiB
+	site, theme, out, cache string
+	tmp                     string
+	db                      string
+	addr, socket, origin    string
+	url                     string // as written: the rule of the URL is checked where it is used
+	trustedProxies          []string
+	workers                 int
+	memory                  int64 // MiB
 }
 
 // loadConfig reads and checks the config file file, a YAML mapping of items. It reads nothing and returns the zero
@@ -33,7 +33,7 @@ func loadConfig(file string) (config, error) {
 		return config{}, err
 	}
 	return config{
-		data: f.Data, site: f.Site, theme: f.Theme, out: f.Out, cache: f.Cache, tmp: f.Tmp, db: f.DB,
+		site: f.Site, theme: f.Theme, out: f.Out, cache: f.Cache, tmp: f.Tmp, db: f.DB,
 		addr: f.Addr, socket: f.Socket, origin: f.Origin, url: f.URL, trustedProxies: f.TrustedProxies,
 		workers: f.Workers, memory: f.Memory,
 	}, nil

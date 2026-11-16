@@ -416,6 +416,7 @@ func TestBackupBuildsSameRelease(t *testing.T) {
 // while one that was there is used; and a backup that fails after it has begun, by a context that is done or an original that
 // cannot be read, leaves DEST as it was, and can be tried again.
 func TestBackupErrors(t *testing.T) {
+	t.Parallel()
 	const need = "; DEST must be missing or an empty directory\n"
 
 	t.Run("a DEST that is not missing or empty", func(t *testing.T) {
@@ -506,27 +507,36 @@ func TestBackupErrors(t *testing.T) {
 
 	t.Run("a daemon that cannot be reached", func(t *testing.T) {
 		// A directory that cannot be written, where DEST could not be made, is not what is reported: DEST is made first, and
-		// removed when the connection fails.
-		missingDB := filepath.Join(t.TempDir(), "missing")
-		emptyDB := t.TempDir()
-		parent := t.TempDir()
-		missingDest := filepath.Join(parent, "missing-dest")
-		emptyDest := filepath.Join(parent, "empty-dest")
-		if err := os.Mkdir(emptyDest, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		emptied := stateOf(t, emptyDest)
-		for _, tt := range []struct{ what, db string }{{"a missing directory", missingDB}, {"an empty directory", emptyDB}} {
-			for _, dest := range []string{missingDest, emptyDest} {
-				got := failingBackup(t, tt.what, t.Context(), "-db", tt.db, dest)
-				if want := "whiteroom backup: " + tt.db + ": cannot reach the daemon: "; !strings.HasPrefix(got, want) ||
-					!strings.Contains(got, filepath.Join(tt.db, "reader.sock")) {
-					t.Errorf("%s: whiteroom backup printed %q, want that the daemon cannot be reached, with the name of the socket", tt.what, got)
-				}
-			}
-			checkMissing(t, tt.what+", DEST missing", missingDest)
-			if after := stateOf(t, emptyDest); after != emptied {
-				t.Errorf("%s: the empty DEST is now:\n%s\nwas:\n%s", tt.what, after, emptied)
+		// removed when the connection fails. Each case waits for the client's 2 seconds, so they run together, each with a
+		// DEST of its own.
+		for _, tt := range []struct {
+			what string
+			db   func(t *testing.T) string
+		}{
+			{"a missing directory", func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
+			{"an empty directory", func(t *testing.T) string { return t.TempDir() }},
+		} {
+			for _, destKind := range []string{"missing", "empty"} {
+				t.Run(tt.what+", DEST "+destKind, func(t *testing.T) {
+					t.Parallel()
+					db, dest := tt.db(t), filepath.Join(t.TempDir(), "dest")
+					if destKind == "empty" {
+						if err := os.Mkdir(dest, 0o755); err != nil {
+							t.Fatal(err)
+						}
+					}
+					was := stateOf(t, dest)
+					got := failingBackup(t, tt.what, t.Context(), "-db", db, dest)
+					if want := "whiteroom backup: " + db + ": cannot reach the daemon: "; !strings.HasPrefix(got, want) ||
+						!strings.Contains(got, filepath.Join(db, "reader.sock")) {
+						t.Errorf("%s: whiteroom backup printed %q, want that the daemon cannot be reached, with the name of the socket", tt.what, got)
+					}
+					if destKind == "missing" {
+						checkMissing(t, tt.what+", DEST missing", dest)
+					} else if after := stateOf(t, dest); after != was {
+						t.Errorf("%s: the empty DEST is now:\n%s\nwas:\n%s", tt.what, after, was)
+					}
+				})
 			}
 		}
 	})

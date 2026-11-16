@@ -93,8 +93,6 @@ linters:
           list-mode: lax
           files:
             - "!$test"
-            # Until phase 14 of the plan of issue 109, whiteroom serve admin reaches the data directory through a daemon in its process.
-            - "!**/cmd/whiteroom/*.go"
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
               desc: storetest は、データのディレクトリから保存先を開く、テストの土台で、テストだけが使う
@@ -352,6 +350,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
             - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
         store-test:
           list-mode: strict
@@ -552,8 +551,6 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
-            # Until phase 14 of the plan of issue 109: whiteroom serve admin runs a daemon inside its process (embedded.go).
-            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
         cmd/whiteroom-test:

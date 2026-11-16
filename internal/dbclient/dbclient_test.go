@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"strings"
@@ -156,6 +157,10 @@ func TestOpen(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), c.socket) || !strings.Contains(err.Error(), dir) {
 				t.Errorf("the error does not name the socket and its directory: %v", err)
+			}
+			// The socket file is missing, which a caller that tests for a missing key or document must not take for one.
+			if errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the error of a missing socket file wraps fs.ErrNotExist: %v", err)
 			}
 			if elapsed := time.Since(start); elapsed < 120*time.Millisecond || rec.attempts < 2 {
 				t.Errorf("gave up after %v and %d attempts", elapsed, rec.attempts)

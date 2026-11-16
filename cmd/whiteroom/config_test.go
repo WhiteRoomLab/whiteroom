@@ -63,7 +63,8 @@ snapshotIdle: 30s
 stall: 1m30s
 `
 
-// sizedConfig returns a config file of n bytes that gives the item data, with a comment for the rest.
+// sizedConfig returns a config file of n bytes that gives the item data, which whiteroom does not keep, with a comment for the
+// rest.
 func sizedConfig(n int) string {
 	head := "data: a\n# "
 	return head + strings.Repeat("x", n-len(head)-1) + "\n"
@@ -103,7 +104,7 @@ memory: 512
 		{
 			"every item", all,
 			config{
-				data: in("data"), site: filepath.Join(root, "site"), theme: abs, out: in("out/releases"), cache: in("cache"),
+				site: filepath.Join(root, "site"), theme: abs, out: in("out/releases"), cache: in("cache"),
 				tmp: in("spool/tmp"), db: in("run"), addr: "127.0.0.1:8081", socket: filepath.Join(abs, "admin.sock"),
 				origin: "https://admin.example.com", url: "https://staging.example.com", trustedProxies: []string{"10.0.0.0/8", "::1"},
 				workers: 4, memory: 512,
@@ -121,7 +122,7 @@ memory: 512
 		{"the largest memory", fmt.Sprintf("memory: %d\n", configfile.MaxMemory), config{memory: configfile.MaxMemory}},
 		{"no proxies", "trustedProxies: []\n", config{}},
 		{"an empty mapping", "{}\n", config{}},
-		{"the largest size", sizedConfig(configfile.MaxSize), config{data: in("a")}},
+		{"the largest size", sizedConfig(configfile.MaxSize), config{}},
 	} {
 		file := writeConfig(t, dir, "whiteroom.yaml", tt.text)
 		got, err := loadConfig(file)
@@ -134,7 +135,7 @@ memory: 512
 		writeConfig(t, filepath.Join(root, "rel", "conf"), "whiteroom.yaml", "data: data\nsite: ../site\ntheme: /abs\n")
 		t.Chdir(filepath.Join(root, "rel"))
 		got, err := loadConfig(filepath.Join("conf", "whiteroom.yaml"))
-		want := config{data: filepath.Join("conf", "data"), site: "site", theme: "/abs"}
+		want := config{site: "site", theme: "/abs"}
 		if err != nil || !sameConfig(got, want) {
 			t.Errorf("loadConfig = %+v, %v\nwant %+v", got, err, want)
 		}
@@ -644,9 +645,8 @@ func TestConfigTmpOfOtherCommands(t *testing.T) {
 
 // TestConfigDaemonItems checks that the commands which take -config accept a file that has the item db and the items of
 // whiteroom-db, which they check for their types and ranges and do not use but db, which the commands that connect to the
-// daemon use, and serve admin, which keeps its own -data for now, does not: it makes nothing for it, and a value that is not
-// right is a problem of the file for each of them, a line, and exit 2, as for the other items. The item data is checked for
-// its type, and the commands that connect do not use it.
+// daemon use, serve admin among them: a value that is not right is a problem of the file for each of them, a line, and exit 2,
+// as for the other items. The item data is checked for its type, and no command opens that directory, which is missing here.
 func TestConfigDaemonItems(t *testing.T) {
 	root, db := storedRoot(t)
 	conf := filepath.Join(root, "conf")
@@ -669,10 +669,10 @@ func TestConfigDaemonItems(t *testing.T) {
 		t.Errorf("whiteroom init -config with the items of the daemon = %d, with stderr:\n%s\nwant 0", code, stderr)
 	}
 	s, base := initSample(t), t.TempDir()
-	// The file of serve admin has the items of the daemon, and a db that is a path from the file, which serve admin does not use.
+	// The file of serve admin has the items of the daemon, and the data directory of the daemon, which serve admin does not open.
 	a := startAdmin(t, t.Context(), "-config", s.configIn(t, filepath.Join(base, "conf"), strings.TrimSuffix(daemonItems, "\n")))
 	stopsWith(t, "the server with the items of the daemon", a)
-	checkMissing(t, "serve admin, which does not make the directory of db", filepath.Join(base, "run"))
+	checkMissing(t, "the data directory of the daemon, which no command opens", filepath.Join(root, "data"))
 
 	const (
 		notName     = "must be a name, or a number of 0 or more"

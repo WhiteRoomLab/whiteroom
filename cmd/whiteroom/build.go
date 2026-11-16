@@ -58,7 +58,7 @@ type buildFlags struct {
 	config, out, cache, theme, url string
 	workers                        int
 	memory                         int64
-	dbDir                          string // -db, of whiteroom build only: whiteroom serve admin has a flag of its own, -data
+	dbDir                          string // -db, which the commands that connect to the daemon add themselves, with their own text
 }
 
 // newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.

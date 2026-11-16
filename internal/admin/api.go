@@ -284,12 +284,15 @@ func noOperationID(w http.ResponseWriter, r *http.Request) bool {
 // answerError answers r with the problem for err, which an operation or a read returned, and p is who asked. tried says what
 // the request tried, for a refusal whose error does not say; a refusal is recorded in the activity log (recordDenied) before
 // it is answered. An error that is none of the known ones is logged and answered with 500, or with 503 if the context of the
-// request has ended. The write gets a new time limit: the request may have taken long.
+// request has ended, and so is one that says that the daemon of the store cannot be reached. The write gets a new time
+// limit: the request may have taken long.
 func (s *Server) answerError(w http.ResponseWriter, r *http.Request, p account.Principal, err error, tried attempt) {
 	_ = extendWrite(w, writeTimeout)
 	var denied *deniedError
 	var invalid content.Errors
 	switch {
+	case errors.Is(err, store.ErrUnavailable):
+		s.fail(w, r, err)
 	case errors.Is(err, errSessionChanged), errors.Is(err, account.ErrNoSession):
 		s.clearSessionCookie(w)
 		writeProblem(w, http.StatusUnauthorized, codeUnauthenticated, detailUnauthenticated)

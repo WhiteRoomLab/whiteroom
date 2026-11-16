@@ -176,6 +176,16 @@ func (f *readFailure) Read(p []byte) (int, error) {
 // minutes (slowTransfer) for what is in a file, since the request may have taken minutes to receive. If it cannot read
 // out after the answer has begun it logs that and aborts the connection, which tells the client that the body is not whole.
 func (s *Server) sendSpool(w http.ResponseWriter, r *http.Request, status int, header http.Header, out *spool) {
+	limit := writeTimeout
+	if out.spilled() {
+		limit = slowTransfer
+	}
+	_ = extendWrite(w, limit)
+	s.sendBody(w, r, status, header, out)
+}
+
+// sendBody is sendSpool for a caller that has set the time limit of the write.
+func (s *Server) sendBody(w http.ResponseWriter, r *http.Request, status int, header http.Header, out *spool) {
 	if status == 0 {
 		status = http.StatusOK
 	}
@@ -184,11 +194,6 @@ func (s *Server) sendSpool(w http.ResponseWriter, r *http.Request, status int, h
 		s.fail(w, r, err)
 		return
 	}
-	limit := writeTimeout
-	if out.spilled() {
-		limit = slowTransfer
-	}
-	_ = extendWrite(w, limit)
 	h := w.Header()
 	for name, values := range header {
 		h.Del(name)

@@ -3,17 +3,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/store"
 )
 
 // TestMain gives the tests a temporary directory of their own, and fails the run if one leaves something in it, a directory
@@ -76,9 +80,8 @@ func leakedGoroutines() []string {
 var dbLimits = dbwire.Limits{CommitsPerSecond: -1, MinFree: -1}
 
 // testDB is a daemon that runs inside the test process, until the test ends: the data directory that it serves, and the
-// directory of its sockets, which the commands get as -db. The tests that serve admin give it the data directory, as -data,
-// until it connects to whiteroom-db too; the daemon of a data directory is one in the process, so that the server and the
-// commands of the test share it.
+// directory of its sockets, which the commands, whiteroom serve admin among them, get as -db. The helpers that read the data
+// directory open it by themselves, which joins the daemon of the process: they must not run while the daemon is stopped.
 type testDB struct {
 	data    string
 	sockets string
@@ -115,6 +118,21 @@ func newDBOptions(t *testing.T, o dbtest.Options) testDB {
 		t.Fatal(err)
 	}
 	return testDB{data: data, sockets: listenOn(t, data, o, "")}
+}
+
+// newDBWithStore is newDB, with the store made in the data directory, as the first command that writes makes it, and no
+// account in it.
+func newDBWithStore(t *testing.T) testDB {
+	t.Helper()
+	db := newDB(t)
+	st, err := store.Create(dbDialer(db.sockets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return db
 }
 
 // newDBAt is newDB, with the sockets in the directory sockets, which it makes: a path from which a config file can find
@@ -157,8 +175,9 @@ func listenOn(t *testing.T, data string, o dbtest.Options, sockets string) strin
 	if err != nil {
 		t.Fatal(err)
 	}
+	daemons.Store(sockets, h)
 	t.Cleanup(func() {
-		if err := h.Release(); err != nil {
+		if err := releaseDB(sockets); err != nil {
 			t.Errorf("closing the daemon of %s: %v", data, err)
 		}
 	})
@@ -166,6 +185,73 @@ func listenOn(t *testing.T, data string, o dbtest.Options, sockets string) strin
 		t.Fatal(err)
 	}
 	return sockets
+}
+
+// daemons has the handle of the daemon that listens on each directory of sockets, which stopDB and startDB change.
+var daemons sync.Map
+
+// releaseDB gives up the handle of the daemon on the sockets in the directory sockets, if it has one.
+func releaseDB(sockets string) error {
+	if h, ok := daemons.LoadAndDelete(sockets); ok {
+		return h.(*dbtest.Daemon).Release()
+	}
+	return nil
+}
+
+// stopDB stops the daemon of db, as a process that is stopped does: its connections end and its sockets are gone, and the
+// data directory is as it was. The helpers that open the data directory by themselves must not run until startDB.
+func stopDB(t *testing.T, db testDB) {
+	t.Helper()
+	if err := releaseDB(db.sockets); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startDB starts the daemon of db again, on the same sockets, as dbLimits say, after stopDB.
+func startDB(t *testing.T, db testDB) {
+	t.Helper()
+	h, err := dbtest.Acquire(db.data, dbtest.Options{Limits: &dbLimits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Listen(db.sockets); err != nil {
+		_ = h.Release()
+		t.Fatal(err)
+	}
+	daemons.Store(db.sockets, h)
+}
+
+// headExport runs the export of the heads of the audit logs of the daemon of db as whiteroom-db serve does, which writes them
+// to its standard error: at the start and at the stop, and every minute, which does not come in a test. It is the daemon that
+// writes them and not whiteroom serve admin.
+type headExport struct {
+	out    *syncBuffer
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func exportHeads(t *testing.T, db testDB) *headExport {
+	t.Helper()
+	h, ok := daemons.Load(db.sockets)
+	if !ok {
+		t.Fatalf("no daemon listens on %s", db.sockets)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &headExport{out: new(syncBuffer), cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(e.done)
+		_ = h.(*dbtest.Daemon).Server().ExportHeads(ctx, e.out, nil, nil)
+	}()
+	t.Cleanup(func() { e.finish() })
+	return e
+}
+
+// finish ends the export, which writes the last heads first, and returns every head that it wrote.
+func (e *headExport) finish() []audit.Head {
+	e.cancel()
+	<-e.done
+	heads, _ := headsOf(e.out.String())
+	return heads
 }
 
 // commitsOf returns the number of the last commit of the daemon of db, 0 for a store that has none, as a reader that
@@ -189,4 +275,24 @@ func commitsOf(t *testing.T, db testDB) uint64 {
 		t.Fatal(err)
 	}
 	return seq
+}
+
+// async runs f in a goroutine, and returns the channel of its result.
+func async[T any](f func() T) <-chan T {
+	ch := make(chan T, 1)
+	go func() { ch <- f() }()
+	return ch
+}
+
+// receive waits for the result of async, for at most adminWait.
+func receive[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(adminWait):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	var zero T
+	return zero
 }

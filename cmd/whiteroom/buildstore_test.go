@@ -181,12 +181,14 @@ func TestBuildDataDefaults(t *testing.T) {
 // directories, and that -db wins over the item db, and that no item db is a build from the site directory, also with the item
 // data, which is the daemon's.
 func TestBuildDataConfig(t *testing.T) {
+	t.Parallel()
 	ref := t.TempDir()
 	buildSample(t, ref, t.TempDir())
 	release := currentOf(t, ref)
 	const items = "site: ../site\ntheme: ../theme\nout: ../out\ncache: ../cache\n"
 
 	t.Run("the items of the file", func(t *testing.T) {
+		t.Parallel()
 		root, _ := storedRoot(t)
 		file := writeConfig(t, filepath.Join(root, "conf"), "whiteroom.yaml", "# the settings of every command\n"+
 			"db: ../run\n"+items+"addr: 127.0.0.1:8081\nsocket: ../run/admin.sock\norigin: https://admin.example.com\n"+
@@ -212,6 +214,7 @@ func TestBuildDataConfig(t *testing.T) {
 	})
 
 	t.Run("the flag wins over the item", func(t *testing.T) {
+		t.Parallel()
 		root, db := storedRoot(t)
 		conf := filepath.Join(root, "conf")
 		missing := filepath.Join(root, "missing-run")
@@ -234,6 +237,7 @@ func TestBuildDataConfig(t *testing.T) {
 	})
 
 	t.Run("no item db", func(t *testing.T) {
+		t.Parallel()
 		root, _ := storedRoot(t)
 		// The item data is the daemon's: it does not make a build from a store, and its type is checked.
 		for _, text := range []string{items, "data: ../data\n" + items} {
@@ -317,7 +321,9 @@ func TestBuildDataBesideAdmin(t *testing.T) {
 // directory; one that is missing or empty; a SITE without the schema file or the theme; documents that the schema does not
 // accept, which name their files in the data directory; and a schema that is not YAML.
 func TestBuildDataErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("without settings", func(t *testing.T) {
+		t.Parallel()
 		s := initEmpty(t)
 		code, stdout, stderr := buildStored(t, s, "-theme", s.theme)
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom build: ") || strings.Count(stderr, "\n") != 1 ||
@@ -331,6 +337,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("a missing directory of sockets", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		missing := filepath.Join(shortDir(t), "missing")
 		failingBuild(t, "a missing directory of sockets", t.Context(), noDaemon("whiteroom build", missing, "reader.sock"),
@@ -341,6 +348,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("an empty directory of sockets", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		empty := shortDir(t)
 		failingBuild(t, "an empty directory of sockets", t.Context(), noDaemon("whiteroom build", empty, "reader.sock"),
@@ -352,6 +360,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("a daemon that has no store", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		fresh := newDB(t)
 		failingBuild(t, "a daemon that has no store", t.Context(),
@@ -363,6 +372,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("no schema file", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		schemaOnly(t, s.site, true)
 		before := manifestOf(t, s.data)
@@ -384,6 +394,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("no theme", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		schemaOnly(t, s.site, false)
 		failingBuild(t, "a SITE without a theme", t.Context(), filepath.Join(s.site, "theme")+": missing directory\n",
@@ -394,6 +405,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("a problem in a document", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		schemaOnly(t, s.site, true)
 		schema := filepath.Join(s.site, "site", "schema.yaml")
@@ -429,6 +441,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("a schema that is not YAML", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		schemaOnly(t, s.site, true)
 		schema := filepath.Join(s.site, "site", "schema.yaml")
@@ -444,6 +457,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("canceled", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -454,6 +468,7 @@ func TestBuildDataErrors(t *testing.T) {
 	})
 
 	t.Run("usage errors", func(t *testing.T) {
+		t.Parallel()
 		s := initSample(t)
 		for _, args := range [][]string{
 			{"-workers", "-1", s.site}, {"-memory", "-1", s.site}, {"-memory", "8796093022208", s.site}, {s.site, s.site},

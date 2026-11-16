@@ -78,6 +78,7 @@ type Server struct {
 	attempts     *attempts
 	logins       chan struct{} // a place for each login that attempts has allowed and that has not ended
 	forwardedDue func() bool   // true at most once a minute: the time to log an X-Forwarded-For that is not read
+	unreachable  func() bool   // true at most once a minute: the time to log that the daemon of the store cannot be reached
 	handler      http.Handler  // the check of cross-origin requests, then the routes
 
 	deadlinesMu sync.RWMutex
@@ -146,6 +147,7 @@ func New(c Config) (*Server, error) {
 		deadline:     defaultDeadline,
 		logins:       make(chan struct{}, maxLogins),
 		forwardedDue: everyMinute(now),
+		unreachable:  everyMinute(now),
 		heavy:        make(chan struct{}, 1),
 		logReads:     make(chan struct{}, 1),
 		passwords:    newPasswordAttempts(now, passwordAttemptsCapacity),
@@ -333,9 +335,17 @@ func isCleanPath(p string) bool {
 	return true
 }
 
-// fail answers r with 503 if err says that its context has ended, and else with 500 and logs err.
+// fail answers r with 503 if err says that the daemon of the store cannot be reached, which it logs at most once a minute,
+// or that its context has ended, and else with 500 and logs err.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, store.ErrUnavailable):
+		if s.unreachable() {
+			s.log.Printf("the daemon of the store cannot be reached: %v", err)
+		}
+		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
+		return
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
 		return
 	}

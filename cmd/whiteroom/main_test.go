@@ -73,11 +73,14 @@ func TestRun(t *testing.T) {
 		t.Fatalf("whiteroom serve admin -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code,
 			stdout, adminHelp)
 	}
-	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-data DIR", "-memory MiB", "-origin URL", "-out DIR",
-		"-socket PATH", "-theme DIR", "-trusted-proxy PREFIX", "-url URL", "-workers N"} {
+	for _, name := range []string{"-addr ADDR", "-cache DIR", "-config FILE", "-db DIR", "-memory MiB", "-origin URL", "-out DIR",
+		"-socket PATH", "-theme DIR", "-tmp DIR", "-trusted-proxy PREFIX", "-url URL", "-workers N"} {
 		if !strings.Contains(adminHelp, "\n  "+name+"\n") {
 			t.Errorf("the usage of whiteroom serve admin has no flag %s:\n%s", name, adminHelp)
 		}
+	}
+	if strings.Contains(adminHelp, "-data") {
+		t.Errorf("the usage of whiteroom serve admin has the flag -data, which is gone:\n%s", adminHelp)
 	}
 	if !strings.Contains(adminHelp, defaultAdminAddr) {
 		t.Errorf("the usage of whiteroom serve admin does not tell the default of -addr, %s:\n%s", defaultAdminAddr, adminHelp)
@@ -305,19 +308,20 @@ func TestRun(t *testing.T) {
 		{[]string{"serve", "-h"}, 0, usage, ""},
 		{[]string{"serve", "help"}, 0, usage, ""},
 		{[]string{"serve", "nope"}, 2, "", "whiteroom serve: unknown server \"nope\"\nRun \"whiteroom help\" for usage.\n"},
-		{[]string{"serve", "admin"}, 2, "", adminErr("no data directory: give -data DIR, or data in the config file")},
-		{[]string{"serve", "admin", "-data", "d", "a", "b"}, 2, "",
+		{[]string{"serve", "admin"}, 2, "", adminErr(errNoDB)},
+		{[]string{"serve", "admin", "-data", "d"}, 2, "", "flag provided but not defined: -data\n" + adminHelp},
+		{[]string{"serve", "admin", "-db", "d", "a", "b"}, 2, "",
 			adminErr("too many arguments: give at most one SITE, after the flags")},
-		{[]string{"serve", "admin", "-data", "d", "-addr", "localhost:8081"}, 2, "",
+		{[]string{"serve", "admin", "-db", "d", "-addr", "localhost:8081"}, 2, "",
 			adminErr(`-addr "localhost:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`)},
-		{[]string{"serve", "admin", "-data", "d", "-addr", "127.0.0.1:8081", "-socket", "s"}, 2, "",
+		{[]string{"serve", "admin", "-db", "d", "-addr", "127.0.0.1:8081", "-socket", "s"}, 2, "",
 			adminErr("-addr and -socket are both given: give one of them, as the server listens on one")},
-		{[]string{"serve", "admin", "-data", "d", "-socket", "s"}, 2, "",
+		{[]string{"serve", "admin", "-db", "d", "-socket", "s"}, 2, "",
 			adminErr("no origin: a socket has no address that the origin can be made of: give -origin URL, or origin in the " +
 				"config file")},
-		{[]string{"serve", "admin", "-data", "d", "-socket", "", "-origin", "http://localhost"}, 2, "",
+		{[]string{"serve", "admin", "-db", "d", "-socket", "", "-origin", "http://localhost"}, 2, "",
 			adminErr("-socket must not be empty")},
-		{[]string{"serve", "admin", "-data", "d", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "serve admin")},
+		{[]string{"serve", "admin", "-db", "d", "-url", "https://example.com/"}, 2, "", fmt.Sprintf(badURL, "serve admin")},
 		{[]string{"serve", "admin", "-config", missing}, 2, "", "whiteroom serve admin: " + openErr.Error() + "\n"},
 		{[]string{"serve", "admin", "-config", broken}, 2, "", broken + ":1:6: tab characters are not allowed; use spaces\n"},
 		{[]string{"serve", "public", "-x"}, 2, "", "flag provided but not defined: -x\n" + serveHelp},

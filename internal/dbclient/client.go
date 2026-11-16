@@ -184,6 +184,12 @@ func (e *ioError) Error() string {
 func (e *ioError) Unwrap() error        { return e.err }
 func (e *ioError) Is(target error) bool { return target == ErrUnavailable }
 
+// dialFailure has the text of a failed dial and none of its chain: the socket file of a daemon that has stopped is missing,
+// which wraps fs.ErrNotExist, and a caller that tests for that would take a key or a document for missing.
+type dialFailure struct{ err error }
+
+func (e dialFailure) Error() string { return e.err.Error() }
+
 // busyError is the refusal of a writer, which another writer's connection keeps out.
 type busyError struct {
 	name string
@@ -254,7 +260,7 @@ func (c *Client) connectWait(ctx context.Context, role dbwire.Role, wait time.Du
 func (c *Client) attempt(ctx context.Context, role dbwire.Role) (cn *conn, retry bool, err error) {
 	nc, err := c.d.Dial(ctx, role)
 	if err != nil {
-		return nil, true, &ioError{c.name, err}
+		return nil, true, &ioError{c.name, dialFailure{err}}
 	}
 	cn = &conn{c: c, nc: nc, rd: dbwire.NewReader(nc, helloFrame), wr: dbwire.NewWriter(nc, helloFrame)}
 	c.mu.Lock()

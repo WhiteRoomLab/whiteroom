@@ -31,11 +31,20 @@ import (
 
 const serveAdminUsage = `Usage: whiteroom serve admin [flags] [SITE]
 
-Open the data directory as the process that writes it, and serve its admin API
-over HTTP until interrupted. The site is built from the data directory into the
-output directory when the server starts, and after each change that publishes.
-From the site directory SITE (default ".") only the schema file site/schema.yaml
-and the theme are read.
+Connect to the daemon whiteroom-db whose sockets are in the directory of -db as the
+one writer of its store, and serve the admin API of the store over HTTP until
+interrupted. The server reads through the reader socket of the daemon too; it opens
+no file of the data directory, which only the daemon opens, and it does not write the
+heads of the chains of the audit logs: whiteroom-db writes them to its standard
+error. The site is built from the store into the output directory when the server
+starts, and after each change that publishes. From the site directory SITE (default
+".") only the schema file site/schema.yaml and the theme are read.
+
+If the daemon cannot be reached within 2 seconds when the server starts, or another
+process is connected to it as the writer, the command fails. Once it runs, the
+server stays up while the daemon is away: the requests that need the store are
+answered 503 until the daemon is back, which the server connects to again with no
+restart, and the sessions that were valid are valid then. Start whiteroom-db first.
 
 The server does not end TLS. It listens on one of a loopback TCP address (-addr)
 and a Unix domain socket (-socket): browsers open the first over http on
@@ -45,23 +54,23 @@ The reverse proxy for the second connects to the socket file, which the server
 makes with the mode 0660 and removes when it stops, and is always trusted. A
 socket has no address that the origin can be made of, so it needs -origin.
 
-It writes the heads of the chains of the audit logs to the standard error, a line
-each: when it starts, then every minute those that have changed, and when it
-stops, so that the journal keeps them outside the data directory.
-
 With -url, or url in the config file, the server takes URL as the url of the site
 settings, for its builds and for the checks of what the API saves, and leaves the
 settings as they are: the API shows and saves the url that is written in them.
 URL is checked as the url of the settings is.
 
 While a request runs, a large body or answer is kept in a file of the directory of
--tmp, and not in memory. By default the directory is SITE/tmp: the server makes it
-if it is missing, and removes the files that a server that was killed left in it
-when it starts. Give a directory on a disk, which no other server uses.
+-tmp, and not in memory: so that a client that sends or reads slowly does not hold a
+connection of the daemon, an upload is received whole before it is saved, and a
+download is copied from the store before it is sent. By default the directory is
+SITE/tmp: the server makes it if it is missing, and removes the files that a server
+that was killed left in it when it starts. Give a directory on a disk, which no
+other server uses.
 
-With -config, the items data, site, theme, out, cache, tmp, workers, memory, url,
+With -config, the items db, site, theme, out, cache, tmp, workers, memory, url,
 addr, socket, origin and trustedProxies of the YAML file give what the flags and
-SITE leave out. Without it, no config file is read.
+SITE leave out; the other items are checked and not used: one file may be shared
+with whiteroom-db. Without it, no config file is read.
 
 Flags:
 `
@@ -69,16 +78,15 @@ Flags:
 const (
 	defaultAdminAddr  = "127.0.0.1:8081"
 	adminShutdownWait = 10 * time.Second
-	// recordWait is how long a write of the counted failures of logins, and the last write of the heads of the audit
-	// logs, may take.
+	// recordWait is how long a write of the counted failures of logins may take.
 	recordWait = 5 * time.Second
 )
 
 // serveAdminFlags are the values of the flags of whiteroom serve admin, those of whiteroom build among them.
 type serveAdminFlags struct {
 	*buildFlags
-	data, tmp, addr, socket, origin string
-	proxies                         []netip.Prefix // -trusted-proxy
+	tmp, addr, socket, origin string
+	proxies                   []netip.Prefix // -trusted-proxy
 }
 
 func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
@@ -89,7 +97,8 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 		flags.PrintDefaults()
 	}
 	f := &serveAdminFlags{buildFlags: addBuildFlags(flags)}
-	flags.StringVar(&f.data, "data", "", "open the data directory `DIR` (required unless the config file has data)")
+	flags.StringVar(&f.dbDir, "db", "", "connect to the daemon whose sockets are in the directory `DIR` (required unless the config file "+
+		"has db)")
 	flags.StringVar(&f.tmp, "tmp", "",
 		"keep the temporary files of large requests in the directory `DIR`, which no other server uses (default tmp of the "+
 			"config file, else SITE/tmp)")
@@ -119,7 +128,7 @@ func newServeAdminFlags(stderr io.Writer) (*flag.FlagSet, *serveAdminFlags) {
 // adminSettings is what whiteroom serve admin works with.
 type adminSettings struct {
 	buildSettings
-	data    string
+	db      string // the directory of the sockets of the daemon of the store
 	tmp     string // the directory of the temporary files of large requests
 	network string // "tcp" or "unix"
 	addr    string // to listen on: a host:port, or the path of the socket
@@ -131,10 +140,10 @@ type adminSettings struct {
 // defaults. If one is wrong it prints it on stderr and returns false, which is a usage error.
 func (f *serveAdminFlags) resolve(flags *flag.FlagSet, cfg config, stderr io.Writer) (adminSettings, bool) {
 	s := adminSettings{
-		buildSettings: f.settings(flags, cfg), data: cmp.Or(f.data, cfg.data), origin: cmp.Or(f.origin, cfg.origin),
+		buildSettings: f.settings(flags, cfg), db: cmp.Or(f.dbDir, cfg.db), origin: cmp.Or(f.origin, cfg.origin),
 	}
-	if s.data == "" {
-		usageError(flags, "no data directory: give -data DIR, or data in the config file")
+	if s.db == "" {
+		usageError(flags, errNoDB)
 		return s, false
 	}
 	s.tmp = cmp.Or(f.tmp, cfg.tmp, fspath.Join(s.site, "tmp"))
@@ -320,7 +329,7 @@ func serveAdmin(ctx context.Context, args []string, e env) int {
 	if s.network == "unix" {
 		listening = "socket " + s.addr
 	}
-	printf(e.stdout, "serving admin of %s at %s (listening on %s)\n", s.data, a.origin, listening)
+	printf(e.stdout, "serving admin of the store of %s at %s (listening on %s)\n", s.db, a.origin, listening)
 	return reportRun(ctx, a, p)
 }
 
@@ -343,7 +352,6 @@ type adminServer struct {
 	publisher *publish.Publisher
 	http      *http.Server
 	logger    *log.Logger
-	heads     io.Writer // gets the heads of the audit logs, a line each
 	ticks     func() (<-chan time.Time, func())
 	closers   []func() // in the order of opening
 }
@@ -355,7 +363,7 @@ func (a *adminServer) close() {
 	}
 }
 
-// openAdmin opens the site, the data directory, the listener, the accounts and the Publisher, and makes the servers from
+// openAdmin opens the site, the store of the daemon, the listener, the accounts and the Publisher, and makes the servers from
 // them, as the settings s say. If it fails it closes what it has opened. Run and Serve of what it returns are not called.
 func openAdmin(e env, s adminSettings, logger *log.Logger) (*adminServer, error) {
 	a := &adminServer{}
@@ -373,15 +381,15 @@ func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
 		return err
 	}
 	a.closers = append(a.closers, closeSite)
-	a.logger, a.heads, a.ticks = logger, e.stderr, e.ticks
-	st, err := openStore(s.data)
+	a.logger, a.ticks = logger, e.ticks
+	st, err := store.Open(dbDialer(s.db))
 	if err != nil {
 		return err
 	}
 	a.store = st
 	a.closers = append(a.closers, func() {
 		if err := st.Close(); err != nil {
-			logger.Printf("closing the data directory: %v", err)
+			logger.Printf("closing the store: %v", err)
 		}
 	})
 	if err := makeTempDir(s.tmp); err != nil {
@@ -481,23 +489,14 @@ func (a *adminServer) flushSuppressed(ctx context.Context) {
 }
 
 // runAdmin serves and builds until ctx is done, or one of the two fails, and then stops them in this order: the HTTP
-// server, which lets the requests in progress end; the Publisher, whose build that runs is canceled; the minutes, with
-// a last record of the failed logins that were counted, which nothing adds to now; and the export of the heads of the
-// audit logs, whose last write has all the records. It returns the first failure.
+// server, which lets the requests in progress end; the Publisher, whose build that runs is canceled; and the minutes, with
+// a last record of the failed logins that were counted, which nothing adds to now. The store is closed after it returns.
+// It returns the first failure.
 func runAdmin(ctx context.Context, a *adminServer) error {
 	// Not ctx: the builds go on while the requests end, which may ask for one.
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
 
-	// The heads are written after the records of the minute, and the last time after all that is recorded.
-	exportTicks := make(chan time.Time, 1)
-	exportCtx, cancelExport := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelExport()
-	exported := make(chan struct{})
-	go func() {
-		defer close(exported)
-		_ = audit.Export(exportCtx, a.store, a.heads, exportTicks, func(err error) { a.logger.Print(err) })
-	}()
 	minutes, stopMinutes := a.ticks()
 	endMinutes, minutesEnded := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -506,16 +505,12 @@ func runAdmin(ctx context.Context, a *adminServer) error {
 			select {
 			case <-endMinutes:
 				return
-			case at, ok := <-minutes:
+			case _, ok := <-minutes:
 				if !ok {
 					minutes = nil
 					continue
 				}
 				a.flushSuppressed(ctx)
-				select {
-				case exportTicks <- at:
-				default:
-				}
 			}
 		}
 	}()
@@ -558,7 +553,5 @@ func runAdmin(ctx context.Context, a *adminServer) error {
 	<-minutesEnded
 	stopMinutes()
 	a.flushSuppressed(ctx)
-	cancelExport()
-	<-exported
 	return failure
 }

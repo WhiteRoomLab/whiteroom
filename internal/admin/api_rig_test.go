@@ -141,8 +141,14 @@ func newAPIServerAt(t *testing.T, origin string) *apiServer {
 // newAPIServerIn is newAPIServerAt for the image cache in the directory cache.
 func newAPIServerIn(t *testing.T, origin, cache string) *apiServer {
 	t.Helper()
-	ts := newTestBase()
 	db, dir := testStore(t)
+	return newAPIServerOn(t, origin, cache, db, dir)
+}
+
+// newAPIServerOn is newAPIServerIn for the new store db, which is in the data directory dir.
+func newAPIServerOn(t *testing.T, origin, cache string, db *store.Store, dir string) *apiServer {
+	t.Helper()
+	ts := newTestBase()
 	importSample(t, db)
 	m := testManager(t, db)
 	gate := newBuildGate()

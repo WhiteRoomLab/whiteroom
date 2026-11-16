@@ -295,6 +295,7 @@ func TestAccountReset(t *testing.T) {
 // stdout, no record, and the old password still works. The standard input is not read where the command fails before it
 // asks for the password.
 func TestAccountResetErrors(t *testing.T) {
+	t.Parallel()
 	clean := accountDB(t)
 	addAccount(t, clean, "yamada", account.RoleEditor, true)
 	addAccount(t, clean, "a-long-login-name", account.RoleEditor, true)
@@ -359,17 +360,21 @@ func TestAccountResetErrors(t *testing.T) {
 	// A directory of sockets that has no daemon, because it is missing or empty: it is not made, and the line names the socket.
 	missing := filepath.Join(t.TempDir(), "missing")
 	empty := t.TempDir()
+	// Each waits for the client's 2 seconds, so they run together.
 	for _, tt := range []struct{ what, dir string }{{"a directory that is none", missing}, {"an empty directory", empty}} {
-		was := snapshot(t, tt.dir)
-		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-db", tt.dir, initLogin)
-		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: "+tt.dir+": cannot reach the daemon: ") ||
-			!strings.Contains(stderr, filepath.Join(tt.dir, "writer.sock")) || strings.Count(stderr, "\n") != 1 {
-			t.Errorf("whiteroom account reset of %s = %d, with stdout %q and stderr %q, want 1, nothing and one line that names the socket",
-				tt.what, code, stdout, stderr)
-		}
-		if s := snapshot(t, tt.dir); s != was {
-			t.Errorf("%s is now:\n%s\nwant it as it was:\n%s", tt.what, s, was)
-		}
+		t.Run(tt.what, func(t *testing.T) {
+			t.Parallel()
+			was := snapshot(t, tt.dir)
+			code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-db", tt.dir, initLogin)
+			if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: "+tt.dir+": cannot reach the daemon: ") ||
+				!strings.Contains(stderr, filepath.Join(tt.dir, "writer.sock")) || strings.Count(stderr, "\n") != 1 {
+				t.Errorf("whiteroom account reset of %s = %d, with stdout %q and stderr %q, want 1, nothing and one line that names the socket",
+					tt.what, code, stdout, stderr)
+			}
+			if s := snapshot(t, tt.dir); s != was {
+				t.Errorf("%s is now:\n%s\nwant it as it was:\n%s", tt.what, s, was)
+			}
+		})
 	}
 }
 
@@ -598,6 +603,7 @@ func TestAccountDelete(t *testing.T) {
 // TestAccountConfig runs the commands with the daemon of a config file, which -db overrides, and checks that the advice names
 // the directory of the sockets that was chosen.
 func TestAccountConfig(t *testing.T) {
+	t.Parallel()
 	// The sockets are in a short directory, beside the directory of the config file.
 	root, err := os.MkdirTemp("", "wr")
 	if err != nil {
@@ -686,36 +692,43 @@ func TestAccountConfig(t *testing.T) {
 // TestAccountBesideAdmin runs the commands on a data directory that a whiteroom serve admin has open: they fail after the
 // wait for the lock, with the advice, without reading the standard input, and the server is as it was.
 func TestAccountBesideAdmin(t *testing.T) {
+	t.Parallel()
 	s := initSample(t)
 	a := startAdmin(t, t.Context(), s.args()...)
 	cookie := a.login(t)
 	if built := a.waitBuilt(t, cookie); failedBuild(built) || built.Last.Release == "" {
 		t.Fatalf("the start build has %+v, want a release\nstderr:\n%s", built.Last, a.stderr)
 	}
-	for _, tt := range []struct {
-		args   []string
-		advice string
-	}{
-		{[]string{"account", "reset", "-db", s.db, initLogin}, "POST /api/accounts/{id}/reset"},
-		{[]string{"account", "delete", "-db", s.db, "usr_x"}, "DELETE /api/accounts/{id}"},
-	} {
-		start := time.Now()
-		code, stdout, stderr := runCmdIn(t, noRead{t}, tt.args...)
-		if elapsed := time.Since(start); elapsed > 30*time.Second {
-			t.Errorf("whiteroom %s took %v, want a few seconds", strings.Join(tt.args, " "), elapsed)
+	// Each waits for the client's 2 seconds, so they run together.
+	t.Run("the commands", func(t *testing.T) {
+		for _, tt := range []struct {
+			args   []string
+			advice string
+		}{
+			{[]string{"account", "reset", "-db", s.db, initLogin}, "POST /api/accounts/{id}/reset"},
+			{[]string{"account", "delete", "-db", s.db, "usr_x"}, "DELETE /api/accounts/{id}"},
+		} {
+			name := "whiteroom " + tt.args[0] + " " + tt.args[1]
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				start := time.Now()
+				code, stdout, stderr := runCmdIn(t, noRead{t}, tt.args...)
+				if elapsed := time.Since(start); elapsed > 30*time.Second {
+					t.Errorf("whiteroom %s took %v, want a few seconds", strings.Join(tt.args, " "), elapsed)
+				}
+				lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+				if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
+					!strings.HasSuffix(lines[0], ": another process is connected as the writer") ||
+					!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
+					t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the writer lock and the advice", name,
+						code, stdout, stderr)
+				}
+				if status, _, _, err := a.try(http.MethodGet, "/api/builds", "", "Cookie", cookie); err != nil || status != http.StatusOK {
+					t.Errorf("the server answers %d (%v) after %s, want %d", status, err, name, http.StatusOK)
+				}
+			})
 		}
-		name := "whiteroom " + tt.args[0] + " " + tt.args[1]
-		lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
-		if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
-			!strings.HasSuffix(lines[0], ": another process is connected as the writer") ||
-			!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
-			t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the writer lock and the advice", name, code,
-				stdout, stderr)
-		}
-		if status, _ := a.exchange(t, http.MethodGet, "/api/builds", "", "Cookie", cookie); status != http.StatusOK {
-			t.Errorf("the server answers %d after %s, want %d", status, name, http.StatusOK)
-		}
-	}
+	})
 	if status, cookie := a.tryLogin(t, initLogin, initPassword); status != http.StatusOK || cookie == "" {
 		t.Errorf("the login with the old password after the commands = %d, want %d", status, http.StatusOK)
 	}

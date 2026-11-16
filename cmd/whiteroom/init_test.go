@@ -880,6 +880,7 @@ func reachFail(t *testing.T, what, out string, socket string) {
 // reader's for the others, and makes nothing: no output directory, no DEST. It takes the wait of the client, so the commands
 // run at the same time.
 func TestNoDaemon(t *testing.T) {
+	t.Parallel()
 	dir, err := os.MkdirTemp("", "wr")
 	if err != nil {
 		t.Fatal(err)
@@ -1093,6 +1094,7 @@ func TestInitFailures(t *testing.T) {
 // serve admin: it fails after the wait of the client, with the sentence of the writer lock, without reading its standard input,
 // and the store is as it was.
 func TestInitBesideWriter(t *testing.T) {
+	t.Parallel()
 	db := newDB(t)
 	writer, err := store.Create(dbDialer(db.sockets))
 	if err != nil {

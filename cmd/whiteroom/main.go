@@ -40,8 +40,8 @@ const usage = `Usage:
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
-        serve the admin API of the data directory, and build the site from it
-        into the output directory
+        serve the admin API of the store of the daemon whiteroom-db, and build
+        the site from it into the output directory
 
 Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
 "whiteroom backup -h", "whiteroom doctor -h", "whiteroom account reset -h",
