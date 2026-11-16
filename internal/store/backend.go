@@ -78,7 +78,31 @@ type backendTx interface {
 	indexReady() (bool, error)  // false only for a store of the table schema 1, which has no index
 	lastNumber() (int64, error) // the largest number that an entry has had; 0 if none
 	setLastNumber(n int64) error
+
+	// The reads ahead, which change no result and no error, and which a backend may leave empty: what they could not read,
+	// the read that needs it reads and reports. preloadEntries reads what revision and revisions will be asked of the
+	// entries, preloadIndex what indexGet will be asked of the rows, and readAhead what current, document, revision and the
+	// summaries of indexGet will be asked of the documents sums, docs and the revisions revs; forget drops what they keep.
+	preloadEntries(entries []entryRevisions) error
+	preloadIndex(rows []indexRow) error
+	readAhead(sums, docs []DocumentID, revs []string) error
+	forget()
 }
+
+// entryRevisions names the revisions that entryRow reads of an entry besides its last one: those that it names.
+type entryRevisions struct {
+	entry string
+	named []string
+}
+
+// indexRow is a row that the index must have.
+type indexRow struct {
+	table      indexTable
+	key, value []byte
+}
+
+// chunkSize is how many documents or rows a read ahead covers at a time.
+const chunkSize = 256
 
 // versionErr is the error of a backend for the saved_at of the version seq, which does not parse.
 func versionErr(seq int64, err error) error {

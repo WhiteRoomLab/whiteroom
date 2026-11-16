@@ -165,21 +165,32 @@ func (c *checker) compareIndex(t *Tx) error {
 	}
 	tables := []indexTable{indexSummaries, indexReferences}
 	want := map[indexTable]map[string]struct{}{indexSummaries: {}, indexReferences: {}}
-	largest, err := t.computeIndex(func(table indexTable, key, value []byte) error {
+	largest, err := t.computeIndexRows(func(rows []indexRow) error {
 		if err := c.ctx.Err(); err != nil {
 			return err
 		}
-		want[table][string(key)] = struct{}{}
-		got, ok, err := t.b.indexGet(table, key)
-		switch {
-		case err != nil:
+		if err := t.b.preloadIndex(rows); err != nil {
 			return err
-		case !ok:
-			c.indexProblem(table, key, "the row is missing")
-		case !bytes.Equal(got, value):
-			c.indexProblem(table, key, "the row differs from the one that the documents give")
 		}
-		return c.stopError()
+		for _, r := range rows {
+			if err := c.ctx.Err(); err != nil {
+				return err
+			}
+			want[r.table][string(r.key)] = struct{}{}
+			got, ok, err := t.b.indexGet(r.table, r.key)
+			switch {
+			case err != nil:
+				return err
+			case !ok:
+				c.indexProblem(r.table, r.key, "the row is missing")
+			case !bytes.Equal(got, r.value):
+				c.indexProblem(r.table, r.key, "the row differs from the one that the documents give")
+			}
+			if err := c.stopError(); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		if c.stopped || endedBy(err) {

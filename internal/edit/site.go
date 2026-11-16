@@ -28,6 +28,7 @@ type reader interface {
 	Summary(kind content.RefKind, id string) (store.Summary, error)
 	Summaries(kind content.RefKind) ([]store.Summary, error)
 	Referrers(kind content.RefKind, id string) ([]store.Referrer, error)
+	ReadAhead(a store.Ahead) error
 }
 
 func (e *Editor) reader(tx *store.Tx) reader {

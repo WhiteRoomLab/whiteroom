@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
@@ -144,4 +146,50 @@ func (d *Daemon) Start() error {
 func (d *Daemon) Close() error {
 	err := d.Stop()
 	return errors.Join(err, os.RemoveAll(d.sockets))
+}
+
+// CountWrites returns a Dialer that dials through d and counts the Write calls of the connections that it makes, and the
+// function that returns the count so far. A request, and a window of reads that the client sends before it reads their
+// replies, are one Write call each while they fit a frame, so the count is the round trips. It passes on String and Close
+// of d.
+func CountWrites(d dbclient.Dialer) (dbclient.Dialer, func() int) {
+	c := &countDialer{Dialer: d}
+	return c, func() int { return int(c.writes.Load()) }
+}
+
+type countDialer struct {
+	dbclient.Dialer
+	writes atomic.Int64
+}
+
+func (c *countDialer) Dial(ctx context.Context, role dbwire.Role) (net.Conn, error) {
+	conn, err := c.Dialer.Dial(ctx, role)
+	if err != nil {
+		return nil, err
+	}
+	return &countConn{Conn: conn, writes: &c.writes}, nil
+}
+
+func (c *countDialer) String() string {
+	if s, ok := c.Dialer.(fmt.Stringer); ok {
+		return s.String()
+	}
+	return fmt.Sprintf("%T", c.Dialer)
+}
+
+func (c *countDialer) Close() error {
+	if cl, ok := c.Dialer.(interface{ Close() error }); ok {
+		return cl.Close()
+	}
+	return nil
+}
+
+type countConn struct {
+	net.Conn
+	writes *atomic.Int64
+}
+
+func (c *countConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return c.Conn.Write(p)
 }

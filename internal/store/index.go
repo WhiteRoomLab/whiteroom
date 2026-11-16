@@ -717,43 +717,99 @@ func (t *Tx) LastNumber() (int, error) {
 // computeIndex calls emit with every row that the index must have, in the order of the documents, from the current
 // documents and the revisions alone, and returns the largest number of the entries.
 func (t *Tx) computeIndex(emit func(table indexTable, key, value []byte) error) (int64, error) {
+	return t.computeIndexRows(func(rows []indexRow) error {
+		for _, r := range rows {
+			if err := emit(r.table, r.key, r.value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// computeIndexRows is computeIndex for a caller that takes the rows of chunkSize documents at a time, in the same order:
+// emit is called with the rows of each chunk, and with those of the documents before the one that fails before the error of
+// the chunk is returned.
+func (t *Tx) computeIndexRows(emit func(rows []indexRow) error) (int64, error) {
 	var largest int64
 	for _, kind := range indexKinds {
 		docs, err := t.b.documents(kind)
 		if err != nil {
 			return 0, err
 		}
-		for _, d := range docs {
-			if err := verify(d.Hash, d.Data); err != nil {
-				return 0, err
-			}
-			// A document that does not decode has no summary.
-			doc, err := checkData(kind, d.ID, d.Data)
-			if err != nil {
-				continue
-			}
-			row := docRow(d.ID, doc, d.Data)
-			if e, ok := doc.(*content.Entry); ok {
-				largest = max(largest, int64(e.Number))
-				if err := t.entryRow(&row, d.ID, e, summaryRow{}, false); err != nil {
-					return 0, err
+		for len(docs) > 0 {
+			chunk := docs[:min(chunkSize, len(docs))]
+			docs = docs[len(chunk):]
+			rows, err := t.chunkRows(kind, chunk, &largest)
+			if len(rows) > 0 {
+				if eerr := emit(rows); eerr != nil {
+					return 0, eerr
 				}
 			}
-			value, err := row.marshal()
 			if err != nil {
 				return 0, err
-			}
-			if err := emit(indexSummaries, docKey(kind, d.ID), value); err != nil {
-				return 0, err
-			}
-			for _, key := range row.refKeys(kind, d.ID) {
-				if err := emit(indexReferences, key, nil); err != nil {
-					return 0, err
-				}
 			}
 		}
 	}
 	return largest, nil
+}
+
+// chunkRows returns the rows of the index of docs, current documents of kind, in their order, and raises largest to the
+// largest number of the entries among them. With an error, it also returns the rows of the documents before it.
+func (t *Tx) chunkRows(kind content.RefKind, docs []Document, largest *int64) ([]indexRow, error) {
+	decoded, valid := make([]any, len(docs)), make([]bool, len(docs))
+	var verr error
+	for i, d := range docs {
+		if verr = verify(d.Hash, d.Data); verr != nil {
+			docs = docs[:i]
+			break
+		}
+		// A document that does not decode has no summary.
+		if doc, err := checkData(kind, d.ID, d.Data); err == nil {
+			decoded[i], valid[i] = doc, true
+		}
+	}
+	if kind == content.RefEntry {
+		var entries []entryRevisions
+		for i, d := range docs {
+			if e, ok := decoded[i].(*content.Entry); ok {
+				er := entryRevisions{entry: d.ID}
+				for _, id := range []string{e.PublishedRevision, e.ScheduledRevision} {
+					if id != "" {
+						er.named = append(er.named, id)
+					}
+				}
+				entries = append(entries, er)
+			}
+		}
+		defer t.b.forget()
+		if err := t.b.preloadEntries(entries); err != nil {
+			return nil, err
+		}
+	}
+	var rows []indexRow
+	for i, d := range docs {
+		if !valid[i] {
+			continue
+		}
+		doc := decoded[i]
+		row := docRow(d.ID, doc, d.Data)
+		if e, ok := doc.(*content.Entry); ok {
+			*largest = max(*largest, int64(e.Number))
+			if err := t.entryRow(&row, d.ID, e, summaryRow{}, false); err != nil {
+				return rows, err
+			}
+		}
+		value, err := row.marshal()
+		if err != nil {
+			return rows, err
+		}
+		rows = append(rows, indexRow{indexSummaries, docKey(kind, d.ID), value})
+		for _, key := range row.refKeys(kind, d.ID) {
+			rows = append(rows, indexRow{indexReferences, key, nil})
+		}
+	}
+	return rows, verr
 }
 
 // RebuildIndex makes the index again from the current documents and the revisions: the rows of summaries and
@@ -782,14 +838,32 @@ func (t *Tx) RebuildIndex() error {
 			want[table] = map[string]struct{}{}
 		}
 	}
-	largest, err := t.computeIndex(func(table indexTable, key, value []byte) error {
-		if keys, ok := want[table]; ok {
-			keys[string(key)] = struct{}{}
-			if old, found, err := t.b.indexGet(table, key); err != nil || found && bytes.Equal(old, value) {
+	largest, err := t.computeIndexRows(func(rows []indexRow) error {
+		var have []indexRow
+		for _, r := range rows {
+			if _, ok := want[r.table]; ok {
+				have = append(have, r)
+			}
+		}
+		if err := t.b.preloadIndex(have); err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if keys, ok := want[r.table]; ok {
+				keys[string(r.key)] = struct{}{}
+				old, found, err := t.b.indexGet(r.table, r.key)
+				if err != nil {
+					return err
+				}
+				if found && bytes.Equal(old, r.value) {
+					continue
+				}
+			}
+			if err := t.b.indexPut(r.table, r.key, r.value); err != nil {
 				return err
 			}
 		}
-		return t.b.indexPut(table, key, value)
+		return nil
 	})
 	if err != nil {
 		return err

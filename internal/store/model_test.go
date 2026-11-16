@@ -420,3 +420,11 @@ func (t *modelTx) setLastNumber(n int64) error {
 	t.st.number = n
 	return nil
 }
+
+func (t *modelTx) preloadEntries([]entryRevisions) error { return nil }
+
+func (t *modelTx) preloadIndex([]indexRow) error { return nil }
+
+func (t *modelTx) readAhead(_, _ []DocumentID, _ []string) error { return nil }
+
+func (t *modelTx) forget() {}

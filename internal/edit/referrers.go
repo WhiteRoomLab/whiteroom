@@ -77,7 +77,19 @@ type checkEnv struct {
 type unit struct {
 	draft bool
 	check func(env checkEnv) (content.Errors, error)
+	reads []string // the revisions that check reads, which revalidate reads ahead
 }
+
+// reading returns u with the revision id, if it has one, among those that its check reads.
+func (u unit) reading(id string) unit {
+	if id != "" {
+		u.reads = append(u.reads, id)
+	}
+	return u
+}
+
+// aheadChunk is how many referrers, or units, are read ahead at a time.
+const aheadChunk = 256
 
 // locatedIn returns the problems in err, located in f and sorted.
 func locatedIn(err error, f content.SiteFile) content.Errors {
@@ -275,7 +287,20 @@ func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 		return nil, err
 	}
 	var units []unit
-	for _, ref := range refs {
+	for i, ref := range refs {
+		if i%aheadChunk == 0 {
+			var a store.Ahead
+			for _, next := range refs[i:min(i+aheadChunk, len(refs))] {
+				doc := store.DocumentID{Kind: next.kind, ID: next.id}
+				if next.kind == content.RefEntry {
+					a.Summaries = append(a.Summaries, doc)
+				}
+				a.Documents = append(a.Documents, doc)
+			}
+			if err := r.rd.ReadAhead(a); err != nil {
+				return nil, err
+			}
+		}
 		switch {
 		case ref.kind == store.SettingsKind:
 			d, err := r.tx.Document(store.SettingsKind, "")
@@ -305,13 +330,13 @@ func (r *run) referrerUnits(kind content.RefKind, id string) ([]unit, error) {
 				return nil, err
 			}
 			if published {
-				units = append(units, r.publishedUnit(ref.id, d.Data))
+				units = append(units, r.publishedUnit(ref.id, d.Data).reading(sum.Entry.PublishedRevision))
 			}
 			if scheduled {
-				units = append(units, r.scheduledUnit(ref.id, d.Data))
+				units = append(units, r.scheduledUnit(ref.id, d.Data).reading(sum.Entry.ScheduledRevision))
 			}
 			if latest {
-				units = append(units, r.latestUnit(ref.id, d.Data, sum.Latest))
+				units = append(units, r.latestUnit(ref.id, d.Data, sum.Latest).reading(sum.Latest))
 			}
 		}
 	}
@@ -373,9 +398,17 @@ func (r *run) allUnits() ([]unit, error) {
 		if sum.Entry == nil || data[sum.ID] == nil {
 			continue
 		}
-		units = append(units, r.entryUnit(sum.Entry.Status, sum.ID, data[sum.ID]))
+		u := r.entryUnit(sum.Entry.Status, sum.ID, data[sum.ID])
+		switch sum.Entry.Status {
+		case content.StatusPublished:
+			u = u.reading(sum.Entry.PublishedRevision)
+		case content.StatusScheduled:
+			u = u.reading(sum.Entry.ScheduledRevision)
+		case content.StatusDraft, content.StatusArchived:
+		}
+		units = append(units, u)
 		if sum.Latest != "" && !publishesLatest(sum) {
-			units = append(units, r.latestUnit(sum.ID, data[sum.ID], sum.Latest))
+			units = append(units, r.latestUnit(sum.ID, data[sum.ID], sum.Latest).reading(sum.Latest))
 		}
 	}
 	return units, nil
@@ -386,7 +419,16 @@ func (r *run) allUnits() ([]unit, error) {
 // before the change has too, by file, JSON Pointer and message, are not new; if that state is not known, every problem is.
 // A store error of a read or of a lookup is the error.
 func (r *run) revalidate(units []unit, after, before checkEnv) (errs, warnings content.Errors, err error) {
-	for _, u := range units {
+	for i, u := range units {
+		if i%aheadChunk == 0 {
+			var a store.Ahead
+			for _, next := range units[i:min(i+aheadChunk, len(units))] {
+				a.Revisions = append(a.Revisions, next.reads...)
+			}
+			if err := r.rd.ReadAhead(a); err != nil {
+				return nil, nil, err
+			}
+		}
 		now, err := u.check(after)
 		switch {
 		case r.err != nil:

@@ -509,6 +509,7 @@ var diffOps = []struct {
 	{9, (*diffGen).object},
 	{6, (*diffGen).getRevision},
 	{6, (*diffGen).revisions},
+	{6, (*diffGen).readAhead},
 	{5, (*diffGen).putOperation},
 	{4, (*diffGen).operation},
 	{4, (*diffGen).putAccount},
@@ -651,6 +652,29 @@ func (g *diffGen) revisions() diffOp {
 	return diffOp{
 		desc: fmt.Sprintf("Revisions(%q)", entry),
 		run:  func(tx *Tx) (any, error) { return tx.Revisions(entry) },
+	}
+}
+
+// readAhead reads ahead what 0 to 4 calls of each of Summary, Document and Revision will read, of names that the program
+// has made, has not made, or cannot make. It changes no result, which the comparison with the model, which does nothing for
+// it, shows.
+func (g *diffGen) readAhead() diffOp {
+	var a Ahead
+	for range g.rng.IntN(5) {
+		d := g.doc()
+		a.Summaries = append(a.Summaries, DocumentID{d.k.kind, d.id})
+	}
+	for range g.rng.IntN(5) {
+		d := g.doc()
+		a.Documents = append(a.Documents, DocumentID{d.k.kind, d.id})
+	}
+	for range g.rng.IntN(5) {
+		a.Revisions = append(a.Revisions, g.revision())
+	}
+	return diffOp{
+		desc: fmt.Sprintf("ReadAhead(%d summaries, %d documents, %d revisions)", len(a.Summaries), len(a.Documents),
+			len(a.Revisions)),
+		run: func(tx *Tx) (any, error) { return nil, tx.ReadAhead(a) },
 	}
 }
 
@@ -803,8 +827,10 @@ func sessionResult(tx *Tx, key string) (any, error) {
 
 // diffReads are the reads of a dump of a store: Documents and Summaries of each kind, Document, History, Summary and
 // Referrers of each document, Revision of each revision, Revisions of each entry, Object of each hash, Operation of
-// each operation, Account of each account, Accounts, Session of each session, Sessions, and LastNumber.
+// each operation, Account of each account, Accounts, Session of each session, Sessions, and LastNumber; with ahead, after a
+// ReadAhead of those that Document, Summary and Revision read.
 type diffReads struct {
+	ahead      bool // the reads begin with a ReadAhead of the documents and the revisions that follow
 	kinds      []content.RefKind
 	docs       []diffDoc
 	revs       []string
@@ -820,6 +846,7 @@ type diffReads struct {
 // the data.
 func (g *diffGen) reads(invalid bool) diffReads {
 	r := diffReads{
+		ahead:      g.chance(0.5),
 		docs:       diffValidDocs,
 		revs:       diffRevisions,
 		entries:    diffKinds[0].ids,

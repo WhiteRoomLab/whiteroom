@@ -313,23 +313,182 @@ func (t *logTx) document(kind content.RefKind, id string) (Document, bool, error
 
 func (t *logTx) documents(kind content.RefKind) ([]Document, error) {
 	prefix := docKey(kind, "")
-	var docs []Document
+	type current struct {
+		key []byte
+		v   Version
+	}
+	var rows []current
 	var err error
 	if serr := t.tx.Scan(tableDocuments, prefix, func(key, value []byte) bool {
 		var v Version
 		if v, err = decodeCurrent(key, value, kind, string(key[len(prefix):])); err != nil {
 			return false
 		}
-		var data []byte
-		if data, err = t.data(tableDocuments, key, v.Hash); err != nil {
-			return false
-		}
-		docs = append(docs, Document{Version: v, Data: data})
+		rows = append(rows, current{key, v})
 		return true
 	}); err == nil {
 		err = serr
 	}
+	// The data of the rows that the scan gave, the objects of a chunk with one window. The error is the first problem in
+	// the order of the IDs, as when each row was read with its data: the error of the scan comes after the rows.
+	var docs []Document
+	for len(rows) > 0 {
+		chunk := rows[:min(chunkSize, len(rows))]
+		rows = rows[len(chunk):]
+		hashes := make([][sha256.Size]byte, 0, len(chunk))
+		for _, r := range chunk {
+			if d, derr := digest(r.v.Hash); derr == nil {
+				hashes = append(hashes, d)
+			}
+		}
+		// A hint: an object that it could not read is read, and its failure reported, by data.
+		_ = t.tx.PrefetchObjects(hashes)
+		for _, r := range chunk {
+			data, derr := t.data(tableDocuments, r.key, r.v.Hash)
+			if derr != nil {
+				t.tx.DropPrefetched()
+				return docs, derr
+			}
+			docs = append(docs, Document{Version: r.v, Data: data})
+		}
+	}
 	return docs, err
+}
+
+// getMany reads the rows of keys in table into the transaction, chunkSize keys at a time, so that a call holds the
+// requests of one window at most.
+func (t *logTx) getMany(table uint32, keys [][]byte) error {
+	for len(keys) > 0 {
+		n := min(chunkSize, len(keys))
+		if err := t.tx.GetMany(table, keys[:n]); err != nil {
+			return err
+		}
+		keys = keys[n:]
+	}
+	return nil
+}
+
+// prefetchObjects reads the objects with the hashes into the transaction, chunkSize at a time, as getMany does.
+func (t *logTx) prefetchObjects(hashes [][sha256.Size]byte) error {
+	for len(hashes) > 0 {
+		n := min(chunkSize, len(hashes))
+		if err := t.tx.PrefetchObjects(hashes[:n]); err != nil {
+			return err
+		}
+		hashes = hashes[n:]
+	}
+	return nil
+}
+
+func (t *logTx) preloadEntries(entries []entryRevisions) error {
+	var keys, prefixes [][]byte
+	for _, e := range entries {
+		for _, id := range e.named {
+			keys = append(keys, []byte(id))
+		}
+		prefixes = append(prefixes, append([]byte(e.entry), 0))
+	}
+	if err := t.getMany(tableRevisions, keys); err != nil {
+		return err
+	}
+	if err := t.tx.PrefetchScans(tableEntryRevisions, prefixes); err != nil {
+		return err
+	}
+	// The rows of the revisions that the pages name, and then the data of those that entryRow reads: what cannot be read
+	// here is left to the read that needs it.
+	last := make([]string, len(entries))
+	keys = keys[:0]
+	for i, p := range prefixes {
+		_ = t.tx.Scan(tableEntryRevisions, p, func(_, id []byte) bool {
+			keys = append(keys, id)
+			last[i] = string(id)
+			return true
+		})
+	}
+	if err := t.getMany(tableRevisions, keys); err != nil {
+		return err
+	}
+	var hashes [][sha256.Size]byte
+	for i, e := range entries {
+		for _, id := range append(e.named[:len(e.named):len(e.named)], last[i]) {
+			if id == "" {
+				continue
+			}
+			if r, ok, err := t.revisionInfo(id); err == nil && ok {
+				if d, err := digest(r.Hash); err == nil {
+					hashes = append(hashes, d)
+				}
+			}
+		}
+	}
+	return t.prefetchObjects(hashes)
+}
+
+func (t *logTx) preloadIndex(rows []indexRow) error {
+	var keys [numIndexTables][][]byte
+	for _, r := range rows {
+		keys[r.table] = append(keys[r.table], r.key)
+	}
+	for table, k := range keys {
+		if err := t.getMany(indexTableIDs[table], k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *logTx) forget() {
+	t.tx.DropPrefetched()
+}
+
+func (t *logTx) readAhead(sums, docs []DocumentID, revs []string) error {
+	t.tx.DropPrefetched()
+	keysOf := func(ids []DocumentID) [][]byte {
+		keys := make([][]byte, len(ids))
+		for i, id := range ids {
+			keys[i] = docKey(id.Kind, id.ID)
+		}
+		return keys
+	}
+	if len(sums) > 0 {
+		// Summary reads the schema before the row.
+		if err := t.getMany(tableMeta, [][]byte{schemaKey}); err != nil {
+			return err
+		}
+	}
+	if err := t.getMany(tableSummaries, keysOf(sums)); err != nil {
+		return err
+	}
+	docKeys := keysOf(docs)
+	if err := t.getMany(tableDocuments, docKeys); err != nil {
+		return err
+	}
+	revKeys := make([][]byte, len(revs))
+	for i, id := range revs {
+		revKeys[i] = []byte(id)
+	}
+	if err := t.getMany(tableRevisions, revKeys); err != nil {
+		return err
+	}
+	// The data of the versions and the revisions that are there and can be read; the others are left to their reads.
+	var hashes [][sha256.Size]byte
+	for i, id := range docs {
+		if v, ok, err := t.tx.Get(tableDocuments, docKeys[i]); err == nil && ok {
+			if ver, err := decodeCurrent(docKeys[i], v, id.Kind, id.ID); err == nil {
+				if d, err := digest(ver.Hash); err == nil {
+					hashes = append(hashes, d)
+				}
+			}
+		}
+	}
+	for _, id := range revs {
+		if r, ok, err := t.revisionInfo(id); err == nil && ok {
+			if d, err := digest(r.Hash); err == nil {
+				hashes = append(hashes, d)
+			}
+		}
+	}
+	return t.prefetchObjects(hashes)
 }
 
 func (t *logTx) history(kind content.RefKind, id string) ([]Version, error) {
@@ -421,24 +580,31 @@ func (t *logTx) revisionInfo(id string) (Revision, bool, error) {
 }
 
 func (t *logTx) revisions(entry string) ([]Revision, error) {
+	type named struct{ key, id []byte }
+	var rows []named
+	serr := t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
+		rows = append(rows, named{key, id})
+		return true
+	})
+	ids := make([][]byte, len(rows))
+	for i, r := range rows {
+		ids[i] = r.id
+	}
+	// A hint: a row that it could not read is read, and its failure reported, by revisionInfo.
+	_ = t.getMany(tableRevisions, ids)
 	var revs []Revision
-	var err error
-	if serr := t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
-		var r Revision
-		var ok bool
-		if r, ok, err = t.revisionInfo(string(id)); err == nil && !ok {
-			err = fmt.Errorf("%s %q: the revision %s is missing", tableNames[tableEntryRevisions], key, id)
+	for _, row := range rows {
+		r, ok, err := t.revisionInfo(string(row.id))
+		if err == nil && !ok {
+			err = fmt.Errorf("%s %q: the revision %s is missing", tableNames[tableEntryRevisions], row.key, row.id)
 		}
 		if err != nil {
-			return false
+			return nil, err
 		}
 		revs = append(revs, r)
-		return true
-	}); err == nil {
-		err = serr
 	}
-	if err != nil {
-		return nil, err
+	if serr != nil {
+		return nil, serr
 	}
 	return revs, nil
 }

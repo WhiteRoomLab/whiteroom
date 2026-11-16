@@ -323,6 +323,14 @@ func (d *diffStore) dump(t *testing.T, s *Store, r diffReads) diffLines {
 }
 
 func (r diffReads) run(tx *Tx, line func(desc string, v any, err error)) {
+	if r.ahead {
+		a := Ahead{Revisions: r.revs}
+		for _, d := range r.docs {
+			a.Summaries = append(a.Summaries, DocumentID{d.k.kind, d.id})
+			a.Documents = append(a.Documents, DocumentID{d.k.kind, d.id})
+		}
+		line("ReadAhead(everything that is read)", nil, tx.ReadAhead(a))
+	}
 	for _, kind := range r.kinds {
 		docs, err := tx.Documents(kind)
 		line(fmt.Sprintf("Documents(%q)", kind), docs, err)
@@ -381,6 +389,7 @@ type diffCounts struct {
 	reads                                      int
 	reopens, replays, crashes, afterCheckpoint int
 	readers                                    int
+	aheads                                     int // the calls of ReadAhead, in the Updates and at the start of the reads
 }
 
 // diffRun runs the same steps on the model and on the log backend in each placement, and checks that each log store has
@@ -439,6 +448,11 @@ func (r *diffRun) stores() []*diffStore {
 func (r *diffRun) compare(step string, f func(d *diffStore) diffLines) diffLines {
 	r.t.Helper()
 	want := f(r.ref)
+	for _, l := range want.lines {
+		if strings.HasPrefix(l, "ReadAhead(") {
+			r.counts.aheads++
+		}
+	}
 	var problems []string
 	external := func(d *diffStore, l diffLines) {
 		if l.external != nil {
@@ -652,11 +666,15 @@ func (r *diffRun) finish() {
 			st.InlineObjects, st.FileObjects))
 	}
 	c := r.counts
+	if c.aheads == 0 {
+		r.t.Errorf("%s: no call of ReadAhead", r.about)
+	}
 	r.t.Logf("%s: %d updates (%d committed, %d aborted, %d failed), %d calls in them (%d failed), %d reads; "+
 		"%d versions, %d revisions; opened again %d times, %d without the checkpoints, %d times after crashes (%d "+
-		"replaying records after a checkpoint), read %d times in readers; %s", r.about, c.updates, c.commits, c.aborted,
-		c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.logs[0].s, "versions"), count(r.t, r.logs[0].s, "revisions"),
-		c.reopens, c.replays, c.crashes, c.afterCheckpoint, c.readers, strings.Join(stats, ", "))
+		"replaying records after a checkpoint), read %d times in readers; %d calls of ReadAhead; %s", r.about, c.updates,
+		c.commits, c.aborted, c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.logs[0].s, "versions"),
+		count(r.t, r.logs[0].s, "revisions"), c.reopens, c.replays, c.crashes, c.afterCheckpoint, c.readers, c.aheads,
+		strings.Join(stats, ", "))
 }
 
 // The sizes of the segments and the checkpoints of the log stores of a seed (0: the defaults, 64 MiB), so that some
@@ -721,6 +739,7 @@ func TestDifferential(t *testing.T) {
 func TestDifferentialSampleSite(t *testing.T) {
 	updates, reads := sampleSiteSteps(t)
 	r := newDiffRun(t, func(*logdb.Options) {}, false)
+	reads.ahead = true
 	r.reads = func(bool) diffReads { return reads }
 	r.about = "the sample site"
 	for i, u := range updates {

@@ -552,6 +552,12 @@ func calls(tx *Tx) map[string]func() error {
 			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
 			return err
 		},
+		"ReadAhead": func() error {
+			return tx.ReadAhead(Ahead{
+				Summaries: []DocumentID{{content.RefEntry, entryID}}, Documents: []DocumentID{{content.RefEntry, entryID}},
+				Revisions: []string{revisionID},
+			})
+		},
 		"Summary":         func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
 		"Summaries":       func() error { _, err := tx.Summaries(content.RefEntry); return err },
 		"Referrers":       func() error { _, err := tx.Referrers(content.RefEntry, entryID); return err },
