@@ -94,7 +94,7 @@ func TestHelperProcess(t *testing.T) {
 		if sockets == "" {
 			t.Fatal("the mode reader needs the sockets of a daemon")
 		}
-		s, err = openOn(dbclient.SocketDir(sockets), dbwire.RoleReader, time.Now, dbclient.Options{DialWait: wait})
+		s, err = openOn(context.Background(), dbclient.SocketDir(sockets), dbwire.RoleReader, time.Now, dbclient.Options{DialWait: wait})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +102,7 @@ func TestHelperProcess(t *testing.T) {
 		readerLoop(t, s)
 		return
 	case sockets != "":
-		s, err = openOn(dbclient.SocketDir(sockets), dbwire.RoleWriter, time.Now, dbclient.Options{DialWait: wait})
+		s, err = openOn(context.Background(), dbclient.SocketDir(sockets), dbwire.RoleWriter, time.Now, dbclient.Options{DialWait: wait})
 	default:
 		s, err = tb.open(dir)
 	}
@@ -360,7 +360,7 @@ func startDaemonHelper(t *testing.T, tb testBackend, dir, point string) (*helper
 // which tries to connect for wait (see dbclient.Options). The end of the test closes it.
 func clientOf(t *testing.T, sockets string, role dbwire.Role, wait time.Duration) *Store {
 	t.Helper()
-	s, err := openOn(dbclient.SocketDir(sockets), role, time.Now, dbclient.Options{DialWait: wait})
+	s, err := openOn(context.Background(), dbclient.SocketDir(sockets), role, time.Now, dbclient.Options{DialWait: wait})
 	if err != nil {
 		t.Fatalf("a client of %s: %v", sockets, err)
 	}
@@ -640,7 +640,7 @@ func TestCrashOriginal(t *testing.T) {
 		// after that at original:renamed.
 		synced := func(t *testing.T, dir string, s *Store) {
 			t.Helper()
-			f, err := s.OpenOriginal(hash)
+			f, err := s.OpenOriginal(context.Background(), hash)
 			if f != nil {
 				_ = f.Close()
 			}
@@ -734,7 +734,7 @@ func TestCrashOriginal(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = r.Close() })
-			if f, err := r.OpenOriginal(hash); !errors.Is(err, fs.ErrNotExist) {
+			if f, err := r.OpenOriginal(context.Background(), hash); !errors.Is(err, fs.ErrNotExist) {
 				if f != nil {
 					_ = f.Close()
 				}

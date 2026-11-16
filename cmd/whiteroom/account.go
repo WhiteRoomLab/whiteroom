@@ -148,8 +148,8 @@ func parseAccountArgs(args []string, e env, name, usage, what, argument string) 
 }
 
 // openAccounts opens the store of the daemon whose sockets are in the directory db as its writer, with its accounts.
-func openAccounts(e env, db string) (*store.Store, *account.Manager, error) {
-	s, err := store.Open(dbDialer(db))
+func openAccounts(ctx context.Context, e env, db string) (*store.Store, *account.Manager, error) {
+	s, err := store.Open(ctx, dbDialer(db))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -176,7 +176,7 @@ func accountReset(ctx context.Context, args []string, e env) int {
 		return code
 	}
 	p := errorPrinter{w: e.stderr, command: t.name}
-	s, m, err := openAccounts(e, t.db)
+	s, m, err := openAccounts(ctx, e, t.db)
 	if err != nil {
 		p.printError(ctx, err)
 		adviseOnLock(e.stderr, t.name, err, "POST /api/accounts/{id}/reset")
@@ -278,7 +278,7 @@ func accountDelete(ctx context.Context, args []string, e env) int {
 		return code
 	}
 	p := errorPrinter{w: e.stderr, command: t.name}
-	s, m, err := openAccounts(e, t.db)
+	s, m, err := openAccounts(ctx, e, t.db)
 	if err != nil {
 		p.printError(ctx, err)
 		adviseOnLock(e.stderr, t.name, err, "DELETE /api/accounts/{id}, for an account whose row can be read")

@@ -718,7 +718,7 @@ func observe(t *testing.T, s *Store) (matrixState, error) {
 // hasOriginal reports whether s has the original data, whole: an original that is there with other data, or that
 // cannot be read, is an error.
 func hasOriginal(s *Store, data []byte) (bool, error) {
-	f, err := s.OpenOriginal(sum(data))
+	f, err := s.OpenOriginal(context.Background(), sum(data))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}

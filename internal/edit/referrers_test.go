@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1053,7 +1054,7 @@ func newCountedSite(t *testing.T, posts int) (*Editor, *store.Store, *storetest.
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	dialer, count := storetest.CountWrites(d.Dialer())
-	s, err := store.Create(dialer)
+	s, err := store.Create(context.Background(), dialer)
 	if err != nil {
 		t.Fatal(err)
 	}

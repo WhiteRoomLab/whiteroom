@@ -111,8 +111,8 @@ var schemaKey = []byte(metaSchema)
 
 // createLog puts the schema in meta, with the first record of the activity log, store.create, at the time of now, in
 // one commit of the store that c is connected to, which must have no commit. name is that of the daemon in errors.
-func createLog(c *dbclient.Client, name string, now func() time.Time) error {
-	return c.Update(context.Background(), func(tx *dbclient.Tx) error {
+func createLog(ctx context.Context, c *dbclient.Client, name string, now func() time.Time) error {
+	return c.Update(ctx, func(tx *dbclient.Tx) error {
 		_, ok, err := tx.Get(tableMeta, schemaKey)
 		if err != nil {
 			return err
@@ -162,8 +162,7 @@ func checkSchema(ctx context.Context, c *dbclient.Client, name string) error {
 // store.upgrade. One of the schema 2 to 6 has the index of the schema 7 already: it gets only the schema 7, the record
 // and the rows of heads, and no document, revision or object is read, so a damaged one does not stop Open, and only the
 // reads that use it fail. name is that of the daemon in errors, and the record has the time of now.
-func upgradeLog(c *dbclient.Client, name string, now func() time.Time) error {
-	ctx := context.Background()
+func upgradeLog(ctx context.Context, c *dbclient.Client, name string, now func() time.Time) error {
 	var version uint64
 	upgrade := false
 	if err := c.View(ctx, func(tx *dbclient.Tx) error {
@@ -209,8 +208,7 @@ func upgradeLog(c *dbclient.Client, name string, now func() time.Time) error {
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name,
-			logSchemaVersion, err)
+		return fmt.Errorf("%s: cannot upgrade the table schema to %d: %w", name, logSchemaVersion, err)
 	}
 	return nil
 }

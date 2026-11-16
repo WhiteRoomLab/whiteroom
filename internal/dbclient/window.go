@@ -141,6 +141,9 @@ func (cn *conn) exchangeWindows(reads []windowRead, take func(*windowRead) bool)
 				err = r.read(&dbwire.Dec{R: cn.rd}, cn.hello.MaxKey)
 			}
 			if re, ok := errors.AsType[*dbwire.RemoteError](err); ok {
+				if re.Code == dbwire.CodeBusy {
+					return &refusedError{cn.c.name, re} // the daemon is closing
+				}
 				r.err = re
 			} else if err != nil {
 				return err

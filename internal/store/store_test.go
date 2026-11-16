@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -153,7 +154,7 @@ func newDaemonDir(t *testing.T, o options) string {
 // createOnDir makes the store of the data directory dir, which a daemon has made, as Create does.
 func createOnDir(dir string, o options) (*Store, error) {
 	return start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
-		return createOn(d, o.clock(), o.client())
+		return createOn(context.Background(), d, o.clock(), o.client())
 	})
 }
 
@@ -224,7 +225,7 @@ func TestCreate(t *testing.T) {
 		// Create does not make a store of one that has commits, and writes nothing.
 		for range 2 {
 			s, err = start(dir, tb.options(), false, func(d dbclient.Dialer) (*Store, error) {
-				return openOn(d, dbwire.RoleReader, time.Now, dbclient.Options{})
+				return openOn(context.Background(), d, dbwire.RoleReader, time.Now, dbclient.Options{})
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -241,7 +242,7 @@ func TestCreate(t *testing.T) {
 				t.Errorf("Create() of a store with commits = %v, want %q", err, want)
 			}
 			s, err = start(dir, tb.options(), false, func(d dbclient.Dialer) (*Store, error) {
-				return openOn(d, dbwire.RoleReader, time.Now, dbclient.Options{})
+				return openOn(context.Background(), d, dbwire.RoleReader, time.Now, dbclient.Options{})
 			})
 			if err != nil {
 				t.Fatal(err)

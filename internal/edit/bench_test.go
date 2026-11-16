@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -185,7 +186,7 @@ func benchSite(t *testing.T, posts int, bl *benchLog) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	s, err := store.Create(d.Dialer())
+	s, err := store.Create(context.Background(), d.Dialer())
 	if err != nil {
 		t.Fatal(err)
 	}

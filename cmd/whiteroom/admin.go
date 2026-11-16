@@ -316,7 +316,7 @@ func serveAdmin(ctx context.Context, args []string, e env) int {
 
 	logger := log.New(e.stderr, "", log.LstdFlags)
 	p := errorPrinter{w: e.stderr, command: flags.Name(), site: s.site, theme: s.theme}
-	a, err := openAdmin(e, s, logger)
+	a, err := openAdmin(ctx, e, s, logger)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
@@ -365,9 +365,9 @@ func (a *adminServer) close() {
 
 // openAdmin opens the site, the store of the daemon, the listener, the accounts and the Publisher, and makes the servers from
 // them, as the settings s say. If it fails it closes what it has opened. Run and Serve of what it returns are not called.
-func openAdmin(e env, s adminSettings, logger *log.Logger) (*adminServer, error) {
+func openAdmin(ctx context.Context, e env, s adminSettings, logger *log.Logger) (*adminServer, error) {
 	a := &adminServer{}
-	if err := a.open(e, s, logger); err != nil {
+	if err := a.open(ctx, e, s, logger); err != nil {
 		a.close()
 		return nil, err
 	}
@@ -375,14 +375,14 @@ func openAdmin(e env, s adminSettings, logger *log.Logger) (*adminServer, error)
 }
 
 // open does what openAdmin says, and leaves what it has opened in closers.
-func (a *adminServer) open(e env, s adminSettings, logger *log.Logger) error {
+func (a *adminServer) open(ctx context.Context, e env, s adminSettings, logger *log.Logger) error {
 	schema, themeFS, closeSite, err := openAdminSite(s.site, s.theme)
 	if err != nil {
 		return err
 	}
 	a.closers = append(a.closers, closeSite)
 	a.logger, a.ticks = logger, e.ticks
-	st, err := store.Open(dbDialer(s.db))
+	st, err := store.Open(ctx, dbDialer(s.db))
 	if err != nil {
 		return err
 	}

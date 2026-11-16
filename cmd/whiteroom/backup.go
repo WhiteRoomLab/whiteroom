@@ -137,7 +137,7 @@ func checkBackupDest(dest string) (missing bool, err error) {
 }
 
 // cleanupNewDataDir removes what whiteroom backup has made in the directory dir, the directory that the kernel takes the
-// path dir for: logdb/ and files/, and dir itself if it was missing. It leaves the parents that making dir has made.
+// path dir for: logdb/ and files/, and dir itself if it was missing. Its parent is left: the command makes none.
 func cleanupNewDataDir(dir string, missing bool) error {
 	var errs []error
 	// Not filepath.Join(dir, ...): it drops a ".." after a symbolic link, and names another directory than the one that was made.

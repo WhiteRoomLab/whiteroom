@@ -2222,7 +2222,7 @@ func TestIndexUpgrade(t *testing.T) {
 			}
 			dropAudit(t, dir)
 			// The error says where the upgrade failed, and wraps the cause.
-			upgrade := fmt.Sprintf("%s: cannot upgrade the table schema to %d, so the store is unchanged: ", dir,
+			upgrade := fmt.Sprintf("%s: cannot upgrade the table schema to %d: ", dir,
 				logSchemaVersion)
 			var first string
 			for i := range 2 {
@@ -2311,7 +2311,7 @@ func TestIndexUpgrade(t *testing.T) {
 					if u := errors.Unwrap(err); u != nil {
 						cause = u.Error()
 					}
-					upgrade := fmt.Sprintf("data: cannot upgrade the table schema to %d, so the store is unchanged: ",
+					upgrade := fmt.Sprintf("data: cannot upgrade the table schema to %d: ",
 						logSchemaVersion)
 					// The daemon's text of a failed write, which names the file and the error of the file system.
 					if err == nil || err.Error() != upgrade+cause || !strings.HasSuffix(cause, ": "+syscall.EIO.Error()) {

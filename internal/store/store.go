@@ -46,18 +46,19 @@ type Store struct {
 // Create makes the store in the data directory that the daemon of d serves, which must be new: one that whiteroom-db init
 // has just made, without a commit. It connects as the writer, and commits the schema and the record store.create in one
 // commit. For a store that has commits, Create fails and writes nothing. While the store is open, no other process
-// connects as the writer.
-func Create(d dbclient.Dialer) (*Store, error) {
-	return createOn(d, time.Now, dbclient.Options{})
+// connects as the writer. ctx bounds Create alone: the connection, the Hello and the commit; the store that it returns
+// does not depend on it.
+func Create(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+	return createOn(ctx, d, time.Now, dbclient.Options{})
 }
 
 // createOn is Create with the clock now and the options o of the client.
-func createOn(d dbclient.Dialer, now func() time.Time, o dbclient.Options) (*Store, error) {
-	s, err := connect(d, dbwire.RoleWriter, now, o)
+func createOn(ctx context.Context, d dbclient.Dialer, now func() time.Time, o dbclient.Options) (*Store, error) {
+	s, err := connect(ctx, d, dbwire.RoleWriter, now, o)
 	if err != nil {
 		return nil, err
 	}
-	if err := createLog(s.c, dialerName(d), s.now); err != nil {
+	if err := createLog(ctx, s.c, dialerName(d), s.now); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -69,33 +70,36 @@ func createOn(d dbclient.Dialer, now func() time.Time, o dbclient.Options) (*Sto
 // for 2 seconds, and other processes read the store with OpenReader. A store of the table schema 1 to 6 gets the schema 7
 // in one Update, with the record store.upgrade (7.4) and the rows of heads of its audit logs: one of the schema 1 gets
 // its index too (it has none), and one of the schema 2 to 6 gets nothing else and has no document read; if that fails,
-// so does Open, and the store is unchanged. A daemon whose store has no schema is an error that wraps ErrNoStore.
-func Open(d dbclient.Dialer) (*Store, error) {
-	return openOn(d, dbwire.RoleWriter, time.Now, dbclient.Options{})
+// so does Open, and the store is unchanged unless the error says that it is not known whether the commit was made: the
+// next Open finds out. A daemon whose store has no schema is an error that wraps ErrNoStore. ctx bounds Open alone: the
+// connection, the Hello, the check of the schema and the upgrade; the store that it returns does not depend on it.
+func Open(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+	return openOn(ctx, d, dbwire.RoleWriter, time.Now, dbclient.Options{})
 }
 
 // OpenReader opens the store that the daemon of d serves to read it, in a process other than its writer, which may run
 // or not. Its Views see the commits that are durable when they begin. It changes nothing: Update fails with "read-only
 // transaction", and PutOriginal fails too. A store of the table schema 1 has no index until its writer opens it: a
 // reader reads it, but Summary and the other reads of the index fail with ErrNoIndex. A store of the table schema 1 to 5
-// has no audit log until its writer opens it: ReadAudit, AuditHeads and VerifyAudit fail with ErrNoAuditLog.
-func OpenReader(d dbclient.Dialer) (*Store, error) {
-	return openOn(d, dbwire.RoleReader, time.Now, dbclient.Options{})
+// has no audit log until its writer opens it: ReadAudit, AuditHeads and VerifyAudit fail with ErrNoAuditLog. ctx bounds
+// OpenReader alone, as that of Open.
+func OpenReader(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+	return openOn(ctx, d, dbwire.RoleReader, time.Now, dbclient.Options{})
 }
 
 // openOn connects as role and checks the schema, and upgrades an older one if the role is the writer.
-func openOn(d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
-	s, err := connect(d, role, now, o)
+func openOn(ctx context.Context, d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
+	s, err := connect(ctx, d, role, now, o)
 	if err != nil {
 		return nil, err
 	}
 	name := dialerName(d)
-	if err := checkSchema(context.Background(), s.c, name); err != nil {
+	if err := checkSchema(ctx, s.c, name); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
 	if role == dbwire.RoleWriter {
-		if err := upgradeLog(s.c, name, s.now); err != nil {
+		if err := upgradeLog(ctx, s.c, name, s.now); err != nil {
 			_ = s.Close()
 			return nil, err
 		}
@@ -105,8 +109,8 @@ func openOn(d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclien
 
 // connect opens a client of d as role, with the options o, and makes the store of it, with the clock now for the
 // versions. It takes d, and closes it if it fails.
-func connect(d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
-	c, err := dbclient.Open(context.Background(), d, role, o)
+func connect(ctx context.Context, d dbclient.Dialer, role dbwire.Role, now func() time.Time, o dbclient.Options) (*Store, error) {
+	c, err := dbclient.Open(ctx, d, role, o)
 	if err != nil {
 		return nil, err
 	}

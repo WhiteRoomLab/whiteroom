@@ -204,7 +204,7 @@ func (s *Server) showMediumFile(w http.ResponseWriter, r *http.Request, p accoun
 		s.answerError(w, r, p, err, attempt{})
 		return
 	}
-	f, err := s.openOriginal(m.hash, m.size)
+	f, err := s.openOriginal(r.Context(), m.hash, m.size)
 	if err != nil {
 		// The medium is there: an original that is missing is a fault of the store, and not a resource that is missing.
 		_ = extendWrite(w, writeTimeout)
@@ -250,8 +250,8 @@ func (s *Server) showMediumFile(w http.ResponseWriter, r *http.Request, p accoun
 }
 
 // openOriginal opens the original with the hash, and checks that it has the size that the document of the medium says.
-func (s *Server) openOriginal(hash string, size int) (fs.File, error) {
-	f, err := s.store.OpenOriginal(hash)
+func (s *Server) openOriginal(ctx context.Context, hash string, size int) (fs.File, error) {
+	f, err := s.store.OpenOriginal(ctx, hash)
 	if err != nil {
 		return nil, err
 	}

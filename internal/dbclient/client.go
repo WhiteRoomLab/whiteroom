@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
@@ -25,7 +26,8 @@ import (
 
 var (
 	ErrReadOnly = errors.New("read-only transaction")
-	// ErrUnavailable is wrapped by the errors of a daemon that cannot be reached, and of a connection that ends.
+	// ErrUnavailable is wrapped by the errors of a daemon that cannot be reached, of a connection that ends, of a request
+	// that a closing daemon refuses, and of a reader that a daemon at its limit of readers refuses.
 	ErrUnavailable = errors.New("cannot reach the daemon")
 	ErrClosed      = errors.New("the client is closed")
 
@@ -92,7 +94,7 @@ type Client struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	wconn *conn // the writer connection, for the holder of turn
+	wconn *conn // the writer connection, for the holder of turn; nil if the last dial failed, dead if it has ended
 }
 
 // Open connects to the daemon as role and says Hello. The Client owns d from the call on: Close closes it, and so does an
@@ -192,6 +194,20 @@ func (e *ioError) Is(target error) bool { return target == ErrUnavailable }
 type dialFailure struct{ err error }
 
 func (e dialFailure) Error() string { return e.err.Error() }
+
+// refusedError is the refusal busy of a request, which the daemon sends while it shuts down and ends the connection after,
+// or of the Hello of a reader that it has no place for. It has the text of the daemon, and is not an *ioError: a request
+// that is sent again to the same daemon is refused again.
+type refusedError struct {
+	name string
+	err  *dbwire.RemoteError
+}
+
+func (e *refusedError) Error() string {
+	return e.name + ": " + ErrUnavailable.Error() + ": " + e.err.Error()
+}
+func (e *refusedError) Unwrap() error        { return e.err }
+func (e *refusedError) Is(target error) bool { return target == ErrUnavailable }
 
 // busyError is the refusal of a writer, which another writer's connection keeps out.
 type busyError struct {
@@ -296,7 +312,7 @@ func (c *Client) attempt(ctx context.Context, role dbwire.Role) (cn *conn, retry
 		if role == dbwire.RoleWriter {
 			return nil, true, &busyError{c.name, re}
 		}
-		return nil, true, err
+		return nil, true, &refusedError{c.name, re}
 	case errors.As(err, &ioe):
 		return nil, true, err
 	}
@@ -318,7 +334,12 @@ func (cn *conn) call(ctx context.Context, kind dbwire.Kind, body func(*dbwire.En
 	if err == nil {
 		return nil
 	}
-	if _, ok := errors.AsType[*dbwire.RemoteError](err); ok {
+	if re, ok := errors.AsType[*dbwire.RemoteError](err); ok {
+		if re.Code == dbwire.CodeBusy && kind != dbwire.KindHello {
+			// The daemon is closing, and ends the connection after it has refused the request.
+			cn.close()
+			return &refusedError{cn.c.name, re}
+		}
 		return err
 	}
 	cn.close()
@@ -329,6 +350,9 @@ func (cn *conn) call(ctx context.Context, kind dbwire.Kind, body func(*dbwire.En
 func (cn *conn) failure(ctx context.Context, err error) error {
 	if le, ok := errors.AsType[*localError](err); ok {
 		return le.err
+	}
+	if re, ok := errors.AsType[*refusedError](err); ok {
+		return re
 	}
 	switch {
 	case errors.Is(err, errStop):
@@ -360,10 +384,10 @@ func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*db
 		body(e)
 	}
 	if e.Err != nil {
-		return e.Err // the message is left open, and the connection ends
+		return cn.refusedBefore(e.Err) // the message is left open, and the connection ends
 	}
 	if err := cn.wr.End(); err != nil {
-		return err
+		return cn.refusedBefore(err)
 	}
 	if err := cn.rd.Reply(); err != nil {
 		return err
@@ -372,6 +396,20 @@ func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*db
 		return nil
 	}
 	return read(&dbwire.Dec{R: cn.rd})
+}
+
+// refusedBefore returns the refusal of the daemon in place of err, the failed write of a request, if the daemon has closed
+// the connection and has answered before that: it refuses an original at its first bytes, with the reason, and does not
+// read the rest. Only then is there a reply to read, or the end of the stream: any other failure is returned as it is.
+func (cn *conn) refusedBefore(err error) error {
+	if !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
+		return err
+	}
+	if re, ok := errors.AsType[*dbwire.RemoteError](cn.rd.Reply()); ok {
+		cn.close()
+		return re
+	}
+	return err
 }
 
 func (cn *conn) snapshot(ctx context.Context) (seq uint64, err error) {

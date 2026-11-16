@@ -130,7 +130,7 @@ func runInit(ctx context.Context, args []string, e env) int {
 		p.printError(ctx, err)
 		return 1
 	}
-	s, err := openNewStore(db)
+	s, err := openNewStore(ctx, db)
 	if err != nil {
 		p.printError(ctx, err)
 		return 1
@@ -166,10 +166,10 @@ func runInit(ctx context.Context, args []string, e env) int {
 
 // openNewStore opens the store of the daemon whose sockets are in the directory db as its writer, and makes it, with its
 // first commit, if it has none. It is closed if it is refused.
-func openNewStore(db string) (*store.Store, error) {
-	s, err := store.Open(dbDialer(db))
+func openNewStore(ctx context.Context, db string) (*store.Store, error) {
+	s, err := store.Open(ctx, dbDialer(db))
 	if errors.Is(err, store.ErrNoStore) {
-		return store.Create(dbDialer(db))
+		return store.Create(ctx, dbDialer(db))
 	}
 	return s, err
 }

@@ -3,12 +3,14 @@ package admin
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,13 @@ const unreachableLine = "the daemon of the store cannot be reached: "
 // newDaemonAPIServer is newAPIServerAt for a store that connects to its daemon on sockets, which the test stops and starts again.
 func newDaemonAPIServer(t *testing.T, origin string) (*apiServer, *storetest.Daemon) {
 	t.Helper()
+	a, d, _ := newWatchedAPIServer(t, origin)
+	return a, d
+}
+
+// newWatchedAPIServer is newDaemonAPIServer for a store that connects through a Watch of the daemon.
+func newWatchedAPIServer(t *testing.T, origin string) (*apiServer, *storetest.Daemon, *storetest.Watch) {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
 	d, err := storetest.Serve(dir)
 	if err != nil {
@@ -33,12 +42,13 @@ func newDaemonAPIServer(t *testing.T, origin string) (*apiServer, *storetest.Dae
 			t.Errorf("closing the daemon: %v", err)
 		}
 	})
-	db, err := store.Create(d.Dialer())
+	w := d.Watch()
+	db, err := store.Create(context.Background(), w)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return newAPIServerOn(t, origin, t.TempDir(), db, dir), d
+	return newAPIServerOn(t, origin, t.TempDir(), db, dir), d, w
 }
 
 // receiveWithin is receive with the time that a request takes while the daemon is away: each write waits its 2 seconds to
@@ -184,6 +194,87 @@ func TestDaemonAway(t *testing.T) {
 	if n, all := linesWith(a.logs.String(), unreachableLine); n != 2 || !all {
 		t.Errorf("the log has %d lines that the daemon cannot be reached, all lines of that kind: %t, want 2 and nothing else:\n%s",
 			n, all, a.logs)
+	}
+	if files := a.leftovers(t); len(files) != 0 {
+		t.Errorf("%d temporary files stay: %v", len(files), files)
+	}
+}
+
+// TestDaemonGoesMidRequest stops the daemon after a request has been authenticated, at the points of the server where the
+// work of the route itself, and not the check of the session, meets the daemon that is away: "checked" is in the place of heavy
+// work (or of the logs, or before a build is asked for), before the route works, and "sending" is after the place is given
+// back, with the answer not yet made. Each answer is 503 with the problem busy and no cookie, the store is not changed, the
+// sessions are valid when the daemon is back, and the log has one line for all of them.
+func TestDaemonGoesMidRequest(t *testing.T) {
+	a, d := newDaemonAPIServer(t, httpsOrigin)
+	a.waitBuilds(t)
+	news := a.stored(t, content.RefTerm, newsTerm)
+	changed := strings.Replace(string(news.Data), "お知らせ", "お知らせ9", 1)
+	before := a.versions(t)
+	logo := "/api/media/" + sampleLogo + "/file"
+	probes := []struct {
+		name, point string
+		send        func() *http.Response
+	}{
+		{"a document", "checked", func() *http.Response { return a.as("editor").get("/api/terms/" + newsTerm) }},
+		{"a document that there is not", "checked", func() *http.Response { return a.as("editor").get("/api/media/" + missingMed) }},
+		{"a list", "checked", func() *http.Response { return a.as("editor").get("/api/entries?limit=1") }},
+		{"the settings", "checked", func() *http.Response { return a.as("editor").get("/api/settings") }},
+		{"a log", "checked", func() *http.Response { return a.as("admin").get("/api/logs/activity?limit=1") }},
+		{"a save", "checked", func() *http.Response { return a.as("editor").put("/api/terms/"+newsTerm, saveBody(news.Seq, changed)) }},
+		{"a download, before its document is read", "checked", func() *http.Response { return a.as("viewer").get(logo) }},
+		{"a download, after its document is read", "sending", func() *http.Response { return a.as("viewer").get(logo) }},
+		{"the head of a download", "sending", func() *http.Response { return a.as("viewer").send(http.MethodHead, logo, "") }},
+		{"a rebuild", "checked", func() *http.Response { return a.as("admin").post("/api/builds", "") }},
+	}
+	for _, p := range probes {
+		var once sync.Once
+		stopped := false
+		a.hook = func(point string) {
+			if point == p.point {
+				once.Do(func() {
+					stopped = true
+					if err := d.Stop(); err != nil {
+						t.Errorf("%s: stopping the daemon: %v", p.name, err)
+					}
+				})
+			}
+		}
+		res := receiveWithin(t, async(p.send), p.name, 60*time.Second)
+		a.hook = nil
+		if !stopped {
+			t.Errorf("%s: the point %q of the server did not come, so that the daemon was not stopped in the request", p.name, p.point)
+		}
+		if got := res.Header.Values("Set-Cookie"); len(got) != 0 {
+			t.Errorf("%s sets the cookies %q, want none: the session is still valid", p.name, redacted(got))
+		}
+		if p.name == "the head of a download" {
+			// A HEAD has no body, which checkProblem reads.
+			if res.StatusCode != http.StatusServiceUnavailable || res.Header.Get("Retry-After") != "5" {
+				t.Errorf("%s has the status %d and the Retry-After %q, want 503 and 5", p.name, res.StatusCode,
+					res.Header.Get("Retry-After"))
+			}
+			_ = bodyOf(t, res)
+		} else {
+			checkProblem(t, p.name+", with the daemon gone at "+p.point, res, "busy")
+		}
+		if err := d.Start(); err != nil {
+			t.Fatal(err)
+		}
+		a.waitBuilds(t)
+		for _, login := range []string{"viewer", "editor", "admin"} {
+			if res := a.as(login).get("/api/session"); res.StatusCode != http.StatusOK {
+				t.Errorf("the session of %s after %s, with the daemon back, has the status %d, want 200", login, p.name,
+					res.StatusCode)
+			}
+		}
+	}
+	if got := a.versions(t); got != before {
+		t.Errorf("the requests that were answered 503 have changed the store:\n%s\nwant\n%s", got, before)
+	}
+	if n, all := linesWith(a.logs.String(), unreachableLine); n != 1 || !all {
+		t.Errorf("the log has %d lines that the daemon cannot be reached, all lines of that kind: %t, want 1 line and nothing else, "+
+			"for the requests of a minute:\n%s", n, all, a.logs)
 	}
 	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)

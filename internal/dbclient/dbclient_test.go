@@ -95,6 +95,9 @@ func TestOpen(t *testing.T) {
 		if re := remote(t, err); re.Code != dbwire.CodeBusy {
 			t.Errorf("got the code %v", re.Code)
 		}
+		if errors.Is(err, dbclient.ErrUnavailable) {
+			t.Errorf("the refusal for another writer, %v, says that the daemon is unavailable", err)
+		}
 		if rec.attempts < 2 || rec.closes != 1 {
 			t.Errorf("%d attempts and %d closes of the dialer", rec.attempts, rec.closes)
 		}
@@ -202,6 +205,17 @@ func TestOpen(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("got %v", err)
 		}
+	})
+
+	t.Run("the context ends after the open", func(t *testing.T) {
+		f := newFixture(t, nil)
+		ctx, cancel := context.WithCancel(bg)
+		w, _, err := f.tryOpen(ctx, dbwire.RoleWriter, dbclient.Options{})
+		must(t, err)
+		cancel()
+		seed(t, w)
+		commit(t, w, func(tx *dbclient.Tx) { put(t, tx, 2, "k", "v") })
+		wantRows(t, rows(t, w, 2, ""), "k=v")
 	})
 
 	t.Run("a role that does not exist", func(t *testing.T) {

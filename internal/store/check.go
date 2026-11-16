@@ -53,12 +53,13 @@ var errStop = errors.New("stop")
 // a store that is opened by its writer, and in one that is opened to read only, which may be written at the same time:
 // a store that is right gives no problem to either.
 //
-// The error of Check is that of ctx, context.Canceled or context.DeadlineExceeded, and no other: what else goes wrong
-// is a problem.
+// The error of Check is that of ctx, context.Canceled or context.DeadlineExceeded, or one that wraps ErrUnavailable:
+// the daemon cannot be reached, so the check cannot be made, and nothing is known to be wrong. What else goes wrong is a
+// problem.
 func (s *Store) Check(ctx context.Context, found func(Problem) bool) error {
 	c := &checker{ctx: ctx, found: found}
 	if err := s.b.verify(ctx); err != nil {
-		if endedBy(err) {
+		if unchecked(err) {
 			return err
 		}
 		if !c.report(Problem{Area: AreaEngine, Detail: err.Error()}) {
@@ -95,21 +96,28 @@ func endedBy(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// unchecked reports whether err ends Check as its error: the end of a context, or a daemon that cannot be reached.
+func unchecked(err error) bool {
+	return endedBy(err) || errors.Is(err, ErrUnavailable)
+}
+
 // mediaOf is the media documents that refer to each original, by its hash, in the order of their IDs.
 type mediaOf map[string][]string
 
 // checkIndex checks the index, and finds the originals of the current media documents, in one View. It returns an
-// error only if ctx has ended. If the View itself fails, as a reader does when it cannot read the commits that have
-// become durable, that is one problem of the index, and the originals are not known: the next area gives one problem
-// too.
+// error only if ctx has ended or the daemon cannot be reached. If the View itself fails otherwise, as a reader does when
+// it cannot read the commits that have become durable, that is one problem of the index, and the originals are not
+// known: the next area gives one problem too.
 func (c *checker) checkIndex(s *Store) (mediaOf, error) {
 	var media mediaOf
 	var mediaErr error
 	err := s.View(c.ctx, func(t *Tx) error {
 		// First, for the originals to be found when the index cannot be computed.
-		media, mediaErr = mediaHashes(t)
+		if media, mediaErr = mediaHashes(t); unchecked(mediaErr) {
+			return mediaErr
+		}
 		err := c.compareIndex(t)
-		if c.stopped || endedBy(err) {
+		if c.stopped || unchecked(err) {
 			return err
 		}
 		if err != nil {
@@ -120,7 +128,7 @@ func (c *checker) checkIndex(s *Store) (mediaOf, error) {
 	switch {
 	case c.stopped:
 		return nil, nil
-	case endedBy(err):
+	case unchecked(err):
 		return nil, err
 	case err != nil:
 		media, mediaErr = nil, err
@@ -193,7 +201,7 @@ func (c *checker) compareIndex(t *Tx) error {
 		return nil
 	})
 	if err != nil {
-		if c.stopped || endedBy(err) {
+		if c.stopped || unchecked(err) {
 			return err
 		}
 		return fmt.Errorf("the rows that the documents give cannot be computed: %w", err)
@@ -217,6 +225,8 @@ func (c *checker) compareIndex(t *Tx) error {
 	}
 	last, err := t.b.lastNumber()
 	switch {
+	case unchecked(err):
+		return err
 	case err != nil:
 		c.report(Problem{Area: AreaIndex, Target: "last number", Detail: err.Error()})
 	case last < largest:
@@ -268,7 +278,7 @@ func (c *checker) checkOriginals(s *Store, media mediaOf) error {
 			return err
 		}
 		err := s.verifyOriginal(c.ctx, hash)
-		if endedBy(err) {
+		if unchecked(err) {
 			return err
 		}
 		if err != nil && !c.report(Problem{Area: AreaOriginal, Target: hash,
@@ -282,7 +292,7 @@ func (c *checker) checkOriginals(s *Store, media mediaOf) error {
 // verifyOriginal reads the original with hash to its end, which checks its data against the hash, and checks ctx before
 // each read.
 func (s *Store) verifyOriginal(ctx context.Context, hash string) error {
-	f, err := s.OpenOriginal(hash)
+	f, err := s.OpenOriginal(ctx, hash)
 	if err != nil {
 		return err
 	}

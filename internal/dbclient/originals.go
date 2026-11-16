@@ -98,6 +98,7 @@ func (c *Client) PutOriginal(ctx context.Context, r io.Reader) (sum [32]byte, si
 		return sum, 0, err
 	}
 	defer c.releaseTurn()
+	defer c.restoreWriter(ctx)
 	cn, err := c.liveWriter(ctx)
 	if err != nil {
 		return sum, 0, err
@@ -114,9 +115,9 @@ func (c *Client) PutOriginal(ctx context.Context, r io.Reader) (sum [32]byte, si
 	}
 	err = cn.call(ctx, dbwire.KindPutOriginal, func(e *dbwire.Enc) { src.send(e, first) }, dbwire.ReadEmpty)
 	if err != nil {
-		if _, ok := errors.AsType[*dbwire.RemoteError](err); !ok {
-			c.wconn = nil
-		}
+		// The daemon ends the session after some refusals of an original, which it has not read to its end: restoreWriter
+		// takes a new connection.
+		cn.close()
 		return [32]byte{}, 0, err
 	}
 	return [32]byte(src.sum.Sum(nil)), src.size, nil

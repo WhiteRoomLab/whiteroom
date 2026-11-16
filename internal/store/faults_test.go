@@ -109,7 +109,7 @@ func TestOriginalFaults(t *testing.T) {
 					if got := names(t, files); got != nil {
 						t.Errorf("files/ has %q, want nothing", got)
 					}
-					f, err := s.OpenOriginal(hash)
+					f, err := s.OpenOriginal(context.Background(), hash)
 					if f != nil {
 						_ = f.Close()
 					}

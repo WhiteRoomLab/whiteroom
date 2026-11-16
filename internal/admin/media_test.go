@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
@@ -103,7 +104,7 @@ func (a *apiServer) storedMedium(t *testing.T, id string) content.Media {
 // original returns the original with the hash, as the store has it.
 func (a *apiServer) original(t *testing.T, hash string) []byte {
 	t.Helper()
-	f, err := a.db.OpenOriginal(hash)
+	f, err := a.db.OpenOriginal(context.Background(), hash)
 	if err != nil {
 		t.Fatalf("OpenOriginal(%q) error = %v", hash, err)
 	}

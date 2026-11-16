@@ -125,7 +125,7 @@ func newDBOptions(t *testing.T, o dbtest.Options) testDB {
 func newDBWithStore(t *testing.T) testDB {
 	t.Helper()
 	db := newDB(t)
-	st, err := store.Create(dbDialer(db.sockets))
+	st, err := store.Create(t.Context(), dbDialer(db.sockets))
 	if err != nil {
 		t.Fatal(err)
 	}

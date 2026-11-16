@@ -2,6 +2,7 @@ package edit
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -134,7 +135,7 @@ func mediaText(t *testing.T, m content.Media) string {
 
 func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 	t.Helper()
-	f, err := s.OpenOriginal(hash)
+	f, err := s.OpenOriginal(context.Background(), hash)
 	switch {
 	case err == nil:
 		_ = f.Close()
@@ -148,7 +149,7 @@ func hasOriginal(t *testing.T, s *store.Store, hash string) bool {
 
 func readOriginal(t *testing.T, s *store.Store, hash string) []byte {
 	t.Helper()
-	f, err := s.OpenOriginal(hash)
+	f, err := s.OpenOriginal(context.Background(), hash)
 	if err != nil {
 		t.Fatalf("OpenOriginal(%q) = %v", hash, err)
 	}
@@ -452,15 +453,23 @@ func TestProbe(t *testing.T) {
 		return o.Hash
 	}
 
-	info, bad, err := ed.probe(put(testPNG(t, 5, 4, 7)))
+	png := put(testPNG(t, 5, 4, 7))
+	info, bad, err := ed.probe(context.Background(), png)
 	if want := (mediafile.Info{MIMEType: mediafile.PNG, Width: 5, Height: 4, Orientation: 1}); info != want || bad != nil || err != nil {
 		t.Errorf("probe() of a PNG = %+v, %v, %v; want %+v", info, bad, err, want)
 	}
-	if _, bad, err = ed.probe(put([]byte("hello"))); !errors.Is(bad, mediafile.ErrUnsupported) || err != nil {
+	if _, bad, err = ed.probe(context.Background(), put([]byte("hello"))); !errors.Is(bad, mediafile.ErrUnsupported) || err != nil {
 		t.Errorf("probe() of a text = %v, %v; want the file's unsupported format", bad, err)
 	}
-	if _, bad, err = ed.probe("sha256:" + strings.Repeat("0", 64)); bad != nil || !errors.Is(err, fs.ErrNotExist) {
+	if _, bad, err = ed.probe(context.Background(), "sha256:"+strings.Repeat("0", 64)); bad != nil || !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("probe() of an original that the store does not have = %v, %v; want an error of the store", bad, err)
+	}
+
+	// The read is bound by the context of the operation.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, bad, err = ed.probe(ctx, png); bad != nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("probe() after the context has ended = %v, %v; want the error of the context", bad, err)
 	}
 
 	// The data of an original that has another hash is an error of the store, found as the read ends.
@@ -475,7 +484,7 @@ func TestProbe(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, bad, err = ed.probe(hash); bad != nil || err == nil || !strings.Contains(err.Error(), "the data has the hash") {
+	if _, bad, err = ed.probe(context.Background(), hash); bad != nil || err == nil || !strings.Contains(err.Error(), "the data has the hash") {
 		t.Errorf("probe() of a damaged original = %v, %v; want an error of the store about its hash", bad, err)
 	}
 }

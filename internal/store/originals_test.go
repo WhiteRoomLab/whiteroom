@@ -57,7 +57,7 @@ func putOriginal(t *testing.T, s *Store, data []byte) {
 // what it reads, and that the file cannot be read without Read.
 func readOriginal(t *testing.T, s *Store, hash string) ([]byte, error) {
 	t.Helper()
-	f, err := s.OpenOriginal(hash)
+	f, err := s.OpenOriginal(context.Background(), hash)
 	if err != nil {
 		t.Fatalf("OpenOriginal() = %v", err)
 	}
@@ -145,7 +145,7 @@ func TestLargestOriginal(t *testing.T) {
 		}
 		open := func() fs.File {
 			t.Helper()
-			f, err := s.OpenOriginal(want.Hash)
+			f, err := s.OpenOriginal(context.Background(), want.Hash)
 			if err != nil {
 				t.Fatalf("OpenOriginal() = %v", err)
 			}
@@ -225,7 +225,7 @@ func TestOpenOriginalErrors(t *testing.T) {
 			"sha256:../" + digits[3:],
 			"",
 		} {
-			f, err := s.OpenOriginal(h)
+			f, err := s.OpenOriginal(context.Background(), h)
 			if want := `invalid hash "` + h + `"` + use; f != nil || err == nil || err.Error() != want {
 				t.Errorf("OpenOriginal(%q) = %v, %v; want an error %q", h, f, err, want)
 			}
@@ -308,7 +308,7 @@ func TestOpenOriginalErrors(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				s, dir := newStore(t, tb)
 				tt.setup(t, s, originalPath(dir, hash))
-				f, err := s.OpenOriginal(hash)
+				f, err := s.OpenOriginal(context.Background(), hash)
 				if f != nil {
 					_ = f.Close()
 				}
@@ -356,7 +356,7 @@ func TestOriginalLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		file, err := s.OpenOriginal(hash)
+		file, err := s.OpenOriginal(context.Background(), hash)
 		if file != nil {
 			_ = file.Close()
 		}

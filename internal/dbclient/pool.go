@@ -102,32 +102,39 @@ func (c *Client) snapshotReader(ctx context.Context) (*conn, uint64, error) {
 	return cn, seq, nil
 }
 
+// dialWriter connects as the writer and keeps the connection, for the holder of the turn. A connection that fails leaves
+// none, which restoreWriter does not try again.
+func (c *Client) dialWriter(ctx context.Context) (*conn, error) {
+	cn, err := c.connect(ctx, dbwire.RoleWriter)
+	if err != nil {
+		c.wconn = nil
+		return nil, err
+	}
+	c.wconn = cn
+	return cn, nil
+}
+
 // snapshotWriter returns the writer connection with a snapshot, for the holder of the turn. As snapshotReader, it
 // replaces a connection that fails on that first request.
 func (c *Client) snapshotWriter(ctx context.Context) (*conn, uint64, error) {
 	cn, dialed := c.wconn, false
 	if cn == nil || cn.dead.Load() {
 		var err error
-		if cn, err = c.connect(ctx, dbwire.RoleWriter); err != nil {
-			c.wconn = nil
+		if cn, err = c.dialWriter(ctx); err != nil {
 			return nil, 0, err
 		}
 		dialed = true
 	}
-	c.wconn = cn
 	seq, err := cn.snapshot(ctx)
 	if _, ok := errors.AsType[*ioError](err); ok && !dialed {
 		cn.close()
-		if cn, err = c.connect(ctx, dbwire.RoleWriter); err != nil {
-			c.wconn = nil
+		if cn, err = c.dialWriter(ctx); err != nil {
 			return nil, 0, err
 		}
-		c.wconn = cn
 		seq, err = cn.snapshot(ctx)
 	}
 	if err != nil {
 		cn.close()
-		c.wconn = nil
 		return nil, 0, err
 	}
 	return cn, seq, nil
@@ -146,17 +153,11 @@ func (c *Client) liveWriter(ctx context.Context) (*conn, error) {
 			return cn, nil
 		}
 		cn.close()
-		c.wconn = nil
 		if _, ok := errors.AsType[*ioError](err); !ok {
 			return nil, err
 		}
 	}
-	cn, err := c.connect(ctx, dbwire.RoleWriter)
-	if err != nil {
-		return nil, err
-	}
-	c.wconn = cn
-	return cn, nil
+	return c.dialWriter(ctx)
 }
 
 func (c *Client) acquireTurn(ctx context.Context) error {

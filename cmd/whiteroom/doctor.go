@@ -162,8 +162,11 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	}
 
 	rep := &report{w: e.stdout, limit: limit}
-	st, err := store.OpenReader(dbDialer(db))
+	st, err := store.OpenReader(ctx, dbDialer(db))
 	if err != nil {
+		if ctx.Err() != nil {
+			return fail(err)
+		}
 		rep.add("open: " + err.Error())
 		return rep.finish(db)
 	}
@@ -173,7 +176,7 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	}
 	if !rep.full() {
 		if err := st.VerifyAudit(ctx, heads); err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, store.ErrUnavailable) {
 				return fail(err)
 			}
 			rep.add("audit: " + err.Error())

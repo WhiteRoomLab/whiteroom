@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -35,7 +36,7 @@ func TestUnavailable(t *testing.T) {
 		return h
 	}
 	h := serveSockets()
-	s, err := createOn(dbclient.SocketDir(sockets), time.Now, dbclient.Options{DialWait: 50 * time.Millisecond})
+	s, err := createOn(context.Background(), dbclient.SocketDir(sockets), time.Now, dbclient.Options{DialWait: 50 * time.Millisecond})
 	if err != nil {
 		_ = h.Release()
 		t.Fatal(err)
@@ -68,7 +69,7 @@ func TestUnavailable(t *testing.T) {
 			return err
 		}},
 		{"OpenOriginal", func() error {
-			f, err := s.OpenOriginal(hash)
+			f, err := s.OpenOriginal(context.Background(), hash)
 			if err != nil {
 				return err
 			}
@@ -78,6 +79,13 @@ func TestUnavailable(t *testing.T) {
 				t.Errorf("OpenOriginal() has %d bytes, want %d", len(got), len(original))
 			}
 			return err
+		}},
+		// A check that cannot be made is an error, and no problem of the store.
+		{"Check", func() error {
+			return s.Check(t.Context(), func(p Problem) bool {
+				t.Errorf("Check() found %+v, want no problem", p)
+				return true
+			})
 		}},
 	}
 	for _, op := range ops[1:] {

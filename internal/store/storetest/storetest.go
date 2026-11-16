@@ -31,7 +31,7 @@ func Create(dir string) (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.Create(d)
+	return store.Create(context.Background(), d)
 }
 
 // Open opens the store of the data directory dir as its writer, as store.Open does.
@@ -40,7 +40,7 @@ func Open(dir string) (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.Open(d)
+	return store.Open(context.Background(), d)
 }
 
 // OpenReader opens the store of the data directory dir to read it, as store.OpenReader does.
@@ -49,7 +49,7 @@ func OpenReader(dir string) (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.OpenReader(d)
+	return store.OpenReader(context.Background(), d)
 }
 
 // Backup copies the store of the data directory srcDir to dstDir, as store.Backup does.
@@ -84,7 +84,7 @@ type Daemon struct {
 
 // Serve starts the daemon of the data directory dir, which no other daemon of the process serves, and makes it listen on
 // sockets in a new directory. A directory that is missing or empty is made first, as whiteroom-db init makes it, and the
-// caller makes the store in it with store.Create(d.Dialer()); Close ends the daemon and removes the directory of the sockets.
+// caller makes the store in it with store.Create(ctx, d.Dialer()); Close ends the daemon and removes the directory of the sockets.
 func Serve(dir string) (*Daemon, error) {
 	if entries, err := os.ReadDir(dir); errors.Is(err, fs.ErrNotExist) || err == nil && len(entries) == 0 {
 		if err := dbtest.Init(dir, dbtest.Options{}); err != nil {

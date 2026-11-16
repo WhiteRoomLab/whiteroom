@@ -22,7 +22,7 @@ func buildFromStore(ctx context.Context, stdout io.Writer, p errorPrinter, db st
 		return 1
 	}
 	defer closeSite()
-	st, err := store.OpenReader(dbDialer(db))
+	st, err := store.OpenReader(ctx, dbDialer(db))
 	if err != nil {
 		p.printError(ctx, err)
 		return 1

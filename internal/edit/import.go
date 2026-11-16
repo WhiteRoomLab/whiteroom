@@ -391,7 +391,7 @@ func (im *importer) checkOriginal(d *imported, m *content.Media) (content.Errors
 	if o.Hash != m.Hash {
 		return problemAt(d.file, "/hash", "the original has the hash "+o.Hash), nil
 	}
-	info, bad, err := im.ed.probe(o.Hash)
+	info, bad, err := im.ed.probe(im.ctx, o.Hash)
 	if err != nil {
 		return nil, err
 	}

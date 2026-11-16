@@ -239,7 +239,7 @@ func connectBefore(s *Store, sockets string) (*Store, error) {
 	if err := info.h.Listen(sockets); err != nil {
 		return nil, err
 	}
-	return openOn(dbclient.SocketDir(sockets), dbwire.RoleReader, time.Now, dbclient.Options{})
+	return openOn(context.Background(), dbclient.SocketDir(sockets), dbwire.RoleReader, time.Now, dbclient.Options{})
 }
 
 // hungReader returns the number of the last commit that a new reader client of the daemon of fsys, which hangs, sees.

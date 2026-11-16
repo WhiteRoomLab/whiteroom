@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -81,15 +82,20 @@ func (c *countedConn) Write(p []byte) (int, error) {
 // countedStore makes a store of the log backend, whose connections are counted by the writeCounter that it returns.
 func countedStore(t *testing.T) (*Store, *writeCounter) {
 	t.Helper()
+	return countedStoreOf(t, oneBackend[0].options())
+}
+
+// countedStoreOf is countedStore with the options o.
+func countedStoreOf(t *testing.T, o options) (*Store, *writeCounter) {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
-	o := oneBackend[0].options()
 	if err := dbtest.Init(dir, o.daemonOptions(nil)); err != nil {
 		t.Fatal(err)
 	}
 	w := new(writeCounter)
 	s, err := start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
 		w.Dialer = d
-		return createOn(w, o.clock(), o.client())
+		return createOn(context.Background(), w, o.clock(), o.client())
 	})
 	if err != nil {
 		t.Fatalf("createOn() = %v", err)
@@ -933,8 +939,8 @@ func TestChunkDropsWhatItKept(t *testing.T) {
 }
 
 // TestAheadConnectionEnds checks that Documents, Check and ReadAhead of a store whose connection ends in the middle of a
-// window or between two return an error that is ErrUnavailable (Check: problems of its areas, which have the same
-// words), and that the next call works on a new connection.
+// window or between two return an error that is ErrUnavailable (Check: and no problem), and that the next call works on a
+// new connection.
 func TestAheadConnectionEnds(t *testing.T) {
 	s, w := countedStore(t)
 	putAheadSite(t, s, 20)
@@ -989,8 +995,15 @@ func TestAheadConnectionEnds(t *testing.T) {
 		}
 	}
 
-	// Check reports what it cannot read as problems, and has none once the connection is back.
+	// Check cannot be made when the connection ends: that is its error, and no problem of the store, which has none. The
+	// media are for its last area, the originals.
+	for i := range 3 {
+		data, id := fmt.Appendf(nil, "an original %d", i), fmt.Sprintf("med_01JH%022d", i)
+		putOriginal(t, s, data)
+		update(t, s, putDoc(content.RefMedia, id, mediaJSON(id, data)))
+	}
 	total := counted(w, func() { wantProblems(t, "a store that is right", findProblems(t, s)) })
+	failed := 0
 	for n := 1; n <= total+1; n++ {
 		w.cut(int64(n))
 		var got []Problem
@@ -999,21 +1012,142 @@ func TestAheadConnectionEnds(t *testing.T) {
 			return true
 		})
 		w.cutAt.Store(0)
-		if err != nil {
-			t.Errorf("Check() with the connection ended at the Write call %d = %v, want nil: problems", n, err)
+		switch {
+		case err == nil:
+		case !errors.Is(err, ErrUnavailable) || errors.Is(err, fs.ErrNotExist):
+			t.Errorf("Check() with the connection ended at the Write call %d = %v, want an error that is ErrUnavailable", n, err)
+		default:
+			failed++
 		}
-		index := 0
-		for _, p := range got {
-			if !strings.Contains(p.Detail, ErrUnavailable.Error()) {
-				t.Errorf("Check() with the connection ended at the Write call %d found %+v, want only the problems of the end", n, p)
-			}
-			if p.Area == AreaIndex {
-				index++
-			}
-		}
-		if index > 1 {
-			t.Errorf("Check() with the connection ended at the Write call %d found %d problems of the index, want at most 1: %+v", n, index, got)
+		if len(got) != 0 {
+			t.Errorf("Check() with the connection ended at the Write call %d found %+v, want no problem: the store has none", n, got)
 		}
 		wantProblems(t, fmt.Sprintf("the Check after the connection ended at the Write call %d", n), findProblems(t, s))
+	}
+	if failed < total/2 { // the first write of a connection that was kept is tried again on a new one
+		t.Errorf("Check() failed %d times when the connection ended at each of its %d Write calls, want most", failed, total)
+	}
+
+	// The connection ends in the middle of an original: the request for it was answered, so it is not sent again.
+	big, bigID := make([]byte, 512<<10), "med_01JH0000000000000000000009"
+	putOriginal(t, s, big)
+	update(t, s, putDoc(content.RefMedia, bigID, mediaJSON(bigID, big)))
+	before := w.readBytes.Load()
+	wantProblems(t, "a store that is right", findProblems(t, s))
+	read := w.readBytes.Load() - before
+	for _, back := range []int64{64 << 10, 256 << 10} {
+		w.cutReadAt.Store(w.readBytes.Load() + read - back)
+		var got []Problem
+		err := s.Check(t.Context(), func(p Problem) bool {
+			got = append(got, p)
+			return true
+		})
+		w.cutReadAt.Store(0)
+		if !errors.Is(err, ErrUnavailable) || len(got) != 0 {
+			t.Errorf("Check() with the connection ended %d bytes before the end of its reads = %v, with the problems %+v; want an "+
+				"error that is ErrUnavailable and no problem", back, err, got)
+		}
+		wantProblems(t, "the Check after the connection ended in an original", findProblems(t, s))
+	}
+}
+
+// TestScanConnectionEnds ends the connection of a View at each of the Write calls of a read that scans a table, whose rows
+// come in more than one page, and checks that the read is either whole or an error that is ErrUnavailable: a scan that
+// the end of the connection has cut is no list that ends early.
+func TestScanConnectionEnds(t *testing.T) {
+	o := oneBackend[0].options()
+	o.limits = &dbwire.Limits{Frame: 4096, CommitsPerSecond: -1, MinFree: -1}
+	s, w := countedStoreOf(t, o)
+	putAheadSite(t, s, 60)
+	const revisions = 150
+	update(t, s, func(tx *Tx) error {
+		for i := range revisions {
+			id := fmt.Sprintf("rev_01JG%022d", i)
+			if _, err := tx.AddRevision(aheadEntry(0), id, revJSON(fmt.Sprintf("a revision %d", i)), userID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	update(t, s, func(tx *Tx) error {
+		for i := range 40 {
+			if err := tx.PutOperation(fmt.Sprintf("operation-%03d", i), bytes.Repeat([]byte("o"), 200)); err != nil {
+				return err
+			}
+			if err := tx.PutAccount(fmt.Sprintf("usr_01JF%022d", i), bytes.Repeat([]byte("a"), 400)); err != nil {
+				return err
+			}
+			if err := tx.PutSession(fmt.Sprintf("%064x", i), bytes.Repeat([]byte("s"), 150)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	// Each read returns what it read as a value to compare. whole says that a read that fails has called its function for
+	// the rows that came before.
+	ops := []struct {
+		name  string
+		pages int // the least number of pages of the scan
+		read  func(tx *Tx) (any, error)
+	}{
+		{"Revisions", 3, func(tx *Tx) (any, error) { return tx.Revisions(aheadEntry(0)) }},
+		{"Summaries", 2, func(tx *Tx) (any, error) { return tx.Summaries(content.RefEntry) }},
+		{"Referrers", 2, func(tx *Tx) (any, error) { return tx.Referrers(content.RefTerm, aheadTerm(0)) }},
+		{"Operations", 2, func(tx *Tx) (any, error) {
+			var ids []string
+			err := tx.Operations(func(id string, _ []byte) bool { ids = append(ids, id); return true })
+			return ids, err
+		}},
+		{"Accounts", 2, func(tx *Tx) (any, error) { return tx.Accounts() }},
+		{"Sessions", 2, func(tx *Tx) (any, error) { return tx.Sessions() }},
+	}
+	for _, c := range ops {
+		do := func() (got any, err error) {
+			err = s.View(t.Context(), func(tx *Tx) error {
+				var err error
+				got, err = c.read(tx)
+				return err
+			})
+			return got, err
+		}
+		warm(t, s)
+		var want any
+		total := counted(w, func() {
+			var err error
+			if want, err = do(); err != nil {
+				t.Fatalf("%s() = %v", c.name, err)
+			}
+		})
+		if n := reflect.ValueOf(want).Len(); n < c.pages*10 || total < c.pages+1 {
+			t.Fatalf("%s() has %d rows and makes %d Write calls, want the pages of %d", c.name, n, total, c.pages)
+		}
+		failed := 0
+		for n := 1; n <= total+1; n++ {
+			w.cut(int64(n))
+			got, err := do()
+			w.cutAt.Store(0)
+			switch {
+			case err == nil:
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s() with the connection ended at the Write call %d = %d rows and no error, want all %d", c.name, n,
+						reflect.ValueOf(got).Len(), reflect.ValueOf(want).Len())
+				}
+			case !errors.Is(err, ErrUnavailable) || errors.Is(err, fs.ErrNotExist):
+				t.Errorf("%s() with the connection ended at the Write call %d = %v, want an error that is ErrUnavailable", c.name, n, err)
+			default:
+				failed++
+				if c.name != "Operations" && !reflect.ValueOf(got).IsZero() {
+					t.Errorf("%s() with the connection ended at the Write call %d = %d rows and the error %v, want no rows", c.name,
+						n, reflect.ValueOf(got).Len(), err)
+				}
+			}
+			if _, err := do(); err != nil { // a connection for the next one
+				t.Errorf("%s() after the connection ended at the Write call %d = %v, want it to work on a new connection", c.name, n, err)
+			}
+		}
+		if failed < total-2 { // the first write is retried on a new connection, and a Release that fails is not an error
+			t.Errorf("%s() failed %d times when the connection ended at each of its %d Write calls, want almost all", c.name, failed, total)
+		}
 	}
 }

@@ -56,11 +56,12 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// OpenOriginal opens the original whose hash is hash. If there is none, the error wraps fs.ErrNotExist. The file checks
+// OpenOriginal opens the original whose hash is hash. ctx bounds the open and every read of the file: when it ends, the
+// reads fail with its error. If there is no original, the error wraps fs.ErrNotExist. The file checks
 // the data against hash at its end: the Read that reaches the end returns an error instead of io.EOF if the data has
 // another hash. A reader that stops at the size that Stat returns, as io.ReadFull does, does not reach the end, and
 // must check the hash itself.
-func (s *Store) OpenOriginal(hash string) (fs.File, error) {
+func (s *Store) OpenOriginal(ctx context.Context, hash string) (fs.File, error) {
 	if err := checkHash(hash); err != nil {
 		return nil, err
 	}
@@ -70,7 +71,7 @@ func (s *Store) OpenOriginal(hash string) (fs.File, error) {
 	}
 	digits := strings.TrimPrefix(hash, "sha256:")
 	path := "files/" + digits[:2] + "/" + digits
-	o, err := s.c.Original(context.Background(), sum)
+	o, err := s.c.Original(ctx, sum)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, notFoundError(path)

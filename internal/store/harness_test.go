@@ -227,21 +227,21 @@ func create(dir string, o options) (*Store, error) {
 		return nil, err
 	}
 	return start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
-		return createOn(d, o.clock(), o.client())
+		return createOn(context.Background(), d, o.clock(), o.client())
 	})
 }
 
 // open opens the store of the data directory dir as its writer, as Open does.
 func open(dir string, o options) (*Store, error) {
 	return start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
-		return openOn(d, dbwire.RoleWriter, o.clock(), o.client())
+		return openOn(context.Background(), d, dbwire.RoleWriter, o.clock(), o.client())
 	})
 }
 
 // openLogReader opens the store of the data directory dir to read it, as OpenReader does.
 func openLogReader(dir string, o options) (*Store, error) {
 	return start(dir, o, false, func(d dbclient.Dialer) (*Store, error) {
-		return openOn(d, dbwire.RoleReader, o.clock(), o.client())
+		return openOn(context.Background(), d, dbwire.RoleReader, o.clock(), o.client())
 	})
 }
 

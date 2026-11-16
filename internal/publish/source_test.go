@@ -638,6 +638,25 @@ func TestSnapshotCanceled(t *testing.T) {
 	}
 }
 
+// TestSnapshotContextEnds checks that the reads that a Source makes after Snapshot, of a revision and of an original, are
+// bound by the context of Snapshot.
+func TestSnapshotContextEnds(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	src, err := Snapshot(ctx, newStore(t), schemaFile(t), exampleTheme(t))
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	cancel()
+	if f, err := src.Revision(testID(content.RefRevision, 1)); !errors.Is(err, context.Canceled) || f.Data != nil {
+		t.Errorf("Revision() after the context has ended = %s, %v; want the error %v", describe(f), err, context.Canceled)
+	}
+	sum := sha256.Sum256([]byte("no such original"))
+	if f, err := src.OpenMedia("sha256:" + hex.EncodeToString(sum[:])); !errors.Is(err, context.Canceled) || f != nil {
+		t.Errorf("OpenMedia() after the context has ended = %v, %v; want the error %v", f, err, context.Canceled)
+	}
+}
+
 // TestSnapshotConcurrent reads a snapshot from several goroutines at once, the revisions and the originals as a build
 // does; run with -race.
 func TestSnapshotConcurrent(t *testing.T) {

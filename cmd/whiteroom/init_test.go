@@ -591,7 +591,7 @@ func TestInitUsedStore(t *testing.T) {
 
 	t.Run("the documents of the sample site, saved by a user without an account", func(t *testing.T) {
 		db := newDB(t)
-		s, err := store.Create(dbDialer(db.sockets))
+		s, err := store.Create(t.Context(), dbDialer(db.sockets))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -620,7 +620,7 @@ func TestInitUsedStore(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			id, data := sampleDocument(t, src, kind)
 			db := newDB(t)
-			s, err := store.Create(dbDialer(db.sockets))
+			s, err := store.Create(t.Context(), dbDialer(db.sockets))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1096,7 +1096,7 @@ func TestInitFailures(t *testing.T) {
 func TestInitBesideWriter(t *testing.T) {
 	t.Parallel()
 	db := newDB(t)
-	writer, err := store.Create(dbDialer(db.sockets))
+	writer, err := store.Create(t.Context(), dbDialer(db.sockets))
 	if err != nil {
 		t.Fatal(err)
 	}

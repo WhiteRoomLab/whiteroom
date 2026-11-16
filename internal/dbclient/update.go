@@ -55,7 +55,8 @@ func (c *Client) View(ctx context.Context, f func(*Tx) error) error {
 // Update runs f in a transaction that writes, and commits it if f returns nil and ctx has not ended; otherwise nothing
 // that f has written stays. When Update returns nil, the commit is durable. Updates run one at a time: Update waits for
 // the others until ctx ends. f must not call Update of c, which would wait for itself. A client of a reader fails with
-// ErrReadOnly.
+// ErrReadOnly. If the connection of the writer ends in an Update, as it does when ctx ends in the middle of a request,
+// the Update connects again before it returns, so that the daemon has a writer and no other process takes the place.
 func (c *Client) Update(ctx context.Context, f func(*Tx) error) error {
 	switch {
 	case c.isClosed():
@@ -70,6 +71,7 @@ func (c *Client) Update(ctx context.Context, f func(*Tx) error) error {
 		return err
 	}
 	defer c.releaseTurn()
+	defer c.restoreWriter(ctx)
 	cn, seq, err := c.snapshotWriter(ctx)
 	if err != nil {
 		return err
@@ -107,8 +109,29 @@ func (c *Client) endWriter(ctx context.Context, cn *conn) {
 	defer cancel()
 	if cn.release(ctx) != nil {
 		cn.close()
-		c.wconn = nil
 	}
+}
+
+// restoreWriter connects as the writer again, for the holder of the turn, if the Update or the PutOriginal that ends has
+// left the writer connection ended and the client is open: with no connection the daemon has no writer, and another
+// process may connect as one, which the client holds off while it has its own. The wait does not depend on ctx, which may
+// have ended, as that of resolve; if it fails the next write connects, as after a connection that was never made.
+func (c *Client) restoreWriter(ctx context.Context) {
+	if cn := c.wconn; cn == nil || !cn.dead.Load() || c.isClosed() {
+		return
+	}
+	c.wconn = nil
+	if cn, err := c.reconnectWriter(ctx); err == nil {
+		c.wconn = cn
+	}
+}
+
+// reconnectWriter connects as the writer, which the daemon lets in only after the session of the old connection has
+// ended. It does not stop when ctx ends. The connection is not kept: the caller sets wconn.
+func (c *Client) reconnectWriter(ctx context.Context) (*conn, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupWait+max(c.o.DialWait, 0))
+	defer cancel()
+	return c.connectWait(ctx, dbwire.RoleWriter, c.o.DialWait)
 }
 
 // commit sends the ops of t, and returns when the daemon has answered. It leaves the writer connection without a
@@ -145,9 +168,7 @@ func (c *Client) resolve(ctx context.Context, seq uint64, cause error) error {
 		return fmt.Errorf("%s: it is not known whether the commit was made (%w): %w", c.name, cause, why)
 	}
 	// The question is answered also if ctx has ended: whether the commit was made does not depend on it.
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupWait+max(c.o.DialWait, 0))
-	defer cancel()
-	cn, err := c.connectWait(rctx, dbwire.RoleWriter, c.o.DialWait)
+	cn, err := c.reconnectWriter(ctx)
 	if err != nil {
 		return unknown(err)
 	}

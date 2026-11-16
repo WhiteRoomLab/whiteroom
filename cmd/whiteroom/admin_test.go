@@ -1314,7 +1314,7 @@ func TestServeAdminOriginLine(t *testing.T) {
 		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
 		origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
 	}
-	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
+	a, err := openAdmin(t.Context(), testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1610,7 +1610,7 @@ func TestServeAdminErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	noStore := newDB(t)
-	_, noStoreErr := store.Open(dbDialer(noStore.sockets))
+	_, noStoreErr := store.Open(t.Context(), dbDialer(noStore.sockets))
 	_, rootErr := os.OpenRoot(missing)
 	dialErr := func(dir string) error {
 		_, err := new(net.Dialer).DialContext(t.Context(), "unix", filepath.Join(dir, dbwire.WriterSocket))
@@ -1876,7 +1876,7 @@ func openForRunLogging(t *testing.T, s adminSite, logger *log.Logger) *adminServ
 		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, db: s.db,
 		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
 	}
-	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
+	a, err := openAdmin(t.Context(), testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
