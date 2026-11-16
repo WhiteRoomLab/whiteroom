@@ -24,6 +24,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -70,7 +71,7 @@ func openSite(t *testing.T, dir string) siteDir {
 
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,6 +635,25 @@ func TestSnapshotCanceled(t *testing.T) {
 	src, err := Snapshot(ctx, newStore(t), schemaFile(t), exampleTheme(t))
 	if src != nil || !errors.Is(err, context.Canceled) {
 		t.Errorf("Snapshot() = %v, %v; want the error %v", src, err, context.Canceled)
+	}
+}
+
+// TestSnapshotContextEnds checks that the reads that a Source makes after Snapshot, of a revision and of an original, are
+// bound by the context of Snapshot.
+func TestSnapshotContextEnds(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	src, err := Snapshot(ctx, newStore(t), schemaFile(t), exampleTheme(t))
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	cancel()
+	if f, err := src.Revision(testID(content.RefRevision, 1)); !errors.Is(err, context.Canceled) || f.Data != nil {
+		t.Errorf("Revision() after the context has ended = %s, %v; want the error %v", describe(f), err, context.Canceled)
+	}
+	sum := sha256.Sum256([]byte("no such original"))
+	if f, err := src.OpenMedia("sha256:" + hex.EncodeToString(sum[:])); !errors.Is(err, context.Canceled) || f != nil {
+		t.Errorf("OpenMedia() after the context has ended = %v, %v; want the error %v", f, err, context.Canceled)
 	}
 }
 

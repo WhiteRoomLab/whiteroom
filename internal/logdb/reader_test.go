@@ -934,6 +934,66 @@ func TestReaderMissingSegment(t *testing.T) {
 }
 
 // TestReaderSnapshot: a View sees the state that it first read, while refreshes of other Views publish newer ones.
+func TestReaderScanAfter(t *testing.T) {
+	ctx := context.Background()
+	fsys, db := newSim(t, Options{})
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		putKey(t, db, 1, k, "v"+k)
+	}
+	putKey(t, db, 2, "z", "w")
+	rd := openReader(t, fsys, Options{})
+	rows := func(tx *Tx, table uint32, prefix, after string) string {
+		var got []string
+		tx.ScanAfter(table, []byte(prefix), []byte(after), func(k, v []byte) bool {
+			if cap(v) != len(v) {
+				t.Errorf("value %q of %q has the capacity %d", v, k, cap(v))
+			}
+			got = append(got, string(k)+"="+string(v))
+			return true
+		})
+		return strings.Join(got, " ")
+	}
+	err := rd.View(ctx, func(tx *Tx) error {
+		for _, c := range []struct {
+			table                 uint32
+			prefix, after, wanted string
+		}{
+			{1, "", "", "a=va b=vb c=vc d=vd e=ve"},
+			{1, "", "b", "c=vc d=vd e=ve"},
+			{1, "", "bb", "c=vc d=vd e=ve"},
+			{1, "", "e", ""},
+			{1, "c", "b", "c=vc"},
+			{1, "c", "c", ""},
+			{2, "", "a", "z=w"},
+			{3, "", "", ""},
+		} {
+			if got := rows(tx, c.table, c.prefix, c.after); got != c.wanted {
+				t.Errorf("reader: ScanAfter(%d, %q, %q): %q, want %q", c.table, c.prefix, c.after, got, c.wanted)
+			}
+		}
+		if err := checkPages(tx, 1, 2, [][2]string{{"a", "va"}, {"b", "vb"}, {"c", "vc"}, {"d", "vd"}, {"e", "ve"}}); err != nil {
+			t.Error(err)
+		}
+		// A commit of the writer after the first read is not in the snapshot of this View.
+		putKey(t, db, 1, "bb", "new")
+		if got := rows(tx, 1, "", "b"); got != "c=vc d=vd e=ve" {
+			t.Errorf("reader: ScanAfter after a commit of the writer: %q", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rd.View(ctx, func(tx *Tx) error {
+		if got := rows(tx, 1, "", "b"); got != "bb=new c=vc d=vd e=ve" {
+			t.Errorf("reader: ScanAfter in the next View: %q", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReaderSnapshot(t *testing.T) {
 	ctx := context.Background()
 	fsys, db := newSim(t, Options{})

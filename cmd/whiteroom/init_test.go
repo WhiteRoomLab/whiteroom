@@ -11,19 +11,26 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -149,7 +156,7 @@ func documentsOf(t *testing.T, s *store.Store) map[string]string {
 // must be that of its login name.
 func inspect(t *testing.T, dir, password string) initialized {
 	t.Helper()
-	s, err := store.Open(dir)
+	s, err := storetest.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,49 +237,69 @@ func checkDirs(t *testing.T, what, dir string, dir0700 bool) {
 	}
 }
 
-// TestInit makes data directories with the password on a pipe: of a missing directory, with parents that are missing too,
-// and of an empty one. It checks the output, the one account, who can log in, the records, that there are no documents, the
-// modes and that nothing has the password.
+// initDB runs whiteroom init on the daemon db, with the first administrator, the flags more, and the text stdin as the
+// standard input.
+func initDB(t *testing.T, db testDB, stdin string, more ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	return runInitCmd(t, stdin, adminFlags(append([]string{"-db", db.sockets}, more...)...)...)
+}
+
+// wantInitialized is what whiteroom init prints for the daemon db, with the administrator admin and, if site is not "", the
+// site that it imports.
+func wantInitialized(db testDB, admin account.Account, site string) string {
+	want := "initialized the store of " + db.sockets + "\ncreated the administrator " + initLogin + " (" + admin.ID + ")\n"
+	if site != "" {
+		want += "imported the site " + site + "\n"
+	}
+	return want
+}
+
+// checkStoreMade checks that the store of db has been made and has no account and no document: what a whiteroom init that
+// failed before it made the administrator leaves, which the next init uses.
+func checkStoreMade(t *testing.T, what string, db testDB) {
+	t.Helper()
+	got := inspect(t, db.data, initPassword)
+	checkRecords(t, what, got.records, []audit.Action{audit.StoreCreate}, []string{audit.System})
+	if len(got.accounts) != 0 || len(got.docs) != 0 {
+		t.Errorf("%s: the store has %d accounts and %d documents, want none", what, len(got.accounts), len(got.docs))
+	}
+}
+
+// TestInit makes the first administrator of new stores with the password on a pipe, in the ways that the input can end. It
+// checks the output, the one account, who can log in, the records, that there are no documents, the modes of the data
+// directory, the commits that init makes, and that nothing has the password.
 func TestInit(t *testing.T) {
-	for _, tt := range []struct {
-		what    string
-		prepare func(t *testing.T, data string)
-		stdin   string
-		made    bool // the directory is made by init
-	}{
-		{"a missing directory", func(t *testing.T, data string) {}, initPassword + "\n", true},
-		{"an empty directory", func(t *testing.T, data string) {
-			if err := os.Mkdir(data, 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}, initPassword + "\r\n", false},
-		{"the end of the input", func(t *testing.T, data string) {}, initPassword, true},
-		{"more lines", func(t *testing.T, data string) {}, initPassword + "\nthe rest\n", true},
+	for _, tt := range []struct{ what, stdin string }{
+		{"a line", initPassword + "\n"},
+		{"a line that ends with CR LF", initPassword + "\r\n"},
+		{"the end of the input", initPassword},
+		{"more lines", initPassword + "\nthe rest\n"},
 	} {
-		data := filepath.Join(t.TempDir(), "parent", "data")
-		if !tt.made {
-			data = filepath.Join(t.TempDir(), "data")
+		db := newDB(t)
+		if n := commitsOf(t, db); n != 0 {
+			t.Fatalf("%s: a new store has the commit %d, want none", tt.what, n)
 		}
-		tt.prepare(t, data)
-		code, stdout, stderr := runInitCmd(t, tt.stdin, adminFlags("-data", data)...)
+		code, stdout, stderr := initDB(t, db, tt.stdin)
 		if code != 0 || stderr != "" {
 			t.Fatalf("%s: whiteroom init = %d, with stderr:\n%s", tt.what, code, stderr)
 		}
-		got := inspect(t, data, initPassword)
+		got := inspect(t, db.data, initPassword)
 		admin := checkAdmin(t, tt.what, got)
-		wantOut := "created the data directory " + data + "\ncreated the administrator " + initLogin + " (" + admin.ID + ")\n"
-		if stdout != wantOut {
-			t.Errorf("%s: whiteroom init printed:\n%s\nwant:\n%s", tt.what, stdout, wantOut)
+		if want := wantInitialized(db, admin, ""); stdout != want {
+			t.Errorf("%s: whiteroom init printed:\n%s\nwant:\n%s", tt.what, stdout, want)
 		}
 		checkRecords(t, tt.what, got.records, []audit.Action{audit.StoreCreate, audit.AccountCreateFirst},
 			[]string{audit.System, audit.System})
 		if len(got.docs) != 0 {
 			t.Errorf("%s: the store has documents %v, want none", tt.what, slices.Sorted(maps.Keys(got.docs)))
 		}
-		checkDirs(t, tt.what, data, tt.made)
-		checkNoSecret(t, tt.what, initPassword, stdout, stderr, data)
-		if !dataHas(t, data, initLogin) {
-			t.Errorf("%s: the scan of %s does not find the login name, which the data has", tt.what, data)
+		if n := commitsOf(t, db); n != 2 {
+			t.Errorf("%s: init made the commits up to %d, want 2: the store and the administrator", tt.what, n)
+		}
+		checkDirs(t, tt.what, db.data, true)
+		checkNoSecret(t, tt.what, initPassword, stdout, stderr, db.data)
+		if !dataHas(t, db.data, initLogin) {
+			t.Errorf("%s: the scan of %s does not find the login name, which the data has", tt.what, db.data)
 		}
 	}
 }
@@ -291,30 +318,31 @@ func sampleImportWarnings(t *testing.T, site string) string {
 	return b.String()
 }
 
-// TestInitImport makes a data directory with the sample site, with the example theme of -theme: the documents are those
-// of edit.Import, saved by the administrator, who also does the import in the records, and the warnings are those of
-// the redirects.
+// TestInitImport initializes a store with the sample site, with the example theme of -theme: the documents are those of
+// edit.Import, saved by the administrator, who also does the import in the records, and the warnings are those of the
+// redirects, printed once; init makes 3 commits, and the trial import of the site, which comes before them, none.
 func TestInitImport(t *testing.T) {
-	data := filepath.Join(t.TempDir(), "data")
-	code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data, "-theme", exampleTheme, sampleSite)...)
+	db := newDB(t)
+	code, stdout, stderr := initDB(t, db, initPassword+"\n", "-theme", exampleTheme, sampleSite)
 	if code != 0 {
 		t.Fatalf("whiteroom init of the sample site = %d, with stderr:\n%s", code, stderr)
 	}
 	if want := sampleImportWarnings(t, sampleSite); want == "" || stderr != want {
 		t.Errorf("whiteroom init printed the warnings:\n%s\nwant:\n%s", stderr, want)
 	}
-	got := inspect(t, data, initPassword)
+	got := inspect(t, db.data, initPassword)
 	admin := checkAdmin(t, "the sample site", got)
-	wantOut := "created the data directory " + data + "\ncreated the administrator " + initLogin + " (" + admin.ID + ")\n" +
-		"imported the site " + sampleSite + "\n"
-	if stdout != wantOut {
-		t.Errorf("whiteroom init printed:\n%s\nwant:\n%s", stdout, wantOut)
+	if want := wantInitialized(db, admin, sampleSite); stdout != want {
+		t.Errorf("whiteroom init printed:\n%s\nwant:\n%s", stdout, want)
 	}
 	checkRecords(t, "the sample site", got.records,
 		[]audit.Action{audit.StoreCreate, audit.AccountCreateFirst, audit.SiteImport},
 		[]string{audit.System, audit.System, admin.ID})
-	checkDirs(t, "the sample site", data, true)
-	checkNoSecret(t, "the sample site", initPassword, stdout, stderr, data)
+	if n := commitsOf(t, db); n != 3 {
+		t.Errorf("init made the commits up to %d, want 3: the store, the administrator and the site", n)
+	}
+	checkDirs(t, "the sample site", db.data, true)
+	checkNoSecret(t, "the sample site", initPassword, stdout, stderr, db.data)
 
 	// The documents are those that edit.Import stores of the same site for the same user.
 	src, closeSite, err := openSite(sampleSite, exampleTheme)
@@ -322,7 +350,7 @@ func TestInitImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeSite()
-	ref, err := store.Create(filepath.Join(t.TempDir(), "ref"))
+	ref, err := storetest.Create(filepath.Join(t.TempDir(), "ref"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,48 +382,37 @@ func emailLine() string {
 	return "whiteroom init: -email: " + content.CheckEmail("nobody").Error() + "\n"
 }
 
-// initCase is a whiteroom init that fails, with the text on its standard input, its exit code, what it prints on stderr,
-// and whether the data directory is as it was and may be made again.
+// initCase is a whiteroom init that fails, with the text on its standard input, its exit code, and what it prints on
+// stderr.
 type initCase struct {
 	what string
-	// prepare changes the data directory, which is missing or empty, and returns the arguments after init.
-	prepare func(t *testing.T, data string) []string
-	stdin   string
-	secret  string // that must not appear anywhere; initPassword if ""
-	code    int
+	// args returns the arguments after init, for the daemon db.
+	args  func(t *testing.T, db testDB) []string
+	stdin string
+	// unread says that the command must fail before it asks for the password: its standard input is not read.
+	unread bool
+	secret string // that must not appear anywhere; initPassword if ""
+	code   int
 	// stderr is what it prints; if prefixes is true, it is the prefixes of the lines.
-	stderr   func(data string) []string
+	stderr   func(db testDB) []string
 	prefixes bool
-	// retry says that init with the right flags must make the data directory afterwards.
-	retry bool
 }
 
-// TestInitErrors checks the whiteroom init that fail: the exit code, the lines of stderr, that the data directory is as
-// it was, a missing one or an empty one, that init can be run again at once, and that no password is in the output or in
-// the data directory.
+// TestInitErrors checks the whiteroom init that fail: the exit code, the lines of stderr, that the standard input is not read
+// where the command fails before the password, what the store is after it: not made after a usage error, and made, with no
+// account and no document, after any other failure; that init can be run again at once on that store; and that no password is
+// in the output or in the data directory.
 func TestInitErrors(t *testing.T) {
 	help := initHelp(t)
-	usageErr := func(msg string) func(string) []string {
-		return func(string) []string { return []string{"whiteroom init: " + msg + "\n" + help} }
+	usageErr := func(msg string) func(testDB) []string {
+		return func(testDB) []string { return []string{"whiteroom init: " + msg + "\n" + help} }
 	}
-	line := func(format string, args ...any) func(string) []string {
-		return func(data string) []string {
-			return []string{"whiteroom init: " + fmt.Sprintf(strings.ReplaceAll(format, "DATA", data), args...) + "\n"}
-		}
+	line := func(format string, args ...any) func(testDB) []string {
+		return func(testDB) []string { return []string{"whiteroom init: " + fmt.Sprintf(format, args...) + "\n"} }
 	}
-	notEmpty := "DATA: not empty; the data directory must be missing or an empty directory"
-	flagsOnly := func(extra ...string) func(*testing.T, string) []string {
-		return func(t *testing.T, data string) []string {
-			return adminFlags(append([]string{"-data", data}, extra...)...)
-		}
-	}
-	write := func(t *testing.T, name string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
+	flagsOnly := func(extra ...string) func(*testing.T, testDB) []string {
+		return func(t *testing.T, db testDB) []string {
+			return adminFlags(append([]string{"-db", db.sockets}, extra...)...)
 		}
 	}
 	missing := filepath.Join(t.TempDir(), "missing")
@@ -422,163 +439,610 @@ func TestInitErrors(t *testing.T) {
 	long := strings.Repeat("p", maxPasswordLine+1)
 
 	cases := []initCase{
-		{"no -login", func(t *testing.T, data string) []string {
-			return []string{"-name", initName, "-email", initEmail, "-data", data}
-		}, initPassword + "\n", "", 2, usageErr("-login is required"), false, true},
-		{"an empty -login", func(t *testing.T, data string) []string {
-			return []string{"-login", "", "-name", initName, "-email", initEmail, "-data", data}
-		}, initPassword + "\n", "", 2, usageErr("-login is required"), false, true},
-		{"no -name", func(t *testing.T, data string) []string {
-			return []string{"-login", initLogin, "-email", initEmail, "-data", data}
-		}, initPassword + "\n", "", 2, usageErr("-name is required"), false, true},
-		{"no -email", func(t *testing.T, data string) []string {
-			return []string{"-login", initLogin, "-name", initName, "-data", data}
-		}, initPassword + "\n", "", 2, usageErr("-email is required"), false, true},
-		{"no data directory", func(t *testing.T, data string) []string { return adminFlags() },
-			initPassword + "\n", "", 2, usageErr("no data directory: give -data DIR, or data in the config file"), false, true},
-		{"two arguments", flagsOnly("a", "b"), initPassword + "\n", "", 2,
-			usageErr("too many arguments: give at most one SITE, after the flags"), false, true},
-		{"-theme without SITE", flagsOnly("-theme", exampleTheme), initPassword + "\n", "", 2,
-			usageErr("-theme is for SITE: give the directory SITE of the site to import"), false, true},
+		{"no -login", func(t *testing.T, db testDB) []string {
+			return []string{"-name", initName, "-email", initEmail, "-db", db.sockets}
+		}, initPassword + "\n", true, "", 2, usageErr("-login is required"), false},
+		{"an empty -login", func(t *testing.T, db testDB) []string {
+			return []string{"-login", "", "-name", initName, "-email", initEmail, "-db", db.sockets}
+		}, initPassword + "\n", true, "", 2, usageErr("-login is required"), false},
+		{"no -name", func(t *testing.T, db testDB) []string {
+			return []string{"-login", initLogin, "-email", initEmail, "-db", db.sockets}
+		}, initPassword + "\n", true, "", 2, usageErr("-name is required"), false},
+		{"no -email", func(t *testing.T, db testDB) []string {
+			return []string{"-login", initLogin, "-name", initName, "-db", db.sockets}
+		}, initPassword + "\n", true, "", 2, usageErr("-email is required"), false},
+		{"no database", func(t *testing.T, db testDB) []string { return adminFlags() },
+			initPassword + "\n", true, "", 2, usageErr(errNoDB), false},
+		{"an empty -db", func(t *testing.T, db testDB) []string { return adminFlags("-db", "") },
+			initPassword + "\n", true, "", 2, usageErr(errNoDB), false},
+		{"two arguments", flagsOnly("a", "b"), initPassword + "\n", true, "", 2,
+			usageErr("too many arguments: give at most one SITE, after the flags"), false},
+		{"-theme without SITE", flagsOnly("-theme", exampleTheme), initPassword + "\n", true, "", 2,
+			usageErr("-theme is for SITE: give the directory SITE of the site to import"), false},
 
-		{"a file in the data directory", func(t *testing.T, data string) []string {
-			write(t, filepath.Join(data, "x"))
-			return adminFlags("-data", data)
-		}, initPassword + "\n", "", 1, line(notEmpty), false, false},
-		{"a directory in the data directory", func(t *testing.T, data string) []string {
-			if err := os.MkdirAll(filepath.Join(data, "sub"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			return adminFlags("-data", data)
-		}, initPassword + "\n", "", 1, line(notEmpty), false, false},
-		{"a files directory that the data directory has", func(t *testing.T, data string) []string {
-			write(t, filepath.Join(data, "files", "ab", "cd"))
-			return adminFlags("-data", data)
-		}, initPassword + "\n", "", 1, line(notEmpty), false, false},
-		{"a logdb directory that the data directory has", func(t *testing.T, data string) []string {
-			write(t, filepath.Join(data, "logdb", "x"))
-			return adminFlags("-data", data)
-		}, initPassword + "\n", "", 1, line(notEmpty), false, false},
-		{"a file as the data directory", func(t *testing.T, data string) []string {
-			if err := os.RemoveAll(data); err != nil {
-				t.Fatal(err)
-			}
-			write(t, data)
-			return adminFlags("-data", data)
-		}, initPassword + "\n", "", 1,
-			line("DATA: not a directory; the data directory must be missing or an empty directory"), false, false},
-
-		{"a missing site", flagsOnly(missing), initPassword + "\n", "", 1,
-			line("open %s: no such file or directory", missing), false, true},
-		{"an empty site directory", flagsOnly(siteEmpty), initPassword + "\n", "", 1,
-			func(string) []string {
+		{"a missing site", flagsOnly(missing), initPassword + "\n", true, "", 1,
+			line("open %s: no such file or directory", missing), false},
+		{"an empty site directory", flagsOnly(siteEmpty), initPassword + "\n", true, "", 1,
+			func(testDB) []string {
 				return []string{filepath.Join(siteEmpty, "site", "schema.yaml") + ": missing file\n" +
 					filepath.Join(siteEmpty, "site", "settings.json") + ": missing file\n"}
-			}, false, true},
-		{"a site without a theme", flagsOnly(siteNoTheme), initPassword + "\n", "", 1,
-			func(string) []string { return []string{filepath.Join(siteNoTheme, "theme") + ": missing directory\n"} }, false, true},
-		{"a missing theme", flagsOnly("-theme", missing, sampleSite), initPassword + "\n", "", 1,
-			line("open %s: no such file or directory", missing), false, true},
+			}, false},
+		{"a site without a theme", flagsOnly(siteNoTheme), initPassword + "\n", true, "", 1,
+			func(testDB) []string { return []string{filepath.Join(siteNoTheme, "theme") + ": missing directory\n"} }, false},
+		{"a missing theme", flagsOnly("-theme", missing, sampleSite), initPassword + "\n", true, "", 1,
+			line("open %s: no such file or directory", missing), false},
+		{"a site with a broken document", flagsOnly(siteBroken), initPassword + "\n", true, "", 1,
+			func(testDB) []string { return []string{revision + ":1:1: /title: missing title\n"} }, false},
 
-		{"no standard input", flagsOnly(), "", "", 1, line("no password was read from the standard input"), false, true},
-		{"an empty line", flagsOnly(), "\n" + initPassword + "\n", "", 1,
-			line("no password was read from the standard input"), false, true},
-		{"a line that is too long", flagsOnly(), long + "\n", long[:20], 1,
-			line("the password is longer than %d bytes", maxPasswordLine), false, true},
+		{"no standard input", flagsOnly(), "", false, "", 1, line("no password was read from the standard input"), false},
+		{"an empty line", flagsOnly(), "\n" + initPassword + "\n", false, "", 1,
+			line("no password was read from the standard input"), false},
+		{"a line that is too long", flagsOnly(), long + "\n", false, long[:20], 1,
+			line("the password is longer than %d bytes", maxPasswordLine), false},
 
-		{"a short password", flagsOnly(), shortSecret + "\n" + initPassword + "\n", shortSecret, 1,
-			line("the password: too short: %d characters (min 15)", len(shortSecret)), false, true},
-		{"the login name as the password", func(t *testing.T, data string) []string {
-			return adminFlags("-login", sameAsLogin, "-data", data)
-		}, sameAsLogin + "\n", sameAsLogin, 1,
-			line("the password: the same as the login name, the email address or the name"), false, true},
-		{"an invalid -email", flagsOnly("-email", "nobody"), initPassword + "\n", "", 1,
-			func(string) []string { return []string{emailLine()} }, false, true},
-		{"an invalid -login", flagsOnly("-login", "Bad Login"), initPassword + "\n", "", 1,
-			func(string) []string { return []string{"whiteroom init: -login: invalid login name \"bad login\": "} }, true, true},
+		{"a short password", flagsOnly(), shortSecret + "\n" + initPassword + "\n", false, shortSecret, 1,
+			line("the password: too short: %d characters (min 15)", len(shortSecret)), false},
+		{"the login name as the password", func(t *testing.T, db testDB) []string {
+			return adminFlags("-login", sameAsLogin, "-db", db.sockets)
+		}, sameAsLogin + "\n", false, sameAsLogin, 1,
+			line("the password: the same as the login name, the email address or the name"), false},
+		{"an invalid -email", flagsOnly("-email", "nobody"), initPassword + "\n", false, "", 1,
+			func(testDB) []string { return []string{emailLine()} }, false},
+		{"an invalid -login", flagsOnly("-login", "Bad Login"), initPassword + "\n", false, "", 1,
+			func(testDB) []string { return []string{"whiteroom init: -login: invalid login name \"bad login\": "} }, true},
 		{"problems in the flags and the password", flagsOnly("-login", "Bad Login", "-email", "nobody"),
-			shortSecret + "\n", shortSecret, 1,
-			func(string) []string {
+			shortSecret + "\n", false, shortSecret, 1,
+			func(testDB) []string {
 				return []string{
 					"whiteroom init: -login: invalid login name \"bad login\": ",
 					strings.TrimSuffix(emailLine(), "\n"),
 					fmt.Sprintf("whiteroom init: the password: too short: %d characters (min 15)", len(shortSecret)),
 				}
-			}, true, true},
-		{"a site with a broken document", flagsOnly(siteBroken), initPassword + "\n", "", 1,
-			func(string) []string { return []string{revision + ":1:1: /title: missing title\n"} }, false, true},
+			}, true},
 	}
 
-	for _, preexisting := range []bool{false, true} {
-		for _, tt := range cases {
-			what := tt.what
-			if preexisting {
-				what += " in an empty directory"
+	for _, tt := range cases {
+		db := newDB(t)
+		args := tt.args(t, db)
+		before := snapshot(t, db.data)
+		var stdin io.Reader = strings.NewReader(tt.stdin)
+		if tt.unread {
+			stdin = failingReader{t}
+		}
+		var o, e bytes.Buffer
+		code := run(t.Context(), append([]string{"init"}, args...), testEnv(stdin, &o, &e))
+		stdout, stderr := o.String(), e.String()
+		want := tt.stderr(db)
+		switch {
+		case code != tt.code || stdout != "":
+			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant %d, and nothing on stdout", tt.what, code,
+				stdout, stderr, tt.code)
+		case !tt.prefixes && stderr != strings.Join(want, ""):
+			t.Errorf("%s: whiteroom init printed:\n%s\nwant:\n%s", tt.what, stderr, strings.Join(want, ""))
+		case tt.prefixes:
+			lines := strings.SplitAfter(stderr, "\n")
+			lines = lines[:len(lines)-1]
+			if len(lines) != len(want) {
+				t.Errorf("%s: whiteroom init printed %d lines:\n%s\nwant %d, those that start with %q", tt.what, len(lines), stderr,
+					len(want), want)
+				break
 			}
-			data := filepath.Join(t.TempDir(), "data")
-			if preexisting {
-				if err := os.Mkdir(data, 0o755); err != nil {
-					t.Fatal(err)
+			for i, l := range lines {
+				if !strings.HasPrefix(l, want[i]) {
+					t.Errorf("%s: line %d is %q, want it to start with %q", tt.what, i+1, l, want[i])
 				}
 			}
-			args := tt.prepare(t, data)
-			before := snapshot(t, data)
-			code, stdout, stderr := runInitCmd(t, tt.stdin, args...)
-			want := tt.stderr(data)
+		}
+		checkNoSecret(t, tt.what, cmp.Or(tt.secret, initPassword), stdout, stderr, db.data)
+		if tt.code == 2 {
+			// A usage error is found before the command connects: nothing is made.
+			if after := snapshot(t, db.data); after != before || commitsOf(t, db) != 0 {
+				t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", tt.what, after, before)
+			}
+		} else {
+			checkStoreMade(t, tt.what, db)
+		}
+
+		// Init can be run again at once, on the store that the failure leaves.
+		code, stdout, stderr = initDB(t, db, initPassword+"\n")
+		if code != 0 || stderr != "" {
+			t.Errorf("%s: whiteroom init again = %d, with stdout %q and stderr:\n%s", tt.what, code, stdout, stderr)
+			continue
+		}
+		checkAdmin(t, tt.what+", again", inspect(t, db.data, initPassword))
+	}
+}
+
+// refusedInit checks that whiteroom init of the daemon db, which does not read its standard input, is refused with the line
+// that the store has what, accounts or documents, and that it changes nothing: not a file of the data directory, not the
+// number of the last commit.
+func refusedInit(t *testing.T, what string, db testDB, what2 string, more ...string) {
+	t.Helper()
+	before, commits := stateOf(t, db.data), commitsOf(t, db)
+	var o, e bytes.Buffer
+	args := append([]string{"init"}, adminFlags(append([]string{"-db", db.sockets}, more...)...)...)
+	code := run(t.Context(), args, testEnv(failingReader{t}, &o, &e))
+	want := "whiteroom init: the store of " + db.sockets + " has " + what2 + ": init is for a new store\n"
+	if code != 1 || o.Len() != 0 || e.String() != want {
+		t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, nothing, and %q", what, code, o.String(), e.String(), want)
+	}
+	if after := stateOf(t, db.data); after != before {
+		t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", what, after, before)
+	}
+	if n := commitsOf(t, db); n != commits {
+		t.Errorf("%s: the last commit is %d, was %d", what, n, commits)
+	}
+}
+
+// TestInitUsedStore checks that whiteroom init refuses a store that has an account, and one that has a document of any kind,
+// the settings included, and writes nothing to it: the files of the data directory are as they were, with the hash of each,
+// and so is the number of the last commit, also when the SITE that it is given cannot be opened, which is not looked at.
+func TestInitUsedStore(t *testing.T) {
+	t.Run("an account", func(t *testing.T) {
+		db := newDB(t)
+		if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
+			t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
+		}
+		refusedInit(t, "an account", db, "accounts")
+		refusedInit(t, "an account, and a SITE", db, "accounts", sampleSite)
+		refusedInit(t, "an account, and a SITE that is none", db, "accounts", filepath.Join(t.TempDir(), "none"))
+		checkAdmin(t, "the account", inspect(t, db.data, initPassword))
+	})
+
+	t.Run("the documents of the sample site, saved by a user without an account", func(t *testing.T) {
+		db := newDB(t)
+		s, err := store.Create(t.Context(), dbDialer(db.sockets))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src, closeSite, err := openSite(sampleSite, exampleTheme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeSite()
+		if _, err := edit.Import(t.Context(), s, src, content.FormatID(content.RefUser, [16]byte{0: 0x02, 15: 1})); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		refusedInit(t, "the documents", db, "documents")
+		refusedInit(t, "the documents, and a SITE", db, "documents", sampleSite)
+	})
+
+	// One document of each kind, with nothing else, is enough, the settings among them.
+	src, closeSite, err := openSite(sampleSite, exampleTheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeSite)
+	for _, kind := range newStoreKinds {
+		t.Run(string(kind), func(t *testing.T) {
+			id, data := sampleDocument(t, src, kind)
+			db := newDB(t)
+			s, err := store.Create(t.Context(), dbDialer(db.sockets))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.Update(t.Context(), func(tx *store.Tx) error {
+				if _, err := tx.Put(kind, id, data, "usr_01JB8Y6T2RG7M4XK9P2D5W8NQ3"); err != nil {
+					return err
+				}
+				return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			refusedInit(t, "a document of the kind "+string(kind), db, "documents")
+		})
+	}
+}
+
+// sampleDocument returns the ID and the bytes of a document of the kind in the sample site: the settings, which have no ID,
+// or the first of the documents of the kind.
+func sampleDocument(t *testing.T, src edit.Source, kind content.RefKind) (id string, data []byte) {
+	t.Helper()
+	if kind == store.SettingsKind {
+		settings, _, err := src.Settings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "", settings.Data
+	}
+	files, err := src.Documents(kind)
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the documents of the kind %s in the sample site: %d, %v", kind, len(files), err)
+	}
+	id = slices.Sorted(maps.Keys(files))[0]
+	return id, files[id].Data
+}
+
+// TestInitTrial checks that the site is tried before the password is asked for, and that the trial commits nothing: a site
+// with a problem, in any stage of the import, fails with the problems, without a read of the standard input and without an
+// administrator, and a second init with the site made right works on the store that the first has made; and the number of the
+// last commit, when the password is asked for, is that of the store that the command has just made, so that the trial has not
+// committed.
+func TestInitTrial(t *testing.T) {
+	db := newDB(t)
+	site := copySample(t)
+	file := filepath.Join(site, "revisions", "rev_01JBD1Y2Z3A4B5C6D7E8F9G0H1.json")
+	changeSlug := func(from, to string) {
+		t.Helper()
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := strings.Replace(string(data), from, to, 1)
+		if changed == string(data) {
+			t.Fatalf("%s has no %s", file, from)
+		}
+		if err := os.WriteFile(file, []byte(changed), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The slug of the page "contact" is that of the page "about": only the last check of the import finds it.
+	changeSlug(`"slug": "contact"`, `"slug": "about"`)
+	var o, e bytes.Buffer
+	code := run(t.Context(), append([]string{"init"}, adminFlags("-db", db.sockets, "-theme", exampleTheme, site)...),
+		testEnv(failingReader{t}, &o, &e))
+	if code != 1 || o.Len() != 0 || !strings.Contains(e.String(), `/slug: slug "about" is also used by`) {
+		t.Fatalf("whiteroom init of a site with a duplicate slug = %d, with stdout %q and stderr:\n%s\nwant 1, nothing and the problem",
+			code, o.String(), e.String())
+	}
+	checkStoreMade(t, "a site with a duplicate slug", db)
+	if n := commitsOf(t, db); n != 1 {
+		t.Errorf("the last commit is %d after the trial of a site with a problem, want 1, that of the store", n)
+	}
+
+	// The site made right: the store that the first init has made is used, and the number of the last commit, when the password
+	// is asked for, is that of the store.
+	changeSlug(`"slug": "about"`, `"slug": "contact"`)
+	var atPassword uint64
+	stdin := &actingReader{act: func() { atPassword = commitsOf(t, db) }, text: strings.NewReader(initPassword + "\n")}
+	code, stdout, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-db", db.sockets, "-theme", exampleTheme, site)...)...)
+	if code != 0 {
+		t.Fatalf("whiteroom init of the site made right = %d, with stderr:\n%s", code, stderr)
+	}
+	if atPassword != 1 {
+		t.Errorf("the last commit is %d when the password is asked for, want 1, that of the store: the trial has committed", atPassword)
+	}
+	got := inspect(t, db.data, initPassword)
+	admin := checkAdmin(t, "the site made right", got)
+	if want := wantInitialized(db, admin, site); stdout != want {
+		t.Errorf("whiteroom init printed:\n%s\nwant:\n%s", stdout, want)
+	}
+	checkRecords(t, "the site made right", got.records,
+		[]audit.Action{audit.StoreCreate, audit.AccountCreateFirst, audit.SiteImport}, []string{audit.System, audit.System, admin.ID})
+	if n := commitsOf(t, db); n != 3 {
+		t.Errorf("the last commit is %d, want 3", n)
+	}
+
+	// On a store that is new, which has no commit at all, the trial comes after the commit of the store, and commits nothing.
+	fresh := newDB(t)
+	var freshAtPassword uint64
+	stdin = &actingReader{act: func() { freshAtPassword = commitsOf(t, fresh) }, text: strings.NewReader(initPassword + "\n")}
+	if code, _, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-db", fresh.sockets, "-theme", exampleTheme, sampleSite)...)...); code != 0 {
+		t.Fatalf("whiteroom init of the sample site = %d, with stderr:\n%s", code, stderr)
+	}
+	if freshAtPassword != 1 {
+		t.Errorf("the last commit is %d when the password is asked for of a new store, want 1", freshAtPassword)
+	}
+}
+
+// fileNames returns the names of the files below dir, with "/", in order.
+func fileNames(t *testing.T, dir string) []string {
+	t.Helper()
+	var names []string
+	err := fs.WalkDir(os.DirFS(dir), ".", func(name string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			names = append(names, name)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+// TestInitFailsAfterAdmin checks the failures of whiteroom init once the administrator is made, which are the failures of the
+// import of SITE, though its trial has passed (an original that the site has lost since, a commit that the daemon fails, a
+// command that is interrupted): the error, and then, on stderr, that the store has the administrator and, unless the daemon
+// stored the import as the command stopped, no site, and how to start over, with exit code 1; the store as it is, with the
+// administrator, and without a document; no file of the data directory removed; and that init is refused for the store
+// from then on.
+func TestInitFailsAfterAdmin(t *testing.T) {
+	advice := func(db testDB) string {
+		return "whiteroom init: the store of " + db.sockets + " now has the administrator " + initLogin + ", and no site, unless " +
+			"the daemon stored the import as the command stopped; to start over, stop whiteroom-db, remove its data directory, " +
+			"make it again with whiteroom-db init, start it, and run whiteroom init again\n"
+	}
+	check := func(t *testing.T, db testDB, code int, stdout, stderr string, before []string, problem string) {
+		t.Helper()
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, advice(db)) || !strings.Contains(stderr, problem) {
+			t.Errorf("whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, nothing, %q, and the advice:\n%s", code, stdout,
+				stderr, problem, advice(db))
+		}
+		if strings.Count(stderr, "\n") < 2 {
+			t.Errorf("stderr is %q, want the error and the advice, in this order", stderr)
+		}
+		got := inspect(t, db.data, initPassword)
+		checkAdmin(t, "the store after the failure", got)
+		checkRecords(t, "the store after the failure", got.records, []audit.Action{audit.StoreCreate, audit.AccountCreateFirst},
+			[]string{audit.System, audit.System})
+		if len(got.docs) != 0 {
+			t.Errorf("the store has %d documents, want none", len(got.docs))
+		}
+		after := fileNames(t, db.data)
+		for _, name := range before {
+			if !slices.Contains(after, name) {
+				t.Errorf("the file %s of the data directory is gone", name)
+			}
+		}
+		checkNoSecret(t, "a failure after the administrator", initPassword, stdout, stderr, db.data)
+		refusedInit(t, "init after the failure", db, "accounts")
+	}
+
+	t.Run("an original that is gone when the import reads it again", func(t *testing.T) {
+		db := newDB(t)
+		site := copySample(t)
+		originals := fileNames(t, filepath.Join(site, "files"))
+		if len(originals) == 0 {
+			t.Fatalf("%s has no original", site)
+		}
+		var before []string
+		stdin := &actingReader{text: strings.NewReader(initPassword + "\n"), act: func() {
+			before = fileNames(t, db.data)
+			if err := os.Remove(filepath.Join(site, "files", filepath.FromSlash(originals[0]))); err != nil {
+				t.Error(err)
+			}
+		}}
+		code, stdout, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-db", db.sockets, site)...)...)
+		check(t, db, code, stdout, stderr, before, "no original with this hash")
+	})
+
+	t.Run("a commit that the daemon fails", func(t *testing.T) {
+		// The third commit, that of the import, whose Update is only tried first, fails in the daemon.
+		var commits atomic.Int32
+		hook := func(point string) error {
+			if point == "commit:gate" && commits.Add(1) == 3 {
+				return errors.New("the disk is gone")
+			}
+			return nil
+		}
+		db := newDBOptions(t, dbtest.Options{Limits: &dbLimits, Hook: hook})
+		var before []string
+		stdin := &actingReader{text: strings.NewReader(initPassword + "\n"), act: func() { before = fileNames(t, db.data) }}
+		code, stdout, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-db", db.sockets, "-theme", exampleTheme, sampleSite)...)...)
+		check(t, db, code, stdout, stderr, before, "")
+		if strings.Contains(stderr, "the disk is gone") || commits.Load() != 3 {
+			t.Errorf("stderr is:\n%s\nafter %d commits, want the daemon's text, with no word of the disk, after 3", stderr, commits.Load())
+		}
+	})
+
+	t.Run("the command is interrupted while the import is written", func(t *testing.T) {
+		// The context ends when the daemon takes the third commit, which it fails, so that the store has no site whichever of
+		// the two the command sees first.
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var commits atomic.Int32
+		hook := func(point string) error {
+			if point == "commit:gate" && commits.Add(1) == 3 {
+				cancel()
+				return errors.New("the disk is gone")
+			}
+			return nil
+		}
+		db := newDBOptions(t, dbtest.Options{Limits: &dbLimits, Hook: hook})
+		var before []string
+		stdin := &actingReader{text: strings.NewReader(initPassword + "\n"), act: func() { before = fileNames(t, db.data) }}
+		var o, e bytes.Buffer
+		args := append([]string{"init"}, adminFlags("-db", db.sockets, "-theme", exampleTheme, sampleSite)...)
+		code := run(ctx, args, testEnv(stdin, &o, &e))
+		check(t, db, code, o.String(), e.String(), before, "")
+		if strings.Contains(e.String(), "the disk is gone") {
+			t.Errorf("stderr is:\n%s\nwant no word of the disk, which the daemon does not tell", &e)
+		}
+	})
+}
+
+// TestInitDefaultCommitRate runs whiteroom init of the sample site on a daemon with the default limit of commits per second,
+// which is whiteroom-db's, 50: its 3 commits are not slowed down. The free space is not checked, as in the other tests.
+func TestInitDefaultCommitRate(t *testing.T) {
+	db := newDBWith(t, dbwire.Limits{MinFree: -1})
+	start := time.Now()
+	code, _, stderr := initDB(t, db, initPassword+"\n", "-theme", exampleTheme, sampleSite)
+	if code != 0 {
+		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Errorf("whiteroom init took %v on a daemon of the default limits", elapsed)
+	}
+	if n := commitsOf(t, db); n != 3 {
+		t.Errorf("the last commit is %d, want 3", n)
+	}
+}
+
+// reachFail checks the output of a command that cannot reach the daemon at the sockets in dir: it names the socket, which is
+// dialed with the role of the command.
+func reachFail(t *testing.T, what, out string, socket string) {
+	t.Helper()
+	if !strings.Contains(out, ": "+dbclient.ErrUnavailable.Error()+": ") || !strings.Contains(out, socket) {
+		t.Errorf("%s printed:\n%s\nwant the socket %s, and that the daemon cannot be reached", what, out, socket)
+	}
+}
+
+// TestNoDaemon runs the commands that connect to a daemon where there is none, a directory of sockets that has none: each
+// fails with exit code 1 and a text that names the socket that it dials, the writer's for init and the account commands, the
+// reader's for the others, and makes nothing: no output directory, no DEST. It takes the wait of the client, so the commands
+// run at the same time.
+func TestNoDaemon(t *testing.T) {
+	t.Parallel()
+	dir, err := os.MkdirTemp("", "wr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	writer, reader := filepath.Join(dir, dbwire.WriterSocket), filepath.Join(dir, dbwire.ReaderSocket)
+	work := t.TempDir()
+	out, cache, dest := filepath.Join(work, "out"), filepath.Join(work, "cache"), filepath.Join(work, "dest")
+	for _, tt := range []struct {
+		what   string
+		args   []string
+		socket string
+		// stdout is where the text is: doctor tells the problem on stdout, with the last line.
+		stdout bool
+	}{
+		{"init", append([]string{"init"}, adminFlags("-db", dir)...), writer, false},
+		{"init of a site", append([]string{"init"}, adminFlags("-db", dir, "-theme", exampleTheme, sampleSite)...), writer, false},
+		{"account reset", []string{"account", "reset", "-db", dir, initLogin}, writer, false},
+		{"account delete", []string{"account", "delete", "-db", dir, "usr_x"}, writer, false},
+		{"backup", []string{"backup", "-db", dir, dest}, reader, false},
+		{"build", []string{"build", "-db", dir, "-theme", exampleTheme, "-out", out, "-cache", cache, sampleSite}, reader, false},
+		{"doctor", []string{"doctor", "-db", dir}, reader, true},
+	} {
+		t.Run(tt.what, func(t *testing.T) {
+			t.Parallel()
+			var o, e bytes.Buffer
+			code := run(t.Context(), tt.args, testEnv(failingReader{t}, &o, &e))
+			name := "whiteroom " + strings.Join(tt.args[:1], " ")
+			if tt.args[0] == "account" {
+				name += " " + tt.args[1]
+			}
 			switch {
-			case code != tt.code || stdout != "":
-				t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant %d, and nothing on stdout", what, code,
-					stdout, stderr, tt.code)
-			case !tt.prefixes && stderr != strings.Join(want, ""):
-				t.Errorf("%s: whiteroom init printed:\n%s\nwant:\n%s", what, stderr, strings.Join(want, ""))
-			case tt.prefixes:
-				lines := strings.SplitAfter(stderr, "\n")
-				lines = lines[:len(lines)-1]
-				if len(lines) != len(want) {
-					t.Errorf("%s: whiteroom init printed %d lines:\n%s\nwant %d, those that start with %q", what, len(lines), stderr,
-						len(want), want)
-					break
+			case tt.stdout:
+				lines := strings.Split(strings.TrimSuffix(o.String(), "\n"), "\n")
+				if code != 1 || e.Len() != 0 || len(lines) != 2 || !strings.HasPrefix(lines[0], "open: "+dir+": ") ||
+					lines[1] != "1 problem found in "+dir {
+					t.Errorf("%s = %d, with stdout:\n%s\nand stderr %q, want 1, the problem open and the count", name, code, &o, &e)
 				}
-				for i, l := range lines {
-					if !strings.HasPrefix(l, want[i]) {
-						t.Errorf("%s: line %d is %q, want it to start with %q", what, i+1, l, want[i])
-					}
+				reachFail(t, name, o.String(), tt.socket)
+			default:
+				if code != 1 || o.Len() != 0 || strings.Count(e.String(), "\n") != 1 || !strings.HasPrefix(e.String(), name+": "+dir+": ") {
+					t.Errorf("%s = %d, with stdout %q and stderr:\n%s\nwant 1, nothing, and one line that starts with the directory", name,
+						code, &o, &e)
 				}
+				reachFail(t, name, e.String(), tt.socket)
 			}
-			if after := snapshot(t, data); after != before {
-				t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", what, after, before)
+		})
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{out, cache, dest} {
+			checkMissing(t, "a command without a daemon", name)
+		}
+	})
+}
+
+// fakeDaemon listens on the two sockets of a new directory, and gives each connection to serve with the role of its socket,
+// as a daemon of another version of the protocol would be. It returns the directory.
+func fakeDaemon(t *testing.T, serve func(role dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer)) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "wr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var conns []net.Conn
+	var listeners []net.Listener
+	for _, s := range []struct {
+		name string
+		role dbwire.Role
+	}{{dbwire.WriterSocket, dbwire.RoleWriter}, {dbwire.ReaderSocket, dbwire.RoleReader}} {
+		l, err := net.Listen("unix", filepath.Join(dir, s.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners = append(listeners, l)
+		wg.Go(func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				conns = append(conns, c)
+				mu.Unlock()
+				wg.Go(func() {
+					defer func() { _ = c.Close() }()
+					serve(s.role, dbwire.NewReader(c, 1<<20), dbwire.NewWriter(c, 1<<20))
+				})
 			}
-			secret := cmp.Or(tt.secret, initPassword)
-			checkNoSecret(t, what, secret, stdout, stderr, data)
-			if !tt.retry {
-				continue
+		})
+	}
+	t.Cleanup(func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	})
+	return dir
+}
+
+// TestDaemonOfAnotherVersion runs the commands against a daemon that speaks another version of the protocol, which refuses
+// the Hello, or answers it with its own version: each fails with exit code 1, a text that has the version of the daemon and
+// that of the program, and makes nothing.
+func TestDaemonOfAnotherVersion(t *testing.T) {
+	hello := func(rd *dbwire.Reader) {
+		if kind, err := rd.Next(); err != nil || kind != dbwire.KindHello {
+			return
+		}
+		_ = rd.Discard()
+	}
+	for _, d := range []struct {
+		what  string
+		serve func(role dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer)
+		want  string
+	}{
+		{"a Hello that is refused", func(_ dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer) {
+			hello(rd)
+			_ = wr.Fail(dbwire.CodeVersion, fmt.Sprintf("protocol version %d, but the daemon speaks version 2", dbwire.Version))
+		}, fmt.Sprintf("version %d, but the daemon speaks version 2", dbwire.Version)},
+		{"a Hello that is answered", func(role dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer) {
+			hello(rd)
+			wr.Begin(dbwire.KindOK)
+			e := &dbwire.Enc{W: wr}
+			e.HelloReply(dbwire.HelloReply{Version: 2, Role: role, Frame: 4096, MaxKey: 4096})
+			_ = wr.End()
+		}, fmt.Sprintf("the daemon speaks version 2, this program %d", dbwire.Version)},
+	} {
+		dir := fakeDaemon(t, d.serve)
+		work := t.TempDir()
+		out, cache, dest := filepath.Join(work, "out"), filepath.Join(work, "cache"), filepath.Join(work, "dest")
+		for _, args := range [][]string{
+			append([]string{"init"}, adminFlags("-db", dir)...),
+			{"account", "reset", "-db", dir, initLogin},
+			{"account", "delete", "-db", dir, "usr_x"},
+			{"backup", "-db", dir, dest},
+			{"build", "-db", dir, "-theme", exampleTheme, "-out", out, "-cache", cache, sampleSite},
+			{"doctor", "-db", dir},
+		} {
+			var o, e bytes.Buffer
+			code := run(t.Context(), args, testEnv(failingReader{t}, &o, &e))
+			text := o.String() + e.String()
+			if code != 1 || !strings.Contains(text, d.want) || strings.Count(text, "\n") > 2 {
+				t.Errorf("%s: whiteroom %s = %d, with stdout %q and stderr %q, want 1, and %q", d.what, args[0], code, &o, &e, d.want)
 			}
-			code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...)
-			if code != 0 || stderr != "" {
-				t.Errorf("%s: whiteroom init again = %d, with stdout %q and stderr:\n%s", what, code, stdout, stderr)
-				continue
-			}
-			checkAdmin(t, what+", again", inspect(t, data, initPassword))
+		}
+		for _, name := range []string{out, cache, dest} {
+			checkMissing(t, d.what, name)
 		}
 	}
 }
 
-// TestInitFailures checks the failures that the arguments do not cause: a parent that is a file, a context that is done,
-// before the password and once the store is made, an error of the accounts, a directory that cannot be written, and a
-// data directory whose name cannot be synced. All but the first leave no more than the directory that was there.
+// TestInitFailures checks the failures that the arguments do not cause: a context that is done, before anything, before the
+// password and once the store is made, and an error of the accounts. The store that they leave has no account, as that of a
+// failure of the site does, and init can be run again.
 func TestInitFailures(t *testing.T) {
-	// A parent of the data directory that is a file.
-	parent := filepath.Join(t.TempDir(), "parent")
-	if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	data := filepath.Join(parent, "data")
-	code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...)
-	if want := "whiteroom init: stat " + data + ": not a directory\n"; code != 1 || stdout != "" || stderr != want {
-		t.Errorf("a parent that is a file: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
-			stderr, want)
-	}
-
 	cheap := func(s *store.Store) (*account.Manager, error) { return account.NewWithIterations(s, 1) }
 	runWith := func(ctx context.Context, newAccounts func(*store.Store) (*account.Manager, error), args ...string) (int, string, string) {
 		var o, e bytes.Buffer
@@ -601,85 +1065,57 @@ func TestInitFailures(t *testing.T) {
 		ctx         context.Context
 		newAccounts func(*store.Store) (*account.Manager, error)
 		stderr      string
+		made        bool // whether the store is made
 	}{
-		{"a context that is done", canceled, cheap, "whiteroom init: interrupted\n"},
-		{"a context that is done once the store is made", late, lateAccounts, "whiteroom init: interrupted\n"},
+		{"a context that is done", canceled, cheap, "whiteroom init: interrupted\n", false},
+		{"a context that is done once the store is made", late, lateAccounts, "whiteroom init: interrupted\n", true},
 		{"accounts that cannot be made", t.Context(), func(*store.Store) (*account.Manager, error) { return nil, noBits },
-			"whiteroom init: no random bits\n"},
+			"whiteroom init: no random bits\n", true},
 	} {
-		for _, preexisting := range []bool{false, true} {
-			what := tt.what
-			data := filepath.Join(t.TempDir(), "data")
-			if preexisting {
-				what += " in an empty directory"
-				if err := os.Mkdir(data, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-			before := snapshot(t, data)
-			code, stdout, stderr := runWith(tt.ctx, tt.newAccounts, adminFlags("-data", data)...)
-			if code != 1 || stdout != "" || stderr != tt.stderr {
-				t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", what, code, stdout, stderr,
-					tt.stderr)
-			}
-			if after := snapshot(t, data); after != before {
-				t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", what, after, before)
-			}
-			checkNoSecret(t, what, initPassword, stdout, stderr, data)
+		db := newDB(t)
+		code, stdout, stderr := runWith(tt.ctx, tt.newAccounts, adminFlags("-db", db.sockets)...)
+		if code != 1 || stdout != "" || stderr != tt.stderr {
+			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", tt.what, code, stdout, stderr,
+				tt.stderr)
+		}
+		if tt.made {
+			checkStoreMade(t, tt.what, db)
+		} else if n := commitsOf(t, db); n != 0 {
+			t.Errorf("%s: the last commit is %d, want none: nothing is made", tt.what, n)
+		}
+		checkNoSecret(t, tt.what, initPassword, stdout, stderr, db.data)
+		if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
+			t.Errorf("%s: whiteroom init again = %d, with stderr:\n%s", tt.what, code, stderr)
 		}
 	}
+}
 
-	// A ".." after a symbolic link: init cleans up what it made in the directory that the kernel means, which is missing, and
-	// leaves the directory beside the link.
-	work, other := linkedDecoy(t)
-	decoy := stateOf(t, filepath.Join(work, "x"))
-	linked := filepath.Join(work, "link") + "/../x"
-	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-data", linked, "-email", "nobody")...)
-	if code != 1 || stdout != "" || stderr != emailLine() {
-		t.Errorf("a .. after a symbolic link: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
-			stderr, emailLine())
-	}
-	if after := stateOf(t, filepath.Join(work, "x")); after != decoy {
-		t.Errorf("a .. after a symbolic link: the directory beside the link is changed:\n%s\nwas:\n%s", after, decoy)
-	}
-	checkMissing(t, "a .. after a symbolic link: the directory that the kernel means", filepath.Join(other, "x"))
-
-	// A directory that cannot be written: the store is not made, and the directory stays as it was.
-	if os.Geteuid() == 0 {
-		t.Log("running as root: a directory that cannot be written is skipped")
-		return
-	}
-	locked := filepath.Join(t.TempDir(), "locked")
-	if err := os.Mkdir(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
-	before := snapshot(t, locked)
-	code, stdout, stderr = runWith(t.Context(), cheap, adminFlags("-data", locked)...)
-	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom init: ") || strings.Count(stderr, "\n") != 1 {
-		t.Errorf("a directory that cannot be written: whiteroom init = %d, with stdout %q and stderr:\n%s", code, stdout, stderr)
-	}
-	if after := snapshot(t, locked); after != before {
-		t.Errorf("a directory that cannot be written: it changed:\n%s\nwas:\n%s", after, before)
-	}
-
-	// A data directory in a directory that can be written but not read: init makes it, cannot open the directory to
-	// sync its name, and removes it.
-	unread, err := filepath.EvalSymlinks(t.TempDir())
+// TestInitBesideWriter runs whiteroom init while another process is connected as the writer of the daemon, such as a whiteroom
+// serve admin: it fails after the wait of the client, with the sentence of the daemon's refusal of a second writer, without
+// reading its standard input, and the store is as it was.
+func TestInitBesideWriter(t *testing.T) {
+	t.Parallel()
+	db := newDB(t)
+	writer, err := store.Create(t.Context(), dbDialer(db.sockets))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(unread, 0o300); err != nil {
-		t.Fatal(err)
+	defer func() { _ = writer.Close() }()
+	before, commits := stateOf(t, db.data), commitsOf(t, db)
+	var o, e bytes.Buffer
+	start := time.Now()
+	code := run(t.Context(), append([]string{"init"}, adminFlags("-db", db.sockets)...), testEnv(failingReader{t}, &o, &e))
+	if want := "whiteroom init: " + db.sockets + ": another process is connected as the writer\n"; code != 1 || o.Len() != 0 ||
+		e.String() != want {
+		t.Errorf("whiteroom init beside a writer = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, o.String(),
+			e.String(), want)
 	}
-	t.Cleanup(func() { _ = os.Chmod(unread, 0o700) })
-	data = filepath.Join(unread, "data")
-	code, stdout, stderr = runWith(t.Context(), cheap, adminFlags("-data", data)...)
-	if want := "whiteroom init: open " + unread + ": permission denied\n"; code != 1 || stdout != "" || stderr != want {
-		t.Errorf("a name that cannot be synced: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code,
-			stdout, stderr, want)
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Errorf("whiteroom init took %v, want the wait of the client, a few seconds", elapsed)
 	}
-	checkMissing(t, "a name that cannot be synced", data)
+	if after := stateOf(t, db.data); after != before || commitsOf(t, db) != commits {
+		t.Errorf("the store has changed:\n%s\nwas:\n%s", after, before)
+	}
 }
 
 // actingReader is a standard input that runs act when it is first read, as another process does while the password is
@@ -700,140 +1136,28 @@ func (r *actingReader) Read(p []byte) (int, error) {
 
 // TestInitInterruptedAtPassword checks that whiteroom init, which waits for the password on an input that gives nothing, as a
 // pipe whose writer is silent, ends when its context is done after it has begun to read: it prints interrupted, returns 1,
-// and has made nothing.
+// and has made no administrator; the store, which it made before, is as an earlier init that was stopped leaves it.
 func TestInitInterruptedAtPassword(t *testing.T) {
-	for _, preexisting := range []bool{false, true} {
-		what, data := "a missing directory", filepath.Join(t.TempDir(), "data")
-		if preexisting {
-			what = "an empty directory"
-			if err := os.Mkdir(data, 0o755); err != nil {
-				t.Fatal(err)
-			}
+	db := newDB(t)
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	ctx, cancel := context.WithCancel(t.Context())
+	stdin := &actingReader{act: cancel, text: pr}
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, append([]string{"init"}, adminFlags("-db", db.sockets)...), testEnv(stdin, &stdout, &stderr))
+	}()
+	select {
+	case code := <-done:
+		if want := "whiteroom init: interrupted\n"; code != 1 || stdout.Len() != 0 || stderr.String() != want {
+			t.Errorf("whiteroom init = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout.String(),
+				stderr.String(), want)
 		}
-		before := snapshot(t, data)
-		pr, pw := io.Pipe()
-		t.Cleanup(func() { _ = pw.Close() })
-		ctx, cancel := context.WithCancel(t.Context())
-		stdin := &actingReader{act: cancel, text: pr}
-		var stdout, stderr bytes.Buffer
-		done := make(chan int, 1)
-		go func() {
-			done <- run(ctx, append([]string{"init"}, adminFlags("-data", data)...), testEnv(stdin, &stdout, &stderr))
-		}()
-		select {
-		case code := <-done:
-			if want := "whiteroom init: interrupted\n"; code != 1 || stdout.Len() != 0 || stderr.String() != want {
-				t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr %q, want 1, nothing and %q", what, code, stdout.String(),
-					stderr.String(), want)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s: whiteroom init has not returned in 10 s after its context is done", what)
-		}
-		if after := snapshot(t, data); after != before {
-			t.Errorf("%s: the data directory changed:\n%s\nwas:\n%s", what, after, before)
-		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("whiteroom init has not returned in 10 s after its context is done")
 	}
-}
-
-// TestInitDataChanged checks whiteroom init when the data directory changes while the password is read: a store that
-// another process has made there, or files in logdb/ and files/, are refused and left as they are; an empty directory
-// is used, and stays if init fails later, since init did not make it.
-func TestInitDataChanged(t *testing.T) {
-	notEmpty := func(data string) string {
-		return "whiteroom init: " + data + ": not empty; the data directory must be missing or an empty directory\n"
-	}
-	anotherStore := func(t *testing.T, data string) {
-		t.Helper()
-		s, err := store.Create(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	someFiles := func(t *testing.T, data string) {
-		t.Helper()
-		for _, name := range []string{"logdb/segment", "files/ab/cd"} {
-			file := filepath.Join(data, filepath.FromSlash(name))
-			if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(file, []byte("another process"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	emptyDir := func(t *testing.T, data string) {
-		t.Helper()
-		if err := os.Mkdir(data, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tt := range []struct {
-		what        string
-		preexisting bool
-		make        func(t *testing.T, data string)
-	}{
-		{"a store made by another process", false, anotherStore},
-		{"a store made by another process in an empty directory", true, anotherStore},
-		{"files made by another process", false, someFiles},
-		{"files made by another process in an empty directory", true, someFiles},
-	} {
-		data := filepath.Join(t.TempDir(), "data")
-		if tt.preexisting {
-			emptyDir(t, data)
-		}
-		var made string
-		stdin := &actingReader{act: func() { tt.make(t, data); made = snapshot(t, data) }, text: strings.NewReader(initPassword + "\n")}
-		code, stdout, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-data", data)...)...)
-		if code != 1 || stdout != "" || stderr != notEmpty(data) {
-			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", tt.what, code, stdout, stderr,
-				notEmpty(data))
-		}
-		if after := snapshot(t, data); made == "" || after != made {
-			t.Errorf("%s: the data directory is:\n%s\nwant it as the other process left it:\n%s", tt.what, after, made)
-		}
-		checkNoSecret(t, tt.what, initPassword, stdout, stderr, data)
-	}
-
-	// The store that another process made is whole: it opens, and has only the record of its making.
-	data := filepath.Join(t.TempDir(), "data")
-	stdin := &actingReader{act: func() { anotherStore(t, data) }, text: strings.NewReader(initPassword + "\n")}
-	if code, _, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-data", data)...)...); code != 1 {
-		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
-	}
-	got := inspect(t, data, initPassword)
-	checkRecords(t, "the store of another process", got.records, []audit.Action{audit.StoreCreate}, []string{audit.System})
-	if len(got.accounts) != 0 {
-		t.Errorf("the store of another process has %d accounts, want none", len(got.accounts))
-	}
-
-	// An empty directory that is made meanwhile is used, which is as good as an empty one that was there.
-	data = filepath.Join(t.TempDir(), "data")
-	stdin = &actingReader{act: func() { emptyDir(t, data) }, text: strings.NewReader(initPassword + "\n")}
-	code, stdout, stderr := runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-data", data)...)...)
-	if code != 0 || stderr != "" {
-		t.Fatalf("an empty directory made meanwhile: whiteroom init = %d, with stderr:\n%s", code, stderr)
-	}
-	admin := checkAdmin(t, "an empty directory made meanwhile", inspect(t, data, initPassword))
-	if want := "created the data directory " + data + "\ncreated the administrator " + initLogin + " (" + admin.ID + ")\n"; stdout != want {
-		t.Errorf("an empty directory made meanwhile: whiteroom init printed:\n%s\nwant:\n%s", stdout, want)
-	}
-
-	// If init then fails, the directory stays, as an empty directory that was there does, for init did not make it.
-	data = filepath.Join(t.TempDir(), "data")
-	var made string
-	stdin = &actingReader{act: func() { emptyDir(t, data); made = snapshot(t, data) }, text: strings.NewReader(initPassword + "\n")}
-	code, stdout, stderr = runCmdIn(t, stdin, append([]string{"init"}, adminFlags("-data", data, "-email", "nobody")...)...)
-	if code != 1 || stdout != "" || stderr != emailLine() {
-		t.Errorf("an empty directory made meanwhile, and a flag refused: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q",
-			code, stdout, stderr, emailLine())
-	}
-	if after := snapshot(t, data); made == "" || after != made {
-		t.Errorf("an empty directory made meanwhile, and a flag refused: the data directory is:\n%s\nwant the empty directory:\n%s",
-			after, made)
-	}
+	checkStoreMade(t, "an init that is interrupted", db)
 }
 
 // failingReader is a standard input that must not be read.
@@ -844,10 +1168,10 @@ func (r failingReader) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// TestInitConfig makes data directories with config files: the data directory from data, from the directory of the file,
-// and from -data over it; no data directory is a usage error; the site of the file is not imported; the theme of the
-// file, with SITE, is the theme, unless -theme is given; a theme that is not used is no error; and a problem in the file
-// is a usage error before anything is read or made.
+// TestInitConfig initializes stores with config files: the daemon from db, from the directory of the file, and from -db over
+// it; no database is a usage error, also for a file that has data, which is no more used; the site of the file is not
+// imported; the theme of the file, with SITE, is the theme, unless -theme is given; a theme that is not used is no error; and a
+// problem in the file is a usage error before anything is read or made.
 func TestInitConfig(t *testing.T) {
 	root := sampleRoot(t)
 	conf := filepath.Join(root, "conf")
@@ -858,111 +1182,130 @@ func TestInitConfig(t *testing.T) {
 	site := filepath.Join(root, "site")
 	missing := filepath.Join(root, "missing")
 	file := func(text string) string { return writeConfig(t, conf, "whiteroom.yaml", text) }
-	ok := func(what string, stdout, stderr string, code int, data string, imported bool) initialized {
+	ok := func(what string, db testDB, stdout, stderr string, code int, imported bool) initialized {
 		t.Helper()
 		if code != 0 {
 			t.Fatalf("%s: whiteroom init = %d, with stderr:\n%s", what, code, stderr)
 		}
-		got := inspect(t, data, initPassword)
+		got := inspect(t, db.data, initPassword)
 		admin := checkAdmin(t, what, got)
-		want := "created the data directory " + data + "\ncreated the administrator " + initLogin + " (" + admin.ID + ")\n"
+		sitePath := ""
 		if imported {
-			want += "imported the site " + site + "\n"
+			sitePath = site
 		}
-		if stdout != want {
+		if want := wantInitialized(db, admin, sitePath); stdout != want {
 			t.Errorf("%s: whiteroom init printed:\n%s\nwant:\n%s", what, stdout, want)
 		}
 		if imported == (len(got.docs) == 0) {
 			t.Errorf("%s: the store has %d documents, want some if the site is imported (%v), and none if not", what,
 				len(got.docs), imported)
 		}
-		checkNoSecret(t, what, initPassword, stdout, stderr, data)
+		checkNoSecret(t, what, initPassword, stdout, stderr, db.data)
 		return got
 	}
 	help := initHelp(t)
 
-	// The data directory from the file: from the directory of the file; -data over it.
-	data := filepath.Join(conf, "data")
-	cfg := file("data: data\n")
+	// The daemon from the file.
+	db := newDB(t)
+	cfg := file("db: " + strconv.Quote(db.sockets) + "\n")
 	code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg)...)
-	ok("data of the file", stdout, stderr, code, data, false)
+	ok("db of the file", db, stdout, stderr, code, false)
 
-	other := filepath.Join(t.TempDir(), "other")
-	cfg = file("data: data2\n")
-	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg, "-data", other)...)
-	ok("-data over data", stdout, stderr, code, other, false)
-	if s := snapshot(t, filepath.Join(conf, "data2")); s != "missing" {
-		t.Errorf("-data over data: the directory of data is made:\n%s", s)
+	// A path of the file is from its directory: the directory of the sockets is beside the directory of the file.
+	short, err := os.MkdirTemp("", "wr")
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	relative := newDBAt(t, filepath.Join(short, "run"))
+	cfg = writeConfig(t, filepath.Join(short, "conf"), "whiteroom.yaml", "db: ../run\n")
+	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg)...)
+	ok("db from the directory of the file", relative, stdout, stderr, code, false)
 
-	// No data directory.
-	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", file("theme: ../theme\n"))...)
-	if want := "whiteroom init: no data directory: give -data DIR, or data in the config file\n" + help; code != 2 || stdout != "" ||
-		stderr != want {
-		t.Errorf("no data: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and:\n%s", code, stdout, stderr, want)
+	// -db over db: the item names a directory that is none.
+	other := newDB(t)
+	cfg = file("db: " + strconv.Quote(missing) + "\n")
+	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg, "-db", other.sockets)...)
+	ok("-db over db", other, stdout, stderr, code, false)
+	checkMissing(t, "-db over db: the directory of the item", missing)
+
+	// No database, with the item data, which is the daemon's, and not used, though it is checked.
+	for _, text := range []string{"theme: ../theme\n", "data: " + strconv.Quote(other.data) + "\n"} {
+		code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", file(text))...)
+		if want := "whiteroom init: " + errNoDB + "\n" + help; code != 2 || stdout != "" || stderr != want {
+			t.Errorf("no db (%q): whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and:\n%s", text, code, stdout, stderr, want)
+		}
+	}
+	bad := file("data: 5\ndb: " + strconv.Quote(other.sockets) + "\n")
+	var o, e bytes.Buffer
+	code = run(t.Context(), append([]string{"init"}, adminFlags("-config", bad)...), testEnv(failingReader{t}, &o, &e))
+	if want := bad + ":1:1: /data: must be a string\n"; code != 2 || o.Len() != 0 || e.String() != want {
+		t.Errorf("a data that is no string: whiteroom init = %d, with stdout %q and stderr %q, want 2, nothing and %q", code,
+			o.String(), e.String(), want)
 	}
 
 	// The site of the file is not imported, and its theme is not used without SITE.
-	data = filepath.Join(t.TempDir(), "data")
-	cfg = file("data: " + data + "\nsite: ../site\ntheme: ../missing\n")
+	db = newDB(t)
+	cfg = file("db: " + strconv.Quote(db.sockets) + "\nsite: ../site\ntheme: ../missing\n")
 	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg)...)
-	ok("site of the file", stdout, stderr, code, data, false)
+	ok("site of the file", db, stdout, stderr, code, false)
 
 	// SITE, with the theme of the file: SITE has no theme/ of its own.
 	if _, err := os.Stat(filepath.Join(site, "theme")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("%s has a theme: %v", site, err)
 	}
-	data = filepath.Join(t.TempDir(), "data")
-	cfg = file("data: " + data + "\ntheme: ../theme\n")
+	db = newDB(t)
+	cfg = file("db: " + strconv.Quote(db.sockets) + "\ntheme: ../theme\n")
 	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg, site)...)
-	ok("SITE and theme of the file", stdout, stderr, code, data, true)
+	ok("SITE and theme of the file", db, stdout, stderr, code, true)
 
 	// -theme over the theme of the file.
-	data = filepath.Join(t.TempDir(), "data")
-	cfg = file("data: " + data + "\ntheme: ../missing\n")
+	db = newDB(t)
+	cfg = file("db: " + strconv.Quote(db.sockets) + "\ntheme: ../missing\n")
 	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg, "-theme", theme, site)...)
-	ok("-theme over theme", stdout, stderr, code, data, true)
+	ok("-theme over theme", db, stdout, stderr, code, true)
 
-	// The theme of the file is read: a theme that is missing fails.
-	data = filepath.Join(t.TempDir(), "data")
-	cfg = file("data: " + data + "\ntheme: ../missing\n")
-	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags("-config", cfg, site)...)
-	if want := "whiteroom init: open " + missing + ": no such file or directory\n"; code != 1 || stdout != "" || stderr != want {
-		t.Errorf("a missing theme of the file: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
-			stderr, want)
+	// The theme of the file is read: a theme that is missing fails, after the store is made, with no administrator.
+	db = newDB(t)
+	cfg = file("db: " + strconv.Quote(db.sockets) + "\ntheme: ../missing\n")
+	o.Reset()
+	e.Reset()
+	code = run(t.Context(), append([]string{"init"}, adminFlags("-config", cfg, site)...), testEnv(failingReader{t}, &o, &e))
+	if want := "whiteroom init: open " + missing + ": no such file or directory\n"; code != 1 || o.Len() != 0 || e.String() != want {
+		t.Errorf("a missing theme of the file: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, o.String(),
+			e.String(), want)
 	}
-	if s := snapshot(t, data); s != "missing" {
-		t.Errorf("a missing theme of the file: the data directory is made:\n%s", s)
-	}
+	checkStoreMade(t, "a missing theme of the file", db)
 
 	// A problem in the file: before the standard input is read, and nothing is made.
-	data = filepath.Join(t.TempDir(), "data")
-	cfg = file("data: " + data + "\nbogus: 1\n")
-	var o, e bytes.Buffer
+	db = newDB(t)
+	cfg = file("db: " + strconv.Quote(db.sockets) + "\nbogus: 1\n")
+	o.Reset()
+	e.Reset()
 	code = run(t.Context(), append([]string{"init"}, adminFlags("-config", cfg)...), testEnv(failingReader{t}, &o, &e))
 	if want := cfg + ":2:1: /bogus: unknown item\n"; code != 2 || o.Len() != 0 || e.String() != want {
 		t.Errorf("a problem in the file: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and %q", code, o.String(),
 			e.String(), want)
 	}
-	if s := snapshot(t, data); s != "missing" {
-		t.Errorf("a problem in the file: the data directory is made:\n%s", s)
+	if n := commitsOf(t, db); n != 0 {
+		t.Errorf("a problem in the file: the last commit is %d, want none", n)
 	}
 
 	// No file is read without -config.
 	t.Chdir(conf)
-	data = filepath.Join(t.TempDir(), "data")
-	file("data: " + data + "\n")
+	db = newDB(t)
+	file("db: " + strconv.Quote(db.sockets) + "\n")
 	code, stdout, stderr = runInitCmd(t, initPassword+"\n", adminFlags()...)
-	if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom init: no data directory") {
-		t.Errorf("no -config: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and no data directory", code, stdout, stderr)
+	if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom init: no database") {
+		t.Errorf("no -config: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, and no database", code, stdout, stderr)
 	}
 }
 
-// TestInitURL imports a site with -url and with the item url of a config file: a redirect that leads back to itself under the
-// URL, which is none under the URL of the settings and under another URL, is a problem of the import, which makes no data
-// directory; the settings that the import stores keep the url that is written in them. The flag wins over the item. Without
-// SITE, -url is a usage error, and the item is not used and not looked at. A URL that does not pass is a usage error that
-// reads no standard input and makes no data directory.
+// TestInitURL initializes stores with the sample site with -url and with the item url of a config file: a redirect that leads
+// back to itself under the URL, which is none under the URL of the settings and under another URL, is a problem of the import,
+// which fails in the trial, before the password, and leaves the store without an administrator; the settings that the import
+// stores keep the url that is written in them. The flag wins over the item. Without SITE, -url is a usage error, and the item
+// is not used and not looked at. A URL that does not pass is a usage error that reads no standard input and makes nothing.
 func TestInitURL(t *testing.T) {
 	const (
 		staging = "https://staging.example.com"
@@ -980,104 +1323,109 @@ func TestInitURL(t *testing.T) {
 	problem := file + ":5:3: /to: redirects to itself\n"
 	conf := t.TempDir()
 	files := 0
-	// item returns the path of a config file with the item url u.
-	item := func(u string) string {
+	// item returns the path of a config file with the item url u, and the daemon db.
+	item := func(db testDB, u string) string {
 		files++
-		return writeConfig(t, conf, "url-"+strconv.Itoa(files)+".yaml", "url: "+strconv.Quote(u)+"\n")
+		return writeConfig(t, conf, "url-"+strconv.Itoa(files)+".yaml", "url: "+strconv.Quote(u)+"\ndb: "+strconv.Quote(db.sockets)+"\n")
 	}
 
-	// imports checks that whiteroom init of dir, with the flags more before it, makes a data directory with the site in it,
-	// and returns the data directory.
-	imports := func(what, dir string, more ...string) string {
+	// imports checks that whiteroom init of dir, with the flags more before it, makes a store with the site in it, and
+	// returns the daemon. more may be made of the daemon, which item gives it.
+	imports := func(what, dir string, more func(db testDB) []string) testDB {
 		t.Helper()
-		data := filepath.Join(t.TempDir(), "data")
-		args := append(adminFlags("-data", data, "-theme", exampleTheme), more...)
+		db := newDB(t)
+		args := append(adminFlags("-theme", exampleTheme), more(db)...)
 		code, stdout, stderr := runInitCmd(t, initPassword+"\n", append(args, dir)...)
 		if want := sampleImportWarnings(t, dir); code != 0 || stderr != want || !strings.HasSuffix(stdout, "imported the site "+dir+"\n") {
-			t.Fatalf("%s: whiteroom init = %d, with stdout:\n%s\nand stderr:\n%s\nwant 0, the import, and the warnings:\n%s", what, code, stdout,
-				stderr, want)
+			t.Fatalf("%s: whiteroom init = %d, with stdout:\n%s\nand stderr:\n%s\nwant 0, the import, and the warnings:\n%s", what, code,
+				stdout, stderr, want)
 		}
-		if got := inspect(t, data, initPassword); len(got.docs) < 10 {
+		if got := inspect(t, db.data, initPassword); len(got.docs) < 10 {
 			t.Errorf("%s: the store has %d documents, want those of the site", what, len(got.docs))
 		}
-		return data
+		return db
 	}
 	// refused checks that whiteroom init of the site, with the flags more before it, is refused for the redirect that leads
-	// back to itself, and makes no data directory.
-	refused := func(what string, more ...string) {
+	// back to itself, before the password is read, and leaves a store that has no administrator.
+	refused := func(what string, more func(db testDB) []string) {
 		t.Helper()
-		data := filepath.Join(t.TempDir(), "data")
-		args := append(adminFlags("-data", data, "-theme", exampleTheme), more...)
-		code, stdout, stderr := runInitCmd(t, initPassword+"\n", append(args, site)...)
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, problem) {
-			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and the problem, which is the last line:\n%s", what, code,
-				stdout, stderr, problem)
+		db := newDB(t)
+		args := append(adminFlags("-theme", exampleTheme), more(db)...)
+		var o, e bytes.Buffer
+		code := run(t.Context(), append([]string{"init"}, append(args, site)...), testEnv(failingReader{t}, &o, &e))
+		if code != 1 || o.Len() != 0 || !strings.HasSuffix(e.String(), problem) {
+			t.Errorf("%s: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 1, and the problem, which is the last line:\n%s", what,
+				code, o.String(), e.String(), problem)
 		}
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("%s: the data directory is made:\n%s", what, s)
-		}
-		checkNoSecret(t, what, initPassword, stdout, stderr, data)
+		checkStoreMade(t, what, db)
+		checkNoSecret(t, what, initPassword, o.String(), e.String(), db.data)
+	}
+	flags := func(more ...string) func(testDB) []string {
+		return func(db testDB) []string { return append([]string{"-db", db.sockets}, more...) }
+	}
+	config := func(u string, more ...string) func(testDB) []string {
+		return func(db testDB) []string { return append([]string{"-config", item(db, u)}, more...) }
 	}
 
-	imports("no URL", site)
-	refused("-url", "-url", staging)
-	imports("-url of another site", site, "-url", other)
-	imports("-url of the URL of the settings", site, "-url", "https://example.com")
-	refused("the item", "-config", item(staging))
-	imports("the item of another site", site, "-config", item(other))
-	refused("-url over the item", "-config", item(other), "-url", staging)
-	imports("-url over the item that leads back to itself", site, "-config", item(staging), "-url", "https://example.com")
-	refused("-url of no text over the item", "-config", item(staging), "-url", "")
-	imports("-url over an item that does not pass", sampleSite, "-config", item("https://example.com/"), "-url", staging)
+	imports("no URL", site, flags())
+	refused("-url", flags("-url", staging))
+	imports("-url of another site", site, flags("-url", other))
+	imports("-url of the URL of the settings", site, flags("-url", "https://example.com"))
+	refused("the item", config(staging))
+	imports("the item of another site", site, config(other))
+	refused("-url over the item", config(other, "-url", staging))
+	imports("-url over the item that leads back to itself", site, config(staging, "-url", "https://example.com"))
+	refused("-url of no text over the item", config(staging, "-url", ""))
+	imports("-url over an item that does not pass", sampleSite, config("https://example.com/", "-url", staging))
 
 	// The settings that are stored have the url that is written in them.
-	data := imports("-url of the sample site", sampleSite, "-url", staging)
-	if dataHas(t, data, "staging.example.com") || !dataHas(t, data, "https://example.com") {
+	db := imports("-url of the sample site", sampleSite, flags("-url", staging))
+	if dataHas(t, db.data, "staging.example.com") || !dataHas(t, db.data, "https://example.com") {
 		t.Errorf("the data directory has the URL of the import (%t), or lacks the url of the settings (%t)",
-			dataHas(t, data, "staging.example.com"), !dataHas(t, data, "https://example.com"))
+			dataHas(t, db.data, "staging.example.com"), !dataHas(t, db.data, "https://example.com"))
 	}
 
 	t.Run("no SITE", func(t *testing.T) {
-		data := filepath.Join(t.TempDir(), "data")
+		db := newDB(t)
 		var o, e bytes.Buffer
-		code := run(t.Context(), append([]string{"init"}, adminFlags("-data", data, "-url", staging)...), testEnv(failingReader{t}, &o, &e))
+		code := run(t.Context(), append([]string{"init"}, adminFlags("-db", db.sockets, "-url", staging)...), testEnv(failingReader{t}, &o, &e))
 		want := "whiteroom init: -url is for SITE: give the directory SITE of the site to import\n" + initHelp(t)
 		if code != 2 || o.Len() != 0 || e.String() != want {
 			t.Errorf("whiteroom init -url without a SITE = %d, with stdout %q and stderr:\n%s\nwant 2, and:\n%s", code, o.String(), e.String(), want)
 		}
-		if s := snapshot(t, data); s != "missing" {
-			t.Errorf("-url without a SITE: the data directory is made:\n%s", s)
+		if n := commitsOf(t, db); n != 0 {
+			t.Errorf("-url without a SITE: the last commit is %d, want none", n)
 		}
 		// The item is used with a SITE only, and is not looked at without it.
 		for _, value := range []string{staging, "https://example.com/"} {
-			data := filepath.Join(t.TempDir(), "data")
-			code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data, "-config", item(value))...)
+			db := newDB(t)
+			code, stdout, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-config", item(db, value))...)
 			if code != 0 || stderr != "" || strings.Contains(stdout, "imported") {
 				t.Errorf("the item %s without a SITE: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 0, and no import", value, code,
 					stdout, stderr)
 			}
-			checkAdmin(t, "the item "+value+" without a SITE", inspect(t, data, initPassword))
+			checkAdmin(t, "the item "+value+" without a SITE", inspect(t, db.data, initPassword))
 		}
 	})
 
 	t.Run("a URL that does not pass", func(t *testing.T) {
 		for _, tt := range badSiteURLs[:3] {
 			for _, fromItem := range []bool{false, true} {
+				db := newDB(t)
 				what, args := "-url", []string{"-url", tt.value}
 				if fromItem {
-					what, args = "url of the config file", []string{"-config", item(tt.value)}
+					what, args = "url of the config file", []string{"-config", item(db, tt.value)}
 				}
-				data := filepath.Join(t.TempDir(), "data")
 				var o, e bytes.Buffer
-				code := run(t.Context(), append(append([]string{"init"}, adminFlags("-data", data)...), append(args, site)...),
+				code := run(t.Context(), append(append([]string{"init"}, adminFlags("-db", db.sockets)...), append(args, site)...),
 					testEnv(failingReader{t}, &o, &e))
 				want := "whiteroom init: " + what + " is not a valid site URL: " + tt.reason + "\n"
 				if code != 2 || o.Len() != 0 || e.String() != want {
 					t.Errorf("%s of %q: whiteroom init = %d, with stdout %q and stderr:\n%s\nwant 2, with no stdout and:\n%s", what, tt.value, code,
 						o.String(), e.String(), want)
 				}
-				if s := snapshot(t, data); s != "missing" {
-					t.Errorf("%s of %q: the data directory is made:\n%s", what, tt.value, s)
+				if n := commitsOf(t, db); n != 0 {
+					t.Errorf("%s of %q: the last commit is %d, want none", what, tt.value, n)
 				}
 			}
 		}

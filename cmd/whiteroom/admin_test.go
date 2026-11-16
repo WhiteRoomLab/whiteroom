@@ -15,7 +15,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -35,16 +34,22 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
+	"github.com/WhiteRoomLab/whiteroom/internal/unixsock"
 )
 
 // adminWait is how long the tests wait for a start, a stop or a build of serve admin.
 const adminWait = 60 * time.Second
 
-// adminSite is a data directory that whiteroom init has made, and the directories that serve admin works with.
+// adminSite is a store that whiteroom init has made in the daemon of the test, and the directories that serve admin works with:
+// the directory of the sockets of the daemon, which it and the other commands connect to, and the data directory of the
+// daemon, which only the helpers of the tests open.
 type adminSite struct {
-	data, site, out, cache string
-	theme                  string // the argument of -theme, "" for SITE/theme
+	data, db, site, out, cache string
+	theme                      string // the argument of -theme, "" for SITE/theme
 }
 
 // initSample makes a data directory with the sample site imported by whiteroom init, from a copy of the sample site, which
@@ -52,12 +57,12 @@ type adminSite struct {
 func initSample(t *testing.T) adminSite {
 	t.Helper()
 	site := copySample(t)
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data, site)...); code != 0 {
+	db := newDB(t)
+	if code, _, stderr := initDB(t, db, initPassword+"\n", site); code != 0 {
 		t.Fatalf("whiteroom init of the sample site = %d, with stderr:\n%s", code, stderr)
 	}
 	return adminSite{
-		data: data, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
+		data: db.data, db: db.sockets, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
 	}
 }
 
@@ -65,8 +70,8 @@ func initSample(t *testing.T) adminSite {
 // schema file of the sample site, which the example theme of -theme goes with: the builds of its server fail, soon.
 func initEmpty(t *testing.T) adminSite {
 	t.Helper()
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+	db := newDB(t)
+	if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
 		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
 	}
 	schema, err := os.ReadFile(filepath.Join(sampleSite, "site", "schema.yaml"))
@@ -81,14 +86,17 @@ func initEmpty(t *testing.T) adminSite {
 		t.Fatal(err)
 	}
 	return adminSite{
-		data: data, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
+		data: db.data, db: db.sockets, site: site, out: filepath.Join(t.TempDir(), "out"), cache: filepath.Join(t.TempDir(), "cache"),
 		theme: exampleTheme,
 	}
 }
 
+// database returns the daemon of s, which the other commands connect to.
+func (s adminSite) database() testDB { return testDB{data: s.data, sockets: s.db} }
+
 // args returns the arguments of whiteroom serve admin for s, with the flags more before SITE.
 func (s adminSite) args(more ...string) []string {
-	args := []string{"-data", s.data, "-out", s.out, "-cache", s.cache}
+	args := []string{"-db", s.db, "-out", s.out, "-cache", s.cache}
 	if s.theme != "" {
 		args = append(args, "-theme", s.theme)
 	}
@@ -106,6 +114,9 @@ func (s adminSite) configIn(t *testing.T, dir string, more ...string) string {
 	t.Helper()
 	lines := []string{"data: " + strconv.Quote(s.data), "site: " + strconv.Quote(s.site), "out: " + strconv.Quote(s.out),
 		"cache: " + strconv.Quote(s.cache)}
+	if s.db != "" {
+		lines = append(lines, "db: "+strconv.Quote(s.db))
+	}
 	if s.theme != "" {
 		theme, err := filepath.Abs(s.theme)
 		if err != nil {
@@ -151,7 +162,7 @@ type adminProc struct {
 	code          int
 }
 
-var adminStartLine = regexp.MustCompile(`^serving admin of (.+) at (\S+) \(listening on (socket )?(\S+)\)\n$`)
+var adminStartLine = regexp.MustCompile(`^serving admin of the store of (.+) at (\S+) \(listening on (socket )?(\S+)\)\n$`)
 
 // startAdminArgs runs whiteroom serve admin with args and a context of ctx, in a goroutine, and returns it when it has
 // printed its first line, which must be that of a server that listens. Its client connects to the address or the socket
@@ -407,7 +418,7 @@ func runAdminCmd(t *testing.T, args ...string) (code int, stdout, stderr string)
 // has not closed it.
 func checkUnlocked(t *testing.T, what, data string) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Errorf("%s: %v", what, err)
 		return
@@ -418,7 +429,8 @@ func checkUnlocked(t *testing.T, what, data string) {
 }
 
 // manifestOf returns the manifest of the files of dir, as the manifest.txt of the golden files has it: a line for each
-// file, with its size and its SHA-256.
+// file, with its size and its SHA-256, those of the engine's files included. The daemon of the directory runs while a test
+// takes it, and a command that only reads the store changes none of them.
 func manifestOf(t *testing.T, dir string) string {
 	t.Helper()
 	var names []string
@@ -446,7 +458,7 @@ func manifestOf(t *testing.T, dir string) string {
 // activityActions returns the actions of the records of the activity log in the data directory, which no process has open.
 func activityActions(t *testing.T, data string) []audit.Action {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +478,7 @@ func activityActions(t *testing.T, data string) []audit.Action {
 // directory, which a server may have open.
 func loginClients(t *testing.T, data string) []string {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,11 +517,11 @@ func freePort(t *testing.T) string {
 func TestServeAdmin(t *testing.T) {
 	s := initSample(t)
 	a := startAdmin(t, t.Context(), s.args()...)
-	m := regexp.MustCompile(`^serving admin of ` + regexp.QuoteMeta(s.data) +
+	m := regexp.MustCompile(`^serving admin of the store of ` + regexp.QuoteMeta(s.db) +
 		` at http://127\.0\.0\.1:([1-9][0-9]*) \(listening on 127\.0\.0\.1:([1-9][0-9]*)\)\n$`).FindStringSubmatch(a.line)
 	if m == nil || m[1] != m[2] {
-		t.Fatalf("whiteroom serve admin printed %q, want the line of the data directory %s with the origin and the address on one port",
-			a.line, s.data)
+		t.Fatalf("whiteroom serve admin printed %q, want the line of the store of the sockets in %s with the origin and the address "+
+			"on one port", a.line, s.db)
 	}
 
 	cookie := a.login(t)
@@ -561,16 +573,8 @@ func TestServeAdminEmpty(t *testing.T) {
 		t.Errorf("%s has an out/, though -out is given", s.site)
 	}
 
-	data := filepath.Join(t.TempDir(), "data")
-	st, err := store.Create(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
 	none := s
-	none.data = data
+	none.db = newDBWithStore(t).sockets
 	b := startAdmin(t, t.Context(), none.args()...)
 	if status, cookie := b.tryLogin(t, initLogin, initPassword); status != http.StatusUnauthorized || cookie != "" {
 		t.Errorf("a login to a store without accounts = %d, with a cookie %t, want 401 and none", status, cookie != "")
@@ -734,7 +738,7 @@ func TestServeAdminSocket(t *testing.T) {
 
 	sock := socketPath(t)
 	a := startAdmin(t, t.Context(), s.args(append([]string{"-socket", sock}, origin...)...)...)
-	if want := "serving admin of " + s.data + " at http://localhost (listening on socket " + sock + ")\n"; a.line != want {
+	if want := "serving admin of the store of " + s.db + " at http://localhost (listening on socket " + sock + ")\n"; a.line != want {
 		t.Errorf("the server on a socket printed %q, want %q", a.line, want)
 	}
 	cookie := a.login(t)
@@ -863,10 +867,10 @@ func TestServeAdminSocket(t *testing.T) {
 	fail("no directory", missing, "bind: no such file or directory")
 	noFile(t, "no directory", filepath.Dir(missing))
 	tooLong := func(n int) string {
-		return fmt.Sprintf("the path of a socket has at most %d bytes, and this one has %d", maxSocketPath, n)
+		return fmt.Sprintf("the path of a socket has at most %d bytes, and this one has %d", unixsock.MaxPath, n)
 	}
 	long := socketDir(t)
-	for _, n := range []int{maxSocketPath + 1, maxSocketPath + 20} {
+	for _, n := range []int{unixsock.MaxPath + 1, unixsock.MaxPath + 20} {
 		path := filepath.Join(long, strings.Repeat("x", n-len(long)-1))
 		if len(path) != n {
 			t.Fatalf("the path has %d bytes, want %d", len(path), n)
@@ -877,7 +881,7 @@ func TestServeAdminSocket(t *testing.T) {
 
 	// A socket file that nobody listens on, at a path that is too long, which a shorter path through a symbolic link has
 	// made: it is not looked at, and is left as it is.
-	deep := filepath.Join(socketDir(t), strings.Repeat("d", maxSocketPath))
+	deep := filepath.Join(socketDir(t), strings.Repeat("d", unixsock.MaxPath))
 	if err := os.Mkdir(deep, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1211,7 +1215,7 @@ func TestServeAdminOrigin(t *testing.T) {
 	noFile(t, "-socket without -origin", sock)
 
 	f := startAdmin(t, t.Context(), s.args("-socket", sock, "-origin", "http://localhost")...)
-	if want := "serving admin of " + s.data + " at http://localhost (listening on socket " + sock + ")\n"; f.line != want ||
+	if want := "serving admin of the store of " + s.db + " at http://localhost (listening on socket " + sock + ")\n"; f.line != want ||
 		f.network != "unix" {
 		t.Errorf("the server on a socket printed %q, want %q", f.line, want)
 	}
@@ -1306,10 +1310,11 @@ func TestServeAdminOriginLine(t *testing.T) {
 	// -addr 127.0.0.1:80 without -origin: the origin that listenOrigin makes is made so too. Only the opening is run, as the
 	// port 80 is not for a test to listen on.
 	settings := adminSettings{
-		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
-		addr: "127.0.0.1:0", origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, db: s.db,
+		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
+		origin: listenOrigin(netip.MustParseAddrPort("127.0.0.1:80")),
 	}
-	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
+	a, err := openAdmin(t.Context(), testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1406,7 +1411,7 @@ func TestServeAdminConfig(t *testing.T) {
 		return strconv.Quote(r)
 	}
 	file := writeConfig(t, dir, "whiteroom.yaml", strings.Join([]string{
-		"data: " + rel(s.data), "site: " + rel(s.site), "theme: " + rel(exampleTheme), "addr: 127.0.0.1:0",
+		"data: " + rel(s.data), "db: " + rel(s.db), "site: " + rel(s.site), "theme: " + rel(exampleTheme), "addr: 127.0.0.1:0",
 		"origin: http://localhost:9", "out: out", "cache: cache",
 	}, "\n")+"\n")
 	a := startAdminArgs(t, t.Context(), "-config", file)
@@ -1549,10 +1554,12 @@ func TestServeAdminClient(t *testing.T) {
 	}
 }
 
-// TestServeAdminErrors checks the commands that fail: with a usage error, 2, and without opening the data directory; and
-// with 1, for a data directory, a site directory, a theme and a second server that cannot be used, each with its message.
-// None leaves the data directory open.
+// TestServeAdminErrors checks the commands that fail: with a usage error, 2, and without connecting to the daemon; and with
+// 1, for a directory of sockets, a site directory, a theme and a second server that cannot be used, each with its message.
+// None leaves the writer of the store taken. The cases that wait for the daemon, which they do not reach, or for a writer,
+// which is not free, wait together: they are subtests that run in parallel.
 func TestServeAdminErrors(t *testing.T) {
+	t.Parallel()
 	s := initEmpty(t)
 	help := adminHelp(t)
 	usage := func(msg string) string { return "whiteroom serve admin: " + msg + "\n" + help }
@@ -1567,14 +1574,15 @@ func TestServeAdminErrors(t *testing.T) {
 		args   []string
 		stderr string
 	}{
-		{"no data directory", []string{"-theme", exampleTheme, s.site},
-			usage("no data directory: give -data DIR, or data in the config file")},
+		{"no database", []string{"-theme", exampleTheme, s.site}, usage(errNoDB)},
+		{"an empty database", s.args("-db", ""), usage(errNoDB)},
 		{"two arguments", s.args("x"), tooMany},
-		{"two arguments, one after a flag", []string{"-data", s.data, "a", "-out", "b"}, tooMany},
+		{"two arguments, one after a flag", []string{"-db", s.db, "a", "-out", "b"}, tooMany},
 		{"workers below 0", s.args("-workers", "-1"), usage("-workers -1 is out of range (0 or more)")},
 		{"memory below 0", s.args("-memory", "-1"), memory("-1")},
 		{"memory above the limit", s.args("-memory", "8796093022208"), memory("8796093022208")},
 		{"a flag that is not defined", s.args("-nope"), "flag provided but not defined: -nope\n" + help},
+		{"the flag data, which is the daemon's", s.args("-data", s.data), "flag provided but not defined: -data\n" + help},
 		{"a proxy that is a name", s.args("-trusted-proxy", "proxy.example"), badProxy("proxy.example", notAddress)},
 		{"a proxy that is an empty text", s.args("-trusted-proxy", ""), badProxy("", notAddress)},
 		{"a range that is too long", s.args("-trusted-proxy", "10.0.0.0/33"), badProxy("10.0.0.0/33", notAddress)},
@@ -1588,22 +1596,29 @@ func TestServeAdminErrors(t *testing.T) {
 			t.Errorf("%s: whiteroom serve admin %s = %d, with stdout %q and stderr:\n%s\nwant 2, with stderr:\n%s", tt.what,
 				strings.Join(tt.args, " "), code, stdout, stderr, tt.stderr)
 		}
-		checkUnlocked(t, tt.what, s.data)
 	}
+	checkUnlocked(t, "after the usage errors", s.data)
 
-	// What fails when it opens what it needs, in the order that it opens it.
+	// What fails when it opens what it needs, in the order that it opens it: the site and the theme, and then the daemon.
+	cannot := func(dir string, err error) string {
+		return "whiteroom serve admin: " + dir + ": " + dbclient.ErrUnavailable.Error() + ": " + err.Error() + "\n"
+	}
 	missing := filepath.Join(t.TempDir(), "missing")
-	_, dataErr := store.Open(missing)
-	notStore := t.TempDir()
-	_, notStoreErr := store.Open(notStore)
+	empty := t.TempDir()
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, fileErr := store.Open(file)
+	noStore := newDB(t)
+	_, noStoreErr := store.Open(t.Context(), dbDialer(noStore.sockets))
 	_, rootErr := os.OpenRoot(missing)
-	if dataErr == nil || notStoreErr == nil || fileErr == nil || rootErr == nil {
-		t.Fatalf("the errors of the missing things are %v, %v, %v and %v", dataErr, notStoreErr, fileErr, rootErr)
+	dialErr := func(dir string) error {
+		_, err := new(net.Dialer).DialContext(t.Context(), "unix", filepath.Join(dir, dbwire.WriterSocket))
+		return err
+	}
+	if noStoreErr == nil || rootErr == nil || dialErr(missing) == nil || dialErr(empty) == nil || dialErr(file) == nil {
+		t.Fatalf("the errors of the missing things are %v, %v, %v, %v and %v", noStoreErr, rootErr, dialErr(missing), dialErr(empty),
+			dialErr(file))
 	}
 	noSchema := t.TempDir()
 	noTheme := t.TempDir()
@@ -1621,83 +1636,226 @@ func TestServeAdminErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(brokenTheme, "theme.yaml"), []byte("schemaVersion: 99\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Each fails the same on a TCP address and on a socket, and leaves no socket file.
-	sockFail := socketPath(t)
-	for _, listen := range [][]string{{"-addr", "127.0.0.1:0"}, {"-socket", sockFail, "-origin", "http://localhost"}} {
-		with := func(data, site string, flags ...string) []string {
-			args := append(slices.Clone(listen), "-data", data, "-out", s.out, "-cache", s.cache)
-			return append(append(args, flags...), site)
-		}
-		for _, tt := range []struct {
-			what   string
-			args   []string
-			stderr string // the whole of it, or "" for the start of it that is prefix
-			prefix string
-		}{
-			{"a missing data directory", with(missing, s.site, "-theme", exampleTheme), "whiteroom serve admin: " + dataErr.Error() + "\n", ""},
-			{"a data directory that is not a store", with(notStore, s.site, "-theme", exampleTheme),
-				"whiteroom serve admin: " + notStoreErr.Error() + "\n", ""},
-			{"a data directory that is a file", with(file, s.site, "-theme", exampleTheme),
-				"whiteroom serve admin: " + fileErr.Error() + "\n", ""},
-			{"a missing site", with(s.data, missing, "-theme", exampleTheme), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
-			{"a site without a schema", with(s.data, noSchema, "-theme", exampleTheme),
-				filepath.Join(noSchema, "site", "schema.yaml") + ": missing file\n", ""},
-			{"a site without a theme", with(s.data, noTheme), filepath.Join(noTheme, "theme") + ": missing directory\n", ""},
-			{"a missing theme", with(s.data, noTheme, "-theme", missing), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
-			{"a theme that is broken", with(s.data, noTheme, "-theme", brokenTheme), "", brokenTheme},
-		} {
-			code, stdout, stderr := runAdminCmd(t, tt.args...)
-			if code != 1 || stdout != "" || stderr == "" || (tt.stderr != "" && stderr != tt.stderr) ||
-				!strings.HasPrefix(stderr, tt.prefix) || strings.Contains(stderr, "Usage:") {
-				t.Errorf("%s: whiteroom serve admin %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr %q%s", tt.what,
-					strings.Join(tt.args, " "), code, stdout, stderr, tt.stderr, tt.prefix)
-			}
-			checkUnlocked(t, tt.what, s.data)
-			noFile(t, tt.what, sockFail)
-		}
-	}
-
-	// A second server on the data directory, which the first has open: it waits for the lock and fails with its error,
-	// whatever the address that it is given, and does not listen. The first goes on.
+	// Each fails the same on a TCP address and on a socket, and leaves no socket file. The second servers need a first one on
+	// the daemon, whose writer it takes: one on a TCP address and one on a socket, each on a daemon of its own, so that the
+	// cases of all of it run together.
 	first := startAdmin(t, t.Context(), s.args()...)
-	for _, addr := range []string{first.addr, "127.0.0.1:0"} {
-		code, stdout, stderr := runAdminCmd(t, s.args("-addr", addr)...)
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process holds the writer lock\n") ||
-			!strings.HasPrefix(stderr, "whiteroom serve admin: ") || strings.Count(stderr, "\n") != 1 {
-			t.Errorf("a second server with -addr %s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer lock",
-				addr, code, stdout, stderr)
-		}
-	}
-	first.login(t)
-	stopsWith(t, "the first server", first)
-	checkUnlocked(t, "after the first server", s.data)
-
-	// The same of a server on a socket: the second fails with the lock before it comes to the socket file, whether it is
-	// that of the first or another, and leaves the file of the first, which goes on, as it is.
 	sock := socketPath(t)
-	one := startAdmin(t, t.Context(), s.args("-socket", sock, "-origin", "http://localhost")...)
+	other := initEmpty(t)
+	one := startAdmin(t, t.Context(), other.args("-socket", sock, "-origin", "http://localhost")...)
 	made, err := os.Lstat(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	another := socketPath(t)
-	for _, path := range []string{sock, another} {
-		code, stdout, stderr := runAdminCmd(t, s.args("-socket", path, "-origin", "http://localhost")...)
-		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process holds the writer lock\n") ||
+	sockFail := socketPath(t)
+	// The theme is looked at once the store is open, which this case takes the writer of: a daemon that is free, for each listen.
+	spares := []adminSite{initEmpty(t), initEmpty(t)}
+	secondWriter := func(t *testing.T, what string, args []string) {
+		t.Helper()
+		code, stdout, stderr := runAdminCmd(t, args...)
+		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, ": another process is connected as the writer\n") ||
 			!strings.HasPrefix(stderr, "whiteroom serve admin: ") || strings.Count(stderr, "\n") != 1 {
-			t.Errorf("a second server with -socket %s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer lock",
-				path, code, stdout, stderr)
+			t.Errorf("%s = %d, with stdout %q and stderr:\n%s\nwant 1, with the error of the writer", what, code, stdout, stderr)
 		}
-		noFile(t, "a second server that fails", another)
-		if now, err := os.Lstat(sock); err != nil || !os.SameFile(made, now) || now.Mode() != made.Mode() {
-			t.Errorf("after a second server with -socket %s, the socket file of the first is %v (%v), want the file that it made", path,
-				now, err)
+	}
+	t.Run("failures", func(t *testing.T) {
+		for i, listen := range [][]string{{"-addr", "127.0.0.1:0"}, {"-socket", sockFail, "-origin", "http://localhost"}} {
+			spare := spares[i]
+			with := func(db, site string, flags ...string) []string {
+				args := append(slices.Clone(listen), "-db", db, "-out", s.out, "-cache", s.cache)
+				return append(append(args, flags...), site)
+			}
+			for _, tt := range []struct {
+				what   string
+				args   []string
+				stderr string // the whole of it, or "" for the start of it that is prefix
+				prefix string
+			}{
+				{"a missing directory of sockets", with(missing, s.site, "-theme", exampleTheme), cannot(missing, dialErr(missing)), ""},
+				{"an empty directory of sockets", with(empty, s.site, "-theme", exampleTheme), cannot(empty, dialErr(empty)), ""},
+				{"a file as the directory of sockets", with(file, s.site, "-theme", exampleTheme), cannot(file, dialErr(file)), ""},
+				{"a daemon that has no store", with(noStore.sockets, s.site, "-theme", exampleTheme),
+					"whiteroom serve admin: " + noStoreErr.Error() + "\n", ""},
+				{"a missing site", with(s.db, missing, "-theme", exampleTheme), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
+				{"a site without a schema", with(s.db, noSchema, "-theme", exampleTheme),
+					filepath.Join(noSchema, "site", "schema.yaml") + ": missing file\n", ""},
+				{"a site without a theme", with(s.db, noTheme), filepath.Join(noTheme, "theme") + ": missing directory\n", ""},
+				{"a missing theme", with(s.db, noTheme, "-theme", missing), "whiteroom serve admin: " + rootErr.Error() + "\n", ""},
+				{"a theme that is broken", with(spare.db, noTheme, "-theme", brokenTheme), "", brokenTheme},
+			} {
+				t.Run(listen[0]+", "+tt.what, func(t *testing.T) {
+					t.Parallel()
+					code, stdout, stderr := runAdminCmd(t, tt.args...)
+					if code != 1 || stdout != "" || stderr == "" || (tt.stderr != "" && stderr != tt.stderr) ||
+						!strings.HasPrefix(stderr, tt.prefix) || strings.Contains(stderr, "Usage:") {
+						t.Errorf("%s: whiteroom serve admin %s = %d, with stdout %q and stderr:\n%s\nwant 1, with stderr %q%s", tt.what,
+							strings.Join(tt.args, " "), code, stdout, stderr, tt.stderr, tt.prefix)
+					}
+				})
+			}
 		}
+		// A second server on the daemon, whose writer the first has taken: it waits for the writer and fails with its error,
+		// whatever the address that it is given, and does not listen. On a socket it fails before it comes to the socket file,
+		// whether it is that of the first or another, and leaves the file of the first, which goes on, as it is.
+		for _, addr := range []string{first.addr, "127.0.0.1:0"} {
+			t.Run("a second server with -addr "+addr, func(t *testing.T) {
+				t.Parallel()
+				secondWriter(t, "a second server with -addr "+addr, s.args("-addr", addr))
+			})
+		}
+		for _, path := range []string{sock, another} {
+			t.Run("a second server with -socket "+path, func(t *testing.T) {
+				t.Parallel()
+				secondWriter(t, "a second server with -socket "+path, other.args("-socket", path, "-origin", "http://localhost"))
+			})
+		}
+	})
+	noFile(t, "the failures", sockFail)
+	noFile(t, "a second server that fails", another)
+	if now, err := os.Lstat(sock); err != nil || !os.SameFile(made, now) || now.Mode() != made.Mode() {
+		t.Errorf("after the second servers, the socket file of the first on a socket is %v (%v), want the file that it made", now, err)
+	}
+	first.login(t)
+	stopsWith(t, "the first server", first)
+	checkUnlocked(t, "after the first server and the failures", s.data)
+	for _, spare := range spares {
+		checkUnlocked(t, "after the failures that opened the store", spare.data)
 	}
 	one.login(t)
 	stopsWith(t, "the first server on a socket", one)
 	noFile(t, "after the first server on a socket", sock)
-	checkUnlocked(t, "after the first server on a socket", s.data)
+	checkUnlocked(t, "after the first server on a socket", other.data)
+}
+
+// try is exchange for a goroutine of the test: it sends the request and returns what came, and the error of the transport.
+func (a *adminProc) try(method, path, body string, headers ...string) (status int, header http.Header, answer []byte, err error) {
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+		headers = append(headers, "Content-Type", "application/json")
+	}
+	req, err := a.newRequest(context.Background(), method, path, r, headers...)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	res, err := a.client.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	answer, err = io.ReadAll(res.Body)
+	return res.StatusCode, res.Header, answer, err
+}
+
+// unreachableLog is what the server logs, at most once a minute, when the daemon of its store cannot be reached.
+const unreachableLog = "the daemon of the store cannot be reached: "
+
+// TestServeAdminDaemon stops the daemon under a running server, and starts it again. While it is away the requests that need
+// the store are 503 with the problem code busy, and the log has one line that says that the daemon cannot be reached; a server
+// that is started then fails, with the name of the socket that it cannot reach, and the one that runs stays up. When the daemon
+// is back the next requests work with no new server, the session that was valid is valid, the Publisher builds what a page that
+// the API publishes needs, and a second server on the daemon fails because the first is its writer. A server can be stopped
+// while the daemon is away.
+func TestServeAdminDaemon(t *testing.T) {
+	t.Parallel()
+	s := initSample(t)
+	db := s.database()
+	a := startAdmin(t, t.Context(), s.args()...)
+	cookie := a.login(t)
+	a.waitBuilt(t, cookie) // a build that the daemon's going away stops would be logged, and its release is not what is checked
+
+	stopDB(t, db)
+	type answer struct {
+		status int
+		header http.Header
+		body   []byte
+		err    error
+	}
+	probe := func(method, path, body string, headers ...string) <-chan answer {
+		return async(func() answer {
+			status, header, body, err := a.try(method, path, body, headers...)
+			return answer{status, header, body, err}
+		})
+	}
+	// Each of these reads the daemon, or writes it, as the first thing: a document that is there, and a list, and a login, and
+	// a session, and a write; the daemon is away for all of them at once, so that the 2 seconds that each waits for it are one.
+	probes := []struct {
+		what string
+		ch   <-chan answer
+	}{
+		{"a session", probe(http.MethodGet, "/api/session", "", "Cookie", cookie)},
+		{"a list", probe(http.MethodGet, "/api/entries?limit=1", "", "Cookie", cookie)},
+		{"the settings", probe(http.MethodGet, "/api/settings", "", "Cookie", cookie)},
+		{"a login", probe(http.MethodPost, "/api/session", fmt.Sprintf(`{"login":%q,"password":%q}`, initLogin, initPassword))},
+		{"a new entry", probe(http.MethodPost, "/api/entries", `{"type":"page","language":"en"}`, "Cookie", cookie)},
+	}
+	// A server that is started now cannot reach the daemon, and says which socket.
+	code, stdout, stderr := runAdminCmd(t, s.args("-addr", "127.0.0.1:0")...)
+	want := "whiteroom serve admin: " + s.db + ": " + dbclient.ErrUnavailable.Error() + ": dial unix " +
+		filepath.Join(s.db, dbwire.WriterSocket) + ": connect: no such file or directory\n"
+	if code != 1 || stdout != "" || stderr != want {
+		t.Errorf("a server that is started while the daemon is away = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
+			stderr, want)
+	}
+	for _, p := range probes {
+		r := receive(t, p.ch, p.what)
+		wantBody := `{"type":"about:blank","title":"Service Unavailable","status":503,"detail":"the server could not answer in time; try again later","code":"busy"}`
+		if r.err != nil || r.status != http.StatusServiceUnavailable || string(r.body) != wantBody || r.header.Get("Retry-After") != "5" ||
+			len(r.header.Values("Set-Cookie")) != 0 {
+			t.Errorf("%s while the daemon is away = %d (%v), with the body %s, the Retry-After %q and the cookies %q, want 503 with "+
+				"the problem busy, and no cookie", p.what, r.status, r.err, r.body, r.header.Get("Retry-After"), r.header.Values("Set-Cookie"))
+		}
+	}
+	if n := strings.Count(a.stderr.String(), unreachableLog); n != 1 {
+		t.Errorf("the log has %d lines that the daemon cannot be reached, want 1 for the requests of a minute:\n%s", n, a.stderr)
+	}
+	for _, secret := range []string{initPassword, strings.TrimPrefix(cookie, "session=")} {
+		if strings.Contains(a.stderr.String(), secret) {
+			t.Errorf("the log has the password or the session of a request:\n%s", a.stderr)
+		}
+	}
+	select {
+	case <-a.exited:
+		t.Fatalf("the server has stopped, with %d, because the daemon is away:\n%s", a.code, a.stderr)
+	default:
+	}
+
+	// The daemon is back: the server reaches it with no restart, and the session is the one that was valid.
+	startDB(t, db)
+	if status, _ := a.exchange(t, http.MethodGet, "/api/session", "", "Cookie", cookie); status != http.StatusOK {
+		t.Fatalf("GET /api/session with the session of before the daemon went away = %d after it is back, want 200\nstderr:\n%s",
+			status, a.stderr)
+	}
+	id := a.publishPage(t, cookie, "en", "After the daemon is back", "after-the-daemon")
+	if b := a.waitPublished(t, cookie, id); failedBuild(b) || b.Last.Release == "" {
+		t.Fatalf("the build of the publishing after the daemon is back has %+v, want a release\nstderr:\n%s", b.Last, a.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(s.out, "current", "public", "en", "after-the-daemon", "index.html")); err != nil {
+		t.Errorf("the page that was published after the daemon is back is not in the output directory: %v", err)
+	}
+
+	// A second server: the writer is the first server's.
+	code, stdout, stderr = runAdminCmd(t, s.args("-addr", "127.0.0.1:0")...)
+	if code != 1 || stdout != "" || stderr != "whiteroom serve admin: "+s.db+": another process is connected as the writer\n" {
+		t.Errorf("a second server on the daemon = %d, with stdout %q and stderr:\n%s\nwant 1, and the error of the writer", code, stdout,
+			stderr)
+	}
+	if n := strings.Count(a.stderr.String(), unreachableLog); n != 1 {
+		t.Errorf("the log has %d lines that the daemon cannot be reached after it is back, want the 1 of before:\n%s", n, a.stderr)
+	}
+	stopsWith(t, "the server that saw the daemon go and come back", a)
+	checkUnlocked(t, "after the server that saw the daemon go and come back", s.data)
+
+	// A server stops with 0 while the daemon is away, and does not wait for it.
+	b := startAdmin(t, t.Context(), s.args()...)
+	stopDB(t, db)
+	start := time.Now()
+	stopsWith(t, "the server while the daemon is away", b)
+	if elapsed := time.Since(start); elapsed > adminShutdownWait {
+		t.Errorf("the server took %v to stop while the daemon is away", elapsed)
+	}
+	startDB(t, db)
 }
 
 // brokenListener is a listener whose Accept fails.
@@ -1715,10 +1873,10 @@ func openForRun(t *testing.T, s adminSite) *adminServer {
 func openForRunLogging(t *testing.T, s adminSite, logger *log.Logger) *adminServer {
 	t.Helper()
 	settings := adminSettings{
-		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, data: s.data, network: "tcp",
-		addr: "127.0.0.1:0",
+		buildSettings: buildSettings{site: s.site, out: s.out, cache: s.cache, theme: s.theme}, db: s.db,
+		tmp: filepath.Join(s.site, "tmp"), network: "tcp", addr: "127.0.0.1:0",
 	}
-	a, err := openAdmin(testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
+	a, err := openAdmin(t.Context(), testEnv(strings.NewReader(""), io.Discard, io.Discard), settings, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1790,12 +1948,10 @@ func (l *failingListener) Accept() (net.Conn, error) {
 
 // TestRunAdminServeEndsFirst checks that the server, when the HTTP server stops by itself while a request is in progress,
 // lets the request end, as it does when its context is done, before it stops the rest: the request gets its answer, the
-// failure is that of the HTTP server, and the last heads of the audit logs that it writes are those that the data directory
-// has when it returns, with the record of the request.
+// failure is that of the HTTP server, and the store, which is still open when it returns, has the record of the request.
 func TestRunAdminServeEndsFirst(t *testing.T) {
 	a := openForRun(t, initEmpty(t))
-	var heads, stderr syncBuffer
-	a.heads = &heads
+	var stderr syncBuffer
 	addr := a.listener.Addr().String()
 	l := &failingListener{Listener: a.listener, release: make(chan struct{})}
 	a.listener = l
@@ -1865,23 +2021,116 @@ func TestRunAdminServeEndsFirst(t *testing.T) {
 		t.Errorf("the server = %d, with stderr %q, want 1 and %q", code, stderr.String(), want)
 	}
 
-	exported, _ := headsOf(heads.String())
-	stored, err := a.store.AuditHeads(t.Context())
+	var logins int
+	err = a.store.ReadAudit(t.Context(), audit.Filter{Log: audit.LoginLog}, func(r audit.Record) bool {
+		if r.Action == audit.Login {
+			logins++
+		}
+		return true
+	})
+	if err != nil || logins != 1 {
+		t.Errorf("the login history has %d records of a login (%v) when the server returns, want the one of the request that was in "+
+			"progress", logins, err)
+	}
+}
+
+// TestRunAdminStopOrder checks the order in which the server stops: the HTTP server, which lets the requests in progress end;
+// the Publisher; and then the last record of the failed logins that were counted, which has the one that a request in
+// progress at the stop has counted. A flush before the HTTP server has ended would leave it out of the login history.
+func TestRunAdminStopOrder(t *testing.T) {
+	s := initEmpty(t)
+	a := openForRun(t, s)
+	addr := a.listener.Addr().String()
+	arrived, handler := make(chan struct{}), a.http.Handler
+	arrive := sync.OnceFunc(func() { close(arrived) })
+	var arrivals atomic.Int32
+	a.http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if arrivals.Add(1) > 10 {
+			arrive()
+		}
+		handler.ServeHTTP(w, r)
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runAdmin(ctx, a) }()
+
+	// Ten refusals are recorded in the minute that they come in, and the one that is in progress at the stop is counted.
+	password := strings.Repeat("x", 9000)
+	body := `{"login":"nobody","password":"` + password + `"}`
+	client := &http.Client{Timeout: adminWait}
+	defer client.CloseIdleConnections()
+	for range 10 {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+"/api/session", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", a.origin)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("a login with a password that is too long = %d, want 401", res.StatusCode)
+		}
+	}
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := lastHeads(exported), lastHeads(stored); !maps.Equal(got, want) {
-		t.Errorf("the last heads that the server wrote are:\n%v\nthe data directory has:\n%v", got, want)
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(adminWait))
+	_, err = fmt.Fprintf(conn, "POST /api/session HTTP/1.1\r\nHost: %s\r\nOrigin: %s\r\nContent-Type: application/json\r\n"+
+		"Content-Length: %d\r\n\r\n%s", addr, a.origin, len(body), body[:10])
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-arrived:
+	case <-time.After(adminWait):
+		t.Fatalf("the request has not come to the handler in %v", adminWait)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("the server has returned (%v) while a request is in progress", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := conn.Write([]byte(body[10:])); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("the response to the request that was in progress: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the request that was in progress got %d, want 401", res.StatusCode)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the server = %v, want it to stop with no failure", err)
+		}
+	case <-time.After(adminWait):
+		t.Fatalf("the server has not returned in %v after the request has ended", adminWait)
+	}
+	if recorded, counted := tooLongLogins(t, s.data); recorded+counted != 11 {
+		t.Errorf("the login history has %d refusals recorded and %d counted, want the 11 that were sent: the last record of the "+
+			"counted ones is made after the HTTP server has stopped", recorded, counted)
 	}
 }
 
 // TestRunAdminRecordFailures checks that the server goes on when what it records cannot be written, with the failures in
-// its log: the counted logins that the minute and the stop cannot record, and the heads that cannot be read, which are
-// those of a store that is closed. It stops with no failure, and the minutes are stopped.
+// its log: the counted logins that the minute and the stop cannot record, as those of a store that is closed. It stops with
+// no failure, and the minutes are stopped.
 func TestRunAdminRecordFailures(t *testing.T) {
 	var logged syncBuffer
 	a := openForRunLogging(t, initEmpty(t), log.New(&logged, "", 0))
-	dead, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	dead, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1895,7 +2144,7 @@ func TestRunAdminRecordFailures(t *testing.T) {
 	if err := dead.Close(); err != nil {
 		t.Fatal(err)
 	}
-	a.accounts, a.store = accounts, dead
+	a.accounts = accounts
 	ticks, stopped := make(chan time.Time), make(chan struct{})
 	a.ticks = func() (<-chan time.Time, func()) { return ticks, func() { close(stopped) } }
 
@@ -1920,68 +2169,17 @@ func TestRunAdminRecordFailures(t *testing.T) {
 	default:
 		t.Error("the minutes are not stopped")
 	}
-	var suppressed, heads int
+	var suppressed int
 	for line := range strings.Lines(logged.String()) {
-		switch {
-		case strings.HasPrefix(line, "cannot record login.suppressed: "):
+		if strings.HasPrefix(line, "cannot record login.suppressed: ") {
 			suppressed++
-		case strings.HasPrefix(line, "cannot read the heads of the audit logs: "):
-			heads++
-		default:
+		} else {
 			t.Errorf("the log has the line %q, which is none of the failures that the test makes", line)
 		}
 	}
-	// The minute and the stop each try the counts, and the start and the stop each try to write the heads.
-	if suppressed != 2 || heads < 2 {
-		t.Errorf("the log has %d lines of the counted logins that cannot be recorded, and %d of the heads that cannot be read, want "+
-			"2 and at least 2:\n%s", suppressed, heads, &logged)
-	}
-}
-
-// blockedWriter is a writer whose Write waits for release to be closed.
-type blockedWriter struct{ release chan struct{} }
-
-func (w blockedWriter) Write(p []byte) (int, error) {
-	<-w.release
-	return len(p), nil
-}
-
-// TestRunAdminSlowHeads checks that a minute does not wait for the export of the heads: while a write of a head has not
-// returned, the minutes go on to be taken; and that the server does not return before that write has, as the data
-// directory is closed after it returns.
-func TestRunAdminSlowHeads(t *testing.T) {
-	a := openForRun(t, initEmpty(t))
-	release := make(chan struct{})
-	a.heads = blockedWriter{release}
-	ticks := make(chan time.Time)
-	a.ticks = func() (<-chan time.Time, func()) { return ticks, func() {} }
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- runAdmin(ctx, a) }()
-	for i := range 4 {
-		select {
-		case ticks <- time.Now():
-		case <-time.After(10 * time.Second):
-			close(release)
-			t.Fatalf("the server has not taken minute %d in 10 s, while the write of a head has not returned", i+1)
-		}
-	}
-	cancel()
-	select {
-	case err := <-done:
-		close(release)
-		t.Fatalf("the server has returned (%v) while the write of a head has not", err)
-	case <-time.After(time.Second):
-	}
-	close(release)
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("the server = %v, want it to stop with no failure", err)
-		}
-	case <-time.After(adminWait):
-		t.Fatalf("the server has not returned in %v after the write of the head has", adminWait)
+	// The minute and the stop each try the counts.
+	if suppressed != 2 {
+		t.Errorf("the log has %d lines of the counted logins that cannot be recorded, want 2:\n%s", suppressed, &logged)
 	}
 }
 
@@ -2020,28 +2218,11 @@ func TestParseProxy(t *testing.T) {
 // recordedWithin is how long the tests wait for what the server does after a minute, which takes a few records.
 const recordedWithin = 20 * time.Second
 
-// headPrefix starts the lines of the export of the heads of the audit logs.
+// headPrefix starts the lines of the export of the heads of the audit logs, which the daemon writes and the server does not.
 const headPrefix = "audit head "
 
-// withoutHeads returns text, what a server printed on stderr, without the lines of the heads of the audit logs.
-func withoutHeads(text string) string {
-	var b strings.Builder
-	for line := range strings.Lines(text) {
-		if !strings.HasPrefix(line, headPrefix) {
-			b.WriteString(line)
-		}
-	}
-	return b.String()
-}
-
-// logged returns what the server printed on stderr but the heads of the audit logs.
-func (a *adminProc) logged() string { return withoutHeads(a.stderr.String()) }
-
-// heads returns the heads that the server has written to stderr, in the order of the lines.
-func (a *adminProc) heads() []audit.Head {
-	heads, _ := headsOf(a.stderr.String())
-	return heads
-}
+// logged returns what the server printed on stderr, which has no line of the heads of the audit logs.
+func (a *adminProc) logged() string { return a.stderr.String() }
 
 // headsOf reads the lines of text that start as a head, with audit.ParseHead: the heads, and the lines that it cannot read.
 func headsOf(text string) (heads []audit.Head, unread []string) {
@@ -2072,7 +2253,7 @@ func lastHeads(heads []audit.Head) map[audit.Log]audit.Head {
 // read as another process reads it.
 func storedHeads(t *testing.T, data string) map[audit.Log]audit.Head {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2084,17 +2265,17 @@ func storedHeads(t *testing.T, data string) map[audit.Log]audit.Head {
 	return lastHeads(heads)
 }
 
-// verifyHeads checks that the chains of the audit logs of the data directory, which no process has open, are those that
-// heads, which a server has written, say.
+// verifyHeads checks that the chains of the audit logs of the data directory are those that heads, which the daemon has
+// written, say.
 func verifyHeads(t *testing.T, what, data string, heads []audit.Head) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
 	if err := s.VerifyAudit(t.Context(), heads); err != nil {
-		t.Errorf("%s: VerifyAudit with the %d heads that the server wrote: %v", what, len(heads), err)
+		t.Errorf("%s: VerifyAudit with the %d heads that the daemon wrote: %v", what, len(heads), err)
 	}
 }
 
@@ -2102,7 +2283,7 @@ func verifyHeads(t *testing.T, what, data string, heads []audit.Head) {
 // refused for a password that is too long: those recorded one by one, and those that login.suppressed records count.
 func tooLongLogins(t *testing.T, data string) (recorded, counted int) {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2229,86 +2410,44 @@ func (a *adminProc) waitPublished(t *testing.T, cookie, entry string) buildsBody
 	return b
 }
 
-// TestServeAdminHeads checks the export of the heads of the audit logs to stderr: at the start, the head of the activity
-// log, which init has made records of, and none of the login history, which has none; the head of the login history
-// after a minute that follows a login, and not before; and at the stop, the last heads, which are those of the data
-// directory, and which VerifyAudit takes as the anchors. A login that is followed by the stop at once is in the last
-// head too. No head goes to stdout, and nothing but the heads goes to stderr.
-func TestServeAdminHeads(t *testing.T) {
+// TestServeAdminNoHeads checks that the server writes no line of the heads of the audit logs, at its start, after a login
+// and a minute, and at its stop: nothing but the dated lines of its log, which it has none of here, goes to stderr, and
+// nothing goes to stdout after its first line. The daemon writes the heads, which its export does here as whiteroom-db serve
+// does, and those that it has written when the server has stopped are the heads of the chains that the server's records have
+// made, which VerifyAudit takes as the anchors.
+func TestServeAdminNoHeads(t *testing.T) {
 	s := initSample(t)
+	export := exportHeads(t, s.database())
 	ticks := make(chan time.Time)
 	a := startAdminTicks(t, t.Context(), ticks, s.args()...)
-	a.waitFor(t, recordedWithin, "the head of the activity log", func() bool {
-		_, ok := lastHeads(a.heads())[audit.ActivityLog]
-		return ok
-	})
-	if h, ok := lastHeads(a.heads())[audit.LoginLog]; ok {
-		t.Errorf("the start has written the head %v of the login history, which has no record", h)
-	}
 	cookie := a.login(t)
-	if h, ok := lastHeads(a.heads())[audit.LoginLog]; ok {
-		t.Errorf("a login has made the server write the head %v of the login history before a minute has come", h)
-	}
 	a.waitBuilt(t, cookie)
 	sendTick(t, ticks)
-	a.waitFor(t, recordedWithin, "the head of the login history after a minute", func() bool {
-		h, ok := lastHeads(a.heads())[audit.LoginLog]
-		return ok && h == storedHeads(t, s.data)[audit.LoginLog]
-	})
 	if code := a.stop(t); code != 0 {
 		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
-	heads, unread := headsOf(a.stderr.String())
-	if len(unread) > 0 {
-		t.Errorf("audit.ParseHead cannot read the lines:\n%s", strings.Join(unread, ""))
+	if got := a.stderr.String(); got != "" {
+		t.Errorf("whiteroom serve admin printed on stderr:\n%s\nwant nothing: the heads are written by the daemon", got)
 	}
-	last := lastHeads(heads)
-	stored := storedHeads(t, s.data)
-	if len(last) != 2 || len(stored) != 2 {
-		t.Errorf("the server wrote the heads of %d logs, and the data directory has %d, want 2", len(last), len(stored))
-	}
-	for _, log := range []audit.Log{audit.LoginLog, audit.ActivityLog} {
-		if last[log] != stored[log] {
-			t.Errorf("the last head of the %s log that the server wrote is %v, and the data directory has %v", log, last[log], stored[log])
-		}
-	}
-	verifyHeads(t, "after the stop", s.data, heads)
 	if len(a.stdout) != 0 {
 		t.Errorf("whiteroom serve admin printed on stdout after its first line: %q", <-a.stdout)
 	}
-	if got := a.logged(); got != "" {
-		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
-	}
 
-	// A login, and no minute before the stop.
-	b := startAdminTicks(t, t.Context(), make(chan time.Time), s.args()...)
-	b.waitFor(t, recordedWithin, "the heads at the start", func() bool {
-		_, ok := lastHeads(b.heads())[audit.LoginLog]
-		return ok
-	})
-	b.login(t)
-	if code := b.stop(t); code != 0 {
-		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+	heads := export.finish()
+	last, stored := lastHeads(heads), storedHeads(t, s.data)
+	if len(last) != 2 || len(stored) != 2 {
+		t.Errorf("the daemon wrote the heads of %d logs, and the data directory has %d, want 2", len(last), len(stored))
 	}
-	var logins []audit.Head
-	for _, h := range b.heads() {
-		if h.Log == audit.LoginLog {
-			logins = append(logins, h)
+	for _, log := range []audit.Log{audit.LoginLog, audit.ActivityLog} {
+		if last[log] != stored[log] {
+			t.Errorf("the last head of the %s log that the daemon wrote is %v, and the data directory has %v", log, last[log], stored[log])
 		}
 	}
-	stored = storedHeads(t, s.data)
-	if len(logins) != 2 || logins[0] == logins[1] || logins[1] != stored[audit.LoginLog] {
-		t.Errorf("the heads of the login history that the server wrote, with a login and no minute, are %v, want the head at the "+
-			"start and then the head of the stop, %v", logins, stored[audit.LoginLog])
-	}
-	if got := b.logged(); got != "" {
-		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
-	}
-	verifyHeads(t, "after the second stop", s.data, append(heads, b.heads()...))
+	verifyHeads(t, "after the stop", s.data, heads)
 }
 
 // TestServeAdminFlush checks that the failed logins that were counted and not recorded are recorded in a login.suppressed
-// record: when the server stops, and when a minute comes, which also makes the export write the head that follows.
+// record: when the server stops, and when a minute comes.
 func TestServeAdminFlush(t *testing.T) {
 	const refused = 25
 	// recorded is at most the 10 refusals of a minute that are recorded, for the two minutes that 25 can take.
@@ -2320,7 +2459,7 @@ func TestServeAdminFlush(t *testing.T) {
 				"login.suppressed records, want %d together, of which at most 20 recorded, and some counted", what, recorded, counted,
 				refused)
 		}
-		if got := a.stderr.String(); strings.Contains(got, "cannot record") {
+		if got := a.stderr.String(); got != "" {
 			t.Errorf("%s: whiteroom serve admin printed on stderr:\n%s", what, got)
 		}
 	}
@@ -2333,21 +2472,16 @@ func TestServeAdminFlush(t *testing.T) {
 		t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
 	}
 	check("at the stop", s.data, a)
-	if last, stored := lastHeads(a.heads())[audit.LoginLog], storedHeads(t, s.data)[audit.LoginLog]; last != stored {
-		t.Errorf("at the stop: the last head of the login history that the server wrote is %v, and the data directory has %v", last,
-			stored)
-	}
 
-	// At a minute, while the server runs: the records are there, and the head that the export writes after is the last.
+	// At a minute, while the server runs: the records are there.
 	s = initEmpty(t)
 	ticks := make(chan time.Time)
 	b := startAdminTicks(t, t.Context(), ticks, s.args()...)
 	b.refuseLogins(t, refused)
 	sendTick(t, ticks)
-	b.waitFor(t, recordedWithin, "the record of the counted logins, and the head after it", func() bool {
+	b.waitFor(t, recordedWithin, "the record of the counted logins", func() bool {
 		recorded, counted := tooLongLogins(t, s.data)
-		last, ok := lastHeads(b.heads())[audit.LoginLog]
-		return recorded+counted == refused && ok && last == storedHeads(t, s.data)[audit.LoginLog]
+		return recorded+counted == refused
 	})
 	check("at a minute", s.data, b)
 	if code := b.stop(t); code != 0 {
@@ -2585,4 +2719,246 @@ func TestServeAdminURL(t *testing.T) {
 			checkUnlocked(t, what+" of "+tt.value, s.data)
 		}
 	}
+}
+
+// tempNamesIn returns the names of the files of the directory dir that start with .tmp-.
+func tempNamesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// checkTempDir checks that dir is a directory with the mode 0700, and returns the names of the temporary files in it.
+func checkTempDir(t *testing.T, what, dir string) []string {
+	t.Helper()
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s: %s is %v (%v), want a directory with the mode 0700", what, dir, info, err)
+	}
+	return tempNamesIn(t, dir)
+}
+
+// slowRevision starts the POST of a revision of the entry of more than the memory of a spool, 256 KiB, whose body stops
+// before its end until the function that it returns is called: that sends the rest and returns the status of the answer.
+func (a *adminProc) slowRevision(t *testing.T, cookie, entry string) (sendRest func() int) {
+	t.Helper()
+	var head strings.Builder
+	head.WriteString(`{"base":"","revision":{"schemaVersion":1,"title":"Big","slug":"big","body":[{"type":"paragraph","id":"b_big00000",` +
+		`"content":[{"type":"text","text":"first"}]}`)
+	for i := 1; head.Len() < 400<<10; i++ {
+		fmt.Fprintf(&head, `,{"type":"paragraph","id":"b_big%05d","content":[{"type":"text","text":"%s"}]}`, i, strings.Repeat("a", 100))
+	}
+	pr, pw := io.Pipe()
+	req, err := a.newRequest(t.Context(), http.MethodPost, "/api/entries/"+entry+"/revisions", pr, "Content-Type", "application/json",
+		"Cookie", cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan int, 1)
+	go func() {
+		res, err := a.client.Do(req)
+		if err != nil {
+			answered <- -1
+			return
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		answered <- res.StatusCode
+	}()
+	if _, err := io.WriteString(pw, head.String()); err != nil {
+		t.Fatal(err)
+	}
+	return func() int {
+		t.Helper()
+		_, _ = io.WriteString(pw, `]}}`)
+		_ = pw.Close()
+		select {
+		case status := <-answered:
+			return status
+		case <-time.After(adminWait):
+			t.Fatalf("the request has not been answered in %v", adminWait)
+			return 0
+		}
+	}
+}
+
+// bigPNG returns a PNG of more than 256 KiB.
+func bigPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 300, 300))
+	rng := rand.New(rand.NewPCG(300, 300))
+	for i := range img.Pix {
+		img.Pix[i] = byte(rng.UintN(256))
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	if b.Len() <= 256<<10 {
+		t.Fatalf("the PNG has %d bytes", b.Len())
+	}
+	return b.Bytes()
+}
+
+// TestServeAdminTmp checks the directory of the temporary files of the large bodies and answers: SITE/tmp unless -tmp or tmp of
+// the config file gives another, made with the mode 0700 without its parents, and kept when the server stops; what is in it
+// while a request runs, and that nothing of it is in files/ of the data directory; the files that a server that was killed
+// left in it are removed when the next one starts; and a directory that cannot be made or read fails the start.
+func TestServeAdminTmp(t *testing.T) {
+	t.Run("the default", func(t *testing.T) {
+		s := initSample(t)
+		tmp := filepath.Join(s.site, "tmp")
+		checkMissing(t, "before the start", tmp)
+		a := startAdmin(t, t.Context(), s.args()...)
+		if got := checkTempDir(t, "the default", tmp); got != nil {
+			t.Errorf("SITE/tmp has %q after the start, want nothing", got)
+		}
+		cookie := a.login(t)
+		a.waitBuilt(t, cookie)
+
+		// A body of more than 256 KiB is in a file of the directory while the request runs, and not in files/.
+		status, answer := a.exchange(t, http.MethodPost, "/api/entries", `{"type":"page","language":"ja"}`, "Cookie", cookie)
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(answer, &created); status != http.StatusCreated || err != nil {
+			t.Fatalf("POST /api/entries = %d (%v), with the body %s, want 201", status, err, answer)
+		}
+		sendRest := a.slowRevision(t, cookie, created.ID)
+		var info fs.FileInfo
+		a.waitFor(t, adminWait, "the body to be in a temporary file", func() bool {
+			temps := tempNamesIn(t, tmp)
+			if len(temps) != 1 {
+				return false
+			}
+			var err error
+			info, err = os.Stat(filepath.Join(tmp, temps[0]))
+			return err == nil && info.Size() > 256<<10
+		})
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("the temporary file has the mode %v, want -rw-------", info.Mode())
+		}
+		if got := tempNamesIn(t, filepath.Join(s.data, "files")); got != nil {
+			t.Errorf("files/ of the data directory has %q while the body is received, want nothing", got)
+		}
+		if status := sendRest(); status != http.StatusCreated {
+			t.Errorf("the revision of more than 256 KiB = %d, want 201\nstderr:\n%s", status, a.stderr)
+		}
+		a.waitFor(t, adminWait, "the temporary file to be removed", func() bool { return len(tempNamesIn(t, tmp)) == 0 })
+
+		// An upload of more than 256 KiB.
+		file := bigPNG(t)
+		req, err := a.newRequest(t.Context(), http.MethodPost, "/api/media?fileName=big.png", bytes.NewReader(file),
+			"Content-Type", "image/png", "Cookie", cookie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Errorf("the upload of %d bytes = %d, want 201\nstderr:\n%s", len(file), res.StatusCode, a.stderr)
+		}
+		for _, dir := range []string{tmp, filepath.Join(s.data, "files")} {
+			if got := tempNamesIn(t, dir); got != nil {
+				t.Errorf("%s has %q after the requests, want nothing", dir, got)
+			}
+		}
+		if code := a.stop(t); code != 0 {
+			t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+		}
+		if got := checkTempDir(t, "after the stop", tmp); got != nil {
+			t.Errorf("SITE/tmp has %q after the stop, want nothing", got)
+		}
+	})
+
+	t.Run("a directory that is missing, and what a killed server left", func(t *testing.T) {
+		s := initSample(t)
+		dir := filepath.Join(t.TempDir(), "spool")
+		a := startAdmin(t, t.Context(), s.args("-tmp", dir)...)
+		checkTempDir(t, "-tmp", dir)
+		checkMissing(t, "-tmp", filepath.Join(s.site, "tmp"))
+		if code := a.stop(t); code != 0 {
+			t.Errorf("whiteroom serve admin = %d after its context is done, want 0", code)
+		}
+		if got := checkTempDir(t, "after the stop", dir); got != nil {
+			t.Errorf("the directory has %q after the stop, want nothing", got)
+		}
+
+		const leftover, other = ".tmp-0123456789abcdef", "keep.txt"
+		for _, name := range []string{leftover, other} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("half"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b := startAdmin(t, t.Context(), s.args("-tmp", dir)...)
+		if _, err := os.Lstat(filepath.Join(dir, leftover)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the file that a server left is %v after the next start, want it removed", err)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, other)); err != nil {
+			t.Errorf("%s after the start is %v, want it kept", other, err)
+		}
+		stopsWith(t, "the second server", b)
+	})
+
+	t.Run("the config file", func(t *testing.T) {
+		s := initSample(t)
+		conf := t.TempDir()
+		file := s.configIn(t, conf, "tmp: spool")
+		a := startAdmin(t, t.Context(), "-config", file)
+		checkTempDir(t, "tmp of the config file", filepath.Join(conf, "spool"))
+		checkMissing(t, "tmp of the config file", filepath.Join(s.site, "tmp"))
+		stopsWith(t, "the server of the config file", a)
+
+		// -tmp wins over it.
+		flagDir := filepath.Join(t.TempDir(), "flag")
+		other := t.TempDir()
+		b := startAdmin(t, t.Context(), "-config", s.configIn(t, other, "tmp: spool"), "-tmp", flagDir)
+		checkTempDir(t, "-tmp over tmp", flagDir)
+		checkMissing(t, "-tmp over tmp", filepath.Join(other, "spool"))
+		stopsWith(t, "the server with -tmp and tmp", b)
+	})
+
+	t.Run("a directory that cannot be made or read", func(t *testing.T) {
+		s := initSample(t)
+		gone := filepath.Join(t.TempDir(), "gone", "tmp")
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cases := []struct{ what, path, want string }{
+			{"a missing parent", gone, "mkdir " + gone + ": no such file or directory"},
+			{"a file", file, file + ": not a directory"},
+		}
+		if os.Geteuid() != 0 {
+			locked := filepath.Join(t.TempDir(), "locked")
+			if err := os.Mkdir(locked, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			cases = append(cases, struct{ what, path, want string }{"a directory that cannot be read", locked,
+				"open " + locked + ": permission denied"})
+		}
+		for _, tt := range cases {
+			code, stdout, stderr := runAdminCmd(t, onSystemPort(s.args("-tmp", tt.path))...)
+			if want := "whiteroom serve admin: " + tt.want + "\n"; code != 1 || stdout != "" || stderr != want {
+				t.Errorf("%s: whiteroom serve admin -tmp %s = %d, with stdout %q and stderr:\n%s\nwant 1, and stderr:\n%s", tt.what, tt.path, code,
+					stdout, stderr, want)
+			}
+			checkUnlocked(t, tt.what, s.data)
+		}
+		checkMissing(t, "a missing parent", filepath.Dir(gone))
+	})
 }

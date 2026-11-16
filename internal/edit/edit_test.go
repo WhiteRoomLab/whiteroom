@@ -19,6 +19,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 	"github.com/WhiteRoomLab/whiteroom/internal/theme"
 )
 
@@ -91,7 +92,7 @@ func testEditor(t *testing.T, s *store.Store) *Editor {
 // Editor for it.
 func newSample(t *testing.T) (*Editor, *store.Store) {
 	t.Helper()
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

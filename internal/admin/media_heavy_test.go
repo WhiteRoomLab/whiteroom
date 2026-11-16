@@ -49,19 +49,25 @@ func TestMediaPerAccount(t *testing.T) {
 	for range downloads {
 		receive(t, reached, "a download to be stopped")
 	}
-	first, second := testPNG(t, 40, 40), testPNG(t, 41, 41)
+	// The second upload is of more than the spool keeps in memory.
+	first, second := testPNG(t, 40, 40), bigPDF(spoolMemory+100<<10)
+	const received = spoolMemory + 4<<10
 	up1 := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=one.png", "image/png", first[:100])
-	up2 := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=two.png", "image/png", second[:700])
+	up2 := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=two.pdf", "application/pdf", second[:received])
 	waitFor(t, "four requests of the author to be counted", func() bool { return a.inflight.count(author) == heavyPerAccount })
-	// What has come of the second upload is in a temporary file of the store, and not kept in memory.
+	// What has come of the second upload is in a temporary file of the server, in the directory of its temporary files, and
+	// not kept in memory; none of it is in the store, which gets the file when it has come whole.
 	waitFor(t, "the part of the upload that has come to be in a temporary file", func() bool {
 		files := a.tempFiles(t)
 		if len(files) != 1 {
 			return false
 		}
-		info, err := os.Stat(filepath.Join(a.dir, "files", files[0]))
-		return err == nil && info.Size() == 700
+		info, err := os.Stat(filepath.Join(a.tmp, files[0]))
+		return err == nil && info.Size() == received
 	})
+	if files := a.originalTemps(t); len(files) != 0 {
+		t.Errorf("the store has the temporary files %v of an upload that is not whole", files)
+	}
 
 	// The fifth request is refused at once, whichever it is, and a body that comes with it is not read.
 	before := a.versions(t)
@@ -109,7 +115,7 @@ func TestMediaPerAccount(t *testing.T) {
 		}
 	}
 	up1.finish(first[100:])
-	up2.finish(second[700:])
+	up2.finish(second[received:])
 	for i, up := range []pipedRequest{up1, up2} {
 		if res := receive(t, up.result, "an upload"); res.StatusCode != http.StatusCreated {
 			t.Errorf("upload %d: %d %s, want 201", i+1, res.StatusCode, bodyOf(t, res))
@@ -119,11 +125,47 @@ func TestMediaPerAccount(t *testing.T) {
 	if res := a.as("author").get("/api/entries?limit=1"); res.StatusCode != http.StatusOK {
 		t.Errorf("a request of the author after them has the status %d, want 200", res.StatusCode)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 	if logged := a.logs.String(); logged != "" {
 		t.Errorf("the log is %q, want nothing", logged)
+	}
+}
+
+// TestMediaSlowUploadDoesNotBlockSaves shows that an upload whose body arrives in two parts, with a pause between them, does not
+// block a change of the store meanwhile: the file is received whole into a spool before the store has it, so that the writer
+// connection of the daemon, which every change waits for, is not held for a sender. A save of a document returns while the upload
+// is still open, and the upload is saved when its body is whole.
+func TestMediaSlowUploadDoesNotBlockSaves(t *testing.T) {
+	a := newAPIServer(t)
+	author := a.people["author"].account.ID
+	news := a.stored(t, content.RefTerm, newsTerm)
+	changed := strings.Replace(string(news.Data), "お知らせ", "お知らせ9", 1)
+	file := testPNG(t, 40, 40)
+	half := len(file) / 2
+
+	up := a.startPiped(t, "author", http.MethodPost, "/api/media?fileName=slow.png", "image/png", file[:half])
+	waitFor(t, "the upload of the author to be counted", func() bool { return a.inflight.count(author) == 1 })
+	res := receive(t, async(func() *http.Response { return a.as("editor").put("/api/terms/"+newsTerm, saveBody(news.Seq, changed)) }),
+		"the save while the upload is open")
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("the save while the upload is open has the status %d %s, want 200", res.StatusCode, bodyOf(t, res))
+	}
+	if got := a.stored(t, content.RefTerm, newsTerm); got.Seq == news.Seq {
+		t.Error("the save has not changed the term")
+	}
+	quiet(t, up.result, "the upload was answered before its body was whole")
+	if n := len(a.originalTemps(t)); n != 0 {
+		t.Errorf("the store has %d temporary files of the upload that is not whole, want none", n)
+	}
+
+	up.finish(file[half:])
+	if res := receive(t, up.result, "the upload"); res.StatusCode != http.StatusCreated {
+		t.Errorf("the upload has the status %d %s, want 201", res.StatusCode, bodyOf(t, res))
+	}
+	if files := a.leftovers(t); len(files) != 0 {
+		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 }
 
@@ -203,7 +245,7 @@ func TestMediaDownloadNotRead(t *testing.T) {
 	if n := held.Load(); n != 0 {
 		t.Errorf("the hook \"sending\" found the place taken %d times", n)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 	if logged := a.logs.String(); logged != "" {

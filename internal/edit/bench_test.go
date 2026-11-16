@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -43,6 +45,7 @@ var benchBase = time.Date(2020, 1, 1, 9, 0, 0, 0, time.FixedZone("", 9*60*60))
 // The operations that the benchmark runs on each site, in order, and the adding of the posts.
 const (
 	benchAdd       = "add"
+	benchImport    = "Import"
 	opSaveTerm     = "SaveTerm"
 	opSaveRevision = "SaveRevision"
 	opCreateEntry  = "CreateEntry"
@@ -50,6 +53,8 @@ const (
 	opRefusedSave  = "SaveTermRefused"
 	opPublish      = "Publish"
 	opUnpublish    = "Unpublish"
+	opCheck        = "Check"
+	opReadDocs     = "ReadDocuments"
 )
 
 var benchOps = []struct{ name, what string }{
@@ -60,6 +65,8 @@ var benchOps = []struct{ name, what string }{
 	{opRefusedSave, "Save of that category with the language en, which the published revision of every post refuses (nothing is saved)"},
 	{opPublish, "Publish of a new revision of a published post whose path stays (the revision is saved with SaveRevision before the run, which the time does not count)"},
 	{opUnpublish, "Unpublish of a published post (Publish of its latest revision puts it back after the run, which the time does not count)"},
+	{opCheck, "store.Check, which whiteroom doctor runs: the engine's check, the index against the documents, and the originals (it must find no problem)"},
+	{opReadDocs, "One View that reads the settings document and the current documents of every kind, as publish.Snapshot does at the start of a build from the store (the longest read and the longest gap between two reads are those of the function of the View, between the calls of Document and Documents)"},
 }
 
 // benchResult is one run of an operation, or the adding of the posts (the operation benchAdd, as one run).
@@ -70,6 +77,9 @@ type benchResult struct {
 	Millis   float64 // the time of the run
 	Alloc    uint64  // the bytes that it allocated: the difference of TotalAlloc
 	Problems int     `json:",omitempty"` // in the error of a refused save
+	Staged   int64   `json:",omitempty"` // of the data that the Import, or the largest Update of the adding, put as objects, in bytes
+	LongRead float64 `json:",omitempty"` // of ReadDocuments: the longest call of Document or Documents, in ms
+	LongGap  float64 `json:",omitempty"` // of ReadDocuments: the longest time between the end of a call and the next, in ms
 	Bytes    int64   `json:",omitempty"` // of the files of the store after the posts have been added
 	MaxRSS   uint64  // the largest resident set that the process has had by the end of the run
 }
@@ -91,6 +101,9 @@ func (l *benchLog) add(t *testing.T, r benchResult) {
 	}
 	l.results = append(l.results, r)
 	what := fmt.Sprintf("%s run %d", r.Op, r.Run)
+	if r.Op == benchImport {
+		what = "Import"
+	}
 	if r.Op == benchAdd {
 		what = fmt.Sprintf("added, store %.0f MiB", float64(r.Bytes)/mib)
 	}
@@ -115,9 +128,15 @@ func benchCounts(t *testing.T) []int {
 	return counts
 }
 
+// benchDaemonNote is the line of results.md that says how the store ran.
+const benchDaemonNote = "The store talks to a daemon in the same process over Unix domain socket files (storetest.Serve: " +
+	"the writer and the reader socket in a directory of its own under TMPDIR), with the limits of the tests: no limit of " +
+	"commits per second and no check of the free space, the others as the daemon has them."
+
 // TestBenchmarks runs the benchmarks of the save operations if envBench names a directory for the results. For each of
-// the numbers of posts, it imports the sample site into a new store under TMPDIR, which should be on a real disk, adds
-// the posts, and runs each operation of benchOps benchRuns times. It writes raw.jsonl and results.md to the results.
+// the numbers of posts, it imports the sample site into a new store under TMPDIR, which should be on a real disk and
+// have a short path (the sockets are under it too), adds the posts, and runs each operation of benchOps benchRuns times.
+// It writes raw.jsonl and results.md to the results.
 func TestBenchmarks(t *testing.T) {
 	out := os.Getenv(envBench)
 	if out == "" {
@@ -162,22 +181,33 @@ func TestBenchmarks(t *testing.T) {
 func benchSite(t *testing.T, posts int, bl *benchLog) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	d, err := storetest.Serve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	s, err := store.Create(context.Background(), d.Dialer())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if _, err := Import(t.Context(), s, openSample(t), userID); err != nil {
-		t.Fatalf("Import() error = %v", err)
+	sample := openSample(t)
+	var importErr error
+	took, alloc := benchMeasure(func() { _, importErr = Import(t.Context(), s, sample, userID) })
+	if importErr != nil {
+		t.Fatalf("Import() error = %v", importErr)
 	}
+	bl.add(t, benchResult{Posts: posts, Op: benchImport, Run: 1, Millis: benchMillis(took), Alloc: alloc, Staged: benchData(t, s),
+		MaxRSS: benchMaxRSS()})
 	ed := testEditor(t, s)
 	if posts > 0 {
-		took, alloc := addPosts(t, s, posts)
-		bl.add(t, benchResult{Posts: posts, Op: benchAdd, Run: 1, Millis: benchMillis(took), Alloc: alloc,
+		took, alloc, staged := addPosts(t, s, posts)
+		bl.add(t, benchResult{Posts: posts, Op: benchAdd, Run: 1, Millis: benchMillis(took), Alloc: alloc, Staged: staged,
 			Bytes: benchSize(t, dir), MaxRSS: benchMaxRSS()})
 		checkPosts(t, ed, s, posts)
 	}
 	benchOperations(t, ed, s, posts, bl)
+	benchReads(t, s, posts, bl)
 }
 
 // benchID returns the ID of kind of the post i; none of the sample site or of the Editors of the tests is like it.
@@ -238,9 +268,58 @@ func newBenchPost(i, number int) benchPost {
 	}
 }
 
+// benchData returns the bytes of the objects that the documents and the revisions in s have: the data of the settings
+// document, of the current documents of every kind and of every revision of the entries, by their hashes, so that data that
+// are the same count once. It is what an Import of a site puts in the Update that saves it, at the most.
+func benchData(t *testing.T, s *store.Store) int64 {
+	t.Helper()
+	sizes := make(map[string]int)
+	err := s.View(t.Context(), func(tx *store.Tx) error {
+		doc, err := tx.Document(store.SettingsKind, "")
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err == nil {
+			sizes[doc.Hash] = len(doc.Data)
+		}
+		for _, kind := range documentKinds {
+			docs, err := tx.Documents(kind)
+			if err != nil {
+				return err
+			}
+			for _, d := range docs {
+				sizes[d.Hash] = len(d.Data)
+				if kind != content.RefEntry {
+					continue
+				}
+				revs, err := tx.Revisions(d.ID)
+				if err != nil {
+					return err
+				}
+				for _, r := range revs {
+					rev, err := tx.Revision(r.ID)
+					if err != nil {
+						return err
+					}
+					sizes[rev.Hash] = len(rev.Data)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	for _, size := range sizes {
+		n += int64(size)
+	}
+	return n
+}
+
 // addPosts adds the published posts 1 to posts to s with the store's own API, in Updates of at most benchBatch posts,
-// and returns the time and the allocation of the Updates only.
-func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, alloc uint64) {
+// and returns the time and the allocation of the Updates only, and the most bytes of data that an Update put as objects.
+func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, alloc uint64, staged int64) {
 	t.Helper()
 	var last int
 	err := s.View(t.Context(), func(tx *store.Tx) (err error) {
@@ -253,9 +332,13 @@ func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, allo
 	for from := 1; from <= posts; from += benchBatch {
 		to := min(from+benchBatch-1, posts)
 		batch := make([]benchPost, 0, to-from+1)
+		var data int64
 		for i := from; i <= to; i++ {
-			batch = append(batch, newBenchPost(i, last+i))
+			p := newBenchPost(i, last+i)
+			batch = append(batch, p)
+			data += int64(len(p.entryData) + len(p.revData))
 		}
+		staged = max(staged, data)
 		d, a := benchMeasure(func() {
 			err = s.Update(t.Context(), storeWrite(func(tx *store.Tx) error {
 				for _, p := range batch {
@@ -275,7 +358,7 @@ func addPosts(t *testing.T, s *store.Store, posts int) (took time.Duration, allo
 		took, alloc = took+d, alloc+a
 		t.Logf("%s %d posts: %d added, %.1f s", time.Now().Format(time.TimeOnly), posts, to, took.Seconds())
 	}
-	return took, alloc
+	return took, alloc, staged
 }
 
 // checkPosts fails the test if the first, the middle or the last post that addPosts has added does not validate as the
@@ -455,6 +538,54 @@ func benchOperations(t *testing.T, ed *Editor, s *store.Store, posts int, bl *be
 	}
 }
 
+// benchReads runs store.Check and the read of every current document, which are not saves, benchRuns times each.
+func benchReads(t *testing.T, s *store.Store, posts int, bl *benchLog) {
+	t.Helper()
+	for run := 1; run <= benchRuns; run++ {
+		problems := 0
+		r, err := benchRun(posts, opCheck, run, func() error {
+			return s.Check(t.Context(), func(store.Problem) bool {
+				problems++
+				return true
+			})
+		})
+		if err != nil || problems > 0 {
+			t.Fatalf("%s (run %d, %d posts) has %d problems, error = %v", opCheck, run, posts, problems, err)
+		}
+		bl.add(t, r)
+	}
+	for run := 1; run <= benchRuns; run++ {
+		var long, gap time.Duration
+		r, err := benchRun(posts, opReadDocs, run, func() error {
+			return s.View(t.Context(), func(tx *store.Tx) error {
+				last := time.Now()
+				call := func(f func() error) error {
+					start := time.Now()
+					gap = max(gap, start.Sub(last))
+					err := f()
+					last = time.Now()
+					long = max(long, last.Sub(start))
+					return err
+				}
+				if err := call(func() error { _, err := tx.Document(store.SettingsKind, ""); return err }); err != nil {
+					return err
+				}
+				for _, kind := range documentKinds {
+					if err := call(func() error { _, err := tx.Documents(kind); return err }); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		})
+		if err != nil {
+			t.Fatalf("%s (run %d, %d posts) error = %v", opReadDocs, run, posts, err)
+		}
+		r.LongRead, r.LongGap = benchMillis(long), benchMillis(gap)
+		bl.add(t, r)
+	}
+}
+
 // benchRepublished returns a revision of the published post id with the title title, and the rest of the revision that it
 // publishes, so that publishing it leaves the path of the post as it is.
 func benchRepublished(t *testing.T, s *store.Store, id, title string) []byte {
@@ -567,6 +698,7 @@ func benchMarkdown(results []benchResult, counts []int, work string, started tim
 	fmt.Fprintf(&b, "- %s %s/%s\n- %s, %d CPUs, %d MiB of memory, Linux %s\n- Work directory %s (%s)\n",
 		runtime.Version(), runtime.GOOS, runtime.GOARCH, benchFirst("/proc/cpuinfo", "model name"), runtime.NumCPU(),
 		memory>>10, benchFirst("/proc/sys/kernel/osrelease", ""), work, benchMount(work))
+	b.WriteString("- " + benchDaemonNote + "\n")
 	b.WriteString("- Settings of the runtime:")
 	for _, name := range []string{"GOGC", "GOMEMLIMIT", "GODEBUG"} {
 		v, ok := os.LookupEnv(name)
@@ -592,26 +724,42 @@ func benchMarkdown(results []benchResult, counts []int, work string, started tim
 		return rs
 	}
 	b.WriteString("\n## Adding the posts\n\nThe time of the Updates (not of making the posts), the bytes that they allocated, " +
-		"the size of the files of the store after them, and the largest resident set of the process by then.\n\n" +
-		"| posts | time (s) | ms for each post | allocated (MiB) | store (MiB) | max RSS (MiB) |\n" +
-		"| ---: | ---: | ---: | ---: | ---: | ---: |\n")
+		"the size of the files of the store after them, the data of the largest Update (the bytes of the entries and the " +
+		"revisions that it put as objects), and the largest resident set of the process by then.\n\n" +
+		"| posts | time (s) | ms for each post | allocated (MiB) | store (MiB) | largest Update's data (MiB) | max RSS (MiB) |\n" +
+		"| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, n := range counts {
 		for _, r := range of(n, benchAdd) {
-			fmt.Fprintf(&b, "| %d | %.1f | %.2f | %.0f | %.0f | %.0f |\n", n, r.Millis/1000, r.Millis/float64(n),
-				float64(r.Alloc)/mib, float64(r.Bytes)/mib, float64(r.MaxRSS)/mib)
+			fmt.Fprintf(&b, "| %d | %.1f | %.2f | %.0f | %.0f | %.1f | %.0f |\n", n, r.Millis/1000, r.Millis/float64(n),
+				float64(r.Alloc)/mib, float64(r.Bytes)/mib, float64(r.Staged)/mib, float64(r.MaxRSS)/mib)
+		}
+	}
+	b.WriteString("\n## Import\n\nImport of the sample site into the new store (its Updates and its originals), and the bytes " +
+		"of the objects that the settings document, the documents and the revisions of the store have after it, which " +
+		"are at the most what the Import put as objects.\n\n| posts | time (ms) | allocated (MiB) | objects after it (KiB) |\n" +
+		"| ---: | ---: | ---: | ---: |\n")
+	for _, n := range counts {
+		for _, r := range of(n, benchImport) {
+			fmt.Fprintf(&b, "| %d | %.1f | %.1f | %.1f |\n", n, r.Millis, float64(r.Alloc)/mib, float64(r.Staged)/1024)
 		}
 	}
 
 	for _, op := range benchOps {
 		fmt.Fprintf(&b, "\n## %s\n\n%s.\n\n", op.name, op.what)
-		refused := op.name == opRefusedSave
+		refused, reads := op.name == opRefusedSave, op.name == opReadDocs
 		b.WriteString("| posts | median (ms) | max (ms) | allocated (MiB) |")
 		if refused {
 			b.WriteString(" problems |")
 		}
+		if reads {
+			b.WriteString(" longest read (ms) | longest gap (ms) |")
+		}
 		b.WriteString(" max RSS (MiB) |\n| ---: | ---: | ---: | ---: |")
 		if refused {
 			b.WriteString(" ---: |")
+		}
+		if reads {
+			b.WriteString(" ---: | ---: |")
 		}
 		b.WriteString(" ---: |\n")
 		for _, n := range counts {
@@ -619,17 +767,29 @@ func benchMarkdown(results []benchResult, counts []int, work string, started tim
 			if len(rs) == 0 {
 				continue
 			}
-			var millis, alloc []float64
+			var millis, alloc, long, gap []float64
 			var rss uint64
 			for _, r := range rs {
 				millis, alloc, rss = append(millis, r.Millis), append(alloc, float64(r.Alloc)/mib), max(rss, r.MaxRSS)
+				long, gap = append(long, r.LongRead), append(gap, r.LongGap)
 			}
 			fmt.Fprintf(&b, "| %d | %.1f | %.1f | %.1f |", n, benchMedian(millis), slices.Max(millis), benchMedian(alloc))
 			if refused {
 				fmt.Fprintf(&b, " %d |", rs[0].Problems)
 			}
+			if reads {
+				fmt.Fprintf(&b, " %.2f | %.2f |", benchMedian(long), benchMedian(gap))
+			}
 			fmt.Fprintf(&b, " %.0f |\n", float64(rss)/mib)
 		}
 	}
 	return b.String()
+}
+
+// TestBenchmarkNote checks that results.md says how the store ran.
+func TestBenchmarkNote(t *testing.T) {
+	md := benchMarkdown(nil, nil, "", time.Time{}, 0, [2]string{})
+	if !strings.Contains(md, "The store talks to a daemon in the same process over Unix domain socket files") {
+		t.Errorf("results.md does not say that the store talks to a daemon over socket files:\n%s", md)
+	}
 }

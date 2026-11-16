@@ -11,9 +11,13 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -510,7 +514,7 @@ func checkDeadline(t *testing.T, what string, got, before, after time.Time, d ti
 }
 
 func TestSpool(t *testing.T) {
-	st, dir := testStore(t)
+	dir := t.TempDir()
 	pattern := func(n, seed int) []byte {
 		b := make([]byte, n)
 		for i := range b {
@@ -532,7 +536,7 @@ func TestSpool(t *testing.T) {
 	}
 
 	// Up to spoolMemory bytes stay in memory, whatever the pieces they come in.
-	s := newSpool(st)
+	s := newSpool(dir)
 	data := pattern(spoolMemory, 1)
 	for rest := data; len(rest) > 0; {
 		n := min(len(rest), 10000)
@@ -565,6 +569,12 @@ func TestSpool(t *testing.T) {
 		t.Errorf("%d bytes: Len %d, spilled %v, %d temporary files, want %d, true and 1", len(data), s.Len(), s.spilled(),
 			len(tempFilesIn(t, dir)), len(data))
 	}
+	if name := filepath.Base(s.file.Name()); !tempName.MatchString(name) || filepath.Dir(s.file.Name()) != dir {
+		t.Errorf("the temporary file is %s, want %s/.tmp- and 16 lower case hex digits", s.file.Name(), dir)
+	}
+	if info, err := s.file.Stat(); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the temporary file has the mode %v, %v, want -rw-------", info, err)
+	}
 	for range 2 {
 		if !bytes.Equal(readAll(s), data) {
 			t.Error("a spool in a file does not read back what was written, from its start each time")
@@ -584,7 +594,7 @@ func TestSpool(t *testing.T) {
 	}
 
 	// A write that is more than the memory moves to a file at once; the memory of a spool is returned as it is.
-	s = newSpool(st)
+	s = newSpool(dir)
 	big := pattern(spoolMemory+1, 3)
 	if _, err := s.Write(big); err != nil {
 		t.Fatal(err)
@@ -593,7 +603,7 @@ func TestSpool(t *testing.T) {
 		t.Errorf("a write of %d bytes: spilled %v, want true, and the same bytes", len(big), s.spilled())
 	}
 	_ = s.Close()
-	s = newSpool(st)
+	s = newSpool(dir)
 	if _, err := s.Write([]byte("small")); err != nil {
 		t.Fatal(err)
 	}
@@ -609,27 +619,118 @@ func TestSpool(t *testing.T) {
 	}
 }
 
-// TestSpoolWithoutTempFiles shows that a spool whose store cannot make a temporary file fails the write that needs one,
-// and keeps what it has.
-func TestSpoolWithoutTempFiles(t *testing.T) {
-	st, dir := testStore(t)
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := store.OpenReader(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reader.Close() })
-	s := newSpool(reader)
+// TestSpoolWithoutDirectory shows that a spool whose directory is gone fails the write that needs a temporary file,
+// with the error of the file system, which is not taken for a resource that is not there, and keeps what it has.
+func TestSpoolWithoutDirectory(t *testing.T) {
+	s := newSpool(filepath.Join(t.TempDir(), "gone"))
 	if _, err := s.Write(bytes.Repeat([]byte("a"), spoolMemory)); err != nil {
 		t.Fatalf("Write() of the memory of a spool error = %v", err)
 	}
-	if n, err := s.Write([]byte("b")); err == nil || n != 0 || s.spilled() || s.Len() != spoolMemory {
+	n, err := s.Write([]byte("b"))
+	if err == nil || n != 0 || s.spilled() || s.Len() != spoolMemory {
 		t.Errorf("Write() that needs a file = %d, %v with Len %d and spilled %v, want 0, an error, %d and false", n, err, s.Len(), s.spilled(), spoolMemory)
+	}
+	if errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), syscall.ENOENT.Error()) {
+		t.Errorf("Write() that needs a file = %v, want the error of the file system, which does not wrap fs.ErrNotExist", err)
 	}
 	if got, err := s.bytes(); err != nil || len(got) != spoolMemory {
 		t.Errorf("bytes() = %d bytes, %v, want what it has", len(got), err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
+}
+
+// tempName matches the name of a temporary file of a spool.
+var tempName = regexp.MustCompile(`^\.tmp-[0-9a-f]{16}$`)
+
+// TestTempDir shows what New asks of Config.TempDir, and which files RemoveTemps removes.
+func TestTempDir(t *testing.T) {
+	m, _ := testAccounts(t)
+	c := testConfig(t, m, httpsOrigin)
+	c.TempDir = ""
+	if _, err := New(c); err == nil || err.Error() != "admin: no directory for the temporary files" {
+		t.Errorf("New without TempDir = %v, want the error \"admin: no directory for the temporary files\"", err)
+	}
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ what, path string }{{"a file", file}, {"a directory that is not there", filepath.Join(dir, "gone")}} {
+		c.TempDir = tt.path
+		if _, err := New(c); err == nil || !strings.Contains(err.Error(), tt.path) || !strings.HasPrefix(err.Error(), "admin: ") {
+			t.Errorf("New with %s as TempDir = %v, want an error that names %s", tt.what, err, tt.path)
+		}
+	}
+	c.TempDir = dir
+	if _, err := New(c); err != nil {
+		t.Errorf("New with a directory as TempDir = %v", err)
+	}
+
+	// Only the regular files that are named like a temporary file go.
+	temps := []string{".tmp-0123456789abcdef", ".tmp-fedcba9876543210"}
+	kept := []string{".tmp-short", ".tmp-0123456789abcde", ".tmp-0123456789abcdef0", ".tmp-0123456789ABCDEF", ".tmp-0123456789abcdeg",
+		"tmp-0123456789abcdef", ".tmp-0123456789abcdef.old", "file"}
+	for _, name := range temps {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("half"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range kept[:len(kept)-1] {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A directory with the name of a temporary file, with a file in it, and a link to a file of that name.
+	inner := filepath.Join(dir, ".tmp-aaaaaaaaaaaaaaaa")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inner, ".tmp-0123456789abcdef"), []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, filepath.Join(dir, ".tmp-bbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveTemps(dir); err != nil {
+		t.Fatalf("RemoveTemps() = %v", err)
+	}
+	for _, name := range temps {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s after RemoveTemps() is %v, want it removed", name, err)
+		}
+	}
+	for _, name := range append(kept, ".tmp-aaaaaaaaaaaaaaaa", ".tmp-aaaaaaaaaaaaaaaa/.tmp-0123456789abcdef", ".tmp-bbbbbbbbbbbbbbbb") {
+		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Errorf("%s after RemoveTemps() = %v, want it kept", name, err)
+		}
+	}
+	if err := RemoveTemps(dir); err != nil {
+		t.Errorf("the second RemoveTemps() = %v", err)
+	}
+
+	// A directory that cannot be read, and a file that cannot be removed, are errors that name them.
+	if err := RemoveTemps(filepath.Join(dir, "gone")); err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "gone")) {
+		t.Errorf("RemoveTemps() of a directory that is not there = %v, want an error that names it", err)
+	}
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(t.TempDir(), "locked")
+		if err := os.Mkdir(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stuck := filepath.Join(locked, ".tmp-0123456789abcdef")
+		if err := os.WriteFile(stuck, []byte("half"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+		if err := RemoveTemps(locked); err == nil || !strings.Contains(err.Error(), stuck) {
+			t.Errorf("RemoveTemps() of a file that cannot be removed = %v, want an error that names %s", err, stuck)
+		}
 	}
 }
 

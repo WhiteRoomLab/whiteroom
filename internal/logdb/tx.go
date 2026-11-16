@@ -69,6 +69,20 @@ func (tx *Tx) Scan(table uint32, prefix []byte, fn func(key, value []byte) bool)
 	})
 }
 
+// ScanAfter is Scan for the keys that are greater than after, which is never given, also if it is a key of the table.
+// after need not be a key of the table or start with prefix. It seeks to the first key in the tree, so it does not pass
+// the keys before it: a scan in pages gives each page after the last key of the one before. An empty after does not give
+// the empty key.
+func (tx *Tx) ScanAfter(table uint32, prefix, after []byte, fn func(key, value []byte) bool) {
+	m := tx.view()[table]
+	if tx.tables != nil {
+		tx.owner = new(owner) // writes in fn must not change the nodes that m has
+	}
+	m.AscendAfter(string(prefix), string(after), func(k string, v []byte) bool {
+		return fn([]byte(k), v[:len(v):len(v)])
+	})
+}
+
 // Put sets key in table to value. It copies both.
 func (tx *Tx) Put(table uint32, key, value []byte) error {
 	if err := tx.checkWrite(table, key); err != nil {

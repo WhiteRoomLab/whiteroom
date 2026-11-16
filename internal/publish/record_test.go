@@ -20,6 +20,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/edit"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // activity returns the records of the activity log of s, from the oldest.
@@ -586,7 +587,7 @@ func TestRequestsCheck(t *testing.T) {
 func readOnlyRig(t *testing.T, mod func(*Options)) *rig {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
-	w, err := store.Create(dir)
+	w, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +597,7 @@ func readOnlyRig(t *testing.T, mod func(*Options)) *rig {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.OpenReader(dir)
+	s, err := storetest.OpenReader(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

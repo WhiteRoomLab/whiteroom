@@ -5,24 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
 	"math"
-	"os"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
-	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
-// The log backend keeps a store in the engine of internal/logdb (3.5), in logdb/ of its data directory, beside files/.
-// The tables of its schema, logSchemaVersion:
+// The log backend keeps a store in the engine of internal/logdb (3.5), which the DB daemon opens in logdb/ of its data
+// directory, beside files/, and which the backend reaches through the client of internal/dbclient. The tables of its
+// schema, logSchemaVersion:
 //
 //	meta (1)            "schema", "versions", "revisions", "numbers" -> uvarint: the schema; the last seq of a
 //	                    version, of a revision; the largest number that an entry has had (none: 0)
@@ -39,25 +36,32 @@ import (
 //	operations (8)      operation ID -> the data that the caller of PutOperation keeps
 //	accounts (9)        user ID -> the row of a login account, which internal/account writes and the store does not read
 //	sessions (10)       session key -> the row of a session, which internal/account writes and the store does not read
+//	heads (11)          the name of an audit log, "login" or "activity" -> the line of the head of its chain
+//	                    (audit.Head.String), which the daemon writes out without reading it; none while the log has no
+//	                    record
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
 // SHA-256 of its JSON (32 bytes), and saved_at and the ID of the user after their lengths.
 //
-// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema 6 (upgradeLog). The
-// schema 2 has the index without the role scheduled in references and without the scheduled items in the entries of
-// summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its index is that of
-// the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a store of an older
-// schema has no rows of. The schema 6 adds the audit log: the heads in meta, and the audit events that hold its
-// records. Open sets the schema 6 in a store of the schema 1 to 5 together with the record store.upgrade, which is the
-// first of its activity log, and the head; one of the schema 2 to 5 gets nothing else and has no document read, and
-// the index of one of the schema 1 is built as before.
-const logSchemaVersion = 6
+// The schema 1, which the tables 1 to 5 make, has no index: Open builds it, and sets the schema logSchemaVersion
+// (upgradeLog). The schema 2 has the index without the role scheduled in references and without the scheduled items in
+// the entries of summaries, which the schema 3 adds; no program of the schema 2 could save an entry with them, so its
+// index is that of the schema 3. The schema 4 adds the table accounts and the schema 5 the table sessions, which a
+// store of an older schema has no rows of. The schema 6 adds the audit log: the heads in meta, and the audit events that
+// hold its records. The schema 7 adds the table heads, and lets the daemon add its marks to the events, which the reads
+// of the audit log skip (audit.go). Open sets the schema 7 in a store of the schema 1 to 6 together with the record
+// store.upgrade (the first of the activity log, with its head, for one of the schema 1 to 5) and the rows of heads of
+// the logs that have a head; one of the schema 2 to 6 gets nothing else and has no document read, and the index of one
+// of the schema 1 is built as before.
+const logSchemaVersion = dbwire.TableVersion
 
-// indexSchema is the first schema that has the index tables, and auditSchema the first that has the audit log.
+// indexSchema is the first schema that has the index tables, auditSchema the first that has the audit log, and
+// exportSchema the first that has the table heads.
 const (
-	indexSchema = 2
-	auditSchema = 6
+	indexSchema  = 2
+	auditSchema  = 6
+	exportSchema = 7
 )
 
 const (
@@ -73,10 +77,12 @@ const (
 	tableSessions
 )
 
+const tableHeads = dbwire.TableHeads
+
 var tableNames = map[uint32]string{
 	tableMeta: "meta", tableDocuments: "documents", tableHistory: "history", tableRevisions: "revisions",
 	tableEntryRevisions: "entryRevisions", tableSummaries: "summaries", tableReferences: "references",
-	tableOperations: "operations", tableAccounts: "accounts", tableSessions: "sessions",
+	tableOperations: "operations", tableAccounts: "accounts", tableSessions: "sessions", tableHeads: "heads",
 }
 
 // indexTableIDs are the tables of the engine that keep the index tables.
@@ -96,92 +102,74 @@ const (
 	metaActivityLog = "activityLog"
 )
 
-// logBackend is the backend of the engine in logdb/.
+// logBackend is the backend of the daemon's engine, which the client of internal/dbclient reaches.
 type logBackend struct {
-	db   *logdb.DB
-	fsys vfs.FS // logdb/, which db does not close
+	c *dbclient.Client
 }
 
-// createLog makes the engine with o in logdb/ of root, which is empty, and puts the schema in meta, with the first
-// record of the activity log, store.create, at the time of now, in one commit.
-func createLog(root vfs.FS, o logdb.Options, now func() time.Time) (*logBackend, error) {
-	fsys, err := root.Sub("logdb")
-	if err != nil {
-		return nil, err
-	}
-	d, err := logdb.Create(fsys, o)
-	if err == nil {
-		if err = d.Update(context.Background(), func(tx *logdb.Tx) error {
-			if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
-				return err
-			}
-			return recordIn(d, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreCreate})
-		}); err != nil {
-			_ = d.Close()
+var schemaKey = []byte(metaSchema)
+
+// createLog puts the schema in meta, with the first record of the activity log, store.create, at the time of now, in
+// one commit of the store that c is connected to, which must have no commit. name is that of the daemon in errors.
+func createLog(ctx context.Context, c *dbclient.Client, name string, now func() time.Time) error {
+	return c.Update(ctx, func(tx *dbclient.Tx) error {
+		_, ok, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
 		}
-	}
-	if err != nil {
-		_ = fsys.Close()
-		return nil, err
-	}
-	return &logBackend{db: d, fsys: fsys}, nil
+		if ok || tx.Seq() != 0 {
+			return fmt.Errorf("%s: the store is not new; a new store needs a data directory that whiteroom-db init has just made",
+				name)
+		}
+		if err := tx.Put(tableMeta, schemaKey, binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
+			return err
+		}
+		return recordIn(tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreCreate})
+	})
 }
 
-// recordIn adds r to the audit log in tx, a transaction of the engine db, as Tx.Record does in an Update that begins at
+// recordIn adds r to the audit log in tx, a transaction of the client, as Tx.Record does in an Update that begins at
 // the time of now.
-func recordIn(db *logdb.DB, tx *logdb.Tx, now func() time.Time, r audit.Record) error {
-	t := &Tx{b: &logTx{tx: tx, db: db}, savedAt: now().UTC().Format(savedAtLayout)}
+func recordIn(tx *dbclient.Tx, now func() time.Time, r audit.Record) error {
+	t := &Tx{b: &logTx{tx: tx}, savedAt: now().UTC().Format(savedAtLayout)}
 	return t.run(func(t *Tx) error { return t.Record(r) })
 }
 
-// openLog opens the engine in logdb/ of root with o: as its writer, or as a reader in another process if reader is
-// true.
-func openLog(root vfs.FS, o logdb.Options, reader bool) (*logBackend, error) {
-	fsys, err := root.Sub("logdb")
-	if err != nil {
-		return nil, err
-	}
-	openFS := logdb.Open
-	if reader {
-		openFS = logdb.OpenReader
-	}
-	d, err := openFS(fsys, o)
-	if err != nil {
-		_ = fsys.Close()
-		return nil, err
-	}
-	return &logBackend{db: d, fsys: fsys}, nil
-}
-
-// checkSchema returns the Accept of openLog for the store whose logdb/ is at name: it refuses a store without the
-// schema, or of a newer one, before the engine changes a file.
-func checkSchema(name string) func(*logdb.Tx) error {
-	return func(tx *logdb.Tx) error {
-		v, ok := tx.Get(tableMeta, []byte(metaSchema))
+// checkSchema checks that the store of c has a schema that this program knows, and refuses one without the schema, or
+// of a newer one. name is that of the daemon in errors.
+func checkSchema(ctx context.Context, c *dbclient.Client, name string) error {
+	return c.View(ctx, func(tx *dbclient.Tx) error {
+		v, ok, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
+		}
 		if !ok {
-			return fmt.Errorf("%s: not a store of whiteroom (no schema version)", name)
+			return fmt.Errorf("%s: %w", name, ErrNoStore)
 		}
 		switch version, ok := decodeUint(v); {
 		case !ok || version == 0:
-			return fmt.Errorf("%s: %w", name, invalidValue(tableMeta, []byte(metaSchema)))
+			return fmt.Errorf("%s: %w", name, invalidValue(tableMeta, schemaKey))
 		case version > logSchemaVersion:
 			return fmt.Errorf("%s: the store schema is of version %d, newer than this program knows (%d)", name,
 				version, logSchemaVersion)
 		}
 		return nil
-	}
+	})
 }
 
-// upgradeLog brings the store of b, which its writer has just opened, to the schema logSchemaVersion in one Update, so
-// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 6 and the record
-// store.upgrade. One of the schema 2 to 5 has the index of the schema 6 already: it gets only the schema 6 and the
-// record, and no document, revision or object is read, so a damaged one does not stop Open, and only the reads that use
-// it fail. name is that of its logdb/ in errors, and the record has the time of now.
-func upgradeLog(b *logBackend, name string, now func() time.Time) error {
+// upgradeLog brings the store of c, which its writer has just opened, to the schema logSchemaVersion in one Update, so
+// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 7 and the record
+// store.upgrade. One of the schema 2 to 6 has the index of the schema 7 already: it gets only the schema 7, the record
+// and the rows of heads, and no document, revision or object is read, so a damaged one does not stop Open, and only the
+// reads that use it fail. name is that of the daemon in errors, and the record has the time of now.
+func upgradeLog(ctx context.Context, c *dbclient.Client, name string, now func() time.Time) error {
 	var version uint64
 	upgrade := false
-	if err := b.db.View(context.Background(), func(tx *logdb.Tx) error {
-		v, _ := tx.Get(tableMeta, []byte(metaSchema))
+	if err := c.View(ctx, func(tx *dbclient.Tx) error {
+		v, _, err := tx.Get(tableMeta, schemaKey)
+		if err != nil {
+			return err
+		}
 		var ok bool
 		version, ok = decodeUint(v)
 		upgrade = ok && version < logSchemaVersion
@@ -189,53 +177,68 @@ func upgradeLog(b *logBackend, name string, now func() time.Time) error {
 	}); err != nil || !upgrade {
 		return err
 	}
-	if err := b.db.Update(context.Background(), func(tx *logdb.Tx) error {
+	if err := c.Update(ctx, func(tx *dbclient.Tx) error {
 		// The schema first, so that the index methods find the schema that they need.
-		if err := tx.Put(tableMeta, []byte(metaSchema), binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
+		if err := tx.Put(tableMeta, schemaKey, binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
-		// The index of the schema 2 to 5 is that of the schema 6, and making it again would read every document.
+		// The index of the schema 2 to 6 is that of the schema 7, and making it again would read every document.
 		if version < indexSchema {
-			if err := (&Tx{b: &logTx{tx: tx, db: b.db}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
+			if err := (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
 				return err
 			}
 		}
-		return recordIn(b.db, tx, now, audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
-			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}})
+		upgrade := audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreUpgrade,
+			Detail: map[string]string{"from": strconv.FormatUint(version, 10), "to": strconv.Itoa(logSchemaVersion)}}
+		if err := recordIn(tx, now, upgrade); err != nil {
+			return err
+		}
+		// The heads of a store of the schema 6 have no rows yet; the record has put that of its log.
+		t := &logTx{tx: tx}
+		for _, log := range auditLogs {
+			h, ok, err := t.auditHead(log)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if err := t.putHeadLine(h); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}); err != nil {
-		return fmt.Errorf("%s: cannot upgrade the table schema to %d, so the store is unchanged: %w", name,
-			logSchemaVersion, err)
+		return fmt.Errorf("%s: cannot upgrade the table schema to %d: %w", name, logSchemaVersion, err)
 	}
 	return nil
 }
 
 func (b *logBackend) view(ctx context.Context, f func(backendTx) error) error {
-	return b.db.View(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
+	return b.c.View(ctx, func(tx *dbclient.Tx) error { return f(&logTx{tx: tx}) })
 }
 
 func (b *logBackend) update(ctx context.Context, f func(backendTx) error) error {
-	return b.db.Update(ctx, func(tx *logdb.Tx) error { return f(&logTx{tx: tx, db: b.db}) })
+	return b.c.Update(ctx, func(tx *dbclient.Tx) error { return f(&logTx{tx: tx}) })
 }
 
 func (b *logBackend) close() error {
-	return errors.Join(b.db.Close(), b.fsys.Close())
+	return b.c.Close()
 }
 
 func (b *logBackend) verify(ctx context.Context) error {
-	return b.db.Verify(ctx)
+	return b.c.Verify(ctx)
 }
 
 type logTx struct {
-	tx    *logdb.Tx
-	db    *logdb.DB // of tx
-	wrote bool      // a write other than those of the audit log has been made
+	tx    *dbclient.Tx
+	wrote bool // a write other than those of the audit log has been made
 }
 
 func (t *logTx) current(kind content.RefKind, id string) (Version, bool, error) {
 	key := docKey(kind, id)
-	v, ok := t.tx.Get(tableDocuments, key)
-	if !ok {
-		return Version{}, false, nil
+	v, ok, err := t.tx.Get(tableDocuments, key)
+	if err != nil || !ok {
+		return Version{}, false, err
 	}
 	ver, err := decodeCurrent(key, v, kind, id)
 	if err != nil {
@@ -250,14 +253,10 @@ func (t *logTx) addObject(hash string, data []byte) error {
 		return err
 	}
 	t.wrote = true
-	got, err := t.tx.PutObject(data)
-	if err != nil {
-		return err
-	}
-	if got != want {
+	if got := sha256.Sum256(data); got != want {
 		return fmt.Errorf("object %s: the data has the hash %s", hash, hashText(got[:]))
 	}
-	return nil
+	return t.tx.PutObject(want, data)
 }
 
 func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (int64, error) {
@@ -283,8 +282,11 @@ func (t *logTx) addVersion(kind content.RefKind, id, hash, savedAt, by string) (
 func (t *logTx) setCurrent(kind content.RefKind, id string, seq int64) error {
 	t.wrote = true
 	key := historyKey(kind, id, seq)
-	v, ok := t.tx.Get(tableHistory, key)
-	if !ok {
+	v, ok, err := t.tx.Get(tableHistory, key)
+	switch {
+	case err != nil:
+		return err
+	case !ok:
 		return fmt.Errorf("%s %q: missing", tableNames[tableHistory], key)
 	}
 	return t.tx.Put(tableDocuments, docKey(kind, id), v)
@@ -309,34 +311,197 @@ func (t *logTx) document(kind content.RefKind, id string) (Document, bool, error
 
 func (t *logTx) documents(kind content.RefKind) ([]Document, error) {
 	prefix := docKey(kind, "")
-	var docs []Document
+	type current struct {
+		key []byte
+		v   Version
+	}
+	var rows []current
 	var err error
-	t.tx.Scan(tableDocuments, prefix, func(key, value []byte) bool {
+	if serr := t.tx.Scan(tableDocuments, prefix, func(key, value []byte) bool {
 		var v Version
 		if v, err = decodeCurrent(key, value, kind, string(key[len(prefix):])); err != nil {
 			return false
 		}
-		var data []byte
-		if data, err = t.data(tableDocuments, key, v.Hash); err != nil {
-			return false
-		}
-		docs = append(docs, Document{Version: v, Data: data})
+		rows = append(rows, current{key, v})
 		return true
-	})
+	}); err == nil {
+		err = serr
+	}
+	// The data of the rows that the scan gave, the objects of a chunk with one window. The error is the first problem in
+	// the order of the IDs, as when each row was read with its data: the error of the scan comes after the rows.
+	var docs []Document
+	for len(rows) > 0 {
+		chunk := rows[:min(chunkSize, len(rows))]
+		rows = rows[len(chunk):]
+		hashes := make([][sha256.Size]byte, 0, len(chunk))
+		for _, r := range chunk {
+			if d, derr := digest(r.v.Hash); derr == nil {
+				hashes = append(hashes, d)
+			}
+		}
+		// A hint: an object that it could not read is read, and its failure reported, by data.
+		_ = t.tx.PrefetchObjects(hashes)
+		for _, r := range chunk {
+			data, derr := t.data(tableDocuments, r.key, r.v.Hash)
+			if derr != nil {
+				t.tx.DropPrefetched()
+				return docs, derr
+			}
+			docs = append(docs, Document{Version: r.v, Data: data})
+		}
+	}
 	return docs, err
+}
+
+// getMany reads the rows of keys in table into the transaction, chunkSize keys at a time, so that a call holds the
+// requests of one window at most.
+func (t *logTx) getMany(table uint32, keys [][]byte) error {
+	for len(keys) > 0 {
+		n := min(chunkSize, len(keys))
+		if err := t.tx.GetMany(table, keys[:n]); err != nil {
+			return err
+		}
+		keys = keys[n:]
+	}
+	return nil
+}
+
+// prefetchObjects reads the objects with the hashes into the transaction, chunkSize at a time, as getMany does.
+func (t *logTx) prefetchObjects(hashes [][sha256.Size]byte) error {
+	for len(hashes) > 0 {
+		n := min(chunkSize, len(hashes))
+		if err := t.tx.PrefetchObjects(hashes[:n]); err != nil {
+			return err
+		}
+		hashes = hashes[n:]
+	}
+	return nil
+}
+
+func (t *logTx) preloadEntries(entries []entryRevisions) error {
+	var keys, prefixes [][]byte
+	for _, e := range entries {
+		for _, id := range e.named {
+			keys = append(keys, []byte(id))
+		}
+		prefixes = append(prefixes, append([]byte(e.entry), 0))
+	}
+	if err := t.getMany(tableRevisions, keys); err != nil {
+		return err
+	}
+	if err := t.tx.PrefetchScans(tableEntryRevisions, prefixes); err != nil {
+		return err
+	}
+	// The rows of the revisions that the pages name, and then the data of those that entryRow reads: what cannot be read
+	// here is left to the read that needs it.
+	last := make([]string, len(entries))
+	keys = keys[:0]
+	for i, p := range prefixes {
+		_ = t.tx.Scan(tableEntryRevisions, p, func(_, id []byte) bool {
+			keys = append(keys, id)
+			last[i] = string(id)
+			return true
+		})
+	}
+	if err := t.getMany(tableRevisions, keys); err != nil {
+		return err
+	}
+	var hashes [][sha256.Size]byte
+	for i, e := range entries {
+		for _, id := range append(e.named[:len(e.named):len(e.named)], last[i]) {
+			if id == "" {
+				continue
+			}
+			if r, ok, err := t.revisionInfo(id); err == nil && ok {
+				if d, err := digest(r.Hash); err == nil {
+					hashes = append(hashes, d)
+				}
+			}
+		}
+	}
+	return t.prefetchObjects(hashes)
+}
+
+func (t *logTx) preloadIndex(rows []indexRow) error {
+	var keys [numIndexTables][][]byte
+	for _, r := range rows {
+		keys[r.table] = append(keys[r.table], r.key)
+	}
+	for table, k := range keys {
+		if err := t.getMany(indexTableIDs[table], k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *logTx) forget() {
+	t.tx.DropPrefetched()
+}
+
+func (t *logTx) readAhead(sums, docs []DocumentID, revs []string) error {
+	t.tx.DropPrefetched()
+	keysOf := func(ids []DocumentID) [][]byte {
+		keys := make([][]byte, len(ids))
+		for i, id := range ids {
+			keys[i] = docKey(id.Kind, id.ID)
+		}
+		return keys
+	}
+	if len(sums) > 0 {
+		// Summary reads the schema before the row.
+		if err := t.getMany(tableMeta, [][]byte{schemaKey}); err != nil {
+			return err
+		}
+	}
+	if err := t.getMany(tableSummaries, keysOf(sums)); err != nil {
+		return err
+	}
+	docKeys := keysOf(docs)
+	if err := t.getMany(tableDocuments, docKeys); err != nil {
+		return err
+	}
+	revKeys := make([][]byte, len(revs))
+	for i, id := range revs {
+		revKeys[i] = []byte(id)
+	}
+	if err := t.getMany(tableRevisions, revKeys); err != nil {
+		return err
+	}
+	// The data of the versions and the revisions that are there and can be read; the others are left to their reads.
+	var hashes [][sha256.Size]byte
+	for i, id := range docs {
+		if v, ok, err := t.tx.Get(tableDocuments, docKeys[i]); err == nil && ok {
+			if ver, err := decodeCurrent(docKeys[i], v, id.Kind, id.ID); err == nil {
+				if d, err := digest(ver.Hash); err == nil {
+					hashes = append(hashes, d)
+				}
+			}
+		}
+	}
+	for _, id := range revs {
+		if r, ok, err := t.revisionInfo(id); err == nil && ok {
+			if d, err := digest(r.Hash); err == nil {
+				hashes = append(hashes, d)
+			}
+		}
+	}
+	return t.prefetchObjects(hashes)
 }
 
 func (t *logTx) history(kind content.RefKind, id string) ([]Version, error) {
 	var versions []Version
 	var err error
-	t.tx.Scan(tableHistory, append(docKey(kind, id), 0), func(key, value []byte) bool {
+	if serr := t.tx.Scan(tableHistory, append(docKey(kind, id), 0), func(key, value []byte) bool {
 		var v Version
 		if v, err = decodeVersion(tableHistory, key, value, kind, id); err != nil {
 			return false
 		}
 		versions = append(versions, v)
 		return true
-	})
+	}); err == nil {
+		err = serr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -349,14 +514,7 @@ func (t *logTx) object(hash string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if !t.tx.HasObject(d) {
-		return nil, false, nil
-	}
-	data, err := t.tx.Object(d)
-	if err != nil {
-		return nil, false, err
-	}
-	return data, true, nil
+	return t.tx.Object(d)
 }
 
 // data returns the data of the object hash, which the value of key in table names, and which the store must have.
@@ -372,8 +530,8 @@ func (t *logTx) data(table uint32, key []byte, hash string) ([]byte, error) {
 }
 
 func (t *logTx) revisionExists(id string) (bool, error) {
-	_, ok := t.tx.Get(tableRevisions, []byte(id))
-	return ok, nil
+	_, ok, err := t.tx.Get(tableRevisions, []byte(id))
+	return ok, err
 }
 
 func (t *logTx) addRevision(id, entry, hash, savedAt, by string) (int64, error) {
@@ -408,9 +566,9 @@ func (t *logTx) revision(id string) (Revision, bool, error) {
 
 // revisionInfo returns the revision with id without Data.
 func (t *logTx) revisionInfo(id string) (Revision, bool, error) {
-	v, ok := t.tx.Get(tableRevisions, []byte(id))
-	if !ok {
-		return Revision{}, false, nil
+	v, ok, err := t.tx.Get(tableRevisions, []byte(id))
+	if err != nil || !ok {
+		return Revision{}, false, err
 	}
 	r, err := decodeRevision(id, v)
 	if err != nil {
@@ -420,22 +578,31 @@ func (t *logTx) revisionInfo(id string) (Revision, bool, error) {
 }
 
 func (t *logTx) revisions(entry string) ([]Revision, error) {
-	var revs []Revision
-	var err error
-	t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
-		var r Revision
-		var ok bool
-		if r, ok, err = t.revisionInfo(string(id)); err == nil && !ok {
-			err = fmt.Errorf("%s %q: the revision %s is missing", tableNames[tableEntryRevisions], key, id)
-		}
-		if err != nil {
-			return false
-		}
-		revs = append(revs, r)
+	type named struct{ key, id []byte }
+	var rows []named
+	serr := t.tx.Scan(tableEntryRevisions, append([]byte(entry), 0), func(key, id []byte) bool {
+		rows = append(rows, named{key, id})
 		return true
 	})
-	if err != nil {
-		return nil, err
+	ids := make([][]byte, len(rows))
+	for i, r := range rows {
+		ids[i] = r.id
+	}
+	// A hint: a row that it could not read is read, and its failure reported, by revisionInfo.
+	_ = t.getMany(tableRevisions, ids)
+	var revs []Revision
+	for _, row := range rows {
+		r, ok, err := t.revisionInfo(string(row.id))
+		if err == nil && !ok {
+			err = fmt.Errorf("%s %q: the revision %s is missing", tableNames[tableEntryRevisions], row.key, row.id)
+		}
+		if err != nil {
+			return nil, err
+		}
+		revs = append(revs, r)
+	}
+	if serr != nil {
+		return nil, serr
 	}
 	return revs, nil
 }
@@ -444,20 +611,19 @@ func (t *logTx) addEvent(data []byte) error {
 	return t.tx.AppendEvent(data)
 }
 
-// events reads the events of the commits up to that of the snapshot of t, which the engine reads from the log, and not
-// those that a later commit has added, so that the heads that t reads are those of the events.
+// events reads the events of the commits up to that of the snapshot of t, and not those that a later commit has added, so
+// that the heads that t reads are those of the events. The marks of the daemon are among them.
 func (t *logTx) events(ctx context.Context, fn func(number uint64, data []byte) bool) error {
-	seq := t.tx.Seq()
-	return t.db.Events(ctx, func(e logdb.Event) bool { return e.Seq <= seq && fn(e.Number, e.Data) })
+	return t.tx.Events(ctx, fn)
 }
 
 var metaHeads = map[audit.Log]string{audit.LoginLog: metaLoginLog, audit.ActivityLog: metaActivityLog}
 
 func (t *logTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 	key := metaHeads[log]
-	v, ok := t.tx.Get(tableMeta, []byte(key))
-	if !ok {
-		return audit.Head{}, false, nil
+	v, ok, err := t.tx.Get(tableMeta, []byte(key))
+	if err != nil || !ok {
+		return audit.Head{}, false, err
 	}
 	r := valueReader{b: v}
 	h := audit.Head{Log: log, N: r.uvarint()}
@@ -469,16 +635,45 @@ func (t *logTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 }
 
 func (t *logTx) setAuditHead(h audit.Head) error {
-	return t.tx.Put(tableMeta, []byte(metaHeads[h.Log]), append(binary.AppendUvarint(nil, h.N), h.Hash[:]...))
+	value := append(binary.AppendUvarint(nil, h.N), h.Hash[:]...)
+	if err := t.tx.Put(tableMeta, []byte(metaHeads[h.Log]), value); err != nil {
+		return err
+	}
+	return t.putHeadLine(h)
+}
+
+// putHeadLine puts the line of h in heads, where the daemon finds it to write it out.
+func (t *logTx) putHeadLine(h audit.Head) error {
+	return t.tx.Put(tableHeads, []byte(h.Log), []byte(h.String()))
+}
+
+func (t *logTx) headLine(log audit.Log) (string, bool, error) {
+	v, ok, err := t.tx.Get(tableHeads, []byte(log))
+	return string(v), ok, err
 }
 
 func (t *logTx) auditReady() (bool, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
 	version, valid := decodeUint(v)
 	if !ok || !valid {
-		return false, invalidValue(tableMeta, []byte(metaSchema))
+		return false, invalidValue(tableMeta, schemaKey)
 	}
 	return version >= auditSchema, nil
+}
+
+func (t *logTx) exportReady() (bool, error) {
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
+	version, valid := decodeUint(v)
+	if !ok || !valid {
+		return false, invalidValue(tableMeta, schemaKey)
+	}
+	return version >= exportSchema, nil
 }
 
 func (t *logTx) changed() bool {
@@ -486,8 +681,7 @@ func (t *logTx) changed() bool {
 }
 
 func (t *logTx) indexGet(table indexTable, key []byte) ([]byte, bool, error) {
-	v, ok := t.tx.Get(indexTableIDs[table], key)
-	return v, ok, nil
+	return t.tx.Get(indexTableIDs[table], key)
 }
 
 func (t *logTx) indexPut(table indexTable, key, value []byte) error {
@@ -501,23 +695,25 @@ func (t *logTx) indexDelete(table indexTable, key []byte) error {
 }
 
 func (t *logTx) indexScan(table indexTable, prefix []byte, fn func(key, value []byte) bool) error {
-	t.tx.Scan(indexTableIDs[table], prefix, fn)
-	return nil
+	return t.tx.Scan(indexTableIDs[table], prefix, fn)
 }
 
 func (t *logTx) indexReady() (bool, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaSchema))
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
 	version, valid := decodeUint(v)
 	if !ok || !valid {
-		return false, invalidValue(tableMeta, []byte(metaSchema))
+		return false, invalidValue(tableMeta, schemaKey)
 	}
 	return version >= indexSchema, nil
 }
 
 func (t *logTx) lastNumber() (int64, error) {
-	v, ok := t.tx.Get(tableMeta, []byte(metaNumbers))
-	if !ok {
-		return 0, nil
+	v, ok, err := t.tx.Get(tableMeta, []byte(metaNumbers))
+	if err != nil || !ok {
+		return 0, err
 	}
 	n, valid := decodeUint(v)
 	if !valid || n > math.MaxInt64 {
@@ -535,7 +731,11 @@ func (t *logTx) setLastNumber(n int64) error {
 // puts it there.
 func (t *logTx) next(key string) (int64, error) {
 	var last uint64
-	if v, ok := t.tx.Get(tableMeta, []byte(key)); ok {
+	v, ok, err := t.tx.Get(tableMeta, []byte(key))
+	if err != nil {
+		return 0, err
+	}
+	if ok {
 		if last, ok = decodeUint(v); !ok || last == math.MaxInt64 {
 			return 0, invalidValue(tableMeta, []byte(key))
 		}
@@ -701,106 +901,4 @@ func digest(hash string) ([sha256.Size]byte, error) {
 // hashText returns the hash of Version.Hash and Revision.Hash of the SHA-256 sum.
 func hashText(sum []byte) string {
 	return "sha256:" + hex.EncodeToString(sum)
-}
-
-// Backup copies the data directory srcDir of a store, whose writer may go on writing, to dstDir, which must be missing or
-// an empty directory: logdb/ as it is at the last commit that is durable when Backup begins (logdb.Backup), and then
-// files/, which has the originals of that commit by then, while the engine keeps maintenance away. If it fails, dstDir
-// must be emptied before it can try again.
-func Backup(ctx context.Context, srcDir, dstDir string) error {
-	return backup(ctx, srcDir, nil, dstDir, nil)
-}
-
-// backup is Backup of the data directories src and dst, or of srcDir and dstDir on the OS if they are nil; srcDir and
-// dstDir name them in errors.
-func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst vfs.FS) error {
-	if err := newDataDir(dstDir, dst); err != nil {
-		return err
-	}
-	src, doneSrc, err := dataRoot(srcDir, src)
-	if err != nil {
-		return err
-	}
-	defer doneSrc()
-	if err := checkDir(src, srcDir, "logdb"); err != nil {
-		return err
-	}
-	if err := checkDir(src, srcDir, "files"); err != nil {
-		return err
-	}
-	srcLog, err := src.Sub("logdb")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = srcLog.Close() }()
-	dst, doneDst, err := dataRoot(dstDir, dst)
-	if err != nil {
-		return err
-	}
-	defer doneDst()
-	for _, name := range []string{"files", "logdb"} {
-		if err := dst.Mkdir(name, 0o700); err != nil {
-			return err
-		}
-	}
-	dstLog, err := dst.Sub("logdb")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dstLog.Close() }()
-	if _, err := logdb.Backup(ctx, srcLog, dstLog, func(logdb.Position) error {
-		return copyFiles(ctx, src, dst, "files")
-	}); err != nil {
-		return err
-	}
-	return dst.SyncDir(".")
-}
-
-// copyFiles copies the directory dir of src, with every directory and regular file in it but the temporary files of
-// PutOriginal and CreateTemp, to dst, which has dir. It syncs each file, and each directory after what it has copied in
-// it.
-func copyFiles(ctx context.Context, src, dst vfs.FS, dir string) error {
-	entries, err := src.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		name := path.Join(dir, e.Name())
-		switch {
-		case strings.HasPrefix(e.Name(), ".tmp-"):
-		case e.IsDir():
-			if err := dst.Mkdir(name, 0o700); err != nil {
-				return err
-			}
-			if err := copyFiles(ctx, src, dst, name); err != nil {
-				return err
-			}
-		case e.Type().IsRegular():
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := copyFile(src, dst, name); err != nil {
-				return err
-			}
-		}
-	}
-	return dst.SyncDir(dir)
-}
-
-// copyFile copies the file name of src to dst, and syncs it.
-func copyFile(src, dst vfs.FS, name string) error {
-	r, err := src.Open(name)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = r.Close() }()
-	w, err := dst.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(w, r)
-	if err == nil {
-		err = w.Sync()
-	}
-	return errors.Join(err, w.Close())
 }

@@ -28,7 +28,7 @@ func TestNewRequiresAccounts(t *testing.T) {
 	if _, err := New(Config{Origin: httpsOrigin, TrustedProxies: []netip.Prefix{{}}}); err == nil || !strings.HasPrefix(err.Error(), "admin: invalid trusted proxy") {
 		t.Errorf("New with an invalid proxy and without Accounts = %v, want the error of the proxy", err)
 	}
-	if _, err := New(testConfig(m, httpsOrigin)); err != nil {
+	if _, err := New(testConfig(t, m, httpsOrigin)); err != nil {
 		t.Errorf("New with Accounts = %v", err)
 	}
 }

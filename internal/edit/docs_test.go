@@ -14,6 +14,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // predictIDs returns the IDs that a new Editor of the tests makes for the kinds, in order, which are those that the
@@ -786,7 +787,7 @@ func TestSaveSettingsErrors(t *testing.T) {
 }
 
 func TestNoSettings(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

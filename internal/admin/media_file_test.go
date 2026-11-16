@@ -2,7 +2,6 @@ package admin
 
 import (
 	"bytes"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -108,7 +107,7 @@ func TestMediaFile(t *testing.T) {
 	if logged := a.logs.String(); logged != "" {
 		t.Errorf("the log is %q, want nothing", logged)
 	}
-	if files := a.tempFiles(t); len(files) != 0 {
+	if files := a.leftovers(t); len(files) != 0 {
 		t.Errorf("%d temporary files stay: %v", len(files), files)
 	}
 }
@@ -122,9 +121,9 @@ func (a *apiServer) aborted(req *http.Request) (rec *httptest.ResponseRecorder, 
 	return rec, nil
 }
 
-// TestMediaFileFaults shows what a download does when the store does not have the original that its document says: before
-// the answer begins it is a fault of the server (500), and it is logged; once the data is found to be wrong while it is sent,
-// the connection is aborted, so that what was sent is not taken for the whole file.
+// TestMediaFileFaults shows what a download does when the store does not have the original that its document says: it is a
+// fault of the server (500), and it is logged. The file is copied into a spool before the answer begins, so that data that is
+// found to be wrong at its end is a fault too, and none of the file has been sent.
 func TestMediaFileFaults(t *testing.T) {
 	a := newAPIServer(t)
 	pdf, err := os.ReadFile(filepath.FromSlash(pdfOfSite))
@@ -170,20 +169,25 @@ func TestMediaFileFaults(t *testing.T) {
 	checkProblem(t, "an original that is missing", rec.Result(), "internal")
 	expectLog("a missing original", "the original of "+samplePDF+": ")
 
-	// Data of the right size and another content is found out at its end: the answer has begun, and the connection is aborted.
+	// Data of the right size and another content is found out at its end, while the file is copied into the spool: that is
+	// before the answer begins too, and nothing of the file is sent.
 	damaged := bytes.Clone(pdf)
 	damaged[len(damaged)/2] ^= 0xff
 	if err := os.WriteFile(path, damaged, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rec, panicked = a.aborted(get(samplePDF))
-	if err, ok := panicked.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
-		t.Errorf("a download of data that is not the original panicked with %v, want http.ErrAbortHandler", panicked)
+	if panicked != nil {
+		t.Errorf("a download of data that is not the original panicked with %v, want an answer", panicked)
 	}
-	if rec.Code != http.StatusOK || rec.Header().Get("Content-Length") != strconv.Itoa(len(pdf)) {
-		t.Errorf("the answer began with %d and the Content-Length %q, want 200 and %d", rec.Code, rec.Header().Get("Content-Length"), len(pdf))
+	checkProblem(t, "an original whose data is not its content", rec.Result(), "internal")
+	if got := rec.Header().Values("Content-Disposition"); len(got) != 0 {
+		t.Errorf("the answer has the Content-Disposition %q, want none", got)
 	}
 	expectLog("damaged data", "cannot read the original of "+samplePDF+": original "+pdfDoc.Hash+": the data has the hash sha256:")
+	if files := a.leftovers(t); len(files) != 0 {
+		t.Errorf("%d temporary files stay: %v", len(files), files)
+	}
 
 	// The others are as they were, and the faults are not recorded as anything else.
 	if res := a.as("viewer").get("/api/media/" + sampleLogo + "/file"); res.StatusCode != http.StatusOK || res.Header.Get("Content-Length") != strconv.Itoa(logoDoc.Size) {

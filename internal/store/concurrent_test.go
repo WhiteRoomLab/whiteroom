@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -148,7 +149,7 @@ func TestConcurrent(t *testing.T) {
 		}
 		readOriginals := func() error {
 			for _, want := range [][]byte{same, other} {
-				f, err := s.OpenOriginal(sum(want))
+				f, err := s.OpenOriginal(context.Background(), sum(want))
 				if err != nil {
 					return err
 				}

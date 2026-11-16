@@ -97,8 +97,8 @@ func TestOriginalFaults(t *testing.T) {
 				errHook := errors.New("hook")
 				called := failAt(s, tt.point, errHook)
 				o, err := s.PutOriginal(t.Context(), bytes.NewReader(data))
-				if o != (Original{}) || !errors.Is(err, errHook) || err.Error() != errHook.Error() {
-					t.Errorf("PutOriginal() = %+v, %v; want the error of the hook", o, err)
+				if o != (Original{}) || !failedAtHook(err, errHook, tt.point) {
+					t.Errorf("PutOriginal() = %+v, %v; want the refusal of the daemon, whose hook has failed", o, err)
 				}
 				if got := called(); !slices.Equal(got, tt.points) {
 					t.Errorf("the hook has been called at %q, want %q", got, tt.points)
@@ -109,7 +109,7 @@ func TestOriginalFaults(t *testing.T) {
 					if got := names(t, files); got != nil {
 						t.Errorf("files/ has %q, want nothing", got)
 					}
-					f, err := s.OpenOriginal(hash)
+					f, err := s.OpenOriginal(context.Background(), hash)
 					if f != nil {
 						_ = f.Close()
 					}

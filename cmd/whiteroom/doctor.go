@@ -22,10 +22,12 @@ import (
 
 const doctorUsage = `Usage: whiteroom doctor [flags] [SITE]
 
-Look for what is wrong in the data directory, and print each problem on a line of
-the standard output, which starts with the part that it is in:
+Look for what is wrong in the store of the daemon whiteroom-db whose sockets are in
+the directory of -db, and print each problem on a line of the standard output,
+which starts with the part that it is in:
 
-  open      the data directory cannot be opened to be read; nothing else is checked
+  open      the daemon cannot be reached, or the store cannot be read; nothing else
+            is checked
   engine    the log and the objects of the storage engine
   index     the rows of the index, against the documents
   original  the originals of the media that the documents refer to
@@ -39,15 +41,16 @@ The last line tells how many problems there are, or that the command stopped aft
 could not be made (what could not be made is on the standard error), and 2 for a
 usage error.
 
-The data directory is opened as a process that reads it: nothing is written in it,
-nothing is repaired, and a whiteroom serve admin may run on it. The command does
-not look at the originals that only old versions refer to, at drafts, at the
-templates of the pages and the images (what a build does after the checks), and at
-the accounts and the sessions; to check those, build with -data into other -out
-and -cache directories.
+The store is read through the daemon as a reader: nothing is written in it, nothing
+is repaired, and a whiteroom serve admin may run on it. The command does not look
+at the originals that only old versions refer to, at drafts, at the templates of
+the pages and the images (what a build does after the checks), and at the accounts
+and the sessions; to check those, build with -db into other -out and -cache
+directories. To check a copy that whiteroom backup has made, run a whiteroom-db
+serve on it with another directory of sockets, and give that directory.
 
 With SITE, or site in the config file, the published documents are checked as a
-build from the data directory checks them: from SITE it reads only the schema file
+build from the store checks them: from SITE it reads only the schema file
 site/schema.yaml and the theme. Without SITE, the command says on the standard
 error that it has not checked them.
 
@@ -56,16 +59,16 @@ as the url of the site settings, for the site of another environment, such as
 https://staging.example.com; the settings are not changed. URL is checked as the
 url of the settings is, and is used with SITE only.
 
--heads reads the heads of the audit logs that a whiteroom serve admin has written
-to its standard error, or whiteroom backup to its standard output, which were kept
-outside the data directory: the lines that have "audit head " are used, the others
+-heads reads the heads of the audit logs that whiteroom-db serve has written to its
+standard error, or whiteroom backup to its standard output, which were kept
+outside the store: the lines that have "audit head " are used, the others
 skipped, so that a log can be given as it is. Each must be the hash of the record
 of its number. After a restore, give the heads that whiteroom backup printed, not
-those that the server wrote after the copy was taken.
+those that the daemon wrote after the copy was taken.
 
-With -config, the items data, site, theme and url of the YAML file give what
--data, SITE, -theme and -url leave out; the other items are checked and not used.
-Without it, no config file is read.
+With -config, the items db, site, theme and url of the YAML file give what -db,
+SITE, -theme and -url leave out; the other items are checked and not used: one file
+may be shared with whiteroom-db. Without it, no config file is read.
 
 Flags:
 `
@@ -92,9 +95,10 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		printf(flags.Output(), "%s", doctorUsage)
 		flags.PrintDefaults()
 	}
-	var configFile, dataDir, headsFile, themeDir, urlFlag string
+	var configFile, dbDir, headsFile, themeDir, urlFlag string
 	flags.StringVar(&configFile, "config", "", "read the settings from the YAML file `FILE`; the flags and SITE override them")
-	flags.StringVar(&dataDir, "data", "", "check the data directory `DIR` (default data of the config file)")
+	flags.StringVar(&dbDir, "db", "", "check the store of the daemon whose sockets are in the directory `DIR` (default db of the config "+
+		"file)")
 	flags.StringVar(&headsFile, "heads", "", "compare the audit logs with the heads in the file `FILE`, \"-\" for the standard input")
 	flags.StringVar(&themeDir, "theme", "", "use the theme in the directory `DIR` instead of SITE/theme (default theme of the config file)")
 	flags.StringVar(&urlFlag, "url", "", "check as if the url of the site settings were `URL`, with SITE only (default url of the config "+
@@ -113,9 +117,9 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		printConfigError(e.stderr, flags.Name(), err)
 		return 2
 	}
-	data := cmp.Or(dataDir, cfg.data)
-	if data == "" {
-		return usageError(flags, "no data directory: give -data DIR, or data in the config file")
+	db := cmp.Or(dbDir, cfg.db)
+	if db == "" {
+		return usageError(flags, errNoDB)
 	}
 	// Not ".": a site is checked only when it is asked for.
 	site := cmp.Or(flags.Arg(0), cfg.site)
@@ -139,7 +143,7 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		return 1
 	}
 
-	// What cannot be read here is no problem of the data directory: the command stops before it opens it.
+	// What cannot be read here is no problem of the store: the command stops before it connects to the daemon.
 	var heads []audit.Head
 	var headProblems []string
 	if headsFile != "" {
@@ -158,10 +162,13 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	}
 
 	rep := &report{w: e.stdout, limit: limit}
-	st, err := store.OpenReader(data)
+	st, err := store.OpenReader(ctx, dbDialer(db))
 	if err != nil {
+		if ctx.Err() != nil {
+			return fail(err)
+		}
 		rep.add("open: " + err.Error())
-		return rep.finish(data)
+		return rep.finish(db)
 	}
 	defer func() { _ = st.Close() }()
 	if err := st.Check(ctx, func(pr store.Problem) bool { return rep.add(pr.String()) }); err != nil {
@@ -169,7 +176,7 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 	}
 	if !rep.full() {
 		if err := st.VerifyAudit(ctx, heads); err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, store.ErrUnavailable) {
 				return fail(err)
 			}
 			rep.add("audit: " + err.Error())
@@ -190,7 +197,7 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 			return fail(err)
 		}
 	}
-	return rep.finish(data)
+	return rep.finish(db)
 }
 
 // checkSite checks what is published in st, as a build from it with the site URL url ("" for that of the settings) does
@@ -202,7 +209,7 @@ func checkSite(ctx context.Context, st *store.Store, schema content.SiteFile, th
 	}
 	// Not left to Check, which returns this error as it is, with those that a failing source has.
 	if _, _, err := src.Settings(); errors.Is(err, fs.ErrNotExist) {
-		rep.add("site: the data directory has no site settings")
+		rep.add("site: the store has no site settings")
 		return nil
 	}
 	var es content.Errors
@@ -245,17 +252,17 @@ func (r *report) add(problem string) bool {
 
 func (r *report) full() bool { return r.n >= r.limit }
 
-// finish writes the last line, which tells how many problems there are in the data directory data, and returns the exit
-// code.
-func (r *report) finish(data string) int {
+// finish writes the last line, which tells how many problems there are in the store of the daemon whose sockets are in the
+// directory db, and returns the exit code.
+func (r *report) finish(db string) int {
 	switch {
 	case r.full():
-		printf(r.w, "stopped after %s in %s\n", count(r.n, "problem"), data)
+		printf(r.w, "stopped after %s in %s\n", count(r.n, "problem"), db)
 	case r.n == 0:
-		printf(r.w, "no problems found in %s\n", data)
+		printf(r.w, "no problems found in %s\n", db)
 		return 0
 	default:
-		printf(r.w, "%s found in %s\n", count(r.n, "problem"), data)
+		printf(r.w, "%s found in %s\n", count(r.n, "problem"), db)
 	}
 	return 1
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // Entries and terms of the sample site that the tests use.
@@ -205,7 +206,7 @@ func TestCreateEntry(t *testing.T) {
 // TestCreateEntryTime checks the time: to the second, as it is in the time zone of the site, which is UTC here, and the
 // first number of a site.
 func TestCreateEntryTime(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +273,7 @@ func TestCreateEntryErrors(t *testing.T) {
 }
 
 func TestCreateEntryNoSettings(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

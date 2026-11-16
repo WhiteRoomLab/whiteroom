@@ -100,6 +100,35 @@ func dump(t *testing.T, db *DB) string {
 	return strings.Join(lines, "\n")
 }
 
+// checkPages reads table in pages of size rows, the first with Scan stopped after size rows and each next with ScanAfter
+// after the last key of the one before, and returns an error if the pages together are not want, the rows (key, value)
+// that Scan gives.
+func checkPages(tx *Tx, table uint32, size int, want [][2]string) error {
+	var after []byte
+	for page, done := 0, 0; ; page++ {
+		var got [][2]string
+		read := func(k, v []byte) bool {
+			got = append(got, [2]string{string(k), string(v)})
+			return len(got) < size
+		}
+		if page == 0 {
+			tx.Scan(table, nil, read)
+		} else {
+			tx.ScanAfter(table, nil, after, read)
+		}
+		next := want[done:min(done+size, len(want))]
+		if !slices.Equal(got, next) {
+			return fmt.Errorf("table %d: ScanAfter after %q gives %d rows that Scan does not give in that order (page %d of %d rows, %d rows given before)",
+				table, after, len(got), page, size, done)
+		}
+		if len(got) < size {
+			return nil
+		}
+		done += len(got)
+		after = []byte(got[len(got)-1][0])
+	}
+}
+
 // putF returns a function for Update that puts key in table.
 func putF(table uint32, key, value string) func(*Tx) error {
 	return func(tx *Tx) error { return tx.Put(table, []byte(key), []byte(value)) }

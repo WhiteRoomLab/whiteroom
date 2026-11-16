@@ -27,6 +27,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // sessKey is a key of the table sessions: the 64 lower case hexadecimal digits of the SHA-256 of a text. Of a token it is
@@ -1294,11 +1295,12 @@ func TestAuthenticate(t *testing.T) {
 		e.clock.add(sessionTouch)
 		m0 := e.mark(t)
 		works(t, e, token, p, "the first time that the time is old")
-		m1 := e.mark(t)
-		one := m1.size - m0.size
-		if one <= 0 {
-			t.Fatal("a request that finds the time old writes nothing")
+		// The records, not the bytes of the directory: two writes can differ in size (the time of a record drops its last zeros).
+		seen := []string{string(audit.SessionSeen)}
+		if got := e.added(t, m0); !slices.Equal(got, seen) {
+			t.Fatalf("a request that finds the time old added the records %q, want %q", got, seen)
 		}
+		m1 := e.mark(t)
 		e.clock.add(sessionTouch)
 		const n = 8
 		var arrived atomic.Int32
@@ -1325,8 +1327,8 @@ func TestAuthenticate(t *testing.T) {
 				t.Errorf("request %d = %+v, %v, want the Principal of the login", i, results[i], err)
 			}
 		}
-		if grown := e.mark(t).size - m1.size; grown != one {
-			t.Errorf("%d requests grew the data directory by %d bytes, want %d: one write", n, grown, one)
+		if got := e.added(t, m1); !slices.Equal(got, seen) {
+			t.Errorf("%d requests added the records %q, want %q: one write", n, got, seen)
 		}
 		if s, _ := e.sessionOf(t, token); !s.LastSeenAt.Equal(mgrTime.Add(2 * sessionTouch)) {
 			t.Errorf("the last request is %v, want %v", s.LastSeenAt, mgrTime.Add(2*sessionTouch))
@@ -2002,7 +2004,8 @@ func TestSessionHelpersOnABadTransaction(t *testing.T) {
 
 // gateProbe is a context that tells when the hash gate begins to wait on it: the gate asks for the Done channel of its
 // context in the select that takes a place, even when one is free; the tests take every place first, so that this is
-// when it waits. With endOnWait the context ends itself then, so that the wait ends at once.
+// when it waits. With endOnWait the context ends itself then, so that the wait ends at once. The store asks for the
+// channel too, to end a request of its client with the context (context.AfterFunc), which does not count.
 type gateProbe struct {
 	context.Context
 	cancel    context.CancelFunc
@@ -2017,12 +2020,14 @@ func newGateProbe(parent context.Context, endOnWait bool) *gateProbe {
 }
 
 func (p *gateProbe) Done() <-chan struct{} {
-	p.once.Do(func() {
-		close(p.reached)
-		if p.endOnWait {
-			p.cancel()
-		}
-	})
+	if pc, _, _, ok := runtime.Caller(1); ok && strings.HasSuffix(runtime.FuncForPC(pc).Name(), ".(*Manager).gated") {
+		p.once.Do(func() {
+			close(p.reached)
+			if p.endOnWait {
+				p.cancel()
+			}
+		})
+	}
 	return p.Context.Done()
 }
 
@@ -2060,7 +2065,7 @@ func TestHashGate(t *testing.T) {
 	}
 
 	t.Run("the number of places", func(t *testing.T) {
-		s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+		s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2299,7 +2304,7 @@ func TestHashGate(t *testing.T) {
 }
 
 func TestNewWithIterations(t *testing.T) {
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2356,7 +2361,7 @@ func TestNewWithIterations(t *testing.T) {
 // server does, with the time of its last request.
 func TestSessionsPersist(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := store.Create(dir)
+	s, err := storetest.Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2377,7 +2382,7 @@ func TestSessionsPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s2, err := store.Open(dir)
+	s2, err := storetest.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

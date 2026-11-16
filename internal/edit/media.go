@@ -93,8 +93,8 @@ func (f *failures) Read(p []byte) (int, error) {
 
 // probe reads what the original with the hash is from the store, as mediafile.Probe reads a file. If it is not a file of
 // a supported format, bad says why, which is a problem of the file; err is an error of the store.
-func (e *Editor) probe(hash string) (info mediafile.Info, bad, err error) {
-	f, err := e.store.OpenOriginal(hash)
+func (e *Editor) probe(ctx context.Context, hash string) (info mediafile.Info, bad, err error) {
+	f, err := e.store.OpenOriginal(ctx, hash)
 	if err != nil {
 		return mediafile.Info{}, nil, err
 	}
@@ -116,7 +116,7 @@ func (e *Editor) saveFile(ctx context.Context, name string, file io.Reader) (sto
 	if err != nil {
 		return store.Original{}, mediafile.Info{}, err
 	}
-	info, bad, err := e.probe(o.Hash)
+	info, bad, err := e.probe(ctx, o.Hash)
 	switch {
 	case err != nil:
 		return store.Original{}, mediafile.Info{}, err

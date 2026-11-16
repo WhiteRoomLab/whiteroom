@@ -15,12 +15,11 @@ import (
 // lastCommit returns the number of the last commit of the engine of s, and false for the model, which has none.
 func lastCommit(t *testing.T, s *Store) (uint64, bool) {
 	t.Helper()
-	b, ok := s.b.(*logBackend)
-	if !ok {
+	if _, ok := s.b.(*logBackend); !ok {
 		return 0, false
 	}
 	var seq uint64
-	if err := b.db.View(t.Context(), func(tx *logdb.Tx) error {
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
 		seq = tx.Seq()
 		return nil
 	}); err != nil {

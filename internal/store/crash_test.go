@@ -18,6 +18,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -536,7 +537,11 @@ func readsText(tx *Tx, r diffReads) string {
 func hasObject(tx *Tx, hash string) (bool, error) {
 	if lt, ok := tx.b.(*logTx); ok {
 		d, err := digest(hash)
-		return err == nil && lt.tx.HasObject(d), err
+		if err != nil {
+			return false, err
+		}
+		_, ok, err := lt.tx.Object(d)
+		return ok, err
 	}
 	_, err := tx.Object(hash)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -555,7 +560,8 @@ func textVersion(b []byte, v Version) []byte {
 type mrun struct {
 	open func() (*Store, error) // of mOpen
 	hook func(point string) error
-	s    *Store // nil while closed
+	ctx  context.Context // of the steps that run runs; nil: context.Background()
+	s    *Store          // nil while closed
 }
 
 func (r *mrun) do(ctx context.Context, st *mstep) error {
@@ -612,11 +618,15 @@ func (r result) String() string {
 
 // run runs steps on r until one fails, calling before, if not nil, before each.
 func (r *mrun) run(steps []mstep, before func(i int)) result {
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for i := range steps {
 		if before != nil {
 			before(i)
 		}
-		if err := r.do(context.Background(), &steps[i]); err != nil {
+		if err := r.do(ctx, &steps[i]); err != nil {
 			return result{done: i, err: err}
 		}
 	}
@@ -644,9 +654,10 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 	return copyWorld(fsys)
 }
 
-// writer returns a run of steps of the log backend with o in the data directory fsys.
+// writer returns a run of steps of the log backend with o in the data directory fsys. A store that cannot reach its
+// daemon gives up after a short wait, which the daemons of the matrices end in.
 func writer(fsys vfs.FS, o logdb.Options) *mrun {
-	return &mrun{open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys}) }}
+	return &mrun{open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys, wait: writerWait}) }}
 }
 
 func openReader(fsys vfs.FS, o logdb.Options) (*Store, error) {
@@ -707,7 +718,7 @@ func observe(t *testing.T, s *Store) (matrixState, error) {
 // hasOriginal reports whether s has the original data, whole: an original that is there with other data, or that
 // cannot be read, is an error.
 func hasOriginal(s *Store, data []byte) (bool, error) {
-	f, err := s.OpenOriginal(sum(data))
+	f, err := s.OpenOriginal(context.Background(), sum(data))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -763,8 +774,8 @@ func (w wanted) matches(st matrixState) bool {
 	return true
 }
 
-// checkState returns the state of want that s has, and checks it as checkStore does, or returns what is wrong.
-func checkState(t *testing.T, s *Store, want ...wanted) (wanted, matrixState, error) {
+// matchState returns the state of want that s has, or returns what is wrong, without looking past the API at s.
+func matchState(t *testing.T, s *Store, want ...wanted) (wanted, matrixState, error) {
 	t.Helper()
 	st, err := observe(t, s)
 	if err != nil {
@@ -772,10 +783,20 @@ func checkState(t *testing.T, s *Store, want ...wanted) (wanted, matrixState, er
 	}
 	for _, w := range want {
 		if w.matches(st) {
-			return w, st, checkStore(t, s)
+			return w, st, nil
 		}
 	}
 	return wanted{}, st, fmt.Errorf("the state is not one of %s", describeWanted(st, want))
+}
+
+// checkState returns the state of want that s has, and checks it as checkStore does, or returns what is wrong.
+func checkState(t *testing.T, s *Store, want ...wanted) (wanted, matrixState, error) {
+	t.Helper()
+	w, st, err := matchState(t, s, want...)
+	if err != nil {
+		return w, st, err
+	}
+	return w, st, checkStore(t, s)
 }
 
 // describeWanted describes how st differs from each of want.
@@ -846,6 +867,7 @@ type matrixClean struct {
 	ops    []simfs.Op     // the counted operations, in their order: the operation n is at n-1
 	starts []int          // the number of counted operations before each step
 	hooks  map[string]int // the number of counted operations before the last call of each hook point
+	seqs   []uint64       // the number of the last commit before each step, and after the last
 }
 
 // stepOf returns the index of the step that made the counted operation n.
@@ -870,11 +892,19 @@ func runMatrixClean(t *testing.T, base *simfs.FS, o logdb.Options, refs *matrixR
 		return nil
 	}
 	record := recordOps(fsys)
-	res := r.run(sc.steps, func(int) { c.starts = append(c.starts, fsys.Counted()) })
+	var seq uint64
+	res := r.run(sc.steps, func(int) {
+		c.starts = append(c.starts, fsys.Counted())
+		if r.s != nil {
+			seq = commitSeq(t, r.s)
+		}
+		c.seqs = append(c.seqs, seq)
+	})
 	r.close()
 	if res.done != len(sc.steps) {
 		t.Fatalf("the run without a crash: %v", res)
 	}
+	c.seqs[0] = c.seqs[1] // the store is not open before its first step, which commits nothing
 	for _, op := range record() {
 		if op.N > 0 {
 			c.ops = append(c.ops, op)
@@ -887,6 +917,10 @@ func runMatrixClean(t *testing.T, base *simfs.FS, o logdb.Options, refs *matrixR
 	defer func() { _ = s.Close() }()
 	if _, _, err := checkState(t, s, stateAt(refs, len(sc.steps), len(sc.steps))); err != nil {
 		t.Fatalf("after the run without a crash: %v", err)
+	}
+	c.seqs = append(c.seqs, commitSeq(t, s))
+	if !slices.IsSorted(c.seqs) {
+		t.Fatalf("the numbers of the last commit before the steps, %v, go back", c.seqs)
 	}
 	done := map[string]int{}
 	for _, op := range c.ops {
@@ -917,6 +951,19 @@ func runMatrixClean(t *testing.T, base *simfs.FS, o logdb.Options, refs *matrixR
 		t.Fatalf("the run without a crash has %v, want two originals, each with a Mkdir", done)
 	}
 	return c
+}
+
+// commitSeq returns the number of the last commit that a reader client of the daemon of s sees.
+func commitSeq(t *testing.T, s *Store) uint64 {
+	t.Helper()
+	var seq uint64
+	if err := s.c.View(t.Context(), func(tx *dbclient.Tx) error {
+		seq = tx.Seq()
+		return nil
+	}); err != nil {
+		t.Fatalf("the last commit: %v", err)
+	}
+	return seq
 }
 
 // tally counts what the recoveries of a matrix have found.

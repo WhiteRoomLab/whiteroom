@@ -212,26 +212,68 @@ func TestReopen(t *testing.T) {
 		for _, c := range []struct {
 			table  uint32
 			prefix string
+			seek   bool // ScanAfter after, not Scan
+			after  string
 			limit  int
 			want   string
 		}{
-			{1, "", 0, "=empty key a=one ab=3 c="},
-			{1, "a", 0, "a=one ab=3"},
-			{1, "ab", 0, "ab=3"},
-			{1, "abc", 0, ""},
-			{1, "b", 0, ""},
-			{1, "", 2, "=empty key a=one"},
-			{2, "", 0, ""},
-			{3, "", 0, ""},
+			{1, "", false, "", 0, "=empty key a=one ab=3 c="},
+			{1, "a", false, "", 0, "a=one ab=3"},
+			{1, "ab", false, "", 0, "ab=3"},
+			{1, "abc", false, "", 0, ""},
+			{1, "b", false, "", 0, ""},
+			{1, "", false, "", 2, "=empty key a=one"},
+			{2, "", false, "", 0, ""},
+			{3, "", false, "", 0, ""},
+			{1, "", true, "", 0, "a=one ab=3 c="}, // the empty key is not after the empty key
+			{1, "", true, "", 2, "a=one ab=3"},
+			{1, "", true, "a", 0, "ab=3 c="},
+			{1, "", true, "a", 1, "ab=3"},
+			{1, "", true, "aa", 0, "ab=3 c="},
+			{1, "", true, "b", 0, "c="},
+			{1, "", true, "ab", 0, "c="},
+			{1, "", true, "c", 0, ""},
+			{1, "", true, "d", 0, ""},
+			{1, "a", true, "", 0, "a=one ab=3"},
+			{1, "a", true, "a", 0, "ab=3"},
+			{1, "a", true, "ab", 0, ""},
+			{1, "a", true, "0", 0, "a=one ab=3"},
+			{1, "a", true, "b", 0, ""},
+			{1, "ab", true, "a", 0, "ab=3"},
+			{1, "abc", true, "", 0, ""},
+			{1, "b", true, "a", 0, ""},
+			{2, "", true, "", 0, ""},
+			{2, "", true, "x", 0, ""},
+			{3, "", true, "a", 0, ""},
 		} {
 			var got []string
-			tx.Scan(c.table, []byte(c.prefix), func(k, v []byte) bool {
+			read := func(k, v []byte) bool {
+				if cap(v) != len(v) {
+					t.Errorf("value %q of %q has the capacity %d", v, k, cap(v))
+				}
 				got = append(got, string(k)+"="+string(v))
 				return c.limit == 0 || len(got) < c.limit
-			})
-			if s := strings.Join(got, " "); s != c.want {
-				t.Errorf("Scan(%d, %q): %q, want %q", c.table, c.prefix, s, c.want)
 			}
+			if c.seek {
+				tx.ScanAfter(c.table, []byte(c.prefix), []byte(c.after), read)
+			} else {
+				tx.Scan(c.table, []byte(c.prefix), read)
+			}
+			if s := strings.Join(got, " "); s != c.want {
+				t.Errorf("Scan(%d, %q) after %q (%v): %q, want %q", c.table, c.prefix, c.after, c.seek, s, c.want)
+			}
+		}
+		// A nil after is the empty one.
+		var got []string
+		tx.ScanAfter(1, nil, nil, func(k, _ []byte) bool {
+			got = append(got, string(k))
+			return true
+		})
+		if want := []string{"a", "ab", "c"}; !slices.Equal(got, want) {
+			t.Errorf("ScanAfter(1, nil, nil): %q, want %q", got, want)
+		}
+		if err := checkPages(tx, 1, 1, [][2]string{{"", "empty key"}, {"a", "one"}, {"ab", "3"}, {"c", ""}}); err != nil {
+			t.Error(err)
 		}
 		if v, ok := tx.Get(1, []byte("c")); !ok || len(v) != 0 {
 			t.Errorf("Get of an empty value: %q, %v", v, ok)
@@ -288,6 +330,23 @@ func TestRandomUpdates(t *testing.T) {
 		}
 		return strings.Join(lines, "\n")
 	}
+	// modelPages reads each table in pages of 1, 2 and 7 rows with ScanAfter.
+	modelPages := func(db *DB) error {
+		return db.View(ctx, func(tx *Tx) error {
+			for table := uint32(1); table <= 3; table++ {
+				var want [][2]string
+				for _, k := range slices.Sorted(maps.Keys(model[table])) {
+					want = append(want, [2]string{k, model[table][k]})
+				}
+				for _, size := range []int{1, 2, 7} {
+					if err := checkPages(tx, table, size, want); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+	}
 	for i := range 300 {
 		next := map[uint32]map[string]string{}
 		for table, m := range model {
@@ -330,6 +389,9 @@ func TestRandomUpdates(t *testing.T) {
 		if got, want := dump(t, db), modelDump(); got != want {
 			t.Fatalf("after Update %d:\n%s\nwant:\n%s", i, got, want)
 		}
+		if err := modelPages(db); err != nil {
+			t.Fatalf("after Update %d: %v", i, err)
+		}
 	}
 	if n := len(logNames(t, fsys)); n < 3 {
 		t.Errorf("%d segments", n)
@@ -339,6 +401,9 @@ func TestRandomUpdates(t *testing.T) {
 	db = reopen(t, fsys, o)
 	if got, want := dump(t, db), modelDump(); got != want {
 		t.Errorf("after reopening:\n%s\nwant:\n%s", got, want)
+	}
+	if err := modelPages(db); err != nil {
+		t.Errorf("after reopening: %v", err)
 	}
 	if got := seqOf(t, db); got != seq {
 		t.Errorf("Seq %d, want %d", got, seq)
@@ -390,6 +455,14 @@ func TestOwnWrites(t *testing.T) {
 	ctx := context.Background()
 	_, db := newSim(t, Options{})
 	putKey(t, db, 1, "base", "0")
+	// state is what the table has with the prefix k after the writes in Scan; rest, what ScanAfter with writes gives
+	state, rest := map[string]string{}, []string(nil)
+	for i := range 40 {
+		key := fmt.Sprintf("k%02d", 2*i)
+		state[key], state[key+"x"], state[fmt.Sprintf("k%02d", 2*i+3)] = key, key, key
+	}
+	delete(state, "k78")
+	all := slices.Sorted(maps.Keys(state))
 	err := db.Update(ctx, func(tx *Tx) error {
 		key, value := []byte("a"), []byte("1")
 		if err := tx.Put(1, key, value); err != nil {
@@ -404,6 +477,16 @@ func TestOwnWrites(t *testing.T) {
 		}
 		if _, ok := tx.Get(1, []byte("base")); ok {
 			t.Error("Get of an own delete")
+		}
+		for after, want := range map[string][]string{"": {"a=1"}, "0": {"a=1"}, "a": nil, "b": nil, "base": nil} {
+			var got []string
+			tx.ScanAfter(1, nil, []byte(after), func(k, v []byte) bool {
+				got = append(got, string(k)+"="+string(v))
+				return true
+			})
+			if !slices.Equal(got, want) {
+				t.Errorf("ScanAfter after %q in the Update: %q, want %q", after, got, want)
+			}
 		}
 		if tx.Seq() != 1 {
 			t.Errorf("Seq %d", tx.Seq())
@@ -446,17 +529,63 @@ func TestOwnWrites(t *testing.T) {
 		if v, ok := tx.Get(1, []byte("k00x")); !ok || string(v) != "k00" {
 			t.Errorf("a put in Scan is lost: %q, %v", v, ok)
 		}
+		// ScanAfter sees the writes, from after a key that is there, one that is not and the last key
+		for _, after := range []string{"", "j", "k", "k40", "k40x", "k78", "k81", "k99", "l"} {
+			var got []string
+			tx.ScanAfter(1, []byte("k"), []byte(after), func(k, _ []byte) bool {
+				got = append(got, string(k))
+				return true
+			})
+			var want []string
+			for _, k := range all {
+				if k > after {
+					want = append(want, k)
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("ScanAfter after %q saw %d keys, want %d", after, len(got), len(want))
+			}
+		}
+		// writes while ScanAfter runs do not change what it scans either
+		var given []string
+		tx.ScanAfter(1, []byte("k"), []byte("k40"), func(k, v []byte) bool {
+			given = append(given, string(k))
+			for _, w := range []error{
+				tx.Put(1, []byte(string(k)+"y"), v),
+				tx.Put(1, []byte(string(k)+"\x00"), v),
+				tx.Delete(1, []byte("k60")),
+				tx.Delete(1, k),
+			} {
+				if w != nil {
+					t.Error(w)
+				}
+			}
+			return true
+		})
+		if want := all[slices.Index(all, "k40")+1:]; !slices.Equal(given, want) || given[0] != "k40x" {
+			t.Errorf("ScanAfter with writes saw %q, want %q", given, want)
+		}
+		rest = given
+		if _, ok := tx.Get(1, []byte("k60")); ok {
+			t.Error("a delete in ScanAfter is lost")
+		}
+		if v, ok := tx.Get(1, []byte("k40xy")); !ok || string(v) != "k40" {
+			t.Errorf("a put in ScanAfter is lost: %q, %v", v, ok)
+		}
+		if _, ok := tx.Get(1, []byte("k40x")); ok {
+			t.Error("a delete of the key in ScanAfter is lost")
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"a": "1"}
-	for i := range 40 {
-		key := fmt.Sprintf("k%02d", 2*i)
-		want[key], want[key+"x"], want[fmt.Sprintf("k%02d", 2*i+3)] = key, key, key
+	want := maps.Clone(state)
+	want["a"] = "1"
+	for _, k := range rest {
+		want[k+"y"], want[k+"\x00"] = want[k], want[k]
+		delete(want, k)
 	}
-	delete(want, "k78")
 	var lines []string
 	for _, k := range slices.Sorted(maps.Keys(want)) {
 		lines = append(lines, "1/"+k+"="+want[k])
@@ -495,6 +624,10 @@ func TestErrorAndPanicDiscard(t *testing.T) {
 		t.Errorf("Scan after the end: %s", k)
 		return true
 	})
+	ended.ScanAfter(1, nil, nil, func(k, _ []byte) bool {
+		t.Errorf("ScanAfter after the end: %s", k)
+		return true
+	})
 	if ended.Seq() != 0 {
 		t.Errorf("Seq after the end: %d", ended.Seq())
 	}
@@ -520,6 +653,10 @@ func TestErrorAndPanicDiscard(t *testing.T) {
 		if err := ended.Put(1, []byte("c"), nil); !errors.Is(err, errEnded) {
 			t.Errorf("Put after a panic: %v", err)
 		}
+		ended.ScanAfter(1, nil, nil, func(k, _ []byte) bool {
+			t.Errorf("ScanAfter after a panic: %s", k)
+			return true
+		})
 	}
 	if err := db.View(ctx, func(*Tx) error { return boom }); !errors.Is(err, boom) {
 		t.Errorf("View: %v", err)

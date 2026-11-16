@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/build"
+	"github.com/WhiteRoomLab/whiteroom/internal/configfile"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/sitedir"
@@ -24,12 +24,12 @@ const buildUsage = `Usage: whiteroom build [flags] [SITE]
 Build the site in the directory SITE (default ".") into a new release in the
 output directory, and publish it.
 
-With -data, or data in the config file, the documents and the originals of the
-media are those of the data directory, which the build opens as a process that
-reads it and does not write it: a whiteroom serve admin may serve it at the same
-time, if the build has other -out and -cache directories. From SITE it reads only
-the schema file site/schema.yaml and the theme. Without -data and data, the whole
-site is read from SITE.
+With -db, or db in the config file, the documents and the originals of the media
+are those of the store of the daemon whiteroom-db whose sockets are in that
+directory, which the build reads as a reader and does not write: a whiteroom serve
+admin may serve it at the same time, if the build has other -out and -cache
+directories. From SITE it reads only the schema file site/schema.yaml and the
+theme. Without -db and db, the whole site is read from SITE.
 
 With -url, or url in the config file, the build takes URL as the url of the site
 settings, for this build only: the settings are not changed, and the same
@@ -37,15 +37,13 @@ documents give another release for another URL. It is for the site of another
 environment, such as https://staging.example.com. URL is checked as the url of
 the settings is.
 
-With -config, the items data, site, theme, out, cache, workers, memory and url of
-the YAML file give what the flags and SITE leave out. Without it, no config file
-is read.
+With -config, the items db, site, theme, out, cache, workers, memory and url of the
+YAML file give what the flags and SITE leave out; the other items are checked and
+not used: one file may be shared with whiteroom-db. Without it, no config file is
+read.
 
 Flags:
 `
-
-// maxMemory is the most MiB of -memory, whose bytes must fit in an int64.
-const maxMemory int64 = math.MaxInt64 >> 20
 
 // themedSource is a site directory with the theme of another directory.
 type themedSource struct {
@@ -60,7 +58,7 @@ type buildFlags struct {
 	config, out, cache, theme, url string
 	workers                        int
 	memory                         int64
-	dataDir                        string // -data, of whiteroom build only: whiteroom serve admin has a flag of its own
+	dbDir                          string // -db, which the commands that connect to the daemon add themselves, with their own text
 }
 
 // newBuildFlags returns the flags of whiteroom build, which print on stderr, and where they put their values.
@@ -72,8 +70,8 @@ func newBuildFlags(stderr io.Writer) (*flag.FlagSet, *buildFlags) {
 		flags.PrintDefaults()
 	}
 	f := addBuildFlags(flags)
-	flags.StringVar(&f.dataDir, "data", "", "read the documents and the originals from the data directory `DIR` instead of SITE "+
-		"(default data of the config file)")
+	flags.StringVar(&f.dbDir, "db", "", "read the documents and the originals from the store of the daemon whose sockets are in the "+
+		"directory `DIR` instead of SITE (default db of the config file)")
 	return flags, f
 }
 
@@ -97,8 +95,8 @@ func (f *buildFlags) rangeError() string {
 	switch {
 	case f.workers < 0:
 		return fmt.Sprintf("-workers %d is out of range (0 or more)", f.workers)
-	case f.memory < 0 || f.memory > maxMemory:
-		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, maxMemory)
+	case f.memory < 0 || f.memory > configfile.MaxMemory:
+		return fmt.Sprintf("-memory %d is out of range (0 to %d)", f.memory, configfile.MaxMemory)
 	}
 	return ""
 }
@@ -154,8 +152,8 @@ func runBuild(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	p := errorPrinter{w: stderr, command: flags.Name(), site: s.site, theme: s.theme}
-	if data := cmp.Or(f.dataDir, cfg.data); data != "" {
-		return buildFromStore(ctx, stdout, p, data, s)
+	if db := cmp.Or(f.dbDir, cfg.db); db != "" {
+		return buildFromStore(ctx, stdout, p, db, s)
 	}
 
 	src, closeSite, err := openSite(s.site, s.theme)
@@ -244,8 +242,8 @@ func count(n int, noun string) string {
 }
 
 // errorPrinter prints on w the problems and the errors of command, such as "whiteroom build", on the site in the
-// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of a
-// data directory, which have no files in site: only the schema file and the theme are there.
+// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of the
+// store of a daemon, which have no files in site: only the schema file and the theme are there.
 type errorPrinter struct {
 	w                    io.Writer
 	command, site, theme string
@@ -261,8 +259,8 @@ func (p errorPrinter) printProblem(e *content.Error) {
 	printf(p.w, "%s\n", c.Error())
 }
 
-// path returns the path from the working directory of file, a path with "/" in the site directory; for a data directory,
-// the name of the document in it, which is not a path of the site directory, is the same.
+// path returns the path from the working directory of file, a path with "/" in the site directory; for a store, the name
+// of the document in it, which is not a path of the site directory, is the same.
 func (p errorPrinter) path(file string) string {
 	if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
 		if p.theme != "" {

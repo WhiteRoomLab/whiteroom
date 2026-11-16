@@ -2,11 +2,11 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,7 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 )
 
 // IDs from the tests of internal/content.
@@ -136,212 +141,136 @@ func symlink(t *testing.T, target, name string) {
 	}
 }
 
+// newDaemonDir makes a new data directory with the daemon's init, as whiteroom-db init does, and returns it.
+func newDaemonDir(t *testing.T, o options) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "data")
+	if err := dbtest.Init(dir, o.daemonOptions(nil)); err != nil {
+		t.Fatalf("Init() = %v", err)
+	}
+	return dir
+}
+
+// createOnDir makes the store of the data directory dir, which a daemon has made, as Create does.
+func createOnDir(dir string, o options) (*Store, error) {
+	return start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
+		return createOn(context.Background(), d, o.clock(), o.client())
+	})
+}
+
+// state is the tables, the objects and the events of the engine of s, as the tests compare them.
+func state(t *testing.T, s *Store) string {
+	t.Helper()
+	var b strings.Builder
+	d := logDB(t, s)
+	if err := d.View(t.Context(), func(tx *logdb.Tx) error {
+		fmt.Fprintf(&b, "seq %d\n", tx.Seq())
+		for table := uint32(1); table <= 11; table++ {
+			tx.Scan(table, nil, func(k, v []byte) bool {
+				fmt.Fprintf(&b, "%d %q %q\n", table, k, v)
+				return true
+			})
+		}
+		tx.Objects(func(h [sha256.Size]byte, size int64) bool {
+			fmt.Fprintf(&b, "object %x %d\n", h, size)
+			return true
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Events(t.Context(), func(e logdb.Event) bool {
+		fmt.Fprintf(&b, "event %d %d %q\n", e.Seq, e.Number, e.Data)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
 func TestCreate(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		l := logLayout()
-		parent := filepath.Join(t.TempDir(), "parent")
-		dir := filepath.Join(parent, "data")
-		s, err := tb.create(dir)
+		// A new store has the schema 7 and the record store.create, with the mark of the daemon after it, and nothing else.
+		dir := newDaemonDir(t, tb.options())
+		s, err := createOnDir(dir, tb.options())
 		if err != nil {
 			t.Fatalf("Create() = %v", err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
-		if got, want := modeOf(t, parent), fs.ModeDir|0o700; got != want {
-			t.Errorf("mode of %s = %v, want %v", parent, got, want)
-		}
-		for _, name := range slices.Sorted(maps.Keys(l.created)) {
-			p := filepath.Join(dir, name)
-			if got := modeOf(t, p); got != l.created[name] {
-				t.Errorf("mode of %s = %v, want %v", p, got, l.created[name])
+		for _, table := range []string{"objects", "versions", "documents", "revisions", "summaries", "references",
+			"operations", "accounts", "sessions"} {
+			if n := count(t, s, table); n != 0 {
+				t.Errorf("rows of %s after Create() = %d, want 0", table, n)
 			}
 		}
-		if got := modes(t, dir); !maps.Equal(got, l.created) {
-			t.Errorf("the data directory after Create() has %v, want %v", got, l.created)
+		events := allEvents(t, s)
+		if len(events) != 2 || string(events[0].Data) != createRecordJSON || events[0].Number != 1 ||
+			events[0].Seq != 1 || events[1].Number != 2 || events[1].Seq != 1 {
+			t.Errorf("the events after Create() = %+v, want the record %s and the mark of the daemon", events, createRecordJSON)
 		}
-		if err := s.Close(); err != nil {
-			t.Fatalf("Close() = %v", err)
+		if rs := allRecords(t, s); len(rs) != 1 || rs[0].Action != audit.StoreCreate {
+			t.Errorf("the records after Create() = %+v, want store.create alone", rs)
 		}
-		var top []string // the names in the data directory
-		for name := range l.closed {
-			if name != "." && !strings.Contains(name, "/") {
-				top = append(top, name)
-			}
-		}
-		slices.Sort(top)
-		if got := names(t, dir); !slices.Equal(got, top) {
-			t.Errorf("the data directory after Close() has %q, want %q", got, top)
-		}
-		if got := names(t, filepath.Join(dir, "files")); got != nil {
-			t.Errorf("files/ has %q, want nothing", got)
-		}
-		if got := modes(t, dir); !maps.Equal(got, l.closed) {
-			t.Errorf("the modes in the data directory after Close() are %v, want %v", got, l.closed)
-		}
-
-		// An empty directory keeps its mode.
-		dir = filepath.Join(t.TempDir(), "data")
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(dir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		s, err = tb.create(dir)
-		if err != nil {
-			t.Fatalf("Create() in an empty directory = %v", err)
-		}
-		t.Cleanup(func() { _ = s.Close() })
-		if got := modeOf(t, dir); got != fs.ModeDir|0o750 {
-			t.Errorf("mode of the empty directory after Create() = %v, want %v", got, fs.ModeDir|0o750)
+		if err := s.VerifyAudit(t.Context(), nil); err != nil {
+			t.Errorf("VerifyAudit() after Create() = %v", err)
 		}
 		update(t, s, func(tx *Tx) error {
 			_, err := tx.Put(content.RefEntry, entryID, docJSON(content.RefEntry, entryID), userID)
 			return err
 		})
-	})
-}
-
-func TestCreateErrors(t *testing.T) {
-	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		notEmpty := t.TempDir()
-		if err := os.WriteFile(filepath.Join(notEmpty, "README.md"), []byte("# Data\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, data := newStore(t, tb)
-		for _, dir := range []string{notEmpty, data} {
-			before := names(t, dir)
-			s, err := tb.create(dir)
-			if err == nil {
-				_ = s.Close()
-			}
-			if want := dir + ": not empty; a new data directory needs a missing or empty directory"; err == nil ||
-				err.Error() != want {
-				t.Errorf("Create(%q) = %v, want %q", dir, err, want)
-			}
-			if got := names(t, dir); !slices.Equal(got, before) {
-				t.Errorf("Create(%q) has changed the directory: %q, want %q", dir, got, before)
-			}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
 		}
 
-		file := filepath.Join(t.TempDir(), "file")
-		if err := os.WriteFile(file, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		s, err := tb.create(file)
-		if err == nil {
-			_ = s.Close()
-		}
-		if want := "mkdir " + file + ": not a directory"; err == nil || err.Error() != want {
-			t.Errorf("Create() of a file = %v, want %q", err, want)
-		}
-	})
-}
-
-// TestMakeDirs checks which names makeDirs makes durable: those of the directories that it has made, the outermost
-// first, by paths as the one that it is given, and none of a directory that was there. The directory that SyncParent
-// opens for each is the one that holds it. An error of the sync is the error of makeDirs.
-func TestMakeDirs(t *testing.T) {
-	top, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var synced []string
-	var parents []fs.FileInfo
-	record := func(dir string) error {
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			t.Errorf("%s is synced before it is a directory (%v)", dir, err)
-		}
-		// The directory that the kernel takes for the parent. Not filepath.Join, which drops the "..".
-		parent, err := os.Stat(dir + string(filepath.Separator) + "..")
-		if err != nil {
-			t.Error(err)
-		}
-		synced, parents = append(synced, dir), append(parents, parent)
-		return nil
-	}
-	symlink(t, filepath.Join(top, "a"), filepath.Join(top, "link"))
-	symlink(t, filepath.Join(top, "a", "b"), filepath.Join(top, "deep"))
-	t.Chdir(top)
-	in := func(names ...string) []string {
-		for i, name := range names {
-			names[i] = filepath.Join(top, filepath.FromSlash(name))
-		}
-		return names
-	}
-	for _, c := range []struct {
-		what, dir string
-		want      []string // the directories whose names are synced
-		parents   []string // the directories that hold them, from top
-	}{
-		{"three missing directories", filepath.Join(top, "a", "b", "data"), in("a", "a/b", "a/b/data"),
-			[]string{".", "a", "a/b"}},
-		{"a directory that is there", filepath.Join(top, "a", "b", "data"), nil, nil},
-		{"one missing directory", filepath.Join(top, "a", "b", "other"), in("a/b/other"), []string{"a/b"}},
-		{"through a symbolic link", filepath.Join(top, "link", "c", "data"), in("link/c", "link/c/data"),
-			[]string{"a", "a/c"}},
-		{"after a link and ..", "link/../d", []string{"link/../d"}, []string{"."}},
-		{"a relative path", "rel/data", []string{"rel", "rel/data"}, []string{".", "rel"}},
-		{"a .. after a missing directory", "x/missing/../y/", []string{"x", "x/y"}, []string{".", "x"}},
-		// The parent of what deep points to is a, not the directory of deep.
-		{"missing directories after a link and ..", "deep/../m/d", []string{"deep/../m", "deep/../m/d"},
-			[]string{"a", "a/m"}},
-	} {
-		synced, parents = nil, nil
-		if err := makeDirs(filepath.FromSlash(c.dir), record); err != nil {
-			t.Fatalf("%s: makeDirs() = %v", c.what, err)
-		}
-		var want []string
-		for _, name := range c.want {
-			want = append(want, filepath.FromSlash(name))
-		}
-		if !slices.Equal(synced, want) {
-			t.Fatalf("%s: makeDirs() has synced the names of %q, want %q", c.what, synced, want)
-		}
-		for i, name := range c.parents {
-			holder, err := os.Stat(filepath.Join(top, filepath.FromSlash(name)))
+		// Create does not make a store of one that has commits, and writes nothing.
+		for range 2 {
+			s, err = start(dir, tb.options(), false, func(d dbclient.Dialer) (*Store, error) {
+				return openOn(context.Background(), d, dbwire.RoleReader, time.Now, dbclient.Options{})
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !os.SameFile(parents[i], holder) {
-				t.Errorf("%s: the name of %s is not synced in %s", c.what, synced[i], name)
+			before := state(t, s)
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = createOnDir(dir, tb.options())
+			if err == nil {
+				_ = s.Close()
+			}
+			if want := dir + ": the store is not new; a new store needs a data directory that whiteroom-db init has just made"; err == nil || err.Error() != want {
+				t.Errorf("Create() of a store with commits = %v, want %q", err, want)
+			}
+			s, err = start(dir, tb.options(), false, func(d dbclient.Dialer) (*Store, error) {
+				return openOn(context.Background(), d, dbwire.RoleReader, time.Now, dbclient.Options{})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after := state(t, s); after != before {
+				t.Errorf("Create() of a store with commits has changed it:\n%s\nwant\n%s", after, before)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
 			}
 		}
-		if got := modeOf(t, filepath.FromSlash(c.dir)); got != fs.ModeDir|0o700 {
-			t.Errorf("%s: the mode of the directory is %v", c.what, got)
-		}
-	}
 
-	failed := errors.New("sync failed")
-	synced = nil
-	err = makeDirs(filepath.Join(top, "e", "f"), func(dir string) error {
-		synced = append(synced, dir)
-		return failed
+		// The harness's create makes the data directory too, which is the daemon's init.
+		s, err = tb.create(filepath.Join(t.TempDir(), "other"))
+		if err != nil {
+			t.Fatalf("create() = %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
 	})
-	if !errors.Is(err, failed) || !slices.Equal(synced, []string{filepath.Join(top, "e")}) {
-		t.Errorf("makeDirs() with a sync that fails = %v after the syncs %q, want the error after the first", err, synced)
-	}
-	file := filepath.Join(top, "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	synced = nil
-	if err := makeDirs(filepath.Join(file, "data"), record); err == nil || synced != nil {
-		t.Errorf("makeDirs() in a file = %v after the syncs %q, want an error and no sync", err, synced)
-	}
-	// The error is that of os.MkdirAll.
-	symlink(t, filepath.Join(top, "nowhere"), filepath.Join(top, "dangling"))
-	dangling := "dangling" + string(filepath.Separator) + ".." + string(filepath.Separator) + "data"
-	if err, want := makeDirs(dangling, record), os.MkdirAll(dangling, 0o700); err == nil || want == nil ||
-		err.Error() != want.Error() || synced != nil {
-		t.Errorf("makeDirs() after a link to nothing and .. = %v after the syncs %q, want %v and no sync", err, synced, want)
-	}
 }
 
-// TestSyncParent checks that Create and Backup sync the directory that holds a data directory that they make, with a
-// directory in which they can make it but which they cannot open: they fail, and name it. They do not sync it for a
-// data directory that was there. SyncParent syncs the directory that the kernel takes for the parent: after a
-// symbolic link and "..", the one that holds what the link points to.
-func TestSyncParent(t *testing.T) {
+// TestBackupSyncParent checks that Backup syncs the directory that holds a data directory that it makes, with a directory
+// in which it can make it but which it cannot open: it fails, and names it. It does not sync it for a data directory
+// that was there (fspath.TestSyncParent checks the function that it uses, and dbserver.TestCreateDirMakesDirs that
+// whiteroom-db init makes the directories of a data directory in the same way).
+func TestBackupSyncParent(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can open every directory")
 	}
@@ -356,15 +285,6 @@ func TestSyncParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// In a directory that can be read: beside is next to link, which points to empty.
-	readable, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(readable, "beside"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	symlink(t, empty, filepath.Join(readable, "link"))
 	// Write and search, but not read.
 	if err := os.Chmod(parent, 0o300); err != nil {
 		t.Fatal(err)
@@ -378,84 +298,21 @@ func TestSyncParent(t *testing.T) {
 		}
 	}
 
-	denied("SyncParent()", parent, SyncParent(empty))
-	if err := SyncParent(filepath.Join(readable, "beside")); err != nil {
-		t.Errorf("SyncParent() in a directory that can be read = %v", err)
-	}
-	// Not the directory of the link, which can be read. Not filepath.Join, which drops the "..".
-	through := filepath.Join(readable, "link") + string(filepath.Separator) + ".."
-	denied("SyncParent() after a symbolic link and ..", through,
-		SyncParent(through+string(filepath.Separator)+"copied"))
-
-	made := filepath.Join(parent, "made")
-	s, err := Create(made)
-	if err == nil {
-		_ = s.Close()
-	}
-	denied("Create() of a missing directory", parent, err)
-	if got := modeOf(t, made); got != fs.ModeDir|0o700 {
-		t.Errorf("the mode of the directory that Create() has made is %v", got)
-	}
-	if s, err = Create(empty); err != nil {
-		t.Fatalf("Create() in an empty directory = %v", err)
+	s, err := create(empty, options{})
+	if err != nil {
+		t.Fatalf("create() in an empty directory = %v", err)
 	}
 	update(t, s, func(tx *Tx) error { return putPair(tx, 1) })
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	denied("Backup() to a missing directory", parent, Backup(t.Context(), empty, filepath.Join(parent, "copy")))
-	if err := Backup(t.Context(), empty, copied); err != nil {
+	_, err = backup(t.Context(), empty, nil, filepath.Join(parent, "copy"), nil)
+	denied("Backup() to a missing directory", parent, err)
+	if _, err := backup(t.Context(), empty, nil, copied, nil); err != nil {
 		t.Fatalf("Backup() to an empty directory = %v", err)
 	}
-	if s, err = Open(copied); err != nil {
-		t.Fatalf("Open() of the copy = %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	view(t, s, func(tx *Tx) error {
-		if n, err := checkPairView(tx); err != nil || n != 1 {
-			t.Errorf("the copy has the pair of %d, %v; want 1", n, err)
-		}
-		return nil
-	})
-}
-
-// TestRelativeDataDir checks that Create and Backup take relative paths in a working directory whose absolute path
-// cannot be walked, as a directory in one that the user cannot search: they make the directories, and sync their
-// names, from the working directory.
-func TestRelativeDataDir(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can search every directory")
-	}
-	private := filepath.Join(t.TempDir(), "private")
-	work := filepath.Join(private, "site")
-	if err := os.MkdirAll(filepath.Join(work, "empty"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(work)
-	if err := os.Chmod(private, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(private, 0o700) })
-	if _, err := os.Stat(work); !errors.Is(err, fs.ErrPermission) {
-		t.Fatalf("the working directory can be reached by its absolute path (%v)", err)
-	}
-
-	for _, dir := range []string{"data", "empty", filepath.Join("a", "b", "data")} {
-		s, err := Create(dir)
-		if err != nil {
-			t.Fatalf("Create(%q) = %v", dir, err)
-		}
-		update(t, s, func(tx *Tx) error { return putPair(tx, 1) })
-		if err := s.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := Backup(t.Context(), "data", filepath.Join("copies", "copy")); err != nil {
-		t.Fatalf("Backup() = %v", err)
-	}
-	s, err := Open(filepath.Join("copies", "copy"))
-	if err != nil {
+	if s, err = open(copied, options{}); err != nil {
 		t.Fatalf("Open() of the copy = %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
@@ -477,13 +334,41 @@ func TestOpen(t *testing.T) {
 			want, err = tx.Put(content.RefEntry, entryID, data, userID)
 			return err
 		})
+
+		// The writer holds the place of the writer: a second Open fails after its wait, and a reader opens.
+		o := tb.options()
+		o.wait = 50 * time.Millisecond
+		start := time.Now()
+		second, err := open(dir, o)
+		if err == nil {
+			_ = second.Close()
+		}
+		if want := dir + ": another process is connected as the writer"; err == nil || err.Error() != want {
+			t.Errorf("a second Open() = %v, want %q", err, want)
+		}
+		if waited := time.Since(start); waited < o.wait || waited >= time.Second {
+			t.Errorf("a second Open() has waited %v, want the wait of %v or more, and less than a second", waited, o.wait)
+		}
+		r, err := openLogReader(dir, tb.options())
+		if err != nil {
+			t.Fatalf("OpenReader() beside the writer = %v", err)
+		}
+		view(t, r, func(tx *Tx) error {
+			if d, err := tx.Document(content.RefEntry, entryID); err != nil || d.Version != want {
+				t.Errorf("Document() of the reader = %+v, %v; want %+v", d.Version, err, want)
+			}
+			return nil
+		})
+		if err := r.Close(); err != nil {
+			t.Fatalf("Close() of the reader = %v", err)
+		}
+
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() = %v", err)
 		}
-
-		s, err := tb.open(dir)
+		s, err = tb.open(dir)
 		if err != nil {
-			t.Fatalf("Open() = %v", err)
+			t.Fatalf("Open() after the first writer has closed = %v", err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
 		view(t, s, func(tx *Tx) error {
@@ -503,113 +388,70 @@ func TestOpen(t *testing.T) {
 	})
 }
 
-func TestOpenErrors(t *testing.T) {
-	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		opens := map[string]func(dir string) (*Store, error){
-			"Open":          tb.open,
-			"openLogReader": func(dir string) (*Store, error) { return openLogReader(dir, tb.options()) },
-			"OpenReader":    OpenReader,
-		}
-		for _, tt := range append(logOpenErrors(), []openErrorCase{
-			{
-				name:  "missing files",
-				setup: func(t *testing.T, path func(string) string) { remove(t, path("files")) },
-				file:  "files",
-				want:  "missing directory",
-			},
-			{
-				name: "files as a symbolic link",
-				setup: func(t *testing.T, path func(string) string) {
-					rename(t, path("files"), path("other"))
-					symlink(t, "other", path("files"))
-				},
-				file: "files",
-				want: "symbolic links are not allowed",
-			},
-			{
-				name: "files as a file",
-				setup: func(t *testing.T, path func(string) string) {
-					remove(t, path("files"))
-					if err := os.WriteFile(path("files"), nil, 0o600); err != nil {
-						t.Fatal(err)
-					}
-				},
-				file: "files",
-				want: "must be a directory",
-			},
-		}...) {
-			t.Run(tt.name, func(t *testing.T) {
-				s, dir := newStore(t, tb)
-				if err := s.Close(); err != nil {
-					t.Fatalf("Close() = %v", err)
-				}
-				path := func(name string) string { return filepath.Join(dir, name) }
-				tt.setup(t, path)
-				for name, open := range opens {
-					s, err := open(dir)
-					if err == nil {
-						_ = s.Close()
-					}
-					if want := path(tt.file) + ": " + tt.want; err == nil || err.Error() != want {
-						t.Errorf("%s() = %v, want %q", name, err, want)
-					}
-				}
-			})
-		}
-
-		missing := filepath.Join(t.TempDir(), "missing")
-		if s, err := tb.open(missing); !errors.Is(err, fs.ErrNotExist) {
+// TestOpenNoStore checks that Open and OpenReader of the daemon of a data directory that whiteroom-db init has just
+// made, whose store nobody has made, fail with an error that wraps ErrNoStore, and write nothing.
+func TestOpenNoStore(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		dir := newDaemonDir(t, tb.options())
+		for name, open := range map[string]func(string, options) (*Store, error){"Open": open, "OpenReader": openLogReader} {
+			s, err := open(dir, tb.options())
 			if err == nil {
 				_ = s.Close()
 			}
-			t.Errorf("Open() of a missing directory = %v, want an error that wraps fs.ErrNotExist", err)
+			if want := dir + ": not a store of whiteroom (no schema version)"; !errors.Is(err, ErrNoStore) ||
+				err.Error() != want {
+				t.Errorf("%s() = %v, want an error that wraps ErrNoStore, with the text %q", name, err, want)
+			}
 		}
-		if _, err := os.Lstat(missing); !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("Lstat() of the missing directory after Open() = %v, want fs.ErrNotExist", err)
+		s, err := createOnDir(dir, tb.options())
+		if err != nil {
+			t.Fatalf("Create() after the failed opens = %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
 		}
 	})
 }
 
-// TestDefaults checks the options of the engine of Create, Open and OpenReader (3.4): objects of 64 KiB or more go in
-// files, and a second Open waits 2 seconds for the writer lock.
-// TestOpenThroughLink opens the data directory data as link/../data, where link is a symbolic link to a directory beside
-// data: the errors name the files of data, those of the store with the path as written, and those of the engine with
-// the resolved path.
-func TestOpenThroughLink(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := filepath.Join(base, "data")
-	s, err := Create(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	mkdir(t, filepath.Join(base, "beside"))
-	work := t.TempDir()
-	symlink(t, filepath.Join(base, "beside"), filepath.Join(work, "link"))
-	dir := filepath.Join(work, "link") + filepath.FromSlash("/../data")
-
-	remove(t, filepath.Join(data, "logdb", "checkpoint"))
-	segment := filepath.Join(data, "logdb", filepath.FromSlash(firstSegment))
-	if err := os.WriteFile(segment, []byte("SQLite format 3\x00"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(dir); err == nil || !strings.HasPrefix(err.Error(), segment+": ") {
-		t.Errorf("Open(%s) of a broken segment = %v, want an error about %s", dir, err, segment)
-	}
-	if err := os.RemoveAll(filepath.Join(data, "logdb")); err != nil {
-		t.Fatal(err)
-	}
-	want := dir + filepath.FromSlash("/logdb") + ": missing directory"
-	if _, err := Open(dir); err == nil || err.Error() != want {
-		t.Errorf("Open(%s) without logdb = %v, want %s", dir, err, want)
-	}
+// TestOpenSends checks that the open of a store of the current schema, as a reader or as a writer, sends no Commit: the
+// sequence number of the daemon stays.
+func TestOpenSends(t *testing.T) {
+	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
+		s, dir := newStore(t, tb)
+		putWithRevision(t, s)
+		seq := seqOf(t, s)
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for name, open := range map[string]func(string, options) (*Store, error){"open": open, "openLogReader": openLogReader} {
+			s, err := open(dir, tb.options())
+			if err != nil {
+				t.Fatalf("%s() = %v", name, err)
+			}
+			if got := seqOf(t, s); got != seq {
+				t.Errorf("the last commit after %s() is %d, want %d: the open sends no commit", name, got, seq)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 }
 
+// seqOf returns the sequence number of the last commit of the daemon of s.
+func seqOf(t *testing.T, s *Store) uint64 {
+	t.Helper()
+	var seq uint64
+	view(t, s, func(tx *Tx) error {
+		seq = tx.b.(*logTx).tx.Seq()
+		return nil
+	})
+	return seq
+}
+
+// TestDefaults checks the options of the engine that the daemon of the tests has when a test gives none, which are those
+// of whiteroom-db serve (3.4): objects of 64 KiB or more go in files. The wait for the writer is that of the client,
+// which TestOpen checks.
 func TestDefaults(t *testing.T) {
 	t.Parallel()
 	// paddedEntry returns the JSON of the entry id with size bytes.
@@ -619,7 +461,7 @@ func TestDefaults(t *testing.T) {
 	}
 	small, large := paddedEntry(entryID, 64<<10-1), paddedEntry(pageID, 64<<10)
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := Create(dir)
+	s, err := create(dir, options{})
 	if err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
@@ -643,7 +485,7 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("Close() = %v", err)
 	}
 
-	s, err = Open(dir)
+	s, err = open(dir, options{})
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -656,21 +498,7 @@ func TestDefaults(t *testing.T) {
 		}
 		return nil
 	})
-
-	// The writer holds the lock: a second writer gives up after the 2 seconds of the engine, and a reader opens.
-	start := time.Now()
-	second, err := Open(dir)
-	if err == nil {
-		_ = second.Close()
-	}
-	waited := time.Since(start)
-	if want := dir + "/logdb: another process holds the writer lock"; err == nil || err.Error() != want {
-		t.Errorf("a second Open() = %v, want %q", err, want)
-	}
-	if waited < 2*time.Second || waited >= 10*time.Second {
-		t.Errorf("a second Open() has waited %v, want 2 seconds or more, and less than 10", waited)
-	}
-	r, err := OpenReader(dir)
+	r, err := openLogReader(dir, options{})
 	if err != nil {
 		t.Fatalf("OpenReader() = %v", err)
 	}
@@ -724,6 +552,12 @@ func calls(tx *Tx) map[string]func() error {
 		"AddRevision": func() error {
 			_, err := tx.AddRevision(entryID, revisionID, revJSON("About"), userID)
 			return err
+		},
+		"ReadAhead": func() error {
+			return tx.ReadAhead(Ahead{
+				Summaries: []DocumentID{{content.RefEntry, entryID}}, Documents: []DocumentID{{content.RefEntry, entryID}},
+				Revisions: []string{revisionID},
+			})
 		},
 		"Summary":         func() error { _, err := tx.Summary(content.RefEntry, entryID); return err },
 		"Summaries":       func() error { _, err := tx.Summaries(content.RefEntry); return err },

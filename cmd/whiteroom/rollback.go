@@ -21,7 +21,7 @@ it replaces, so that a rollback undoes the build, and another rollback undoes th
 rollback.
 
 Without RELEASE, it is the one other release that OUT holds. The command does not
-open a data directory, and reads no config file.
+connect to a daemon, and reads no config file.
 `
 
 // rollbackWarning is what whiteroom rollback tells on stderr when it has changed the published release.

@@ -12,6 +12,9 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
 
@@ -22,6 +25,8 @@ type modelBackend struct {
 	mu  sync.Mutex  // guards st
 	upd sync.Mutex  // one Update at a time
 	st  *modelState // the committed state, which an Update replaces and never changes
+
+	orig *dbclient.Client // of the daemon that keeps the originals of the store, which close ends
 }
 
 type modelKey struct {
@@ -48,6 +53,7 @@ type modelState struct {
 	revByID   map[string]int64 // the seq of each revision
 	events    [][]byte
 	heads     map[audit.Log]audit.Head          // of the audit logs that have records
+	lines     map[audit.Log]string              // the lines of the heads for the export
 	index     [numIndexTables]map[string][]byte // the rows of the index tables
 	number    int64                             // the last number
 }
@@ -57,7 +63,7 @@ func (s *modelState) clone() *modelState {
 	c := &modelState{
 		objects: maps.Clone(s.objects), versions: slices.Clone(s.versions), current: maps.Clone(s.current),
 		revisions: slices.Clone(s.revisions), revByID: maps.Clone(s.revByID), events: slices.Clone(s.events),
-		heads: maps.Clone(s.heads), number: s.number,
+		heads: maps.Clone(s.heads), lines: maps.Clone(s.lines), number: s.number,
 	}
 	for i, rows := range s.index {
 		c.index[i] = maps.Clone(rows)
@@ -67,7 +73,7 @@ func (s *modelState) clone() *modelState {
 
 func newModelBackend() *modelBackend {
 	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{},
-		heads: map[audit.Log]audit.Head{}}
+		heads: map[audit.Log]audit.Head{}, lines: map[audit.Log]string{}}
 	for i := range st.index {
 		st.index[i] = map[string][]byte{}
 	}
@@ -76,7 +82,28 @@ func newModelBackend() *modelBackend {
 
 // newModelStore returns a store on a new model, with its originals in a world of simfs.
 func newModelStore() *Store {
-	return &Store{b: newModelBackend(), files: simfs.New("files"), now: func() time.Time { return testTime }}
+	s := newModelStoreOn(newModelBackend())
+	s.now = func() time.Time { return testTime }
+	return s
+}
+
+// newModelStoreOn returns a store on the model b, with its originals in a new world of simfs, which a daemon of the
+// harness serves: the model keeps the tables and the objects, and no commit goes to the daemon.
+func newModelStoreOn(b *modelBackend) *Store {
+	fsys := simfs.New("files")
+	if err := dbtest.Init("model", dbtest.Options{FS: fsys}); err != nil {
+		panic(err)
+	}
+	_, d, err := acquire("model", options{fs: fsys})
+	if err != nil {
+		panic(err)
+	}
+	c, err := dbclient.Open(context.Background(), d, dbwire.RoleWriter, dbclient.Options{})
+	if err != nil {
+		panic(err)
+	}
+	b.orig = c
+	return &Store{b: b, c: c, now: time.Now}
 }
 
 func (b *modelBackend) committed() *modelState {
@@ -120,7 +147,12 @@ func (b *modelBackend) verify(context.Context) error {
 
 // close keeps the state, so that a new Store on the same model is the store opened again.
 func (b *modelBackend) close() error {
-	return nil
+	if b.orig == nil {
+		return nil
+	}
+	err := b.orig.Close()
+	b.orig = nil
+	return err
 }
 
 type modelTx struct {
@@ -317,10 +349,20 @@ func (t *modelTx) auditHead(log audit.Log) (audit.Head, bool, error) {
 
 func (t *modelTx) setAuditHead(h audit.Head) error {
 	t.st.heads[h.Log] = h
+	t.st.lines[h.Log] = h.String()
 	return nil
 }
 
+func (t *modelTx) headLine(log audit.Log) (string, bool, error) {
+	line, ok := t.st.lines[log]
+	return line, ok, nil
+}
+
 func (t *modelTx) auditReady() (bool, error) {
+	return true, nil
+}
+
+func (t *modelTx) exportReady() (bool, error) {
 	return true, nil
 }
 
@@ -378,3 +420,11 @@ func (t *modelTx) setLastNumber(n int64) error {
 	t.st.number = n
 	return nil
 }
+
+func (t *modelTx) preloadEntries([]entryRevisions) error { return nil }
+
+func (t *modelTx) preloadIndex([]indexRow) error { return nil }
+
+func (t *modelTx) readAhead(_, _ []DocumentID, _ []string) error { return nil }
+
+func (t *modelTx) forget() {}

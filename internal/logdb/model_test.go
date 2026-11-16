@@ -313,7 +313,7 @@ func valueText(v []byte) string {
 }
 
 // observe returns the state of db as model.String does. It reads the data of every object, which must have its hash
-// and its size.
+// and its size, and every table again in pages of 3 rows with ScanAfter, which must give the rows that Scan gives.
 func observe(db *DB) (string, error) {
 	ctx := context.Background()
 	var b strings.Builder
@@ -321,10 +321,15 @@ func observe(db *DB) (string, error) {
 		st := tx.snapshot()
 		fmt.Fprintf(&b, "generation %d, sequence %d, next event %d\n", st.gen, tx.Seq(), st.nextEvent)
 		for _, id := range slices.Sorted(maps.Keys(st.tables)) {
+			var rows [][2]string
 			tx.Scan(id, nil, func(k, v []byte) bool {
 				fmt.Fprintf(&b, "%d %q=%s\n", id, k, valueText(v))
+				rows = append(rows, [2]string{string(k), string(v)})
 				return true
 			})
+			if err := checkPages(tx, id, 3, rows); err != nil {
+				return err
+			}
 		}
 		var err error
 		tx.Objects(func(h [32]byte, size int64) bool {

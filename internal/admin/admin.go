@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -29,7 +30,7 @@ const (
 	defaultDeadline         = 30 * time.Second
 )
 
-// Config is what New needs to make a Server. Only Origin and Accounts are required.
+// Config is what New needs to make a Server. Only Origin, Accounts and TempDir are required.
 type Config struct {
 	// Origin is the origin that browsers use: https with any host, or http with localhost, an IPv4 address in
 	// 127.0.0.0/8 or [::1]; with an optional port, and nothing else.
@@ -53,6 +54,10 @@ type Config struct {
 	// refusals that are recorded one by one; nil is time.Now. It should be monotonic: a clock that goes back makes the waits
 	// longer.
 	Now func() time.Time
+	// TempDir is the directory of the temporary files of the bodies and the answers that do not fit in memory. It is
+	// required, and must exist: the caller makes it, for this server alone, and removes what a server that was killed left in
+	// it (RemoveTemps).
+	TempDir string
 }
 
 type Server struct {
@@ -64,6 +69,7 @@ type Server struct {
 	store        *store.Store       // that of accounts
 	publisher    *publish.Publisher // nil: no routes for the documents and the builds
 	editor       *edit.Editor       // that of publisher
+	tmp          string             // the directory of the temporary files of the spools
 	now          func() time.Time
 	cookieName   string // of the cookie of the session
 	log          *log.Logger
@@ -72,6 +78,7 @@ type Server struct {
 	attempts     *attempts
 	logins       chan struct{} // a place for each login that attempts has allowed and that has not ended
 	forwardedDue func() bool   // true at most once a minute: the time to log an X-Forwarded-For that is not read
+	unreachable  func() bool   // true at most once a minute: the time to log that the daemon of the store cannot be reached
 	handler      http.Handler  // the check of cross-origin requests, then the routes
 
 	deadlinesMu sync.RWMutex
@@ -111,6 +118,14 @@ func New(c Config) (*Server, error) {
 	if c.Publisher != nil && c.Publisher.Store() != c.Accounts.Store() {
 		return nil, errors.New("admin: Config.Publisher must use the store of Config.Accounts")
 	}
+	if c.TempDir == "" {
+		return nil, errors.New("admin: no directory for the temporary files")
+	}
+	if info, err := os.Stat(c.TempDir); err != nil {
+		return nil, fmt.Errorf("admin: the directory for the temporary files: %w", err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("admin: the directory for the temporary files, %s, is not a directory", c.TempDir)
+	}
 	https := o.scheme == "https"
 	now := c.Now
 	if now == nil {
@@ -124,6 +139,7 @@ func New(c Config) (*Server, error) {
 		accounts:     c.Accounts,
 		store:        c.Accounts.Store(),
 		publisher:    c.Publisher,
+		tmp:          c.TempDir,
 		now:          now,
 		cookieName:   sessionCookieName(https),
 		log:          c.ErrorLog,
@@ -131,6 +147,7 @@ func New(c Config) (*Server, error) {
 		deadline:     defaultDeadline,
 		logins:       make(chan struct{}, maxLogins),
 		forwardedDue: everyMinute(now),
+		unreachable:  everyMinute(now),
 		heavy:        make(chan struct{}, 1),
 		logReads:     make(chan struct{}, 1),
 		passwords:    newPasswordAttempts(now, passwordAttemptsCapacity),
@@ -318,9 +335,17 @@ func isCleanPath(p string) bool {
 	return true
 }
 
-// fail answers r with 503 if err says that its context has ended, and else with 500 and logs err.
+// fail answers r with 503 if err says that the daemon of the store cannot be reached, which it logs at most once a minute,
+// or that its context has ended, and else with 500 and logs err.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, store.ErrUnavailable):
+		if s.unreachable() {
+			s.log.Printf("the daemon of the store cannot be reached: %v", err)
+		}
+		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
+		return
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeProblem(w, http.StatusServiceUnavailable, codeBusy, detailBusy)
 		return
 	}

@@ -31,17 +31,19 @@ type Source struct {
 	docs        map[content.RefKind]map[string]content.SiteFile
 	store       *store.Store
 	theme       fs.FS
+	ctx         context.Context // of Snapshot, for the reads that the methods make later
 }
 
 // Snapshot reads the settings document and the current documents of every kind of s in one View, and returns them as
 // a Source with schema, the schema file, and theme, the files of the theme, which the store does not keep. What is
 // saved after Snapshot returns does not change what Settings and Documents return.
 //
-// The revisions and the originals are read when the build asks for them. The store never changes or removes a
-// revision or an original, so the build sees the site of one point in time although it reads them later (4.2). The
-// Source holds the bytes of every document, as the build does (4.3, on the memory of the build).
+// The revisions and the originals are read when the build asks for them, within ctx too: the Source is for use while ctx
+// lives, and its reads fail with the error of ctx when it has ended. The store never changes or removes a revision or an
+// original, so the build sees the site of one point in time although it reads them later (4.2). The Source holds the
+// bytes of every document, as the build does (4.3, on the memory of the build).
 func Snapshot(ctx context.Context, s *store.Store, schema content.SiteFile, theme fs.FS) (*Source, error) {
-	src := &Source{schema: schema, store: s, theme: theme}
+	src := &Source{schema: schema, store: s, theme: theme, ctx: ctx}
 	if err := s.View(ctx, src.read); err != nil {
 		return nil, err
 	}
@@ -97,7 +99,7 @@ func (src *Source) Documents(kind content.RefKind) (map[string]content.SiteFile,
 // the error wraps fs.ErrNotExist.
 func (src *Source) Revision(id string) (content.SiteFile, error) {
 	var rev store.Revision
-	err := src.store.View(context.Background(), func(tx *store.Tx) (err error) {
+	err := src.store.View(src.ctx, func(tx *store.Tx) (err error) {
 		rev, err = tx.Revision(id)
 		return err
 	})
@@ -108,7 +110,7 @@ func (src *Source) Revision(id string) (content.SiteFile, error) {
 }
 
 func (src *Source) OpenMedia(hash string) (fs.File, error) {
-	return src.store.OpenOriginal(hash)
+	return src.store.OpenOriginal(src.ctx, hash)
 }
 
 func (src *Source) Theme() (fs.FS, error) {

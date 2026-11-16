@@ -81,18 +81,50 @@ linters:
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
               desc: dmlog は、store のテストだけが使う
+        to-dbtest:
+          list-mode: lax
+          files:
+            - "!$test"
+            - "!**/internal/store/storetest/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+              desc: dbtest は、プロセスの中でデーモンを動かす、テストの土台で、テストだけが使う
+        to-storetest:
+          list-mode: lax
+          files:
+            - "!$test"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
+              desc: storetest は、データのディレクトリから保存先を開く、テストの土台で、テストだけが使う
+        to-engine:
+          list-mode: lax
+          files:
+            - "!$test"
+            - "!**/internal/logdb/**"
+            - "!**/internal/dbserver/**"
+            - "!**/cmd/whiteroom-db/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb$
+              desc: エンジンを開くのは、DB のデーモン（cmd/whiteroom-db と internal/dbserver）だけ（3.6）。ほかは、internal/dbclient で繋ぐ
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+              desc: エンジンを開くのは、DB のデーモン（cmd/whiteroom-db と internal/dbserver）だけ（3.6）。ほかは、internal/dbclient で繋ぐ
         stdlib-only:
           list-mode: strict
           # Every package with a rule of its own is excluded here; other files may import only the standard library.
           files:
             - $all
             - "!**/cmd/whiteroom/*.go"
+            - "!**/cmd/whiteroom-db/*.go"
             - "!**/internal/account/*.go"
             - "!**/internal/admin/*.go"
             - "!**/internal/audit/*.go"
             - "!**/internal/build/*.go"
             - "!**/internal/build/gen/*.go"
+            - "!**/internal/configfile/*.go"
             - "!**/internal/content/*.go"
+            - "!**/internal/dbclient/*.go"
+            - "!**/internal/dbserver/*.go"
+            - "!**/internal/dbserver/dbtest/*.go"
             - "!**/internal/edit/*.go"
             - "!**/internal/imaging/*.go"
             - "!**/internal/logdb/*.go"
@@ -105,6 +137,7 @@ linters:
             - "!**/internal/sitedir/*.go"
             - "!**/internal/siteplan/*.go"
             - "!**/internal/store/*.go"
+            - "!**/internal/store/storetest/*.go"
             - "!**/internal/theme/*.go"
             - "!**/internal/wpimport/*.go"
           allow:
@@ -117,6 +150,17 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        configfile:
+          list-mode: strict
+          files:
+            - "**/internal/configfile/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/content$
+              desc: configfile は content を使わない（whiteroom-db も configfile をリンクし、デーモンはコンテンツのモデルを知らない。3.6）
         audit:
           list-mode: strict
           files:
@@ -267,6 +311,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/siteplan$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/theme$
         publish:
           list-mode: strict
@@ -293,6 +338,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
             - github.com/WhiteRoomLab/whiteroom/internal/theme$
         store:
           list-mode: strict
@@ -303,9 +349,21 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
-            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        storetest:
+          list-mode: strict
+          files:
+            - "**/internal/store/storetest/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
         store-test:
           list-mode: strict
           files:
@@ -314,11 +372,75 @@ linters:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/dmlog$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
             - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+        dbserver:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
+        dbserver-test:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
+        dbclient:
+          list-mode: strict
+          files:
+            - "**/internal/dbclient/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        dbclient-test:
+          list-mode: strict
+          files:
+            - "**/internal/dbclient/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+        dbtest:
+          list-mode: strict
+          files:
+            - "**/internal/dbserver/dbtest/*.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
         logdb:
           list-mode: strict
           files:
@@ -353,6 +475,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/content$
             - github.com/WhiteRoomLab/whiteroom/internal/nfc$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
         admin:
           list-mode: strict
           files:
@@ -385,6 +508,7 @@ linters:
             - github.com/WhiteRoomLab/whiteroom/internal/publish$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
         wpimport:
           list-mode: strict
           files:
@@ -423,20 +547,70 @@ linters:
           list-mode: strict
           files:
             - "**/cmd/whiteroom/*.go"
+            - "!$test"
           allow:
             - $gostd
             - github.com/WhiteRoomLab/whiteroom/internal/account$
             - github.com/WhiteRoomLab/whiteroom/internal/admin$
             - github.com/WhiteRoomLab/whiteroom/internal/audit$
             - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
             - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
             - github.com/WhiteRoomLab/whiteroom/internal/edit$
             - github.com/WhiteRoomLab/whiteroom/internal/fspath$
             - github.com/WhiteRoomLab/whiteroom/internal/publish$
             - github.com/WhiteRoomLab/whiteroom/internal/serve$
             - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
             - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
             - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        cmd/whiteroom-test:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/account$
+            - github.com/WhiteRoomLab/whiteroom/internal/admin$
+            - github.com/WhiteRoomLab/whiteroom/internal/audit$
+            - github.com/WhiteRoomLab/whiteroom/internal/build$
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/content$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/edit$
+            - github.com/WhiteRoomLab/whiteroom/internal/fspath$
+            - github.com/WhiteRoomLab/whiteroom/internal/publish$
+            - github.com/WhiteRoomLab/whiteroom/internal/serve$
+            - github.com/WhiteRoomLab/whiteroom/internal/sitedir$
+            - github.com/WhiteRoomLab/whiteroom/internal/store$
+            - github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
+            - github.com/WhiteRoomLab/whiteroom/internal/unixsock$
+            - github.com/WhiteRoomLab/whiteroom/internal/yaml$
+        cmd/whiteroom-db:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom-db/*.go"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
+        cmd/whiteroom-db-test:
+          list-mode: strict
+          files:
+            - "**/cmd/whiteroom-db/*_test.go"
+          allow:
+            - $gostd
+            - github.com/WhiteRoomLab/whiteroom/internal/configfile$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbclient$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+            - github.com/WhiteRoomLab/whiteroom/internal/dbwire$
+            - github.com/WhiteRoomLab/whiteroom/internal/logdb$
     forbidigo:
       analyze-types: true
       forbid:
@@ -446,6 +620,9 @@ linters:
         - pattern: ^store\.DropIndexRow$
           pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/store$
           msg: テストだけが使う（わざと索引の行を消す）
+        - pattern: ^dbserver\.EngineOf$
+          pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/dbserver$
+          msg: テストだけが使う（エンジンを直接触る）
         - pattern: ^filepath\.Abs$
           pkg: ^path/filepath$
           msg: fspath.Abs を使う（filepath.Abs は、シンボリックリンクの後ろの .. を、文字の上で消す）

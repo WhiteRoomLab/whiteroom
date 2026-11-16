@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // changedTerm returns the JSON of the term whose document is data, after change.
@@ -235,7 +237,7 @@ func newSmallSite(t *testing.T, settings string, files map[string]string) *small
 	for name, data := range all {
 		writeSite(t, x.dir, name, data)
 	}
-	s, err := store.Create(filepath.Join(t.TempDir(), "data"))
+	s, err := storetest.Create(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1005,4 +1007,200 @@ func TestRefChangeGrid(t *testing.T) {
 			}
 		}
 	}
+}
+
+// noAhead is a reader whose ReadAhead reads nothing, as an Editor read before it read ahead.
+type noAhead struct{ reader }
+
+func (noAhead) ReadAhead(store.Ahead) error { return nil }
+
+// failAhead is a reader whose ReadAhead fails with err when it is called for the n-th time (the first is 1), and counts the
+// calls in calls.
+type failAhead struct {
+	reader
+	n     int
+	calls *int
+	err   error
+}
+
+func (f failAhead) ReadAhead(a store.Ahead) error {
+	if *f.calls++; *f.calls == f.n {
+		return f.err
+	}
+	return f.reader.ReadAhead(a)
+}
+
+// stopAhead is a reader that stops the daemon before it reads ahead.
+type stopAhead struct {
+	reader
+	d *storetest.Daemon
+}
+
+func (s stopAhead) ReadAhead(a store.Ahead) error {
+	if err := s.d.Stop(); err != nil {
+		return err
+	}
+	return s.reader.ReadAhead(a)
+}
+
+// newCountedSite returns an Editor of a store that has the sample site and posts published posts, made as the benchmark
+// makes them, on a daemon that listens on sockets, which the Daemon stops and starts; and the function that returns the
+// number of the Write calls that the store's connections have made.
+func newCountedSite(t *testing.T, posts int) (*Editor, *store.Store, *storetest.Daemon, func() int) {
+	t.Helper()
+	d, err := storetest.Serve(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	dialer, count := storetest.CountWrites(d.Dialer())
+	s, err := store.Create(context.Background(), dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	putSample(t, s)
+	if posts > 0 {
+		addPosts(t, s, posts)
+	}
+	return testEditor(t, s), s, d, count
+}
+
+// TestValidationRoundTrips checks the round trips to the daemon of the two saves that validate the whole site: SaveSettings,
+// and the save of a term that every published post refers to, which changes its language and is refused with a problem in
+// each post; and that the refusal is the same, problem by problem, as without the reads ahead.
+func TestValidationRoundTrips(t *testing.T) {
+	const posts = 300
+	ed, s, _, count := newCountedSite(t, posts)
+	ctx, op := t.Context(), Op{By: userID}
+
+	t.Run("SaveSettings", func(t *testing.T) {
+		settings := string(sampleFile(t, settingsName))
+		base := read(t, s, store.SettingsKind, "").Seq
+		data := replaceOnce(t, settings, "Webサイトの企画と制作", "Webサイトの企画と制作（1）")
+		before := count()
+		res, err := ed.SaveSettings(ctx, op, base, []byte(data))
+		n := count() - before
+		if err != nil || len(res.Warnings) != 0 || res.Version.Seq == base {
+			t.Fatalf("SaveSettings() = %+v, %v; want the settings saved with no warning", res, err)
+		}
+		t.Logf("SaveSettings with %d published posts: %d Write calls", posts, n)
+		if n > 150 {
+			t.Errorf("SaveSettings() made %d round trips, want at most 150", n)
+		}
+	})
+
+	t.Run("a refused save of a term", func(t *testing.T) {
+		english := replaceOnce(t, string(sampleFile(t, newsName)), `"language": "ja"`, `"language": "en"`)
+		cur := read(t, s, content.RefTerm, newsID)
+		save := func() (n int, text string) {
+			before := count()
+			_, err := ed.Save(ctx, op, content.RefTerm, newsID, cur.Seq, []byte(english))
+			n = count() - before
+			var es content.Errors
+			if !errors.As(err, &es) {
+				t.Fatalf("Save() = %v, want the problems of the documents that it makes invalid", err)
+			}
+			in := make(map[string]bool, len(es))
+			for _, e := range es {
+				in[e.File] = true
+			}
+			for i := 1; i <= posts; i++ {
+				if f := revisionName(benchID(content.RefRevision, i)); !in[f] {
+					t.Fatalf("Save() has no problem in %s, one of its %d problems is %q", f, len(es), es[0])
+				}
+			}
+			if got := read(t, s, content.RefTerm, newsID); got.Version != cur.Version {
+				t.Fatalf("Save() has saved the version %+v, the store has had %+v", got.Version, cur.Version)
+			}
+			return n, err.Error()
+		}
+		n, with := save()
+		ed.wrap = func(r reader) reader { return noAhead{r} }
+		without, text := save()
+		ed.wrap = nil
+		t.Logf("the refused save of a term that %d posts refer to: %d Write calls, %d without ReadAhead", posts, n, without)
+		if n > 500 {
+			t.Errorf("Save() made %d round trips, want at most 500", n)
+		}
+		if with != text {
+			a, b := strings.Split(with, "\n"), strings.Split(text, "\n")
+			for i := range max(len(a), len(b)) {
+				if i >= len(a) || i >= len(b) || a[i] != b[i] {
+					t.Fatalf("the problems of the save, %d lines with the reads ahead and %d without them, differ at line %d:\n%q\n%q",
+						len(a), len(b), i+1, line(a, i), line(b, i))
+				}
+			}
+		}
+	})
+}
+
+// line returns lines[i], or "" if there is none.
+func line(lines []string, i int) string {
+	if i < len(lines) {
+		return lines[i]
+	}
+	return ""
+}
+
+// TestReadAheadFails checks that an operation whose read ahead fails returns that error and saves nothing, wherever it
+// reads ahead: for the referrers of a term, and for the units that it validates again; and that it does so when the
+// daemon stops just before it reads ahead.
+func TestReadAheadFails(t *testing.T) {
+	op := Op{By: userID}
+	errInjected := errors.New("injected")
+	operations := []struct {
+		name  string
+		do    func(t *testing.T, ed *Editor, s *store.Store) error
+		reads []int // the reads ahead that fail, each in a run of its own, by the number of the call
+	}{
+		{"SaveSettings", func(t *testing.T, ed *Editor, s *store.Store) error {
+			data := replaceOnce(t, string(sampleFile(t, settingsName)), "Webサイトの企画と制作", "Webサイトの企画と制作（1）")
+			_, err := ed.SaveSettings(t.Context(), op, read(t, s, store.SettingsKind, "").Seq, []byte(data))
+			return err
+		}, []int{1}},
+		{"Save of a term", func(t *testing.T, ed *Editor, s *store.Store) error {
+			english := replaceOnce(t, string(sampleFile(t, newsName)), `"language": "ja"`, `"language": "en"`)
+			_, err := ed.Save(t.Context(), op, content.RefTerm, newsID, read(t, s, content.RefTerm, newsID).Seq, []byte(english))
+			return err
+		}, []int{1, 2}},
+	}
+	for _, tt := range operations {
+		for _, n := range tt.reads {
+			t.Run(fmt.Sprintf("%s, read ahead %d", tt.name, n), func(t *testing.T) {
+				ed, s := newSample(t)
+				calls := new(int)
+				ed.wrap = func(r reader) reader {
+					return failAhead{r, n, calls, fmt.Errorf("%w: %w", errInjected, store.ErrUnavailable)}
+				}
+				before := snapshot(t, s)
+				err := tt.do(t, ed, s)
+				if !errors.Is(err, errInjected) || !errors.Is(err, store.ErrUnavailable) || *calls != n {
+					t.Errorf("%s with a read ahead that fails = %v after %d reads ahead; want its error after %d", tt.name, err, *calls, n)
+				}
+				if got := snapshot(t, s); got != before {
+					t.Errorf("%s has changed the store:\nbefore:\n%s\nafter:\n%s", tt.name, before, got)
+				}
+			})
+		}
+	}
+	t.Run("the daemon stops", func(t *testing.T) {
+		ed, s, d, _ := newCountedSite(t, 0)
+		before := snapshot(t, s)
+		ed.wrap = func(r reader) reader { return stopAhead{r, d} }
+		err := operations[0].do(t, ed, s)
+		if !errors.Is(err, store.ErrUnavailable) || errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("SaveSettings() while the daemon stops = %v, want an error that is ErrUnavailable and is not fs.ErrNotExist", err)
+		}
+		if err := d.Start(); err != nil {
+			t.Fatal(err)
+		}
+		ed.wrap = nil
+		if got := snapshot(t, s); got != before {
+			t.Errorf("SaveSettings() has changed the store:\nbefore:\n%s\nafter:\n%s", before, got)
+		}
+		if err := operations[0].do(t, ed, s); err != nil {
+			t.Errorf("SaveSettings() after the daemon is back = %v, want it to work", err)
+		}
+	})
 }

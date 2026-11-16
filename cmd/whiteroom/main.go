@@ -16,21 +16,22 @@ import (
 
 const usage = `Usage:
   whiteroom init [flags] [SITE]
-        make the data directory, with the first administrator, and import the
-        site in the directory SITE if given
+        initialize the store of the daemon whiteroom-db, with the first
+        administrator, and import the site in the directory SITE if given
   whiteroom build [flags] [SITE]
         build the site in the directory SITE (default ".") and publish it
-  whiteroom build -data DIR [flags] [SITE]
-        the same, but from the data directory DIR, of which SITE gives only the
-        schema file and the theme
+  whiteroom build -db DIR [flags] [SITE]
+        the same, but from the store of the daemon whose sockets are in the
+        directory DIR, of which SITE gives only the schema file and the theme
   whiteroom rollback OUT [RELEASE]
         publish a release that the output directory OUT still holds, instead of
         the published one
   whiteroom backup [flags] DEST
-        copy the data directory to DEST, while a whiteroom serve admin may write it
+        copy the data directory of the daemon to DEST, while a whiteroom serve
+        admin may write it
   whiteroom doctor [flags] [SITE]
-        look for what is wrong in the data directory, and in what it publishes
-        if SITE is given, without changing anything
+        look for what is wrong in the store of the daemon, and in what it
+        publishes if SITE is given, without changing anything
   whiteroom account reset [flags] LOGIN
         set a new password for the account with the login name LOGIN, for an
         administrator who cannot log in; read from the standard input
@@ -39,8 +40,8 @@ const usage = `Usage:
   whiteroom serve public [flags] [OUT]
         serve the published release of the output directory OUT (default "out")
   whiteroom serve admin [flags] [SITE]
-        serve the admin API of the data directory, and build the site from it
-        into the output directory
+        serve the admin API of the store of the daemon whiteroom-db, and build
+        the site from it into the output directory
 
 Run "whiteroom init -h", "whiteroom build -h", "whiteroom rollback -h",
 "whiteroom backup -h", "whiteroom doctor -h", "whiteroom account reset -h",

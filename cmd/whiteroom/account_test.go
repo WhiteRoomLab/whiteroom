@@ -18,6 +18,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
+	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 const (
@@ -34,21 +35,21 @@ func (r noRead) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// accountData makes a data directory with the first administrator, by whiteroom init without a site.
-func accountData(t *testing.T) string {
+// accountDB makes a store with the first administrator, by whiteroom init without a site, in a new daemon of the test.
+func accountDB(t *testing.T) testDB {
 	t.Helper()
-	data := filepath.Join(t.TempDir(), "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+	db := newDB(t)
+	if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
 		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
 	}
-	return data
+	return db
 }
 
-// withAccounts opens the data directory data, which nothing else has open, as its writer, runs f with its store and its
+// withAccounts opens the store of the daemon db, which nothing else has open, as its writer, runs f with its store and its
 // accounts, which have cheap password hashes, and closes it: the commands of the tests fail while it is open.
-func withAccounts(t *testing.T, data string, f func(s *store.Store, m *account.Manager)) {
+func withAccounts(t *testing.T, db testDB, f func(s *store.Store, m *account.Manager)) {
 	t.Helper()
-	s, err := store.Open(data)
+	s, err := storetest.Open(db.data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +70,9 @@ func passwordOf(login string) string { return login + " has a long password" }
 
 // addAccount invites an account as the system does, and, if withPassword is true, sets its password to passwordOf(login).
 // Without it, the account is pending, and has the token of its invitation, which nobody knows.
-func addAccount(t *testing.T, data, loginName string, role account.Role, withPassword bool) account.Account {
+func addAccount(t *testing.T, db testDB, loginName string, role account.Role, withPassword bool) account.Account {
 	t.Helper()
-	withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+	withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 		in := account.Input{Login: loginName, Name: "Name of " + loginName, Email: loginName + "@example.com", Role: role}
 		_, token, err := m.Invite(t.Context(), account.System, in)
 		if err != nil {
@@ -83,14 +84,14 @@ func addAccount(t *testing.T, data, loginName string, role account.Role, withPas
 			}
 		}
 	})
-	return mustFind(t, data, loginName)
+	return mustFind(t, db, loginName)
 }
 
 // mustFind returns the account with the login name.
-func mustFind(t *testing.T, data, login string) account.Account {
+func mustFind(t *testing.T, db testDB, login string) account.Account {
 	t.Helper()
 	var a account.Account
-	withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+	withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 		var err error
 		if a, err = m.Find(t.Context(), login); err != nil {
 			t.Fatal(err)
@@ -101,10 +102,10 @@ func mustFind(t *testing.T, data, login string) account.Account {
 
 // unreadableAccount puts a row that cannot be read in the accounts of data, and returns its ID. The row is written with the
 // store's own API, with the record that it needs, as no operation of the accounts makes such a row.
-func unreadableAccount(t *testing.T, data string, n int) string {
+func unreadableAccount(t *testing.T, db testDB, n int) string {
 	t.Helper()
 	id := content.FormatID(content.RefUser, [16]byte{0: 0x02, 15: byte(n)})
-	withAccounts(t, data, func(s *store.Store, _ *account.Manager) {
+	withAccounts(t, db, func(s *store.Store, _ *account.Manager) {
 		err := s.Update(t.Context(), func(tx *store.Tx) error {
 			if err := tx.PutAccount(id, []byte("not json")); err != nil {
 				return err
@@ -119,10 +120,10 @@ func unreadableAccount(t *testing.T, data string, n int) string {
 }
 
 // rowExists reports whether the accounts of data have a row with the ID, whatever it holds.
-func rowExists(t *testing.T, data, id string) bool {
+func rowExists(t *testing.T, db testDB, id string) bool {
 	t.Helper()
 	var ok bool
-	withAccounts(t, data, func(s *store.Store, _ *account.Manager) {
+	withAccounts(t, db, func(s *store.Store, _ *account.Manager) {
 		err := s.View(t.Context(), func(tx *store.Tx) error {
 			var err error
 			_, ok, err = tx.Account(id)
@@ -138,9 +139,9 @@ func rowExists(t *testing.T, data, id string) bool {
 // logRecords are the records of the activity log and of the login history of a data directory.
 type logRecords struct{ activity, logins []audit.Record }
 
-func logsOf(t *testing.T, data string) logRecords {
+func logsOf(t *testing.T, db testDB) logRecords {
 	t.Helper()
-	s, err := store.OpenReader(data)
+	s, err := storetest.OpenReader(db.data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +160,9 @@ func logsOf(t *testing.T, data string) logRecords {
 }
 
 // checkLogs checks that the activity log and the login history of data have no more records than they had before.
-func checkLogs(t *testing.T, what, data string, before logRecords) {
+func checkLogs(t *testing.T, what string, db testDB, before logRecords) {
 	t.Helper()
-	now := logsOf(t, data)
+	now := logsOf(t, db)
 	if len(now.activity) != len(before.activity) || len(now.logins) != len(before.logins) {
 		t.Errorf("%s: the activity log has %d records and the login history %d, want %d and %d, as before", what,
 			len(now.activity), len(now.logins), len(before.activity), len(before.logins))
@@ -169,30 +170,30 @@ func checkLogs(t *testing.T, what, data string, before logRecords) {
 }
 
 // loginAs logs in as loginName with password in data, and returns the token of the session.
-func loginAs(t *testing.T, data, loginName, password string) (token string, err error) {
+func loginAs(t *testing.T, db testDB, loginName, password string) (token string, err error) {
 	t.Helper()
-	withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+	withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 		_, token, err = m.Login(t.Context(), account.Client{}, loginName, password, "")
 	})
 	return token, err
 }
 
 // checkLogin checks that the account can log in with password, and cannot with a password that is not it.
-func checkLogin(t *testing.T, what, data, loginName, password string) {
+func checkLogin(t *testing.T, what string, db testDB, loginName, password string) {
 	t.Helper()
-	if _, err := loginAs(t, data, loginName, password); err != nil {
+	if _, err := loginAs(t, db, loginName, password); err != nil {
 		t.Errorf("%s: the login of %s with the password = %v, want it to work", what, loginName, err)
 	}
-	if _, err := loginAs(t, data, loginName, password+" x"); !errors.Is(err, account.ErrBadCredentials) {
+	if _, err := loginAs(t, db, loginName, password+" x"); !errors.Is(err, account.ErrBadCredentials) {
 		t.Errorf("%s: the login of %s with another password = %v, want %v", what, loginName, err, account.ErrBadCredentials)
 	}
 }
 
 // sessionEnded reports whether the token is no session of data any more.
-func sessionEnded(t *testing.T, data, token string) bool {
+func sessionEnded(t *testing.T, db testDB, token string) bool {
 	t.Helper()
 	var err error
-	withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+	withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 		_, err = m.Authenticate(t.Context(), account.Client{}, token)
 	})
 	return errors.Is(err, account.ErrNoSession)
@@ -204,50 +205,50 @@ func sessionEnded(t *testing.T, data, token string) bool {
 func TestAccountReset(t *testing.T) {
 	for _, tt := range []struct {
 		what     string
-		prepare  func(t *testing.T, data string) account.Account
+		prepare  func(t *testing.T, db testDB) account.Account
 		oldLogin string // the login name and the password of the account that has a session to end
 		password string
 		arg      func(a account.Account) string
 	}{
-		{"the only administrator", func(t *testing.T, data string) account.Account { return mustFind(t, data, initLogin) },
+		{"the only administrator", func(t *testing.T, db testDB) account.Account { return mustFind(t, db, initLogin) },
 			initLogin, initPassword, func(a account.Account) string { return a.Login }},
-		{"the only administrator, by other letters", func(t *testing.T, data string) account.Account {
-			return mustFind(t, data, initLogin)
+		{"the only administrator, by other letters", func(t *testing.T, db testDB) account.Account {
+			return mustFind(t, db, initLogin)
 		}, initLogin, initPassword, func(a account.Account) string { return " " + strings.ToUpper(a.Login) + " " }},
-		{"an editor", func(t *testing.T, data string) account.Account {
-			return addAccount(t, data, "yamada", account.RoleEditor, true)
+		{"an editor", func(t *testing.T, db testDB) account.Account {
+			return addAccount(t, db, "yamada", account.RoleEditor, true)
 		}, "yamada", passwordOf("yamada"), func(a account.Account) string { return a.Login }},
-		{"an account that has no password yet", func(t *testing.T, data string) account.Account {
-			return addAccount(t, data, "suzuki", account.RoleViewer, false)
+		{"an account that has no password yet", func(t *testing.T, db testDB) account.Account {
+			return addAccount(t, db, "suzuki", account.RoleViewer, false)
 		}, "", "", func(a account.Account) string { return a.Login }},
 	} {
 		t.Run(tt.what, func(t *testing.T) {
-			data := accountData(t)
-			target := tt.prepare(t, data)
+			db := accountDB(t)
+			target := tt.prepare(t, db)
 			var session string
 			if tt.oldLogin != "" {
 				var err error
-				if session, err = loginAs(t, data, tt.oldLogin, tt.password); err != nil {
+				if session, err = loginAs(t, db, tt.oldLogin, tt.password); err != nil {
 					t.Fatal(err)
 				}
 			}
-			before := logsOf(t, data)
+			before := logsOf(t, db)
 
-			code, stdout, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-data", data,
+			code, stdout, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-db", db.sockets,
 				tt.arg(target))
 			want := "reset the password of " + target.Login + " (" + target.ID + ")\n"
 			if code != 0 || stdout != want || stderr != "" {
 				t.Fatalf("whiteroom account reset = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr,
 					want)
 			}
-			checkNoSecret(t, tt.what, changedPassword, stdout, stderr, data)
+			checkNoSecret(t, tt.what, changedPassword, stdout, stderr, db.data)
 
 			// The login history gets the end of the session of the account, and nothing else.
 			ended := 0
 			if session != "" {
 				ended = 1
 			}
-			now := logsOf(t, data)
+			now := logsOf(t, db)
 			if len(now.activity) != len(before.activity)+2 || len(now.logins) != len(before.logins)+ended {
 				t.Fatalf("the activity log has %d records and the login history %d, want %d and %d", len(now.activity),
 					len(now.logins), len(before.activity)+2, len(before.logins)+ended)
@@ -268,7 +269,7 @@ func TestAccountReset(t *testing.T) {
 					audit.AccountSetPassword, target.ID, target.ID)
 			}
 
-			withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+			withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 				got, err := m.Get(t.Context(), target.ID)
 				if err != nil || got.Status != account.StatusActive || got.Token != (account.TokenInfo{}) {
 					t.Errorf("the account is %+v, %v, want an active one without a token", got, err)
@@ -278,12 +279,12 @@ func TestAccountReset(t *testing.T) {
 				}
 			})
 			if tt.password != "" {
-				if _, err := loginAs(t, data, target.Login, tt.password); !errors.Is(err, account.ErrBadCredentials) {
+				if _, err := loginAs(t, db, target.Login, tt.password); !errors.Is(err, account.ErrBadCredentials) {
 					t.Errorf("the login with the old password = %v, want %v", err, account.ErrBadCredentials)
 				}
 			}
-			checkLogin(t, tt.what, data, target.Login, changedPassword)
-			if session != "" && !sessionEnded(t, data, session) {
+			checkLogin(t, tt.what, db, target.Login, changedPassword)
+			if session != "" && !sessionEnded(t, db, session) {
 				t.Error("the session of the account has not ended")
 			}
 		})
@@ -294,7 +295,8 @@ func TestAccountReset(t *testing.T) {
 // stdout, no record, and the old password still works. The standard input is not read where the command fails before it
 // asks for the password.
 func TestAccountResetErrors(t *testing.T) {
-	clean := accountData(t)
+	t.Parallel()
+	clean := accountDB(t)
 	addAccount(t, clean, "yamada", account.RoleEditor, true)
 	addAccount(t, clean, "a-long-login-name", account.RoleEditor, true)
 	suzuki := addAccount(t, clean, "suzuki", account.RoleEditor, true)
@@ -303,7 +305,7 @@ func TestAccountResetErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	broken := accountData(t)
+	broken := accountDB(t)
 	badID := unreadableAccount(t, broken, 1)
 
 	unread := func(t *testing.T) io.Reader { return noRead{t} }
@@ -313,7 +315,7 @@ func TestAccountResetErrors(t *testing.T) {
 	const command = "whiteroom account reset: "
 	for _, tt := range []struct {
 		what   string
-		data   string
+		db     testDB
 		stdin  func(t *testing.T) io.Reader // noRead where the command fails before it asks for the password
 		login  string
 		wants  []string // that stderr has
@@ -324,7 +326,7 @@ func TestAccountResetErrors(t *testing.T) {
 		{"an account that is disabled", clean, unread, "suzuki", []string{command, "suzuki", "is disabled"}, false, ""},
 		{"a row that cannot be read", broken, unread, initLogin,
 			[]string{command + "accounts \"" + badID + "\": invalid value\n",
-				command + "delete it with: whiteroom account delete -data " + shellQuote(broken) + " " + badID + "\n"}, false, ""},
+				command + "delete it with: whiteroom account delete -db " + shellQuote(broken.sockets) + " " + badID + "\n"}, false, ""},
 		{"a password that is too short", clean, input(briefPassword + "\n"), initLogin,
 			[]string{command + "the password: too short: 6 characters (min 15)\n"}, true, briefPassword},
 		{"the login name as the password", clean, input("a-long-login-name\n"), "a-long-login-name",
@@ -334,8 +336,8 @@ func TestAccountResetErrors(t *testing.T) {
 		{"a line of 8193 bytes", clean, input(strings.Repeat("a", 8193) + "\n"), initLogin,
 			[]string{command + "the password is longer than 8192 bytes\n"}, true, ""},
 	} {
-		before := logsOf(t, tt.data)
-		code, stdout, stderr := runCmdIn(t, tt.stdin(t), "account", "reset", "-data", tt.data, tt.login)
+		before := logsOf(t, tt.db)
+		code, stdout, stderr := runCmdIn(t, tt.stdin(t), "account", "reset", "-db", tt.db.sockets, tt.login)
 		if code != 1 || stdout != "" {
 			t.Errorf("%s: whiteroom account reset = %d, with stdout %q and stderr:\n%s\nwant 1 and nothing on stdout", tt.what, code,
 				stdout, stderr)
@@ -349,31 +351,30 @@ func TestAccountResetErrors(t *testing.T) {
 			t.Errorf("%s: stderr is:\n%s\nwant only %q", tt.what, stderr, tt.wants[0])
 		}
 		if tt.secret != "" {
-			checkNoSecret(t, tt.what, tt.secret, stdout, stderr, tt.data)
+			checkNoSecret(t, tt.what, tt.secret, stdout, stderr, tt.db.data)
 		}
-		checkLogs(t, tt.what, tt.data, before)
-		checkLogin(t, tt.what, tt.data, initLogin, initPassword)
+		checkLogs(t, tt.what, tt.db, before)
+		checkLogin(t, tt.what, tt.db, initLogin, initPassword)
 	}
 
+	// A directory of sockets that has no daemon, because it is missing or empty: it is not made, and the line names the socket.
 	missing := filepath.Join(t.TempDir(), "missing")
-	code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-data", missing, initLogin)
-	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: ") || !strings.HasSuffix(stderr, "\n") ||
-		strings.Count(stderr, "\n") != 1 {
-		t.Errorf("whiteroom account reset of a data directory that is none = %d, with stdout %q and stderr %q, want 1, nothing and one line",
-			code, stdout, stderr)
-	}
-	if s := snapshot(t, missing); s != "missing" {
-		t.Errorf("the data directory that was none is made:\n%s", s)
-	}
 	empty := t.TempDir()
-	was := snapshot(t, empty)
-	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "reset", "-data", empty, initLogin)
-	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: ") || strings.Count(stderr, "\n") != 1 {
-		t.Errorf("whiteroom account reset of an empty directory = %d, with stdout %q and stderr %q, want 1, nothing and one line",
-			code, stdout, stderr)
-	}
-	if s := snapshot(t, empty); s != was {
-		t.Errorf("the empty directory is now:\n%s\nwant it as it was:\n%s", s, was)
+	// Each waits for the client's 2 seconds, so they run together.
+	for _, tt := range []struct{ what, dir string }{{"a directory that is none", missing}, {"an empty directory", empty}} {
+		t.Run(tt.what, func(t *testing.T) {
+			t.Parallel()
+			was := snapshot(t, tt.dir)
+			code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-db", tt.dir, initLogin)
+			if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: "+tt.dir+": cannot reach the daemon: ") ||
+				!strings.Contains(stderr, filepath.Join(tt.dir, "writer.sock")) || strings.Count(stderr, "\n") != 1 {
+				t.Errorf("whiteroom account reset of %s = %d, with stdout %q and stderr %q, want 1, nothing and one line that names the socket",
+					tt.what, code, stdout, stderr)
+			}
+			if s := snapshot(t, tt.dir); s != was {
+				t.Errorf("%s is now:\n%s\nwant it as it was:\n%s", tt.what, s, was)
+			}
+		})
 	}
 }
 
@@ -454,22 +455,22 @@ func TestResetPasswordFails(t *testing.T) {
 // TestAccountResetAfterInterrupted makes the state that a command leaves when it ends between its two steps, an account that
 // has no password, whose token nobody knows, and checks that the command then makes it whole.
 func TestAccountResetAfterInterrupted(t *testing.T) {
-	data := accountData(t)
-	admin := mustFind(t, data, initLogin)
-	withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+	db := accountDB(t)
+	admin := mustFind(t, db, initLogin)
+	withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 		if _, err := m.Reset(t.Context(), account.System, admin.ID); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if _, err := loginAs(t, data, initLogin, initPassword); !errors.Is(err, account.ErrBadCredentials) {
+	if _, err := loginAs(t, db, initLogin, initPassword); !errors.Is(err, account.ErrBadCredentials) {
 		t.Fatalf("the login after a Reset = %v, want %v", err, account.ErrBadCredentials)
 	}
-	code, stdout, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-data", data, initLogin)
+	code, stdout, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-db", db.sockets, initLogin)
 	if want := "reset the password of " + initLogin + " (" + admin.ID + ")\n"; code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("whiteroom account reset = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
 	}
-	checkLogin(t, "after the command", data, initLogin, changedPassword)
-	if got := mustFind(t, data, initLogin); got.Status != account.StatusActive {
+	checkLogin(t, "after the command", db, initLogin, changedPassword)
+	if got := mustFind(t, db, initLogin); got.Status != account.StatusActive {
 		t.Errorf("the account is %s, want active", got.Status)
 	}
 }
@@ -477,21 +478,21 @@ func TestAccountResetAfterInterrupted(t *testing.T) {
 // TestAccountDelete deletes rows that cannot be read, one at a time and however many there are, and an account that can
 // be read; and the deletions that the rules of the accounts refuse, which leave everything as it was.
 func TestAccountDelete(t *testing.T) {
-	deleteCmd := func(t *testing.T, data string, args ...string) (code int, stdout, stderr string) {
+	deleteCmd := func(t *testing.T, db testDB, args ...string) (code int, stdout, stderr string) {
 		t.Helper()
-		return runCmdIn(t, noRead{t}, append([]string{"account", "delete", "-data", data}, args...)...)
+		return runCmdIn(t, noRead{t}, append([]string{"account", "delete", "-db", db.sockets}, args...)...)
 	}
 	// deleted checks the success of whiteroom account delete, and the record of it.
 	// A session of the account that ends is a record of the login history.
-	deleted := func(t *testing.T, data, id, text string, unreadable bool, sessions int) {
+	deleted := func(t *testing.T, db testDB, id, text string, unreadable bool, sessions int) {
 		t.Helper()
-		before := logsOf(t, data)
-		code, stdout, stderr := deleteCmd(t, data, id)
+		before := logsOf(t, db)
+		code, stdout, stderr := deleteCmd(t, db, id)
 		if want := "deleted account " + id + " (" + text + ")\n"; code != 0 || stdout != want || stderr != "" {
 			t.Fatalf("whiteroom account delete %s = %d, with stdout %q and stderr %q, want 0, %q and nothing", id, code, stdout,
 				stderr, want)
 		}
-		now := logsOf(t, data)
+		now := logsOf(t, db)
 		if len(now.activity) != len(before.activity)+1 || len(now.logins) != len(before.logins)+sessions {
 			t.Fatalf("the activity log has %d records and the login history %d, want %d and %d", len(now.activity),
 				len(now.logins), len(before.activity)+1, len(before.logins)+sessions)
@@ -501,22 +502,22 @@ func TestAccountDelete(t *testing.T) {
 			t.Errorf("the last record is %s by %q about %q with the detail %v, want %s by %s about %s, unreadable %t", r.Action,
 				r.Actor, r.Target.ID, r.Detail, audit.AccountDelete, audit.System, id, unreadable)
 		}
-		if rowExists(t, data, id) {
+		if rowExists(t, db, id) {
 			t.Errorf("the row of %s is still there", id)
 		}
 	}
 	const unreadableText = "its row could not be read"
 
 	t.Run("a row that cannot be read", func(t *testing.T) {
-		data := accountData(t)
-		id := unreadableAccount(t, data, 1)
-		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-data", data, initLogin)
+		db := accountDB(t)
+		id := unreadableAccount(t, db, 1)
+		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-db", db.sockets, initLogin)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, id) || !strings.Contains(stderr, "account delete") {
 			t.Fatalf("whiteroom account reset with the row = %d, with stdout %q and stderr:\n%s\nwant 1 and its ID, and account delete", code,
 				stdout, stderr)
 		}
-		deleted(t, data, id, unreadableText, true, 0)
-		code, stdout, stderr = runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-data", data, initLogin)
+		deleted(t, db, id, unreadableText, true, 0)
+		code, stdout, stderr = runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-db", db.sockets, initLogin)
 		if code != 0 {
 			t.Errorf("whiteroom account reset after the deletion = %d, with stdout %q and stderr:\n%s\nwant 0", code, stdout, stderr)
 		}
@@ -524,129 +525,135 @@ func TestAccountDelete(t *testing.T) {
 
 	for _, order := range [][2]int{{0, 1}, {1, 0}} {
 		t.Run("two rows that cannot be read", func(t *testing.T) {
-			data := accountData(t)
-			ids := []string{unreadableAccount(t, data, 1), unreadableAccount(t, data, 2)}
+			db := accountDB(t)
+			ids := []string{unreadableAccount(t, db, 1), unreadableAccount(t, db, 2)}
 			first, second := ids[order[0]], ids[order[1]]
-			deleted(t, data, first, unreadableText, true, 0)
-			if !rowExists(t, data, second) {
+			deleted(t, db, first, unreadableText, true, 0)
+			if !rowExists(t, db, second) {
 				t.Errorf("the other row, %s, is gone with the first", second)
 			}
-			deleted(t, data, second, unreadableText, true, 0)
+			deleted(t, db, second, unreadableText, true, 0)
 		})
 	}
 
 	t.Run("an account that can be read", func(t *testing.T) {
-		data := accountData(t)
-		yamada := addAccount(t, data, "yamada", account.RoleEditor, true)
-		session, err := loginAs(t, data, "yamada", passwordOf("yamada"))
+		db := accountDB(t)
+		yamada := addAccount(t, db, "yamada", account.RoleEditor, true)
+		session, err := loginAs(t, db, "yamada", passwordOf("yamada"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		deleted(t, data, yamada.ID, "yamada", false, 1)
-		withAccounts(t, data, func(_ *store.Store, m *account.Manager) {
+		deleted(t, db, yamada.ID, "yamada", false, 1)
+		withAccounts(t, db, func(_ *store.Store, m *account.Manager) {
 			if _, err := m.Get(t.Context(), yamada.ID); !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("Get of the deleted account = %v, want %v", err, fs.ErrNotExist)
 			}
 		})
-		if !sessionEnded(t, data, session) {
+		if !sessionEnded(t, db, session) {
 			t.Error("the session of the deleted account has not ended")
 		}
-		checkLogin(t, "the administrator", data, initLogin, initPassword)
+		checkLogin(t, "the administrator", db, initLogin, initPassword)
 	})
 
 	t.Run("the last active administrator", func(t *testing.T) {
-		data := accountData(t)
-		admin := mustFind(t, data, initLogin)
-		before := logsOf(t, data)
-		code, stdout, stderr := deleteCmd(t, data, admin.ID)
+		db := accountDB(t)
+		admin := mustFind(t, db, initLogin)
+		before := logsOf(t, db)
+		code, stdout, stderr := deleteCmd(t, db, admin.ID)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "is the last active administrator: it cannot be deleted") {
 			t.Errorf("whiteroom account delete of the last administrator = %d, with stdout %q and stderr:\n%s\nwant 1 and the reason",
 				code, stdout, stderr)
 		}
-		checkLogs(t, "the last administrator", data, before)
-		checkLogin(t, "the last administrator", data, initLogin, initPassword)
+		checkLogs(t, "the last administrator", db, before)
+		checkLogin(t, "the last administrator", db, initLogin, initPassword)
 	})
 
 	t.Run("no account", func(t *testing.T) {
-		data := accountData(t)
+		db := accountDB(t)
 		gone := content.FormatID(content.RefUser, [16]byte{0: 0x09})
 		for _, arg := range []string{gone, initLogin, "usr_x"} {
-			before := logsOf(t, data)
-			code, stdout, stderr := deleteCmd(t, data, arg)
+			before := logsOf(t, db)
+			code, stdout, stderr := deleteCmd(t, db, arg)
 			if code != 1 || stdout != "" || !strings.Contains(stderr, "not found") {
 				t.Errorf("whiteroom account delete %s = %d, with stdout %q and stderr:\n%s\nwant 1 and not found", arg, code, stdout,
 					stderr)
 			}
-			checkLogs(t, arg, data, before)
+			checkLogs(t, arg, db, before)
 		}
-		checkLogin(t, "the administrator", data, initLogin, initPassword)
+		checkLogin(t, "the administrator", db, initLogin, initPassword)
 	})
 
 	t.Run("an account that can be read, beside a row that cannot", func(t *testing.T) {
-		data := accountData(t)
-		yamada := addAccount(t, data, "yamada", account.RoleEditor, true)
-		id := unreadableAccount(t, data, 1)
-		before := logsOf(t, data)
-		code, stdout, stderr := deleteCmd(t, data, yamada.ID)
+		db := accountDB(t)
+		yamada := addAccount(t, db, "yamada", account.RoleEditor, true)
+		id := unreadableAccount(t, db, 1)
+		before := logsOf(t, db)
+		code, stdout, stderr := deleteCmd(t, db, yamada.ID)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, id) {
 			t.Errorf("whiteroom account delete of an account that can be read = %d, with stdout %q and stderr:\n%s\nwant 1 and the ID %s",
 				code, stdout, stderr, id)
 		}
-		checkLogs(t, "an account that can be read", data, before)
-		if !rowExists(t, data, yamada.ID) || !rowExists(t, data, id) {
+		checkLogs(t, "an account that can be read", db, before)
+		if !rowExists(t, db, yamada.ID) || !rowExists(t, db, id) {
 			t.Error("a row is gone")
 		}
 	})
 }
 
-// TestAccountConfig runs the commands with the data directory of a config file, which -data overrides, and checks that the
-// advice names the data directory that was chosen.
+// TestAccountConfig runs the commands with the daemon of a config file, which -db overrides, and checks that the advice names
+// the directory of the sockets that was chosen.
 func TestAccountConfig(t *testing.T) {
-	root := t.TempDir()
-	data := filepath.Join(root, "data")
-	if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+	t.Parallel()
+	// The sockets are in a short directory, beside the directory of the config file.
+	root, err := os.MkdirTemp("", "wr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	db := newDBAt(t, filepath.Join(root, "run"))
+	if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
 		t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
 	}
 	conf := filepath.Join(root, "conf")
-	file := writeConfig(t, conf, "whiteroom.yaml", "# the settings of every command\ndata: ../data\nworkers: 2\naddr: 127.0.0.1:8081\n")
-	noData := writeConfig(t, conf, "no-data.yaml", "data: ../no-such-data\n")
+	file := writeConfig(t, conf, "whiteroom.yaml", "# the settings of every command\ndb: ../run\nworkers: 2\naddr: 127.0.0.1:8081\n")
+	noDB := writeConfig(t, conf, "no-db.yaml", "db: ../no-such-run\n")
 
-	// reset: the item data of the file.
+	// reset: the item db of the file, from the directory of the file.
 	code, stdout, stderr := runCmdIn(t, strings.NewReader(changedPassword+"\n"), "account", "reset", "-config", file, initLogin)
-	admin := mustFind(t, data, initLogin)
+	admin := mustFind(t, db, initLogin)
 	if want := "reset the password of " + initLogin + " (" + admin.ID + ")\n"; code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("whiteroom account reset -config = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
 	}
-	checkLogin(t, "the item data", data, initLogin, changedPassword)
+	checkLogin(t, "the item db", db, initLogin, changedPassword)
 
-	// -data wins over the item, which names a directory that is none.
-	code, stdout, stderr = runCmdIn(t, strings.NewReader(initPassword+"\n"), "account", "reset", "-config", noData, "-data", data,
+	// -db wins over the item, which names a directory that is none.
+	code, stdout, stderr = runCmdIn(t, strings.NewReader(initPassword+"\n"), "account", "reset", "-config", noDB, "-db", db.sockets,
 		initLogin)
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "reset the password of ") {
-		t.Fatalf("whiteroom account reset -config -data = %d, with stdout %q and stderr %q, want 0", code, stdout, stderr)
+		t.Fatalf("whiteroom account reset -config -db = %d, with stdout %q and stderr %q, want 0", code, stdout, stderr)
 	}
-	checkLogin(t, "-data over the item", data, initLogin, initPassword)
-	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "reset", "-config", noData, initLogin)
+	checkLogin(t, "-db over the item", db, initLogin, initPassword)
+	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "reset", "-config", noDB, initLogin)
 	if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account reset: ") {
-		t.Errorf("whiteroom account reset with an item data that is none = %d, with stdout %q and stderr %q, want 1", code, stdout, stderr)
+		t.Errorf("whiteroom account reset with an item db that is none = %d, with stdout %q and stderr %q, want 1", code, stdout, stderr)
 	}
 
-	// delete: the item data of the file, and -data over it.
-	yamada := addAccount(t, data, "yamada", account.RoleEditor, true)
-	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "delete", "-config", noData, "-data", data, yamada.ID)
+	// delete: the item db of the file, and -db over it.
+	yamada := addAccount(t, db, "yamada", account.RoleEditor, true)
+	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "delete", "-config", noDB, "-db", db.sockets, yamada.ID)
 	if want := "deleted account " + yamada.ID + " (yamada)\n"; code != 0 || stdout != want || stderr != "" {
-		t.Fatalf("whiteroom account delete -config -data = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		t.Fatalf("whiteroom account delete -config -db = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
 	}
-	suzuki := addAccount(t, data, "suzuki", account.RoleEditor, true)
+	suzuki := addAccount(t, db, "suzuki", account.RoleEditor, true)
 	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "delete", "-config", file, suzuki.ID)
 	if want := "deleted account " + suzuki.ID + " (suzuki)\n"; code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("whiteroom account delete -config = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
 	}
 
-	// The advice names the data directory that the file gives, as a path from the working directory.
-	id := unreadableAccount(t, data, 1)
+	// The advice names the directory of the sockets that the file gives, as a path from the working directory.
+	id := unreadableAccount(t, db, 1)
 	code, stdout, stderr = runCmdIn(t, noRead{t}, "account", "reset", "-config", file, initLogin)
-	if want := "whiteroom account reset: delete it with: whiteroom account delete -data " + shellQuote(data) + " " + id + "\n"; code != 1 ||
+	if want := "whiteroom account reset: delete it with: whiteroom account delete -db " + shellQuote(db.sockets) + " " + id + "\n"; code != 1 ||
 		stdout != "" || !strings.Contains(stderr, want) {
 		t.Errorf("whiteroom account reset -config with a row that cannot be read = %d, with stdout %q and stderr:\n%s\nwant 1 and %q in it",
 			code, stdout, stderr, want)
@@ -657,8 +664,8 @@ func TestAccountConfig(t *testing.T) {
 	}
 
 	// A problem in the file is a usage error, found before anything is read or changed.
-	before := logsOf(t, data)
-	unknown := writeConfig(t, conf, "unknown.yaml", "data: ../data\nsnack: 1\n")
+	before := logsOf(t, db)
+	unknown := writeConfig(t, conf, "unknown.yaml", "db: ../run\nsnack: 1\n")
 	for _, args := range [][]string{{"reset", initLogin}, {"delete", admin.ID}} {
 		code, stdout, stderr = runCmdIn(t, noRead{t}, append([]string{"account", args[0], "-config", unknown}, args[1])...)
 		if want := unknown + ":2:1: /snack: unknown item\n"; code != 2 || stdout != "" || stderr != want {
@@ -666,53 +673,62 @@ func TestAccountConfig(t *testing.T) {
 				args[0], code, stdout, stderr, want)
 		}
 	}
-	checkLogs(t, "a config file with a problem", data, before)
+	checkLogs(t, "a config file with a problem", db, before)
 
-	// No data directory, from the flags or the file, is a usage error.
-	other := writeConfig(t, conf, "other.yaml", "workers: 2\n")
-	for _, args := range [][]string{{"reset", initLogin}, {"delete", admin.ID}} {
-		code, stdout, stderr = runCmdIn(t, noRead{t}, append([]string{"account", args[0], "-config", other}, args[1])...)
-		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account "+args[0]+": no data directory: ") {
-			t.Errorf("whiteroom account %s with no data directory = %d, with stdout %q and stderr %q, want 2 and the usage error", args[0],
-				code, stdout, stderr)
+	// No database, from the flags or the file, is a usage error: the item data is the daemon's, and does not name it.
+	for _, text := range []string{"workers: 2\n", "data: ../data\n"} {
+		other := writeConfig(t, conf, "other.yaml", text)
+		for _, args := range [][]string{{"reset", initLogin}, {"delete", admin.ID}} {
+			code, stdout, stderr = runCmdIn(t, noRead{t}, append([]string{"account", args[0], "-config", other}, args[1])...)
+			if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom account "+args[0]+": "+errNoDB+"\n") {
+				t.Errorf("whiteroom account %s with no database (%q) = %d, with stdout %q and stderr %q, want 2 and the usage error", args[0],
+					text, code, stdout, stderr)
+			}
 		}
 	}
-	checkLogs(t, "no data directory", data, before)
+	checkLogs(t, "no database", db, before)
 }
 
 // TestAccountBesideAdmin runs the commands on a data directory that a whiteroom serve admin has open: they fail after the
 // wait for the lock, with the advice, without reading the standard input, and the server is as it was.
 func TestAccountBesideAdmin(t *testing.T) {
+	t.Parallel()
 	s := initSample(t)
 	a := startAdmin(t, t.Context(), s.args()...)
 	cookie := a.login(t)
 	if built := a.waitBuilt(t, cookie); failedBuild(built) || built.Last.Release == "" {
 		t.Fatalf("the start build has %+v, want a release\nstderr:\n%s", built.Last, a.stderr)
 	}
-	for _, tt := range []struct {
-		args   []string
-		advice string
-	}{
-		{[]string{"account", "reset", "-data", s.data, initLogin}, "POST /api/accounts/{id}/reset"},
-		{[]string{"account", "delete", "-data", s.data, "usr_x"}, "DELETE /api/accounts/{id}"},
-	} {
-		start := time.Now()
-		code, stdout, stderr := runCmdIn(t, noRead{t}, tt.args...)
-		if elapsed := time.Since(start); elapsed > 30*time.Second {
-			t.Errorf("whiteroom %s took %v, want a few seconds", strings.Join(tt.args, " "), elapsed)
+	// Each waits for the client's 2 seconds, so they run together.
+	t.Run("the commands", func(t *testing.T) {
+		for _, tt := range []struct {
+			args   []string
+			advice string
+		}{
+			{[]string{"account", "reset", "-db", s.db, initLogin}, "POST /api/accounts/{id}/reset"},
+			{[]string{"account", "delete", "-db", s.db, "usr_x"}, "DELETE /api/accounts/{id}"},
+		} {
+			name := "whiteroom " + tt.args[0] + " " + tt.args[1]
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				start := time.Now()
+				code, stdout, stderr := runCmdIn(t, noRead{t}, tt.args...)
+				if elapsed := time.Since(start); elapsed > 30*time.Second {
+					t.Errorf("whiteroom %s took %v, want a few seconds", strings.Join(tt.args, " "), elapsed)
+				}
+				lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+				if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
+					!strings.HasSuffix(lines[0], ": another process is connected as the writer") ||
+					!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
+					t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the second writer and the advice", name,
+						code, stdout, stderr)
+				}
+				if status, _, _, err := a.try(http.MethodGet, "/api/builds", "", "Cookie", cookie); err != nil || status != http.StatusOK {
+					t.Errorf("the server answers %d (%v) after %s, want %d", status, err, name, http.StatusOK)
+				}
+			})
 		}
-		name := "whiteroom " + tt.args[0] + " " + tt.args[1]
-		lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
-		if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
-			!strings.HasSuffix(lines[0], ": another process holds the writer lock") ||
-			!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
-			t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the writer lock and the advice", name, code,
-				stdout, stderr)
-		}
-		if status, _ := a.exchange(t, http.MethodGet, "/api/builds", "", "Cookie", cookie); status != http.StatusOK {
-			t.Errorf("the server answers %d after %s, want %d", status, name, http.StatusOK)
-		}
-	}
+	})
 	if status, cookie := a.tryLogin(t, initLogin, initPassword); status != http.StatusOK || cookie == "" {
 		t.Errorf("the login with the old password after the commands = %d, want %d", status, http.StatusOK)
 	}
@@ -753,18 +769,23 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// TestAccountResetAdviceQuoted checks that the advice for a row that cannot be read names a data directory with a space or
+// TestAccountResetAdviceQuoted checks that the advice for a row that cannot be read names a directory of sockets with a space or
 // a single quote in its path as one word for a shell.
 func TestAccountResetAdviceQuoted(t *testing.T) {
-	for _, tt := range []struct{ what, dir string }{{"a space", "my data"}, {"a single quote", "it's data"}} {
-		data := filepath.Join(t.TempDir(), tt.dir, "data")
-		if code, _, stderr := runInitCmd(t, initPassword+"\n", adminFlags("-data", data)...); code != 0 {
+	for _, tt := range []struct{ what, dir string }{{"a space", "my run"}, {"a single quote", "it's run"}} {
+		root, err := os.MkdirTemp("", "wr")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		db := newDBAt(t, filepath.Join(root, tt.dir))
+		if code, _, stderr := initDB(t, db, initPassword+"\n"); code != 0 {
 			t.Fatalf("whiteroom init = %d, with stderr:\n%s", code, stderr)
 		}
-		id := unreadableAccount(t, data, 1)
-		want := "whiteroom account reset: delete it with: whiteroom account delete -data '" + strings.ReplaceAll(data, "'", `'\''`) +
+		id := unreadableAccount(t, db, 1)
+		want := "whiteroom account reset: delete it with: whiteroom account delete -db '" + strings.ReplaceAll(db.sockets, "'", `'\''`) +
 			"' " + id + "\n"
-		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-data", data, initLogin)
+		code, stdout, stderr := runCmdIn(t, noRead{t}, "account", "reset", "-db", db.sockets, initLogin)
 		if code != 1 || stdout != "" || !strings.HasSuffix(stderr, want) {
 			t.Errorf("%s: whiteroom account reset = %d, with stdout %q and stderr:\n%s\nwant 1 and %q at its end", tt.what, code, stdout,
 				stderr, want)

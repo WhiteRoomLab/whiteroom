@@ -103,7 +103,7 @@ func (s *Server) readLog(log audit.Log) routeFunc {
 			return
 		}
 		defer release()
-		out := newSpool(s.store)
+		out := newSpool(s.tmp)
 		defer func() { _ = out.Close() }()
 		err := s.inLogs(r.Context(), func(ctx context.Context) error {
 			return s.readRecords(ctx, f, before, limit, out)

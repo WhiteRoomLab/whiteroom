@@ -215,7 +215,7 @@ func (d *diffStore) open(t *testing.T, fresh bool) {
 		if fresh {
 			d.model = newModelBackend()
 		}
-		s = &Store{b: d.model, files: simfs.New("files")}
+		s = newModelStoreOn(d.model)
 	case fresh:
 		s, err = create(d.dir, d.options())
 	default:
@@ -240,6 +240,29 @@ func (d *diffStore) close(t *testing.T) {
 	d.s = nil
 	if err != nil {
 		t.Fatalf("%s: Close() = %v", d.name, err)
+	}
+}
+
+// closeReader closes the reader of d, a store of the log backend, which keeps the daemon of the data directory open as
+// long as it is open: its engine writes the checkpoint when the last store of it is closed.
+func (d *diffStore) closeReader(t *testing.T) {
+	t.Helper()
+	if d.reader == nil {
+		return
+	}
+	err := d.reader.Close()
+	d.reader = nil
+	if err != nil {
+		t.Fatalf("%s: Close() of the reader = %v", d.name, err)
+	}
+}
+
+// openReader opens the reader of d, which then is open since it has been opened.
+func (d *diffStore) openReader(t *testing.T) {
+	t.Helper()
+	var err error
+	if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
+		t.Fatalf("%s: openLogReader() = %v", d.name, err)
 	}
 }
 
@@ -300,6 +323,14 @@ func (d *diffStore) dump(t *testing.T, s *Store, r diffReads) diffLines {
 }
 
 func (r diffReads) run(tx *Tx, line func(desc string, v any, err error)) {
+	if r.ahead {
+		a := Ahead{Revisions: r.revs}
+		for _, d := range r.docs {
+			a.Summaries = append(a.Summaries, DocumentID{d.k.kind, d.id})
+			a.Documents = append(a.Documents, DocumentID{d.k.kind, d.id})
+		}
+		line("ReadAhead(everything that is read)", nil, tx.ReadAhead(a))
+	}
 	for _, kind := range r.kinds {
 		docs, err := tx.Documents(kind)
 		line(fmt.Sprintf("Documents(%q)", kind), docs, err)
@@ -358,6 +389,7 @@ type diffCounts struct {
 	reads                                      int
 	reopens, replays, crashes, afterCheckpoint int
 	readers                                    int
+	aheads                                     int // the calls of ReadAhead, in the Updates and at the start of the reads
 }
 
 // diffRun runs the same steps on the model and on the log backend in each placement, and checks that each log store has
@@ -397,11 +429,12 @@ func newDiffRun(t *testing.T, change func(o *logdb.Options), sim bool) *diffRun 
 		if d.log == nil {
 			continue
 		}
-		var err error
-		if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
-			t.Fatalf("%s: openLogReader() = %v", d.name, err)
-		}
-		t.Cleanup(func() { _ = d.reader.Close() })
+		d.openReader(t)
+		t.Cleanup(func() {
+			if d.reader != nil {
+				_ = d.reader.Close()
+			}
+		})
 	}
 	return r
 }
@@ -415,6 +448,11 @@ func (r *diffRun) stores() []*diffStore {
 func (r *diffRun) compare(step string, f func(d *diffStore) diffLines) diffLines {
 	r.t.Helper()
 	want := f(r.ref)
+	for _, l := range want.lines {
+		if strings.HasPrefix(l, "ReadAhead(") {
+			r.counts.aheads++
+		}
+	}
 	var problems []string
 	external := func(d *diffStore, l diffLines) {
 		if l.external != nil {
@@ -506,10 +544,12 @@ func (r *diffRun) reopen(step string, replay bool) {
 			d.open(r.t, false)
 			continue
 		}
+		d.closeReader(r.t) // the engine of the daemon is closed with the last store, and opens again with the next
 		if replay {
 			d.removeCheckpoint(r.t)
 		}
 		d.open(r.t, false)
+		d.openReader(r.t)
 		if got := logDB(r.t, d.s).Recovery().Checkpoint; got != want {
 			r.t.Fatalf("%s, %s: %s has opened with the checkpoint %q, want %q", r.about, step, d.name, got, want)
 		}
@@ -547,15 +587,10 @@ func (r *diffRun) crash(step, model string) {
 		}
 		world := d.fsys.Crash(simfs.Model{Name: model, Keep: keep})
 		d.close(r.t)
-		if err := d.reader.Close(); err != nil {
-			r.t.Fatalf("%s, %s: Close() of the reader of %s = %v", r.about, step, d.name, err)
-		}
+		d.closeReader(r.t)
 		d.fsys = world
 		d.open(r.t, false)
-		var err error
-		if d.reader, err = openLogReader(d.dir, d.options()); err != nil {
-			r.t.Fatalf("%s, %s: openLogReader() of %s = %v", r.about, step, d.name, err)
-		}
+		d.openReader(r.t)
 		switch info := logDB(r.t, d.s).Recovery(); {
 		case info.Checkpoint != "used" && info.Checkpoint != "none":
 			r.t.Fatalf("%s, %s: %s has opened after the crash with the checkpoint %q", r.about, step, d.name,
@@ -631,11 +666,15 @@ func (r *diffRun) finish() {
 			st.InlineObjects, st.FileObjects))
 	}
 	c := r.counts
+	if c.aheads == 0 {
+		r.t.Errorf("%s: no call of ReadAhead", r.about)
+	}
 	r.t.Logf("%s: %d updates (%d committed, %d aborted, %d failed), %d calls in them (%d failed), %d reads; "+
 		"%d versions, %d revisions; opened again %d times, %d without the checkpoints, %d times after crashes (%d "+
-		"replaying records after a checkpoint), read %d times in readers; %s", r.about, c.updates, c.commits, c.aborted,
-		c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.logs[0].s, "versions"), count(r.t, r.logs[0].s, "revisions"),
-		c.reopens, c.replays, c.crashes, c.afterCheckpoint, c.readers, strings.Join(stats, ", "))
+		"replaying records after a checkpoint), read %d times in readers; %d calls of ReadAhead; %s", r.about, c.updates,
+		c.commits, c.aborted, c.failed, c.ops, c.opErrors, c.reads, count(r.t, r.logs[0].s, "versions"),
+		count(r.t, r.logs[0].s, "revisions"), c.reopens, c.replays, c.crashes, c.afterCheckpoint, c.readers, c.aheads,
+		strings.Join(stats, ", "))
 }
 
 // The sizes of the segments and the checkpoints of the log stores of a seed (0: the defaults, 64 MiB), so that some
@@ -700,6 +739,7 @@ func TestDifferential(t *testing.T) {
 func TestDifferentialSampleSite(t *testing.T) {
 	updates, reads := sampleSiteSteps(t)
 	r := newDiffRun(t, func(*logdb.Options) {}, false)
+	reads.ahead = true
 	r.reads = func(bool) diffReads { return reads }
 	r.about = "the sample site"
 	for i, u := range updates {

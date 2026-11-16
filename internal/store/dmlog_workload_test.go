@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -61,6 +63,10 @@ type looseFS struct {
 	files bool // else the directories
 }
 
+// looseRoots are the file systems that looseRoot has returned, by their directories: the daemon of a data directory is
+// found by its file system, so that one directory has one.
+var looseRoots sync.Map
+
 // looseRoot returns the directory dir of the OS without the syncs that envDMLogLoose names, or nil if it names none.
 func looseRoot(dir string) (vfs.FS, error) {
 	loose := os.Getenv(envDMLogLoose)
@@ -71,11 +77,16 @@ func looseRoot(dir string) (vfs.FS, error) {
 	default:
 		return nil, fmt.Errorf("%s=%s: want files or dirs", envDMLogLoose, loose)
 	}
+	if fsys, ok := looseRoots.Load(dir); ok {
+		return fsys.(vfs.FS), nil
+	}
 	root, err := vfs.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	return looseFS{FS: root, files: loose == "files"}, nil
+	fsys := looseFS{FS: root, files: loose == "files"}
+	looseRoots.Store(dir, fsys)
+	return fsys, nil
 }
 
 func (f looseFS) Open(name string) (vfs.File, error) {
@@ -377,7 +388,7 @@ func openPhase(t *testing.T, root string, ph workloadPhase, mark func(text strin
 	loose := os.Getenv(envDMLogLoose) != ""
 	if ph.create && loose {
 		// As create does on the OS, for the file system of workloadIn.
-		if err := makeDirs(dir, SyncParent); err != nil {
+		if err := fspath.MakeDirs(dir); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -465,9 +476,10 @@ func backupWorkload(ctx context.Context, root string) error {
 	src := filepath.Join(root, filepath.FromSlash(workloadData))
 	dst := filepath.Join(root, filepath.FromSlash(workloadBackup))
 	if os.Getenv(envDMLogLoose) == "" {
-		return Backup(ctx, src, dst)
+		_, err := backup(ctx, src, nil, dst, nil)
+		return err
 	}
-	if err := makeDirs(dst, SyncParent); err != nil {
+	if err := fspath.MakeDirs(dst); err != nil {
 		return err
 	}
 	srcFS, err := looseRoot(src)
@@ -478,7 +490,8 @@ func backupWorkload(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	return backup(ctx, src, srcFS, dst, dstFS)
+	_, err = backup(ctx, src, srcFS, dst, dstFS)
+	return err
 }
 
 // maintainPhase collects the garbage of the engine of the store of dir, which no process has open, compacts it and

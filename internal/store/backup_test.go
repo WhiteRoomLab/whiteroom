@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -86,7 +87,7 @@ func TestBackupWhileWriting(t *testing.T) {
 			}
 			before := committed.Load()
 			copied := filepath.Join(t.TempDir(), "copy")
-			if err := Backup(t.Context(), dir, copied); err != nil {
+			if _, err := backup(t.Context(), dir, nil, copied, nil); err != nil {
 				t.Fatalf("Backup() %d = %v", i+1, err)
 			}
 			after := committed.Load()
@@ -162,7 +163,7 @@ func checkPairView(tx *Tx) (int, error) {
 
 // readOriginalData reads the original data from s to its end, which checks its hash.
 func readOriginalData(s *Store, data []byte) ([]byte, error) {
-	f, err := s.OpenOriginal(sum(data))
+	f, err := s.OpenOriginal(context.Background(), sum(data))
 	if err != nil {
 		return nil, err
 	}

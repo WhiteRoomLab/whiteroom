@@ -141,8 +141,14 @@ func newAPIServerAt(t *testing.T, origin string) *apiServer {
 // newAPIServerIn is newAPIServerAt for the image cache in the directory cache.
 func newAPIServerIn(t *testing.T, origin, cache string) *apiServer {
 	t.Helper()
-	ts := newTestBase()
 	db, dir := testStore(t)
+	return newAPIServerOn(t, origin, cache, db, dir)
+}
+
+// newAPIServerOn is newAPIServerIn for the new store db, which is in the data directory dir.
+func newAPIServerOn(t *testing.T, origin, cache string, db *store.Store, dir string) *apiServer {
+	t.Helper()
+	ts := newTestBase()
 	importSample(t, db)
 	m := testManager(t, db)
 	gate := newBuildGate()
@@ -263,16 +269,35 @@ func (ts *testServer) records(t *testing.T, action audit.Action) []audit.Record 
 	return out
 }
 
-// tempFiles returns the names of the temporary files in files/ of the data directory.
+// tempFiles returns the names of the temporary files of the spools, in the directory of the temporary files of the server.
 func (ts *testServer) tempFiles(t *testing.T) []string {
 	t.Helper()
-	return tempFilesIn(t, ts.dir)
+	return tempFilesIn(t, ts.tmp)
 }
 
-// tempFilesIn returns the names of the temporary files in files/ of the data directory dir.
+// originalTemps returns the names of the temporary files of PutOriginal, in files/ of the data directory.
+func (ts *testServer) originalTemps(t *testing.T) []string {
+	t.Helper()
+	return tempFilesIn(t, filepath.Join(ts.dir, "files"))
+}
+
+// leftovers returns the temporary files that stay in the two places that a request may make them in, with the directory.
+func (ts *testServer) leftovers(t *testing.T) []string {
+	t.Helper()
+	var all []string
+	for _, name := range ts.tempFiles(t) {
+		all = append(all, "tmp/"+name)
+	}
+	for _, name := range ts.originalTemps(t) {
+		all = append(all, "files/"+name)
+	}
+	return all
+}
+
+// tempFilesIn returns the names of the temporary files, those that start with .tmp-, in the directory dir.
 func tempFilesIn(t *testing.T, dir string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(dir, "files"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,14 +17,17 @@ import (
 )
 
 // TestInitServeAdminPublish is the first of the issue's conditions, through the commands and HTTP and nothing else, with
-// the real number of rounds of the password hash: a config file; whiteroom init, with the password on a pipe, imports the
-// sample site; whiteroom serve admin, on the socket of the file, publishes its release; whiteroom serve public serves it;
-// a page that the API makes and publishes is a page of serve public as soon as the build that took the publishing has
-// ended; and both servers stop with 0, the socket file gone.
+// the real number of rounds of the password hash: a config file, which has the data directory of the daemon too (data);
+// whiteroom init, with the password on a pipe, imports the sample site into the store of the daemon of the file (db);
+// whiteroom serve admin, on the socket of the file, connects to that daemon and publishes the release of the store;
+// whiteroom serve public serves it; a page that the API makes and publishes is a page of serve public as soon as the build that
+// took the publishing has ended; and both servers stop with 0, the socket file gone, the server having written no head of the
+// audit logs, and the heads that the daemon wrote verify the chains that the commands and the server have made.
 func TestInitServeAdminPublish(t *testing.T) {
 	dir, sock := t.TempDir(), socketPath(t)
+	db := newDB(t)
 	s := adminSite{
-		data: filepath.Join(dir, "data"), site: copySample(t), out: filepath.Join(dir, "out"), cache: filepath.Join(dir, "cache"),
+		data: db.data, db: db.sockets, site: copySample(t), out: filepath.Join(dir, "out"), cache: filepath.Join(dir, "cache"),
 		theme: exampleTheme,
 	}
 	cfg := s.configIn(t, dir, "socket: "+strconv.Quote(sock), "origin: http://localhost")
@@ -50,8 +53,9 @@ func TestInitServeAdminPublish(t *testing.T) {
 	checkNoSecret(t, "whiteroom init", initPassword, stdout.String(), stderr.String(), s.data)
 
 	// serve admin on the socket of the file, with no flag for the listening, and the build that it makes at the start.
+	export := exportHeads(t, db)
 	a := startAdminWith(t, t.Context(), func(e *env) { e.newAccounts = account.New }, "-config", cfg)
-	if want := "serving admin of " + s.data + " at http://localhost (listening on socket " + sock + ")\n"; a.line != want {
+	if want := "serving admin of the store of " + s.db + " at http://localhost (listening on socket " + sock + ")\n"; a.line != want {
 		t.Errorf("whiteroom serve admin printed %q, want %q", a.line, want)
 	}
 	socketMode(t, "the socket of the config file", sock)
@@ -120,9 +124,9 @@ func TestInitServeAdminPublish(t *testing.T) {
 	noFile(t, "after the server has stopped", sock)
 	checkUnlocked(t, "after the server has stopped", s.data)
 	if got := a.logged(); got != "" {
-		t.Errorf("whiteroom serve admin printed on stderr, but the heads of the audit logs:\n%s", got)
+		t.Errorf("whiteroom serve admin printed on stderr:\n%s\nwant nothing: the heads of the audit logs are the daemon's", got)
 	}
-	verifyHeads(t, "after the stop", s.data, a.heads())
+	verifyHeads(t, "after the stop", s.data, export.finish())
 	if _, err := os.Stat(filepath.Join(s.out, "current", "public", "en", slug, "index.html")); err != nil {
 		t.Errorf("the page is not in the output directory: %v", err)
 	}

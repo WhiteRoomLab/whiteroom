@@ -30,8 +30,9 @@ const (
 var mediaAdd = docRule{action: account.AddMedia}
 
 // mediaRoutes registers the routes of the files of the media. They count among the heavy requests of the account (countAccount),
-// but none of them takes the place of heavy work while the network is waited for: an upload goes to the store as it comes, and
-// a download takes the place to read the document alone, and sends the file after it has given the place back.
+// but none of them takes the place of heavy work while the network is waited for: an upload goes to a spool as it comes, and
+// is saved when it is whole, and a download takes the place to read the document alone, and copies the file into a spool and
+// sends it after it has given the place back.
 func (s *Server) mediaRoutes() {
 	s.apiWithin("POST /api/media", uploadDeadline, s.uploadMedium)
 	s.apiWithin("PUT /api/media/{id}/file", uploadDeadline, s.replaceMediumFile)
@@ -73,9 +74,11 @@ func (s *Server) replaceMediumFile(w http.ResponseWriter, r *http.Request, p acc
 
 // upload receives the body of r, a file, and gives it to save, which saves it as an original and makes or changes the medium.
 // The request counts among the heavy requests of its account, but does not take the place of heavy work: the body is not
-// kept in memory, but goes to the store as it comes. Only its first bytes are looked at before that, to refuse a file in no
-// known format before anything is written; save finds out what else is wrong with it, and the file is what its contents
-// are, whatever the upload says. The answer is 201 with the Location of the new medium if created, and else 200.
+// kept in memory, but goes to a temporary file of the server first (a spool), and only when it has come whole is it saved,
+// so that a slow sender does not hold the writer connection of the daemon, which every change of the store waits for. Its
+// first bytes are looked at before that, to refuse a file in no known format before anything is received; save finds out
+// what else is wrong with it, and the file is what its contents are, whatever the upload says. The answer is 201 with the
+// Location of the new medium if created, and else 200.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request, p account.Principal, created bool,
 	save func(ctx context.Context, file io.Reader, declaredType string) (edit.Result, error)) {
 	release := s.countAccount(w, p)
@@ -105,16 +108,28 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, p account.Princi
 		writeInvalid(w, content.Errors{{Msg: "cannot read the file: " + err.Error()}})
 		return
 	}
-	res, err := save(r.Context(), io.MultiReader(bytes.NewReader(head), body), declaredType(r))
-	if err != nil {
+	in := newSpool(s.tmp)
+	defer func() { _ = in.Close() }()
+	if _, err := io.Copy(in, io.MultiReader(bytes.NewReader(head), body)); err != nil {
 		if body.err != nil {
 			refuseBody(w, body.err)
 		} else {
-			s.answerError(w, r, p, err, attempt{})
+			s.fail(w, r, err)
 		}
 		return
 	}
-	out := newSpool(s.store)
+	file, err := in.Reader()
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	res, err := save(r.Context(), file, declaredType(r))
+	_ = in.Close() // the answer may take long to send, and the file is saved or refused
+	if err != nil {
+		s.answerError(w, r, p, err, attempt{})
+		return
+	}
+	out := newSpool(s.tmp)
 	defer func() { _ = out.Close() }()
 	if err := writeResult(out, res); err != nil {
 		s.fail(w, r, err)
@@ -149,8 +164,9 @@ func refuseBody(w http.ResponseWriter, err error) {
 }
 
 // showMediumFile is GET /api/media/{id}/file: the original of the medium, whole, as a file to save and not one to show. It
-// takes the place of heavy work to read the document, and sends the file after it has given the place back. If the original
-// cannot be read once the answer has begun, the connection is aborted: a part of a file must not pass for the whole.
+// takes the place of heavy work to read the document, and, after it has given the place back, copies the original from the
+// store into a spool before it sends anything, so that a client that reads slowly does not hold a connection of the store; a
+// HEAD does not read the original. If the original cannot be read, that is a failure before the answer has begun.
 func (s *Server) showMediumFile(w http.ResponseWriter, r *http.Request, p account.Principal) {
 	if !s.allowView(w, r, p) || !noOperationID(w, r) {
 		return
@@ -188,7 +204,7 @@ func (s *Server) showMediumFile(w http.ResponseWriter, r *http.Request, p accoun
 		s.answerError(w, r, p, err, attempt{})
 		return
 	}
-	f, err := s.openOriginal(m.hash, m.size)
+	f, err := s.openOriginal(r.Context(), m.hash, m.size)
 	if err != nil {
 		// The medium is there: an original that is missing is a fault of the store, and not a resource that is missing.
 		_ = extendWrite(w, writeTimeout)
@@ -196,32 +212,46 @@ func (s *Server) showMediumFile(w http.ResponseWriter, r *http.Request, p accoun
 		return
 	}
 	defer func() { _ = f.Close() }()
-	if err := extendWrite(w, slowTransfer); err != nil {
-		s.fail(w, r, err)
-		return
-	}
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": m.fileName})
 	if disposition == "" {
 		disposition = "attachment"
 	}
-	h := w.Header()
-	h.Set("Content-Type", m.mimeType)
-	h.Set("Content-Length", strconv.Itoa(m.size))
-	h.Set("Content-Disposition", disposition)
-	w.WriteHeader(http.StatusOK)
+	header := http.Header{"Content-Type": {m.mimeType}, "Content-Disposition": {disposition}}
 	if r.Method == http.MethodHead {
+		if err := extendWrite(w, slowTransfer); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		h := w.Header()
+		for name, values := range header {
+			h[name] = values
+		}
+		h.Set("Content-Length", strconv.Itoa(m.size))
+		w.WriteHeader(http.StatusOK)
 		return
 	}
+	out := newSpool(s.tmp)
+	defer func() { _ = out.Close() }()
 	failure := &readFailure{r: f}
-	if _, err := io.Copy(w, failure); err != nil && failure.err != nil {
-		s.log.Printf("%s %q: %v", r.Method, r.RequestURI, fmt.Errorf("cannot read the original of %s: %w", id, failure.err))
-		panic(http.ErrAbortHandler)
+	if _, err := io.Copy(out, failure); err != nil {
+		if failure.err != nil {
+			err = fmt.Errorf("cannot read the original of %s: %w", id, failure.err)
+		}
+		_ = extendWrite(w, writeTimeout)
+		s.fail(w, r, err)
+		return
 	}
+	_ = f.Close()
+	if err := extendWrite(w, slowTransfer); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.sendBody(w, r, http.StatusOK, header, out)
 }
 
 // openOriginal opens the original with the hash, and checks that it has the size that the document of the medium says.
-func (s *Server) openOriginal(hash string, size int) (fs.File, error) {
-	f, err := s.store.OpenOriginal(hash)
+func (s *Server) openOriginal(ctx context.Context, hash string, size int) (fs.File, error) {
+	f, err := s.store.OpenOriginal(ctx, hash)
 	if err != nil {
 		return nil, err
 	}
