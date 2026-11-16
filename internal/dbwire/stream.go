@@ -11,19 +11,23 @@ import (
 
 func clampFrame(n int) int { return min(max(n, 1), MaxFrame) }
 
-// Writer writes messages to w, one frame in one Write call. A frame has at most the limit of payload bytes, which
-// Writer keeps between 1 and MaxFrame.
+// Writer writes messages to w. A frame has at most the limit of payload bytes, which Writer keeps between 1 and
+// MaxFrame, and a Write call of the underlying writer carries one or more whole frames: with SetHold, the messages that
+// are finished stay in the buffer, and are written with the next Write call. The buffer is never larger than HeaderSize
+// plus the larger of the limit and the hold.
 type Writer struct {
 	w     io.Writer
 	limit int
-	buf   []byte // the header of the frame that is being filled, and its payload
+	buf   []byte // the messages that are held, then the header of the frame that is being filled and its payload
+	start int    // the offset of that header in buf
+	hold  int
 	kind  Kind
 	open  bool
 	err   error
 }
 
 func NewWriter(w io.Writer, maxFrame int) *Writer {
-	return &Writer{w: w, limit: clampFrame(maxFrame), buf: make([]byte, HeaderSize)}
+	return &Writer{w: w, limit: clampFrame(maxFrame), buf: make([]byte, 0, HeaderSize)}
 }
 
 // SetMaxFrame changes the limit of a frame. It panics if a message is open.
@@ -32,6 +36,47 @@ func (w *Writer) SetMaxFrame(n int) {
 		panic("dbwire: SetMaxFrame in an open message")
 	}
 	w.limit = clampFrame(n)
+}
+
+// SetHold makes End and Fail keep the message that they finish, to be written with the next Write call or by Flush, while
+// the buffer then has fewer than n bytes, whatever the limit of a frame is; 0, the default, writes every message at once.
+// It panics if a message is open.
+func (w *Writer) SetHold(n int) {
+	if w.open {
+		panic("dbwire: SetHold in an open message")
+	}
+	w.hold = n
+}
+
+// Held returns the bytes of the finished messages that are in the buffer.
+func (w *Writer) Held() int {
+	if w.open {
+		return w.start
+	}
+	return len(w.buf)
+}
+
+// Flush writes the messages that are held with one Write call. It panics if a message is open.
+func (w *Writer) Flush() error {
+	if w.open {
+		panic("dbwire: Flush in an open message")
+	}
+	if w.err != nil {
+		return w.err
+	}
+	if len(w.buf) == 0 {
+		return nil
+	}
+	_, err := w.w.Write(w.buf)
+	w.buf = w.buf[:0]
+	return w.keep(err)
+}
+
+func (w *Writer) keep(err error) error {
+	if err != nil {
+		w.err = err
+	}
+	return err
 }
 
 // Begin starts a message of kind, which is a request or KindOK. It panics if a message is open.
@@ -43,7 +88,16 @@ func (w *Writer) Begin(kind Kind) {
 		panic("dbwire: Begin of " + kind.String())
 	}
 	w.kind, w.open = kind, true
-	w.buf = w.buf[:HeaderSize]
+	w.header()
+}
+
+// room is the most bytes that the buffer may have.
+func (w *Writer) room() int { return HeaderSize + max(w.limit, w.hold) }
+
+// header starts a frame after what is held.
+func (w *Writer) header() {
+	w.start = len(w.buf)
+	w.buf = append(w.buf, make([]byte, HeaderSize)...)
 }
 
 // Write appends p to the body of the open message, and writes a frame each time the limit is reached. It panics if no
@@ -57,16 +111,31 @@ func (w *Writer) Write(p []byte) (int, error) {
 	}
 	total := len(p)
 	for len(p) > 0 {
-		n := min(w.limit-(len(w.buf)-HeaderSize), len(p))
+		n := min(w.limit-(len(w.buf)-w.start-HeaderSize), len(p))
+		if w.start > 0 && len(w.buf)+n > w.room() {
+			if err := w.writeHeld(w.start); err != nil {
+				return total - len(p), err
+			}
+			w.start = 0
+		}
 		w.buf = append(w.buf, p[:n]...)
 		p = p[n:]
-		if len(w.buf)-HeaderSize == w.limit {
+		if len(w.buf)-w.start-HeaderSize == w.limit {
 			if err := w.flush(false); err != nil {
 				return total - len(p), err
 			}
 		}
 	}
 	return total, nil
+}
+
+// writeHeld writes the first n bytes of the buffer, which are whole messages, and moves the rest to the front.
+func (w *Writer) writeHeld(n int) error {
+	if _, err := w.w.Write(w.buf[:n]); err != nil {
+		return w.keep(err)
+	}
+	w.buf = w.buf[:copy(w.buf, w.buf[n:])]
+	return nil
 }
 
 // End writes the last frame of the message, which has the end flag and may be empty. It panics if no message is open.
@@ -82,15 +151,23 @@ func (w *Writer) End() error {
 }
 
 // Fail drops what is buffered of the open message, if there is one, and writes one Error frame: it ends a reply that
-// has begun, and is a reply of its own when no message is open. Frames that are written stay. The text is cut to
-// MaxErrorText bytes.
+// has begun, and is a reply of its own when no message is open. Frames that are written stay, and so do the messages
+// that are held. The text is cut to MaxErrorText bytes.
 func (w *Writer) Fail(code Code, msg string) error {
-	w.open = false
-	w.buf = w.buf[:HeaderSize]
+	if w.open {
+		w.buf = w.buf[:w.start]
+		w.open = false
+	}
 	if w.err != nil {
 		return w.err
 	}
 	msg = cutText(msg, MaxErrorText)
+	if len(w.buf) > 0 && len(w.buf)+HeaderSize+4+len(msg) > w.room() {
+		if err := w.writeHeld(len(w.buf)); err != nil {
+			return err
+		}
+	}
+	w.header()
 	w.buf = binary.BigEndian.AppendUint16(w.buf, uint16(code))
 	w.buf = binary.BigEndian.AppendUint16(w.buf, uint16(len(msg)))
 	w.buf = append(w.buf, msg...)
@@ -98,19 +175,25 @@ func (w *Writer) Fail(code Code, msg string) error {
 	return w.flush(true)
 }
 
+// flush completes the frame at start, and writes the buffer, unless the frame is the last of its message and the buffer
+// is to be held.
 func (w *Writer) flush(last bool) error {
 	flags := byte(0)
 	if last {
 		flags = flagEnd
 	}
-	w.buf[0], w.buf[1], w.buf[2], w.buf[3] = byte(w.kind), flags, 0, 0
-	binary.BigEndian.PutUint32(w.buf[4:], uint32(len(w.buf)-HeaderSize)) // at most MaxFrame
-	_, err := w.w.Write(w.buf)
-	w.buf = w.buf[:HeaderSize]
-	if err != nil {
-		w.err = err
+	h := w.buf[w.start:]
+	h[0], h[1], h[2], h[3] = byte(w.kind), flags, 0, 0
+	binary.BigEndian.PutUint32(h[4:], uint32(len(h)-HeaderSize)) // at most MaxFrame
+	if last && len(w.buf) < w.hold {
+		return nil
 	}
-	return err
+	_, err := w.w.Write(w.buf)
+	w.buf = w.buf[:0]
+	if !last {
+		w.header()
+	}
+	return w.keep(err)
 }
 
 // cutText returns s as valid UTF-8, cut to at most n bytes at a character boundary.
@@ -141,7 +224,7 @@ type Reader struct {
 }
 
 func NewReader(r io.Reader, maxFrame int) *Reader {
-	return &Reader{br: bufio.NewReaderSize(r, 32<<10), limit: clampFrame(maxFrame), final: io.EOF}
+	return &Reader{br: bufio.NewReaderSize(r, ReadBuffer), limit: clampFrame(maxFrame), final: io.EOF}
 }
 
 // SetMaxFrame changes the limit of a frame, from the next frame header on.

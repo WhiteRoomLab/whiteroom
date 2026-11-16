@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func noLeaks(t testing.TB) {
 			stacks = string(buf[:runtime.Stack(buf, true)])
 			for _, g := range strings.Split(stacks, "\n\n") {
 				for _, marker := range []string{"dbserver.(*session)", "dbserver.(*Server).openSnapshot", "dbserver.(*Server).ServeConn",
-					"dbserver.(*Server).Serve(", "dbserver.(*Server).serveConn", "dbserver.Run("} {
+					"dbserver.(*Server).Serve(", "dbserver.(*Server).serveConn", "dbserver.(*Server).startClock", "dbserver.Run("} {
 					if strings.Contains(g, marker) {
 						return true
 					}
@@ -298,6 +299,71 @@ func (f *fixture) dial(role dbwire.Role) *client {
 	f.t.Cleanup(func() { _ = cc.Close() })
 	return c
 }
+
+// countConn counts what the server does on its end of a connection.
+type countConn struct {
+	net.Conn
+	writes, readDeadlines, writeDeadlines atomic.Int64
+}
+
+func (c *countConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return c.Conn.Write(p)
+}
+
+func (c *countConn) SetReadDeadline(t time.Time) error {
+	c.readDeadlines.Add(1)
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *countConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadlines.Add(1)
+	return c.Conn.SetWriteDeadline(t)
+}
+
+// dialCounted is dial, with a count of the calls that the server makes on its end of the connection.
+func (f *fixture) dialCounted(role dbwire.Role) (*client, *countConn) {
+	f.t.Helper()
+	cc, sc := net.Pipe()
+	counted := &countConn{Conn: sc}
+	go f.srv.ServeConn(counted, role)
+	c := &client{t: f.t, f: f, conn: cc, rd: dbwire.NewReader(cc, 1<<20), wr: dbwire.NewWriter(cc, 1<<20)}
+	f.t.Cleanup(func() { _ = cc.Close() })
+	return c, counted
+}
+
+// connectCounted is connect, with the count of dialCounted.
+func (f *fixture) connectCounted(role dbwire.Role) (*client, *countConn) {
+	f.t.Helper()
+	c, counted := f.dialCounted(role)
+	if err := c.sayHello(); err != nil {
+		f.t.Fatalf("Hello as the %v: %v", role, err)
+	}
+	return c, counted
+}
+
+// stacksWith returns the stacks of the goroutines that have marker in them.
+func stacksWith(marker string) []string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	var stacks []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, marker) {
+			stacks = append(stacks, g)
+		}
+	}
+	return stacks
+}
+
+// snapshotMarker is in the stack of a goroutine that holds a snapshot of the daemon: the session's own.
+const snapshotMarker = "dbserver.(*Server).openSnapshot"
 
 // connect connects as role and says Hello.
 func (f *fixture) connect(role dbwire.Role) *client {

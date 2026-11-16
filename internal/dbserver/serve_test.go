@@ -381,4 +381,113 @@ func TestShutdown(t *testing.T) {
 			close(release)
 		})
 	}
+
+	// A request that Shutdown finds in progress is answered before its connection is closed: the reply that waits in the
+	// buffer of the session is written first.
+	shuttingDown := func(t *testing.T, f *fixture) <-chan struct{} {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			f.srv.Shutdown(t.Context())
+			close(done)
+		}()
+		eventually(t, "the server to refuse requests", func() bool {
+			f.srv.mu.Lock()
+			defer f.srv.mu.Unlock()
+			return f.srv.draining
+		})
+		return done
+	}
+	notYet := func(t *testing.T, done <-chan struct{}, why string) {
+		t.Helper()
+		select {
+		case <-done:
+			t.Fatalf("Shutdown has returned while %s", why)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	t.Run("a session that holds a snapshot and waits", func(t *testing.T) {
+		f := newFixture(t, nil)
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		ctx, cancel := context.WithTimeout(t.Context(), waitLimit)
+		defer cancel()
+		start := time.Now()
+		f.srv.Shutdown(ctx)
+		if d := time.Since(start); d > waitLimit/4 || ctx.Err() != nil {
+			t.Errorf("Shutdown took %v, with a session that only waits for a request", d)
+		}
+		r.wantClosed()
+		f.waitSessions(0)
+	})
+
+	t.Run("the reply to a Get", func(t *testing.T) {
+		f := newFixture(t, nil)
+		seedWindow(f)
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		if err := <-r.send(dbwire.KindGet, func(e *dbwire.Enc) { e.GetRequest(2, []byte("k001")) }); err != nil {
+			t.Fatal(err)
+		}
+		// The request is read and handled, and its reply waits for the client, inside the request.
+		eventually(t, "the daemon to write the reply", func() bool {
+			return blockedIn("dbserver.(*session).request", "dbserver.(*timedConn).Write")
+		})
+		done := shuttingDown(t, f)
+		notYet(t, done, "the reply to a request is not read")
+		if got := r.readOne(dbwire.KindGet); got != `get true "v001"` {
+			t.Errorf("the reply: %s", got)
+		}
+		<-done
+		r.wantClosed()
+	})
+
+	t.Run("a Snapshot", func(t *testing.T) {
+		f := newFixture(t, nil)
+		r := f.connect(dbwire.RoleReader)
+		if err := <-r.send(dbwire.KindSnapshot, nil); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the daemon to write the reply", func() bool {
+			return blockedIn("dbserver.(*session).hold", "dbserver.(*timedConn).Write")
+		})
+		done := shuttingDown(t, f)
+		notYet(t, done, "the reply to a Snapshot is not read")
+		if got := r.readOne(dbwire.KindSnapshot); got != "snapshot 0" {
+			t.Errorf("the reply: %s", got)
+		}
+		<-done
+		r.wantClosed()
+	})
+
+	t.Run("a window that has begun", func(t *testing.T) {
+		held, release := make(chan struct{}), make(chan struct{})
+		var once, unblock sync.Once
+		f := newFixture(t, func(o *Options) {
+			o.Hook = func(point string) error {
+				if point == "reply:held" {
+					once.Do(func() { close(held) })
+					<-release
+				}
+				return nil
+			}
+		})
+		t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+		seedWindow(f)
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		var w window
+		w.get(2, "k001", `get true "v001"`)
+		w.get(2, "k002", `get true "v002"`)
+		r.writeWindow(w.bytes)
+		// The reply to the first request is held, because the second is in the read buffer, and the first is still in progress.
+		<-held
+		done := shuttingDown(t, f)
+		notYet(t, done, "a reply is in the buffer of a session")
+		unblock.Do(func() { close(release) })
+		r.readWindow(&w)
+		<-done
+		r.wantClosed()
+	})
 }

@@ -5,6 +5,16 @@ import "time"
 // MaxKey is the largest key of the engine, in bytes.
 const MaxKey = 4096
 
+// A window is the reads (Get, Scan, Object) that a client sends on a connection before it reads their replies: at most
+// WindowRequests requests of at most WindowBytes bytes together as they are sent. WindowBytes is the size of the buffer
+// that a Reader reads its stream into, so the daemon takes a window with one read, whatever the buffers of the
+// connection are.
+const (
+	ReadBuffer     = 32 << 10
+	WindowRequests = 256
+	WindowBytes    = ReadBuffer
+)
+
 // Limits are the limits that the daemon keeps, and tells its clients in the reply to a Hello. A zero field is the
 // default; a negative SnapshotIdle, Stall, CommitsPerSecond or MinFree turns that limit off.
 type Limits struct {

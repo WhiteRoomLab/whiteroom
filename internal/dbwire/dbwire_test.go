@@ -512,10 +512,16 @@ func TestWriterMisuse(t *testing.T) {
 	w.Begin(KindGet)
 	mustPanic(t, "Begin in an open message", func() { w.Begin(KindGet) })
 	mustPanic(t, "SetMaxFrame in an open message", func() { w.SetMaxFrame(8) })
+	mustPanic(t, "SetHold in an open message", func() { w.SetHold(8) })
+	mustPanic(t, "Flush in an open message", func() { _ = w.Flush() })
 	if err := w.End(); err != nil {
 		t.Fatal(err)
 	}
 	w.SetMaxFrame(8)
+	w.SetHold(8)
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	w.Begin(KindGet)
 	_ = w.End()
 }
@@ -548,6 +554,70 @@ func TestWriterError(t *testing.T) {
 		if err := w.Fail(CodeFailed, "x"); !errors.Is(err, errDisk) {
 			t.Fatalf("Fail with %d bytes of room = %v", n, err)
 		}
+	}
+
+	// A message that is held is not written, so the error comes with the Write call that carries it: that of Flush, of
+	// a message that is not held, or of the release of what is held.
+	held := func(w *Writer, bodies ...string) {
+		t.Helper()
+		for _, b := range bodies {
+			w.Begin(KindOK)
+			_, _ = w.Write([]byte(b))
+			if err := w.End(); err != nil {
+				t.Fatalf("End of a held message = %v", err)
+			}
+		}
+	}
+	again := func(w *Writer) {
+		t.Helper()
+		if err := w.Flush(); !errors.Is(err, errDisk) {
+			t.Errorf("Flush after the error = %v", err)
+		}
+		w.Begin(KindOK)
+		if _, err := w.Write([]byte("x")); !errors.Is(err, errDisk) {
+			t.Errorf("Write after the error = %v", err)
+		}
+		if err := w.End(); !errors.Is(err, errDisk) {
+			t.Errorf("End after the error = %v", err)
+		}
+		if err := w.Fail(CodeFailed, "x"); !errors.Is(err, errDisk) {
+			t.Errorf("Fail after the error = %v", err)
+		}
+	}
+	w = NewWriter(&failWriter{n: 5}, 64)
+	w.SetHold(1000)
+	held(w, "a", "b")
+	if err := w.Flush(); !errors.Is(err, errDisk) {
+		t.Fatalf("Flush = %v", err)
+	}
+	again(w)
+
+	w = NewWriter(&failWriter{n: 5}, 64)
+	w.SetHold(1000)
+	held(w, "a")
+	w.SetHold(0)
+	w.Begin(KindOK)
+	if err := w.End(); !errors.Is(err, errDisk) {
+		t.Fatalf("End of a message that brings the held ones with it = %v", err)
+	}
+	again(w)
+
+	w = NewWriter(&failWriter{n: 5}, 16)
+	w.SetHold(16)
+	held(w, "a")
+	w.Begin(KindOK)
+	if n, err := w.Write(make([]byte, 16)); !errors.Is(err, errDisk) || n != 0 {
+		t.Fatalf("Write of a frame that the held message does not leave room for = %d, %v", n, err)
+	}
+	if err := w.End(); !errors.Is(err, errDisk) {
+		t.Fatalf("End = %v", err)
+	}
+	again(w)
+
+	// Nothing to write, no error.
+	w = NewWriter(&failWriter{n: 0}, 16)
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush of nothing = %v", err)
 	}
 }
 
@@ -585,5 +655,346 @@ func TestKinds(t *testing.T) {
 	}
 	if CodeProtocol != 1 || CodeInternal != 14 || CodeStopped != 11 || CodeHash != 12 {
 		t.Error("the codes are not those of the plan")
+	}
+}
+
+// holdStep is a message that a test writes: a Fail alone if kind is 0, else the body in pieces of 5 bytes, and then End,
+// or Fail if fail is not empty.
+type holdStep struct {
+	kind Kind
+	body string
+	fail string
+}
+
+func (s holdStep) play(t testing.TB, w *Writer) {
+	t.Helper()
+	bound := func() {
+		t.Helper()
+		if len(w.buf) > HeaderSize+max(w.limit, w.hold) {
+			t.Fatalf("the buffer has %d bytes, more than the header and the limit of %d or the hold of %d", len(w.buf), w.limit, w.hold)
+		}
+	}
+	if s.kind == 0 {
+		if err := w.Fail(CodeFailed, s.fail); err != nil {
+			t.Fatal(err)
+		}
+		bound()
+		return
+	}
+	w.Begin(s.kind)
+	bound()
+	for p := []byte(s.body); len(p) > 0; p = p[min(5, len(p)):] {
+		if _, err := w.Write(p[:min(5, len(p))]); err != nil {
+			t.Fatal(err)
+		}
+		bound()
+	}
+	var err error
+	if s.fail != "" {
+		err = w.Fail(CodeFailed, s.fail)
+	} else {
+		err = w.End()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound()
+}
+
+// wholeFrames fails the test unless the bytes of a Write call are whole frames, and returns how many.
+func wholeFrames(t testing.TB, call []byte) int {
+	t.Helper()
+	n := 0
+	for len(call) > 0 {
+		if len(call) < HeaderSize {
+			t.Fatalf("a Write call has %d bytes left, less than a header", len(call))
+		}
+		size := HeaderSize + int(binary.BigEndian.Uint32(call[4:]))
+		if size > len(call) {
+			t.Fatalf("a Write call ends inside a frame of %d bytes", size)
+		}
+		call = call[size:]
+		n++
+	}
+	return n
+}
+
+// readMessages reads every message of stream, which must be whole, and returns each as a line.
+func readMessages(t testing.TB, stream []byte, limit int) []string {
+	t.Helper()
+	r := NewReader(bytes.NewReader(stream), limit)
+	var lines []string
+	for {
+		kind, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return lines
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		body, err := io.ReadAll(r)
+		var re *RemoteError
+		if err != nil && !errors.As(err, &re) {
+			t.Fatalf("Read: %v", err)
+		}
+		lines = append(lines, fmt.Sprintf("%v %q %v", kind, body, err))
+	}
+}
+
+func TestWriterHold(t *testing.T) {
+	const limit = 16
+	small := holdStep{kind: KindOK, body: "ab"}
+	empty := holdStep{kind: KindOK}
+	exact := holdStep{kind: KindScan, body: string(testBytes(limit))}
+	several := holdStep{kind: KindScan, body: string(testBytes(3*limit + 5))}
+	failOpen := holdStep{kind: KindOK, body: string(testBytes(limit + 4)), fail: "gone"}
+	failEarly := holdStep{kind: KindGet, body: "xyz", fail: "refused"}
+	failAlone := holdStep{fail: "no snapshot"}
+	sequences := map[string][]holdStep{
+		"small messages":            {small, empty, small, empty, small, small},
+		"a frame of the limit":      {small, small, exact, small, exact, exact},
+		"several frames":            {small, several, small, empty, several, several},
+		"a Fail in an open message": {small, failOpen, small, failOpen, failEarly, empty},
+		"a Fail alone":              {small, failAlone, small, failAlone, failAlone, empty},
+		"mixed":                     {small, exact, failAlone, several, empty, failOpen, small, failEarly, exact, small},
+		"one message of frames":     {several},
+		"Fails in a row":            {failAlone, failAlone, failAlone},
+	}
+	for name, steps := range sequences {
+		for _, hold := range []int{0, 1, 100, limit, limit + 1, MaxFrame} {
+			t.Run(fmt.Sprintf("%s hold %d", name, hold), func(t *testing.T) {
+				plain := &frameLog{}
+				pw := NewWriter(plain, limit)
+				log := &frameLog{}
+				w := NewWriter(log, limit)
+				w.SetHold(hold)
+				for _, s := range steps {
+					s.play(t, pw)
+					s.play(t, w)
+				}
+				if err := w.Flush(); err != nil {
+					t.Fatal(err)
+				}
+				if w.Held() != 0 {
+					t.Errorf("%d bytes are held after Flush", w.Held())
+				}
+				if !bytes.Equal(log.wire(), plain.wire()) {
+					t.Fatalf("the bytes on the stream differ from those of a writer without hold:\n got  %x\n want %x", log.wire(), plain.wire())
+				}
+				if want := readMessages(t, plain.wire(), limit); !slices.Equal(readMessages(t, log.wire(), limit), want) {
+					t.Errorf("a Reader reads other messages from the held writer")
+				}
+				frames := 0
+				for _, call := range log.frames {
+					frames += wholeFrames(t, call)
+				}
+				if hold == 0 {
+					if len(log.frames) != len(plain.frames) || frames != len(log.frames) {
+						t.Errorf("without hold: %d Write calls of %d frames, want one frame each", len(log.frames), frames)
+					}
+				} else if len(log.frames) > len(plain.frames) {
+					t.Errorf("%d Write calls with hold %d, against %d without", len(log.frames), hold, len(plain.frames))
+				}
+			})
+		}
+	}
+}
+
+func TestWriterHoldCalls(t *testing.T) {
+	msg := func(w *Writer, body string) {
+		t.Helper()
+		w.Begin(KindOK)
+		_, _ = w.Write([]byte(body))
+		if err := w.End(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const size = HeaderSize + 20
+
+	t.Run("nothing is written until Flush", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 1<<10)
+		w.SetHold(10 * size)
+		for i := range 9 {
+			msg(w, string(testBytes(20)))
+			if len(log.frames) != 0 || w.Held() != (i+1)*size {
+				t.Fatalf("after %d messages: %d Write calls, %d bytes held", i+1, len(log.frames), w.Held())
+			}
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if len(log.frames) != 1 || len(log.frames[0]) != 9*size || wholeFrames(t, log.frames[0]) != 9 {
+			t.Fatalf("Flush made %d Write calls", len(log.frames))
+		}
+		if err := w.Flush(); err != nil || len(log.frames) != 1 {
+			t.Fatalf("Flush of nothing: %v, %d Write calls", err, len(log.frames))
+		}
+	})
+
+	t.Run("the message that brings the buffer to the hold", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 1<<10)
+		w.SetHold(4 * size)
+		for range 3 {
+			msg(w, string(testBytes(20)))
+		}
+		if len(log.frames) != 0 || w.Held() != 3*size {
+			t.Fatalf("%d Write calls, %d bytes held, with 3 messages under the hold", len(log.frames), w.Held())
+		}
+		msg(w, string(testBytes(20)))
+		if len(log.frames) != 1 || wholeFrames(t, log.frames[0]) != 4 || w.Held() != 0 {
+			t.Fatalf("the fourth message: %d Write calls, %d bytes held", len(log.frames), w.Held())
+		}
+		msg(w, "next")
+		if len(log.frames) != 1 || w.Held() != HeaderSize+4 {
+			t.Fatalf("a message after it: %d Write calls, %d bytes held", len(log.frames), w.Held())
+		}
+		w.SetHold(0)
+		msg(w, "now")
+		if len(log.frames) != 2 || wholeFrames(t, log.frames[1]) != 2 || w.Held() != 0 {
+			t.Fatalf("a message without hold takes the held one with it: %d Write calls, %d bytes held", len(log.frames), w.Held())
+		}
+	})
+
+	t.Run("Held in an open message, and Fail", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 64)
+		w.SetHold(1000)
+		msg(w, "a")
+		w.Begin(KindOK)
+		if _, err := w.Write([]byte("zzz")); err != nil {
+			t.Fatal(err)
+		}
+		if w.Held() != HeaderSize+1 {
+			t.Errorf("%d bytes are held while a message is open, want %d", w.Held(), HeaderSize+1)
+		}
+		// Fail drops the open message and nothing else.
+		if err := w.Fail(CodeNoSnapshot, "none"); err != nil {
+			t.Fatal(err)
+		}
+		if len(log.frames) != 0 {
+			t.Fatalf("%d Write calls", len(log.frames))
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		want := slices.Concat(message(t, 64, KindOK, []byte("a")), errorFrame(uint16(CodeNoSnapshot), "none"))
+		if !bytes.Equal(log.wire(), want) {
+			t.Errorf("%x, want %x", log.wire(), want)
+		}
+	})
+
+	t.Run("a hold above the limit", func(t *testing.T) {
+		// The hold counts bytes, not frames: messages are held beyond the limit of a frame, up to the hold.
+		log := &frameLog{}
+		w := NewWriter(log, 16)
+		w.SetHold(100)
+		for i := range 9 {
+			msg(w, "ab")
+			if len(log.frames) != 0 || w.Held() != (i+1)*(HeaderSize+2) {
+				t.Fatalf("after %d messages: %d Write calls, %d bytes held", i+1, len(log.frames), w.Held())
+			}
+		}
+		msg(w, "ab")
+		if len(log.frames) != 1 || len(log.frames[0]) != 100 || wholeFrames(t, log.frames[0]) != 10 || w.Held() != 0 {
+			t.Fatalf("the message that brings the buffer to the hold: %d Write calls, %d bytes held", len(log.frames), w.Held())
+		}
+	})
+}
+
+func TestWriterHoldBound(t *testing.T) {
+	const limit = 16
+	for _, hold := range []int{100, limit, MaxFrame} {
+		for _, piece := range []int{1, 7, limit} {
+			t.Run(fmt.Sprintf("hold %d piece %d", hold, piece), func(t *testing.T) {
+				log := &frameLog{}
+				w := NewWriter(log, limit)
+				w.SetHold(hold)
+				var wire []byte
+				for _, held := range []string{"", "a", "abcdefgh"} {
+					for _, body := range []string{string(testBytes(limit)), string(testBytes(3 * limit)), string(testBytes(limit - 1))} {
+						if held != "" {
+							w.Begin(KindOK)
+							_, _ = w.Write([]byte(held))
+							if err := w.End(); err != nil {
+								t.Fatal(err)
+							}
+							wire = append(wire, message(t, limit, KindOK, []byte(held))...)
+						}
+						w.Begin(KindScan)
+						for p := []byte(body); len(p) > 0; p = p[min(piece, len(p)):] {
+							if _, err := w.Write(p[:min(piece, len(p))]); err != nil {
+								t.Fatal(err)
+							}
+							if len(w.buf) > HeaderSize+max(limit, hold) {
+								t.Fatalf("the buffer has %d bytes in a message of %d bytes that follows %q", len(w.buf), len(body), held)
+							}
+						}
+						if err := w.End(); err != nil {
+							t.Fatal(err)
+						}
+						if err := w.Flush(); err != nil {
+							t.Fatal(err)
+						}
+						wire = append(wire, message(t, limit, KindScan, []byte(body))...)
+					}
+				}
+				if !bytes.Equal(log.wire(), wire) {
+					t.Fatal("the stream is not that of the messages")
+				}
+				for _, call := range log.frames {
+					wholeFrames(t, call)
+				}
+			})
+		}
+	}
+
+	// The held messages are written first, with a Write call of their own, when a frame would not fit with them.
+	log := &frameLog{}
+	w := NewWriter(log, limit)
+	w.SetHold(limit)
+	w.Begin(KindOK)
+	_, _ = w.Write([]byte("abc"))
+	_ = w.End()
+	w.Begin(KindOK)
+	_, _ = w.Write(testBytes(limit))
+	if len(log.frames) != 2 || len(log.frames[0]) != HeaderSize+3 || len(log.frames[1]) != HeaderSize+limit {
+		t.Fatalf("a frame of the limit after a held message: %d Write calls", len(log.frames))
+	}
+	_ = w.End()
+	if len(log.frames) != 2 || w.Held() != HeaderSize {
+		t.Fatalf("%d Write calls, %d bytes held after the empty last frame", len(log.frames), w.Held())
+	}
+
+	// A frame that fills is written together with what is held before it, when the hold has room for both.
+	log = &frameLog{}
+	w = NewWriter(log, limit)
+	w.SetHold(100)
+	w.Begin(KindOK)
+	_, _ = w.Write([]byte("abc"))
+	_ = w.End()
+	w.Begin(KindOK)
+	_, _ = w.Write(testBytes(limit))
+	if len(log.frames) != 1 || len(log.frames[0]) != 2*HeaderSize+3+limit || wholeFrames(t, log.frames[0]) != 2 {
+		t.Fatalf("a frame of the limit after a held message, under the hold: %d Write calls", len(log.frames))
+	}
+	_ = w.End()
+	if len(log.frames) != 1 || w.Held() != HeaderSize {
+		t.Fatalf("%d Write calls, %d bytes held after the empty last frame", len(log.frames), w.Held())
+	}
+
+	// The held messages are written first when an Error frame would not fit with them.
+	log = &frameLog{}
+	w = NewWriter(log, 20)
+	w.SetHold(20)
+	w.Begin(KindOK)
+	_, _ = w.Write([]byte("abc"))
+	_ = w.End()
+	if err := w.Fail(CodeFailed, "refused"); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.frames) != 1 || len(log.frames[0]) != HeaderSize+3 || w.Held() != HeaderSize+4+len("refused") {
+		t.Fatalf("an Error frame after a held message: %d Write calls, %d bytes held", len(log.frames), w.Held())
 	}
 }

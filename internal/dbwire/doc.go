@@ -2,11 +2,12 @@
 // (internal/dbclient, internal/store), concept section 3.6, with what both sides know of the tables and of the events
 // that the daemon adds.
 //
-// A connection carries one request and its reply at a time, and a Hello comes first. A message is one or more frames of
-// one kind, the last with the end flag, and its body is the payloads of its frames joined. A frame is a header of 8
-// bytes and its payload: the kind, the flags, two reserved bytes that are zero, and the length of the payload as a
-// uint32 in big-endian. Only the flag 0x01, the end, is defined. A reply is a message of the kind OK, or one Error
-// frame, which also ends an OK message that has begun.
+// A Hello comes first on a connection. The daemon answers the requests of a connection in their order, and a client
+// reads the reply to a request before it sends the next, except for a window of reads (WindowRequests). A message is
+// one or more frames of one kind, the last with the end flag, and its body is the payloads of its frames joined. A frame
+// is a header of 8 bytes and its payload: the kind, the flags, two reserved bytes that are zero, and the length of the
+// payload as a uint32 in big-endian. Only the flag 0x01, the end, is defined. A reply is a message of the kind OK, or
+// one Error frame, which also ends an OK message that has begun.
 //
 // The integers of a body have a fixed width and are big-endian. A byte string is its length as a uint32 and its bytes.
 // An Enc writes a body and a Dec reads one; both keep their first error. The write methods of Enc and the read

@@ -15,37 +15,104 @@ import (
 
 const closingText = "the daemon is closing"
 
-// readBuffer is the size of the buffer that dbwire.NewReader makes, so that it reads from the buffer of the session
-// itself, whose Peek waits for the first byte of a request.
-const readBuffer = 32 << 10
+// replyHold is how many bytes of replies to reads wait in the buffer for the requests that have arrived behind them.
+const replyHold = dbwire.ReadBuffer
 
 // writeStep bounds what one Write of the connection has to deliver within the stall limit.
 const writeStep = 64 << 10
 
 // timedConn gives every read of a request and every write of a reply the stall limit as its deadline. Between the
 // requests, busy is false and the session sets the deadlines of its wait.
+//
+// A deadline comes from the clock of the server, which is read once a tick, and is set only when that clock has moved
+// since: it is never earlier than its limit after the read or the write began, and at most four ticks later. A time-out
+// that a late clock may have caused is tried once more with a deadline from the real clock.
+//
+// Why four ticks: a deadline that is set at the time t from the reading r0 is early only if t-r0 is more than its margin.
+// The reading after r0 is stored after t, and the one after that is taken later still, so t-r0 is less than the two gaps
+// after r0 together. A gap of more than two ticks is marked in lateAt before its reading is stored, and early finds the
+// mark, or finds that the last reading is more than two ticks old; otherwise t-r0 is at most four ticks.
 type timedConn struct {
 	net.Conn
+	s     *Server
 	stall time.Duration
 	busy  bool // used by the goroutine of the session only
+	read  deadline
+	write deadline
+}
+
+// deadline is what timedConn knows of the deadline that it has set.
+type deadline struct {
+	limit time.Duration // 0: none is set
+	at    int64         // the clock of the server when it was set
+	real  bool          // it was set from the real clock
+}
+
+func (c *timedConn) current(d *deadline, limit time.Duration) bool {
+	return d.limit == limit && !d.real && d.at == c.s.coarse.Load()
+}
+
+// stamp makes d the deadline of limit, and returns its time.
+func (c *timedConn) stamp(d *deadline, limit time.Duration) time.Time {
+	at := c.s.coarse.Load()
+	*d = deadline{limit: limit, at: at}
+	return c.s.started.Add(time.Duration(at) + limit + 4*c.s.tick)
+}
+
+// readWithin sets the read deadline limit from now, by the clock of the server, unless it is set. limit 0: no deadline,
+// which reads no clock.
+func (c *timedConn) readWithin(limit time.Duration) {
+	switch {
+	case limit <= 0:
+		if c.read.limit != 0 {
+			_ = c.SetReadDeadline(time.Time{})
+			c.read = deadline{}
+		}
+	case !c.current(&c.read, limit):
+		_ = c.SetReadDeadline(c.stamp(&c.read, limit))
+	}
+}
+
+// early reports whether the time-out of d may have come early because the clock of the server was late, and if so sets d
+// again from the real clock with set; that is final, and another time-out is believed.
+func (c *timedConn) early(d *deadline, set func(time.Time) error) bool {
+	if d.real || d.limit == 0 {
+		return false
+	}
+	now := time.Since(c.s.started)
+	at := c.s.coarse.Load() // before lateAt, which the clock stores first
+	if c.s.lateAt.Load() <= d.at && now <= time.Duration(at)+2*c.s.tick {
+		return false
+	}
+	_ = set(c.s.started.Add(now + d.limit))
+	d.real = true
+	return true
 }
 
 func (c *timedConn) Read(p []byte) (int, error) {
 	if c.busy && c.stall > 0 {
-		_ = c.SetReadDeadline(time.Now().Add(c.stall))
+		c.readWithin(c.stall)
 	}
-	return c.Conn.Read(p)
+	n, err := c.Conn.Read(p)
+	if n == 0 && errors.Is(err, os.ErrDeadlineExceeded) && c.early(&c.read, c.SetReadDeadline) {
+		return c.Conn.Read(p)
+	}
+	return n, err
 }
 
 func (c *timedConn) Write(p []byte) (int, error) {
 	total := 0
 	for {
 		n := min(len(p), writeStep)
-		if c.stall > 0 {
-			_ = c.SetWriteDeadline(time.Now().Add(c.stall))
+		if c.stall > 0 && !c.current(&c.write, c.stall) {
+			_ = c.SetWriteDeadline(c.stamp(&c.write, c.stall))
 		}
 		m, err := c.Conn.Write(p[:n])
 		total += m
+		if errors.Is(err, os.ErrDeadlineExceeded) && c.early(&c.write, c.SetWriteDeadline) {
+			m, err = c.Conn.Write(p[m:n])
+			total += m
+		}
 		if err != nil {
 			return total, err
 		}
@@ -68,14 +135,19 @@ type session struct {
 	deny   error // not nil: the peer is not let in, and the Hello is answered with it
 	snap   *snapshot
 	staged staged
+	// opening: a Snapshot request has been read and is still counted as in progress; hold answers it.
+	opening bool
+	// carried: the request that has ended is still counted, because its reply is held and the next request is already in
+	// the read buffer; the next one takes over the count.
+	carried bool
 }
 
 func (s *Server) newSession(conn net.Conn, role dbwire.Role) *session {
 	if role != dbwire.RoleReader && role != dbwire.RoleWriter {
 		return nil
 	}
-	tc := &timedConn{Conn: conn, stall: s.limits.Stall, busy: true}
-	c := &session{s: s, conn: tc, br: bufio.NewReaderSize(tc, readBuffer), role: role}
+	tc := &timedConn{Conn: conn, s: s, stall: s.limits.Stall, busy: true}
+	c := &session{s: s, conn: tc, br: bufio.NewReaderSize(tc, dbwire.ReadBuffer), role: role}
 	c.rd = dbwire.NewReader(c.br, dbwire.Limits{}.WithDefaults().Frame)
 	c.wr = dbwire.NewWriter(tc, dbwire.Limits{}.WithDefaults().Frame)
 	s.mu.Lock()
@@ -94,33 +166,103 @@ func (c *session) serve() {
 	if !c.handshake() {
 		return
 	}
-	for {
-		c.conn.busy = false
-		if !c.wait() {
-			return
-		}
-		c.conn.busy = true
-		if !c.request() {
-			return
+	for c.step() {
+		for c.opening {
+			if !c.hold() {
+				return
+			}
 		}
 	}
 }
 
+// step waits for a request and answers it. It also returns true, with no request answered, when the snapshot has been
+// released for being idle. False ends the session.
+func (c *session) step() bool {
+	c.conn.busy = false
+	w := c.wait()
+	if w == waitEnded {
+		return false
+	}
+	if w == waitIdle {
+		return true
+	}
+	c.conn.busy = true
+	return c.request()
+}
+
+// hold opens a snapshot, answers the Snapshot request that asked for it, and serves the requests of the session inside the
+// View of the engine until the snapshot is released: a *logdb.Tx is valid only there, and a goroutine of its own for the
+// snapshot would cost two goroutine switches for each read. It reports whether the session goes on.
+func (c *session) hold() (alive bool) {
+	c.opening = false
+	called, err := c.s.openSnapshot(func(sn *snapshot) {
+		c.snap = sn
+		alive = c.ok(func(e *dbwire.Enc) { e.SnapshotReply(sn.seq) })
+		c.s.endRequest()
+		for alive && c.snap == sn {
+			alive = c.step()
+		}
+		if c.snap == sn {
+			c.dropSnapshot()
+		}
+	})
+	if !called {
+		alive = c.fail(dbwire.CodeFailed, safeText(err))
+		c.s.endRequest()
+	}
+	return alive
+}
+
 // request reads and answers one request. A server that is shutting down refuses it.
 func (c *session) request() bool {
-	if !c.s.beginRequest() {
+	if c.carried {
+		c.carried = false
+	} else if !c.s.beginRequest() {
+		c.wr.SetHold(0)
 		return c.refuseAndClose(dbwire.CodeBusy, closingText)
 	}
-	defer c.s.endRequest()
+	// A Snapshot request stays in progress until hold has answered it.
+	defer func() {
+		if !c.opening && !c.carried {
+			c.s.endRequest()
+		}
+	}()
 	kind, err := c.rd.Next()
 	if err != nil {
 		c.bad(err)
 		return false
 	}
-	return c.dispatch(kind)
+	// Only the replies to reads wait for the requests behind them.
+	if kind == dbwire.KindGet || kind == dbwire.KindScan || kind == dbwire.KindObject {
+		c.wr.SetHold(replyHold)
+	} else {
+		c.wr.SetHold(0)
+		if c.wr.Flush() != nil {
+			return false
+		}
+	}
+	if !c.dispatch(kind) {
+		return false
+	}
+	// The replies are written before the request ends, unless a request has arrived behind them: Shutdown, which waits for
+	// the requests in progress, then does not close a connection with a reply in its buffer.
+	switch {
+	case c.opening:
+		return true
+	case c.br.Buffered() > 0 && c.wr.Held() > 0 && c.s.keepRequest():
+		c.carried = true
+		_ = c.s.hook("reply:held")
+		return true
+	}
+	return c.wr.Flush() == nil
 }
 
 func (c *session) end() {
+	_ = c.wr.Flush()
+	if c.carried {
+		c.carried = false
+		c.s.endRequest()
+	}
 	c.cancel()
 	c.dropSnapshot()
 	c.s.mu.Lock()
@@ -137,28 +279,38 @@ func (c *session) end() {
 	c.s.wg.Done()
 }
 
-// wait returns when a byte of the next request has arrived, and false when the connection has ended. While a snapshot
-// is held, it releases it after Limits.SnapshotIdle without a request, and goes on waiting.
-func (c *session) wait() bool {
-	for {
-		var deadline time.Time
-		if c.snap != nil && c.s.limits.SnapshotIdle > 0 {
-			deadline = time.Now().Add(c.s.limits.SnapshotIdle)
-		}
-		_ = c.conn.SetReadDeadline(deadline)
-		_, err := c.br.Peek(1)
-		switch {
-		case err == nil:
-			return true
-		case c.snap != nil && errors.Is(err, os.ErrDeadlineExceeded):
-			c.dropSnapshot()
-			if c.s.onIdle != nil {
-				c.s.onIdle()
-			}
-		default:
-			return false
-		}
+// waited is how a wait for a request ended.
+type waited int
+
+const (
+	waitRequest waited = iota // a byte of a request has arrived
+	waitIdle                  // the snapshot was released for being idle; the connection goes on
+	waitEnded                 // the connection has ended
+)
+
+// wait returns when a byte of the next request has arrived. While a snapshot is held, it releases it after
+// Limits.SnapshotIdle without a request.
+func (c *session) wait() waited {
+	if c.br.Buffered() == 0 && c.wr.Flush() != nil {
+		return waitEnded
 	}
+	if c.snap != nil && c.s.limits.SnapshotIdle > 0 {
+		c.conn.readWithin(c.s.limits.SnapshotIdle)
+	} else {
+		c.conn.readWithin(0)
+	}
+	_, err := c.br.Peek(1)
+	switch {
+	case err == nil:
+		return waitRequest
+	case c.snap != nil && errors.Is(err, os.ErrDeadlineExceeded):
+		c.dropSnapshot()
+		if c.s.onIdle != nil {
+			c.s.onIdle()
+		}
+		return waitIdle
+	}
+	return waitEnded
 }
 
 func (c *session) handshake() bool {
@@ -271,12 +423,10 @@ func (c *session) refuseBody(max int64, code dbwire.Code, msg string) bool {
 	return c.fail(code, msg)
 }
 
+// dropSnapshot lets go of the snapshot and the staged objects; the View returns when the loop of hold sees it.
 func (c *session) dropSnapshot() {
 	c.staged = staged{}
-	if c.snap != nil {
-		c.snap.release()
-		c.snap = nil
-	}
+	c.snap = nil
 }
 
 var handlers = map[dbwire.Kind]func(*session) bool{
@@ -312,12 +462,8 @@ func (c *session) snapshotRequest() bool {
 		return false
 	}
 	c.dropSnapshot()
-	sn, err := c.s.openSnapshot()
-	if err != nil {
-		return c.fail(dbwire.CodeFailed, safeText(err))
-	}
-	c.snap = sn
-	return c.ok(func(e *dbwire.Enc) { e.SnapshotReply(sn.seq) })
+	c.opening = true
+	return true
 }
 
 func (c *session) releaseRequest() bool {

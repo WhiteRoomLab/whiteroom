@@ -37,8 +37,10 @@ type Options struct {
 	FreeSpace func() (uint64, error)
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
-	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal) and "original:renamed" (after
-	// the sync of the directory of the original). Its error fails the operation.
+	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal), "original:renamed" (after
+	// the sync of the directory of the original), "clock:tick" (by the goroutine of the clock of the deadlines, before each
+	// reading of the time) and "reply:held" (when a request that has a reply in the buffer is still counted, before the
+	// next one begins). Its error fails the operation; that of the last two is not used.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
@@ -69,6 +71,13 @@ type Server struct {
 
 	ctx    context.Context // ended by Close
 	cancel context.CancelFunc
+
+	// The deadlines of the connections come from a clock that one goroutine reads once a tick: coarse is its last reading,
+	// in nanoseconds since started, and lateAt is the last reading that came more than two ticks after the one before.
+	started time.Time
+	tick    time.Duration
+	coarse  atomic.Int64
+	lateAt  atomic.Int64
 
 	mu          sync.Mutex
 	sessions    map[*session]struct{}
@@ -155,11 +164,12 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	}
 	s := &Server{name: name, db: db, logFS: logFS, files: files, limits: o.Limits, o: o, now: o.Now,
 		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, spaceStep: originalSpaceStep,
-		drained: make(chan struct{})}
+		drained: make(chan struct{}), started: time.Now()}
 	if s.now == nil {
 		s.now = time.Now
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.startClock()
 	if _, err := rand.Read(s.bootID[:]); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -170,6 +180,44 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// maxTick keeps a limit of time at most two seconds late (four ticks, see timedConn).
+const maxTick = 500 * time.Millisecond
+
+// startClock starts the goroutine of the clock of the deadlines. A tick is a sixteenth of the shorter of the two limits of
+// time that are on, at least a millisecond and at most maxTick.
+func (s *Server) startClock() {
+	var shorter time.Duration
+	for _, d := range []time.Duration{s.limits.Stall, s.limits.SnapshotIdle} {
+		if d > 0 && (shorter == 0 || d < shorter) {
+			shorter = d
+		}
+	}
+	if shorter == 0 {
+		return
+	}
+	s.tick = min(max(shorter/16, time.Millisecond), maxTick)
+	s.coarse.Store(int64(time.Since(s.started)))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		t := time.NewTicker(s.tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-t.C:
+			}
+			_ = s.hook("clock:tick")
+			now := int64(time.Since(s.started))
+			if now-s.coarse.Load() > 2*int64(s.tick) {
+				s.lateAt.Store(now) // before the time: whoever then loads the time, and lateAt after it, sees that it was late
+			}
+			s.coarse.Store(now)
+		}
+	}()
 }
 
 func checkLimits(l dbwire.Limits) error {
@@ -287,6 +335,14 @@ func (s *Server) beginRequest() bool {
 	}
 	s.requests++
 	return true
+}
+
+// keepRequest reports whether a request whose reply is held may stay counted until the next request has begun, which is
+// not so once Shutdown has begun: the reply is then written before the request ends.
+func (s *Server) keepRequest() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.draining
 }
 
 func (s *Server) endRequest() {

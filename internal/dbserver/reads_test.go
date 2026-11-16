@@ -131,6 +131,93 @@ func TestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("the goroutine of the session holds it", func(t *testing.T) {
+		f := newFixture(t, nil)
+		f.update(func(tx *logdb.Tx) { _ = tx.Put(2, []byte("k"), []byte("v")) })
+		held := func(want int) {
+			t.Helper()
+			eventually(t, fmt.Sprintf("%d goroutines to hold a snapshot", want), func() bool { return len(stacksWith(snapshotMarker)) == want })
+		}
+		held(0)
+		a := f.connect(dbwire.RoleReader)
+		a.mustSnapshot()
+		stacks := stacksWith(snapshotMarker)
+		if len(stacks) != 1 || !strings.Contains(stacks[0], "dbserver.(*session).serve") {
+			t.Fatalf("a snapshot is held by %d goroutines, which are not the session's: %v", len(stacks), stacks)
+		}
+		b := f.connect(dbwire.RoleReader)
+		b.mustSnapshot()
+		held(2)
+
+		// Release.
+		if err := a.release(); err != nil {
+			t.Fatal(err)
+		}
+		held(1)
+		// The end of the session.
+		_ = b.conn.Close()
+		held(0)
+
+		// A Commit that was read to its end lets go of the snapshot, whether it commits or not.
+		w := f.connect(dbwire.RoleWriter)
+		seq := w.mustSnapshot()
+		held(1)
+		if _, _, err := w.commit(seq, put(2, "k", "new"), event("e")); err != nil {
+			t.Fatal(err)
+		}
+		held(0)
+		seq = w.mustSnapshot()
+		_, _, err := w.commit(seq+7, put(2, "k", "again"), event("e"))
+		wantCode(t, err, dbwire.CodeSeq)
+		held(0)
+
+		// A request that is refused before it is read leaves the snapshot where it is.
+		a.mustSnapshot()
+		_, _, err = a.commit(seq, put(2, "k", "denied"), event("e"))
+		wantCode(t, err, dbwire.CodeDenied)
+		held(1)
+		if found, _ := a.mustGet(2, "k"); !found {
+			t.Error("the snapshot of a reader that was refused is gone")
+		}
+	})
+
+	t.Run("the idle limit returns the View", func(t *testing.T) {
+		f := newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = 40 * time.Millisecond })
+		idle := make(chan struct{}, 4)
+		f.srv.onIdle = func() { idle <- struct{}{} }
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		<-idle
+		// No request has come since: the View has returned, and the session is still there.
+		eventually(t, "the View to return", func() bool { return len(stacksWith(snapshotMarker)) == 0 })
+		f.waitSessions(1)
+		_, _, err := r.get(2, "k")
+		wantCode(t, err, dbwire.CodeNoSnapshot)
+	})
+
+	t.Run("Views do not nest", func(t *testing.T) {
+		f := newFixture(t, nil)
+		w := f.connect(dbwire.RoleWriter)
+		r := f.connect(dbwire.RoleReader)
+		want := uint64(0)
+		for i := range 1000 {
+			if i%97 == 0 {
+				want, _ = w.mustCommit(put(2, fmt.Sprintf("k%d", i), "v"))
+			}
+			if got := r.mustSnapshot(); got != want {
+				t.Fatalf("Snapshot %d is at %d, want %d", i, got, want)
+			}
+		}
+		// The session of the writer leaves its View just after the reply to its Commit, so it may still be on its way out.
+		eventually(t, "one View in the stacks of the sessions after 1,000 Snapshot requests in a row", func() bool {
+			n := 0
+			for _, g := range stacksWith("dbserver.(*session).serve") {
+				n += strings.Count(g, "dbserver.(*Server).openSnapshot(")
+			}
+			return n == 1
+		})
+	})
+
 	t.Run("a commit does not block readers", func(t *testing.T) {
 		var armed atomic.Bool
 		entered := make(chan struct{}, 1)
