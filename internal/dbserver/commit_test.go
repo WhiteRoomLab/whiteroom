@@ -53,6 +53,52 @@ func TestPutObject(t *testing.T) {
 	f.unchanged(before)
 }
 
+// TestPutObjectCount checks that the number of staged objects is bounded too, as that of the ops of a Commit is: objects of
+// a few bytes cost the daemon more than their bytes. An object that is staged already counts once, and a Commit takes the
+// objects that are staged.
+func TestPutObjectCount(t *testing.T) {
+	f := newFixture(t, nil)
+	if f.srv.maxStagedCount != 1<<22 {
+		t.Fatalf("the limit of staged objects is %d, want %d", f.srv.maxStagedCount, 1<<22)
+	}
+	f.srv.maxStagedCount = 3
+	w := f.connect(dbwire.RoleWriter)
+	seq := w.mustSnapshot()
+	for _, data := range []string{"a", "b", "a", "c", "b"} {
+		if _, err := w.putObject(data); err != nil {
+			t.Fatalf("PutObject of %q: %v", data, err)
+		}
+	}
+	before := f.dump()
+	_, err := w.putObject("d")
+	re := wantCode(t, err, dbwire.CodeLimit)
+	if want := "more than 3 objects would be staged"; re.Msg != want {
+		t.Errorf("the text is %q, want %q", re.Msg, want)
+	}
+	if found, _, _ := w.object(hashOf("d")); found {
+		t.Error("the refused object is staged")
+	}
+	f.unchanged(before)
+	// The connection stays open, and what is staged stays.
+	if _, err := w.putObject("c"); err != nil {
+		t.Errorf("an object that is staged already: %v", err)
+	}
+	if got, _, err := w.commit(seq, event("e")); err != nil || got != seq+1 {
+		t.Fatalf("Commit = %d, %v", got, err)
+	}
+	if got := len(f.dump().Objects); got != 3 {
+		t.Errorf("the store has %d objects, want the 3 that were staged", got)
+	}
+	// After the commit nothing is staged.
+	seq = w.mustSnapshot()
+	if _, err := w.putObject("d"); err != nil {
+		t.Errorf("an object after the commit: %v", err)
+	}
+	if _, _, err := w.commit(seq, event("e")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPutObjectDropped(t *testing.T) {
 	for name, drop := range map[string]func(t *testing.T, w *client, seq uint64){
 		"Release":  func(t *testing.T, w *client, seq uint64) { _ = w.release() },
@@ -847,6 +893,31 @@ func TestCommitSchemaRule(t *testing.T) {
 	for _, l := range f.logs.all() {
 		t.Errorf("a refusal has logged %q", l)
 	}
+}
+
+// TestCommitOpValueBound checks that an op may not claim more bytes than what is left of the limit of the Commit after the
+// ops before it: the claim is refused before its bytes are read, so that they are not allocated.
+func TestCommitOpValueBound(t *testing.T) {
+	f := newFixture(t, func(o *Options) { o.Limits.Commit = 100 })
+	w := f.connect(dbwire.RoleWriter)
+	seq := w.mustSnapshot()
+	body := binary.BigEndian.AppendUint64(nil, seq)
+	body = append(body, byte(dbwire.OpPut))
+	body = binary.BigEndian.AppendUint32(body, 2)
+	body = binary.BigEndian.AppendUint32(body, 1)
+	body = append(body, 'k')
+	body = binary.BigEndian.AppendUint32(body, 50)
+	body = append(body, make([]byte, 50)...) // an op of 64 bytes, which leaves 36
+	body = append(body, byte(dbwire.OpEvent))
+	body = binary.BigEndian.AppendUint32(body, 90) // under the limit of 100, over what is left
+	body = append(body, make([]byte, 10)...)       // and the bytes are not all there
+	done := w.writeRaw(rawFrame(byte(dbwire.KindCommit), 1, body))
+	re := wantCode(t, w.readReply(), dbwire.CodeLimit)
+	<-done
+	if want := "malformed message: a byte string of 90 bytes, over the limit of 36"; re.Msg != want {
+		t.Errorf("the text is %q, want %q", re.Msg, want)
+	}
+	w.wantClosed()
 }
 
 // TestCommitOpsLimit checks that a Commit of more ops than the limit is refused, and the connection closed: the limit of

@@ -1,6 +1,7 @@
 package dbserver
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -33,6 +34,8 @@ type Config struct {
 	Ticks func() (<-chan time.Time, func())
 	// Ready is called once, when both sockets listen.
 	Ready func()
+
+	shutdownWait time.Duration // for the tests: how long the requests in progress are waited for; 0: shutdownWait
 }
 
 // shutdownWait is how long Run lets the requests in progress end after its context has ended.
@@ -141,7 +144,7 @@ func Run(ctx context.Context, cfg Config) error {
 	case serveErr = <-failed:
 	}
 	closeListeners()
-	waited, cancel := context.WithTimeout(context.Background(), shutdownWait)
+	waited, cancel := context.WithTimeout(context.Background(), cmp.Or(cfg.shutdownWait, shutdownWait))
 	s.Shutdown(waited)
 	cancel()
 	stopExport()

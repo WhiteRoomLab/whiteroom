@@ -526,6 +526,41 @@ func TestWriterMisuse(t *testing.T) {
 	_ = w.End()
 }
 
+// TestWriterOpen: Open tells whether a message is open, which Flush may not be called in, and a write that fails in the
+// middle of a message leaves it open, until End or Fail ends it.
+func TestWriterOpen(t *testing.T) {
+	w := NewWriter(&failWriter{n: 0}, 4)
+	if w.Open() {
+		t.Error("a new Writer has a message open")
+	}
+	w.Begin(KindOK)
+	if !w.Open() {
+		t.Error("no message is open after Begin")
+	}
+	if _, err := w.Write([]byte("abcd")); !errors.Is(err, errDisk) { // the frame is full, and its write fails
+		t.Fatalf("Write = %v", err)
+	}
+	if !w.Open() {
+		t.Error("a write that failed has ended the message")
+	}
+	mustPanic(t, "Flush in an open message", func() { _ = w.Flush() })
+	if err := w.Fail(CodeFailed, "x"); !errors.Is(err, errDisk) {
+		t.Errorf("Fail = %v", err)
+	}
+	if w.Open() {
+		t.Error("a message is open after Fail")
+	}
+	if err := w.Flush(); !errors.Is(err, errDisk) {
+		t.Errorf("Flush = %v, want the error of the write", err)
+	}
+
+	w = NewWriter(io.Discard, 4)
+	w.Begin(KindGet)
+	if err := w.End(); err != nil || w.Open() {
+		t.Errorf("End = %v, open %v", err, w.Open())
+	}
+}
+
 func TestWriterError(t *testing.T) {
 	// The frame of 8+4 bytes does not fit, and nothing more is written.
 	fw := &failWriter{n: 10}

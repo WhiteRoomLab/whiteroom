@@ -62,6 +62,8 @@ type Server struct {
 	stopped atomic.Bool
 	maxOps  int // the most ops of a Commit
 
+	maxStagedCount int // the most distinct objects staged at a time
+
 	spaceStep int64 // how much of an original is written between two looks at the free space
 
 	// The originals: the directories of files/ whose names are durable, as keys; syncs is read-locked by each sync of a
@@ -163,7 +165,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{name: name, db: db, logFS: logFS, files: files, limits: o.Limits, o: o, now: o.Now,
-		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, spaceStep: originalSpaceStep,
+		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
 		drained: make(chan struct{}), started: time.Now()}
 	if s.now == nil {
 		s.now = time.Now

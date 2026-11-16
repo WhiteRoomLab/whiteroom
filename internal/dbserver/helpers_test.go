@@ -304,6 +304,7 @@ func (f *fixture) dial(role dbwire.Role) *client {
 type countConn struct {
 	net.Conn
 	writes, readDeadlines, writeDeadlines atomic.Int64
+	readDeadline                          atomic.Int64 // the time of the last call of SetReadDeadline, in nanoseconds; 0: none
 }
 
 func (c *countConn) Write(p []byte) (int, error) {
@@ -313,6 +314,11 @@ func (c *countConn) Write(p []byte) (int, error) {
 
 func (c *countConn) SetReadDeadline(t time.Time) error {
 	c.readDeadlines.Add(1)
+	if t.IsZero() {
+		c.readDeadline.Store(0)
+	} else {
+		c.readDeadline.Store(t.UnixNano())
+	}
 	return c.Conn.SetReadDeadline(t)
 }
 

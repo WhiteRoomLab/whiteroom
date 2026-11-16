@@ -103,6 +103,9 @@ func (c *session) eventsRequest() bool {
 		e.Event(dbwire.Event{Number: ev.Number, Seq: ev.Seq, Data: ev.Data})
 		return e.Err == nil
 	})
+	if err == nil {
+		e.EventsEnd() // may write the frame that fills the limit, and fail
+	}
 	switch {
 	case e.Err != nil:
 		_ = c.wr.Fail(dbwire.CodeInternal, "the reply could not be written")
@@ -110,8 +113,7 @@ func (c *session) eventsRequest() bool {
 	case err != nil:
 		return c.fail(dbwire.CodeFailed, safeText(err))
 	}
-	e.EventsEnd()
-	return e.Err == nil && c.wr.End() == nil
+	return c.wr.End() == nil
 }
 
 func (c *session) verifyRequest() bool {

@@ -40,6 +40,10 @@ func (r *refusal) Error() string { return r.msg }
 // tiny ops would cost the daemon many times its bytes in memory.
 const maxCommitOps = 1 << 22
 
+// maxStagedObjects is the most distinct objects that a writer stages before its Commit: the limit of bytes does not bound
+// the memory of objects of a few bytes, which cost the daemon more than their bytes.
+const maxStagedObjects = 1 << 22
+
 // requestSlack is what a request has besides the bytes that its limit counts: the hashes, the sizes, the end mark.
 const requestSlack = 64
 
@@ -83,8 +87,13 @@ func (c *session) putObjectRequest() bool {
 		c.bad(err)
 		return false
 	}
-	if _, dup := c.staged.data[hash]; !dup && c.staged.total+int64(len(data)) > l.Staged {
-		return c.fail(dbwire.CodeLimit, fmt.Sprintf("the staged objects would be over %d bytes", l.Staged))
+	if _, dup := c.staged.data[hash]; !dup {
+		switch {
+		case c.staged.total+int64(len(data)) > l.Staged:
+			return c.fail(dbwire.CodeLimit, fmt.Sprintf("the staged objects would be over %d bytes", l.Staged))
+		case len(c.staged.order) >= c.s.maxStagedCount:
+			return c.fail(dbwire.CodeLimit, fmt.Sprintf("more than %d objects would be staged", c.s.maxStagedCount))
+		}
 	}
 	if sha256.Sum256(data) != hash {
 		return c.fail(dbwire.CodeHash, "the data do not have the hash that was given")

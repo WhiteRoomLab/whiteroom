@@ -56,6 +56,9 @@ func (w *Writer) Held() int {
 	return len(w.buf)
 }
 
+// Open reports whether a message is open: Begin has been called, and neither End nor Fail has.
+func (w *Writer) Open() bool { return w.open }
+
 // Flush writes the messages that are held with one Write call. It panics if a message is open.
 func (w *Writer) Flush() error {
 	if w.open {

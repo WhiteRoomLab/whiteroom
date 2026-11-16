@@ -433,6 +433,53 @@ func TestRunShutdown(t *testing.T) {
 	}
 }
 
+// TestRunShutdownBackup checks that a Backup that is still in progress when the wait of the shutdown ends is cut, and that
+// Run then ends as a clean stop: it writes the last heads, closes the engine and returns nil.
+func TestRunShutdownBackup(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, unblock sync.Once
+	d := startDaemon(t, func(w *client) {
+		w.mustCommit(put(2, "a", "1"), put(dbwire.TableHeads, "activity", headLine(1)))
+	}, func(c *Config) {
+		c.shutdownWait = 20 * time.Millisecond
+		c.Options.Hook = func(point string) error {
+			if point == "backup:sending" {
+				once.Do(func() { close(entered) })
+				<-release
+			}
+			return nil
+		}
+	})
+	t.Cleanup(func() { unblock.Do(func() { close(release) }) }) // before the daemon is stopped, which waits for the session
+	w := d.dial(dbwire.WriterSocket, false)
+	r := d.dial(dbwire.ReaderSocket, false)
+	_ = r.send(dbwire.KindBackup, nil)
+	<-entered
+	w.mustCommit(put(dbwire.TableHeads, "activity", headLine(2)))
+	d.cancel()
+	// Run has waited for the Backup, and is closing the server, which waits for the session; that has its context ended.
+	eventually(t, "Run to close the server", func() bool {
+		return blockedIn("dbserver.Run", "dbserver.(*Server).Close", "sync.(*WaitGroup).Wait")
+	})
+	unblock.Do(func() { close(release) })
+	if err := <-d.done; err != nil {
+		t.Errorf("Run = %v after the end of its context", err)
+	}
+	d.stopped = true
+	r.wantClosed()
+	if got := d.heads.all(); len(got) != 2 || got[1] != headLine(2)+"\n" {
+		t.Errorf("the lines of the heads are %q, want the last head at the stop", got)
+	}
+	srv, err := OpenDir(d.data, d.cfg.Options)
+	if err != nil {
+		t.Fatalf("OpenDir() after the stop = %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+	if got := (&fixture{t: t, srv: srv}).dump().Seq; got != 2 {
+		t.Errorf("the store has the sequence number %d, want 2", got)
+	}
+}
+
 // blockedHeads is the Heads of a daemon whose first Write does not return until unblock is called.
 type blockedHeads struct {
 	lines    lineWriter

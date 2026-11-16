@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -298,7 +299,6 @@ func TestProtocolErrors(t *testing.T) {
 		}, dbwire.CodeLimit},
 		{"a byte after a Get", func() []byte { return rawFrame(byte(dbwire.KindGet), 1, getBody(0)) }, dbwire.CodeProtocol},
 		{"a byte after a Snapshot", func() []byte { return rawFrame(byte(dbwire.KindSnapshot), 1, []byte{0}) }, dbwire.CodeProtocol},
-		{"a Get that is cut short", func() []byte { return rawFrame(byte(dbwire.KindGet), 1, getBody()[:6]) }, 0},
 		{"a flag that is not 0 or 1", func() []byte {
 			b := binary.BigEndian.AppendUint32(nil, 2)
 			b = binary.BigEndian.AppendUint32(b, 0) // the prefix
@@ -321,13 +321,6 @@ func TestProtocolErrors(t *testing.T) {
 			conn.mustSnapshot()
 			done := conn.writeRaw(tc.bytes())
 			err := conn.readReply()
-			if tc.code == 0 {
-				// The peer stopped in the middle of a frame: nothing is answered.
-				if err == nil {
-					t.Fatal("answered")
-				}
-				return
-			}
 			wantCode(t, err, tc.code)
 			<-done
 			conn.wantClosed()
@@ -339,6 +332,59 @@ func TestProtocolErrors(t *testing.T) {
 		_, _ = conn.conn.Write(rawFrame(byte(dbwire.KindGet), 1, getBody())[:10])
 		_ = conn.conn.Close()
 	})
+}
+
+// TestShortBodies: a message that is whole, with the end flag, but has fewer bytes than its kind needs, cannot be told from
+// a stream that ended in the middle of it: the connection is closed with no reply, and the daemon goes on.
+func TestShortBodies(t *testing.T) {
+	f := newFixture(t, nil)
+	u32 := func(vs ...uint32) []byte {
+		var b []byte
+		for _, v := range vs {
+			b = binary.BigEndian.AppendUint32(b, v)
+		}
+		return b
+	}
+	hash := make([]byte, 32)
+	for _, tc := range []struct {
+		name string
+		role dbwire.Role
+		kind dbwire.Kind
+		body []byte
+	}{
+		{"a Get with half a length", dbwire.RoleReader, dbwire.KindGet, slices.Concat(u32(2), []byte{0, 0})},
+		{"a Get with a key that is cut", dbwire.RoleReader, dbwire.KindGet, slices.Concat(u32(2, 9), []byte("k"))},
+		{"a Get with no body", dbwire.RoleReader, dbwire.KindGet, nil},
+		{"a Scan that is cut in its prefix", dbwire.RoleReader, dbwire.KindScan, slices.Concat(u32(2, 5), []byte("a"))},
+		{"an Object with half a hash", dbwire.RoleReader, dbwire.KindObject, hash[:16]},
+		{"an Original with a hash of 31 bytes", dbwire.RoleReader, dbwire.KindOriginal, hash[:31]},
+		{"a PutObject with half a hash", dbwire.RoleWriter, dbwire.KindPutObject, hash[:16]},
+		{"a PutObject with an object that is cut", dbwire.RoleWriter, dbwire.KindPutObject,
+			slices.Concat(hash, binary.BigEndian.AppendUint64(nil, 5), []byte("ab"))},
+		{"a Commit with no list of ops", dbwire.RoleWriter, dbwire.KindCommit, make([]byte, 8)},
+		{"a Commit with half an op", dbwire.RoleWriter, dbwire.KindCommit,
+			slices.Concat(make([]byte, 8), []byte{byte(dbwire.OpPut)}, u32(2, 5), []byte("k"))},
+		{"a PutOriginal with a chunk that is cut", dbwire.RoleWriter, dbwire.KindPutOriginal, slices.Concat(u32(3), []byte("ab"))},
+		{"a PutOriginal with no trailer", dbwire.RoleWriter, dbwire.KindPutOriginal, slices.Concat(u32(2), []byte("ab"), u32(0))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := f.connect(tc.role)
+			c.mustSnapshot()
+			done := c.writeRaw(rawFrame(byte(tc.kind), 1, tc.body))
+			_ = c.conn.SetReadDeadline(time.Now().Add(waitLimit))
+			if kind, err := c.rd.Next(); !errors.Is(err, io.EOF) {
+				t.Errorf("got the kind %v and the error %v, want the connection closed with no reply (io.EOF)", kind, err)
+			}
+			<-done
+			f.waitSessions(0)
+		})
+	}
+	// None of them has taken the place of the writer, or left anything in the store.
+	w := f.connect(dbwire.RoleWriter)
+	w.mustCommit(put(2, "k", "v"))
+	if d := f.dump(); d.Seq != 1 || len(d.Tables[2]) != 1 || len(d.Objects) != 0 || len(tempFiles(f.fs)) != 0 {
+		t.Errorf("the store after the short messages: %+v, temporary files %v", d, tempFiles(f.fs))
+	}
 }
 
 func TestStall(t *testing.T) {
@@ -402,6 +448,41 @@ func TestStall(t *testing.T) {
 		time.Sleep(3 * stall)
 		c.mustSnapshot()
 	})
+}
+
+// TestIdleNotForRequest: the idle limit of a snapshot is for the wait between requests: a request that has begun is under
+// the stall limit, or under none if the stall limit is off, whatever the idle deadline that the wait set was.
+func TestIdleNotForRequest(t *testing.T) {
+	const idle = 2 * time.Hour
+	for _, tc := range []struct {
+		name  string
+		stall time.Duration // the read deadline of a request that is being read is this far away; none if it is negative
+	}{{"no stall limit", -1}, {"a stall limit", time.Hour}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, func(o *Options) { o.Limits.Stall, o.Limits.SnapshotIdle = tc.stall, idle })
+			seedWindow(f)
+			c, counted := f.connectCounted(dbwire.RoleReader)
+			c.mustSnapshot()
+			// The deadline of the wait is the idle limit away, which is well after that of the stall limit.
+			far := func(d int64) bool { return d > time.Now().Add(idle-30*time.Minute).UnixNano() }
+			eventually(t, "the session to wait with the idle deadline", func() bool { return far(counted.readDeadline.Load()) })
+			req := requestBytes(dbwire.KindGet, func(e *dbwire.Enc) { e.GetRequest(2, []byte("k001")) })
+			if _, err := c.conn.Write(req[:4]); err != nil {
+				t.Fatal(err)
+			}
+			// The deadline is looked at until it has changed: the session sets it after it has begun to read.
+			eventually(t, "the session to read the rest of the request without the idle deadline", func() bool {
+				d := counted.readDeadline.Load()
+				return blockedIn("dbserver.(*session).request", "dbserver.(*timedConn).Read") && !far(d) && (d != 0) == (tc.stall > 0)
+			})
+			if _, err := c.conn.Write(req[4:]); err != nil {
+				t.Fatal(err)
+			}
+			if got := c.readOne(dbwire.KindGet); got != `get true "v001"` {
+				t.Errorf("the reply: %s", got)
+			}
+		})
+	}
 }
 
 func TestSnapshotIdle(t *testing.T) {
@@ -524,6 +605,74 @@ func TestClose(t *testing.T) {
 		}
 		slow.wantClosed()
 	})
+
+	// A Backup has its reply open when the server closes: the session ends with it, which must not panic.
+	for _, point := range []string{"backup:gate", "backup:sending"} {
+		t.Run("a Backup held at "+point, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			f := newFixture(t, func(o *Options) {
+				o.Hook = func(p string) error {
+					if p == point {
+						once.Do(func() { close(entered) })
+						<-release
+					}
+					return nil
+				}
+			})
+			populate(t, f)
+			r := f.connect(dbwire.RoleReader)
+			_ = r.send(dbwire.KindBackup, nil)
+			<-entered
+			closed := make(chan error, 1)
+			go func() { closed <- f.srv.Close() }()
+			// The session finds its context ended, and not only its connection closed, when it goes on.
+			eventually(t, "the server to end its sessions", func() bool { return f.srv.ctx.Err() != nil })
+			close(release)
+			if err := <-closed; err != nil {
+				t.Fatal(err)
+			}
+			r.wantClosed()
+		})
+	}
+
+	t.Run("an Events reply that is not taken", func(t *testing.T) {
+		f := newFixture(t, nil)
+		w := f.connect(dbwire.RoleWriter)
+		seq := w.mustSnapshot()
+		if _, _, err := w.commitExactly(seq, schemaOp(), event(strings.Repeat("e", 3*f.opts.Limits.Frame))); err != nil {
+			t.Fatal(err)
+		}
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		if err := <-r.send(dbwire.KindEvents, nil); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the daemon to write the reply", func() bool {
+			return blockedIn("dbserver.(*session).eventsRequest", "net.(*pipe).Write")
+		})
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.wantClosed()
+	})
+}
+
+// TestSessionEndsWithOpenReply: a handler that returns false with its reply open ends the session like any other, and the
+// daemon goes on; the end of a session does not flush a message that is open, which would panic.
+func TestSessionEndsWithOpenReply(t *testing.T) {
+	saved := handlers[dbwire.KindVerify]
+	handlers[dbwire.KindVerify] = func(c *session) bool {
+		c.wr.Begin(dbwire.KindOK)
+		return false
+	}
+	t.Cleanup(func() { handlers[dbwire.KindVerify] = saved }) // after the server is closed
+	f := newFixture(t, nil)
+	r := f.connect(dbwire.RoleReader)
+	_ = r.send(dbwire.KindVerify, nil)
+	r.wantClosed()
+	f.waitSessions(0)
+	f.connect(dbwire.RoleReader).mustSnapshot()
 }
 
 func TestUnixSocket(t *testing.T) {

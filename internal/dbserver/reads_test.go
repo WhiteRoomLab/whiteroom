@@ -798,6 +798,58 @@ func TestEventsEngineFailure(t *testing.T) {
 	}
 }
 
+// TestEventsPeerGone: the last byte of an Events reply fills a frame exactly, and the peer is gone before that frame is
+// written: the write fails with the reply open, which ends the session as any failed write does, and the daemon goes on.
+func TestEventsPeerGone(t *testing.T) {
+	for _, frames := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d frames", frames), func(t *testing.T) {
+			f := newFixture(t, nil)
+			frame := f.opts.Limits.Frame
+			w := f.connect(dbwire.RoleWriter)
+			seq := w.mustSnapshot()
+			// The body is an event of the writer, the mark of its commit, and the byte that ends the events.
+			n := frames*frame - 21 - (21 + dbwire.MarkSize) - 1 // an event has 21 bytes besides its data
+			if _, _, err := w.commitExactly(seq, schemaOp(), event(strings.Repeat("e", n))); err != nil {
+				t.Fatal(err)
+			}
+			r := f.connect(dbwire.RoleReader)
+			r.mustSnapshot()
+			events, err := r.events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			size := 1
+			for _, ev := range events {
+				size += 21 + len(ev.Data)
+			}
+			if size != frames*frame {
+				t.Fatalf("the body of the reply has %d bytes, want %d", size, frames*frame)
+			}
+
+			if err := <-r.send(dbwire.KindEvents, nil); err != nil {
+				t.Fatal(err)
+			}
+			if frames > 1 {
+				// The first frame is written when it is full; the peer takes it and then goes.
+				if err := r.rd.Reply(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			eventually(t, "the daemon to write the last frame", func() bool {
+				return blockedIn("dbserver.(*session).eventsRequest", "net.(*pipe).Write")
+			})
+			_ = r.conn.Close()
+			f.waitSessions(1) // the writer's
+
+			other := f.connect(dbwire.RoleReader)
+			other.mustSnapshot()
+			if got, err := other.events(); err != nil || len(got) != len(events) {
+				t.Errorf("the events after the session that failed: %d (%v), want %d", len(got), err, len(events))
+			}
+		})
+	}
+}
+
 func TestVerify(t *testing.T) {
 	large := strings.Repeat("an object in a file ", 100)
 	setup := func(t *testing.T) (*fixture, *client) {

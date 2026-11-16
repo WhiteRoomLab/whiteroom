@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -511,6 +512,59 @@ func TestClockEarly(t *testing.T) {
 			}
 			if c.early(&d, set) || len(got) != 1 {
 				t.Error("a second time-out of the same deadline is not believed")
+			}
+		})
+	}
+}
+
+// TestClockHugeLimit: a limit so long that its deadline is beyond what a Duration holds is no deadline: it does not fire
+// at once, as the sum that overflows would make it.
+func TestClockHugeLimit(t *testing.T) {
+	const tick = 500 * time.Millisecond
+	limits := []time.Duration{math.MaxInt64, math.MaxInt64 - time.Second, math.MaxInt64 - 4*tick, 100 * 365 * 24 * time.Hour}
+
+	t.Run("the deadline", func(t *testing.T) {
+		s := &Server{started: time.Now().Add(-time.Hour), tick: tick}
+		s.coarse.Store(int64(time.Minute))
+		s.lateAt.Store(int64(time.Hour)) // a time-out is then believed to be early, which sets the deadline again
+		c := &timedConn{s: s}
+		for _, limit := range limits {
+			huge := limit > math.MaxInt64-time.Hour // its sum with the time since the start overflows
+			var d deadline
+			at := c.stamp(&d, limit)
+			if at.IsZero() != huge {
+				t.Errorf("the deadline of %v is %v: a deadline that is beyond what a Duration holds is none", limit, at)
+			}
+			if !huge && at.Sub(s.started) != time.Minute+limit+4*tick {
+				t.Errorf("the deadline of %v is %v after the start", limit, at.Sub(s.started))
+			}
+			var got []time.Time
+			d = deadline{limit: limit}
+			if !c.early(&d, func(at time.Time) error { got = append(got, at); return nil }) || len(got) != 1 {
+				t.Fatalf("early with the limit %v: %d deadlines set", limit, len(got))
+			}
+			if got[0].IsZero() != huge || !huge && !got[0].After(time.Now()) {
+				t.Errorf("the deadline of %v from the real clock is %v", limit, got[0])
+			}
+		}
+	})
+
+	for name, set := range map[string]func(o *Options, limit time.Duration){
+		"the idle limit of a snapshot": func(o *Options, limit time.Duration) { o.Limits.SnapshotIdle = limit },
+		"the stall limit":              func(o *Options, limit time.Duration) { o.Limits.Stall = limit },
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, limit := range limits {
+				t.Run(limit.String(), func(t *testing.T) {
+					f := newFixture(t, func(o *Options) { set(o, limit) })
+					seedWindow(f)
+					c := f.connect(dbwire.RoleReader)
+					c.mustSnapshot()
+					// A request behind the wait for it with the limit is answered, and the snapshot is still there.
+					if found, v := c.mustGet(2, "k001"); !found || v != "v001" {
+						t.Errorf("a Get: %v %q", found, v)
+					}
+				})
 			}
 		})
 	}

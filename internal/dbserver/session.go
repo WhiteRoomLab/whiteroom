@@ -56,7 +56,19 @@ func (c *timedConn) current(d *deadline, limit time.Duration) bool {
 func (c *timedConn) stamp(d *deadline, limit time.Duration) time.Time {
 	at := c.s.coarse.Load()
 	*d = deadline{limit: limit, at: at}
-	return c.s.started.Add(time.Duration(at) + limit + 4*c.s.tick)
+	return c.s.deadlineAfter(time.Duration(at), limit, 4*c.s.tick)
+}
+
+// deadlineAfter returns the time that is the sum of the parts after the start of the server, which are not negative; the
+// zero time, which is no deadline, if the sum is more than a Duration holds: a limit that long never fires.
+func (s *Server) deadlineAfter(parts ...time.Duration) time.Time {
+	var sum time.Duration
+	for _, p := range parts {
+		if sum += p; sum < 0 {
+			return time.Time{}
+		}
+	}
+	return s.started.Add(sum)
 }
 
 // readWithin sets the read deadline limit from now, by the clock of the server, unless it is set. limit 0: no deadline,
@@ -84,13 +96,13 @@ func (c *timedConn) early(d *deadline, set func(time.Time) error) bool {
 	if c.s.lateAt.Load() <= d.at && now <= time.Duration(at)+2*c.s.tick {
 		return false
 	}
-	_ = set(c.s.started.Add(now + d.limit))
+	_ = set(c.s.deadlineAfter(now, d.limit))
 	d.real = true
 	return true
 }
 
 func (c *timedConn) Read(p []byte) (int, error) {
-	if c.busy && c.stall > 0 {
+	if c.busy { // with no stall limit this clears the idle deadline that wait set
 		c.readWithin(c.stall)
 	}
 	n, err := c.Conn.Read(p)
@@ -258,7 +270,10 @@ func (c *session) request() bool {
 }
 
 func (c *session) end() {
-	_ = c.wr.Flush()
+	// A reply that is still open is dropped with what is held: the connection is closing, and Flush would panic.
+	if !c.wr.Open() {
+		_ = c.wr.Flush()
+	}
 	if c.carried {
 		c.carried = false
 		c.s.endRequest()

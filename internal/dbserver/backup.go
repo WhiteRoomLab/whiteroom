@@ -81,7 +81,7 @@ func (c *session) backupRequest() bool {
 	case err == nil:
 		return c.wr.End() == nil
 	case c.ctx.Err() != nil:
-		return false
+		return false // the server is closing, and its connections are closed: end drops the reply, which is open
 	case errors.As(err, &r):
 		return c.fail(r.code, r.msg)
 	}

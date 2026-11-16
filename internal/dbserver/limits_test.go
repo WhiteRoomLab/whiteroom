@@ -74,6 +74,85 @@ func TestSafeText(t *testing.T) {
 	}
 }
 
+// TestSizeRefusalTexts pins the whole texts of the refusals of a size, as the daemon sends them: the ones of the decoder
+// of the protocol have the prefix of its errors, and the ones of the daemon have none.
+func TestSizeRefusalTexts(t *testing.T) {
+	f := newFixture(t, func(o *Options) { o.Limits.Commit, o.Limits.Object, o.Limits.Staged = 100, 600, 1000 })
+	f.srv.maxOps, f.srv.maxStagedCount = 3, 2
+	for _, tc := range []struct {
+		name string
+		role dbwire.Role
+		send func(c *client) error
+		want string
+	}{
+		{"a frame", dbwire.RoleReader, func(c *client) error {
+			done := c.writeRaw([]byte{byte(dbwire.KindGet), 1, 0, 0, 0, 0, 0x20, 0})
+			defer func() { <-done }()
+			return c.readReply()
+		}, "malformed message: a frame of 8192 bytes, over the limit of 4096"},
+		{"an object", dbwire.RoleWriter, func(c *client) error {
+			done := c.writeRaw(rawFrame(byte(dbwire.KindPutObject), 1, binary.BigEndian.AppendUint64(make([]byte, 32), 1<<40)))
+			defer func() { <-done }()
+			return c.readReply()
+		}, "malformed message: an object of 1099511627776 bytes, over the limit of 600"},
+		{"a key", dbwire.RoleReader, func(c *client) error {
+			_, _, err := c.get(2, strings.Repeat("k", dbwire.MaxKey+1))
+			return err
+		}, "malformed message: a byte string of 4097 bytes, over the limit of 4096"},
+		{"the ops of a Commit in bytes", dbwire.RoleWriter, func(c *client) error {
+			_, _, err := c.commitExactly(0, event(strings.Repeat("e", 96))) // 101 bytes
+			return err
+		}, "the ops of a Commit are over 100 bytes"},
+		{"an op that does not fit what is left of the limit", dbwire.RoleWriter, func(c *client) error {
+			// The first op has 64 bytes, which leaves 36 for the next.
+			_, _, err := c.commitExactly(0, put(2, "k", strings.Repeat("v", 50)), event(strings.Repeat("e", 40)))
+			return err
+		}, "malformed message: a byte string of 40 bytes, over the limit of 36"},
+		{"the ops of a Commit in number", dbwire.RoleWriter, func(c *client) error {
+			_, _, err := c.commitExactly(0, event("a"), event("b"), event("c"), event("d"))
+			return err
+		}, "a Commit of more than 3 ops"},
+		{"a Commit that a reader sends", dbwire.RoleReader, func(c *client) error {
+			_, _, err := c.commitExactly(0, event(strings.Repeat("e", 200)))
+			return err
+		}, "a request of more than 164 bytes"},
+		{"an original", dbwire.RoleWriter, func(c *client) error {
+			_, err := c.putOriginal([]byte(strings.Repeat("o", 601)))
+			return err
+		}, "the original is larger than 600 bytes"},
+		{"the bytes of the staged objects", dbwire.RoleWriter, func(c *client) error {
+			for _, data := range []string{strings.Repeat("a", 400), strings.Repeat("b", 400)} {
+				if _, err := c.putObject(data); err != nil {
+					return err
+				}
+			}
+			_, err := c.putObject(strings.Repeat("c", 300))
+			return err
+		}, "the staged objects would be over 1000 bytes"},
+		{"the number of the staged objects", dbwire.RoleWriter, func(c *client) error {
+			for _, data := range []string{"a", "b", "c"} {
+				if _, err := c.putObject(data); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, "more than 2 objects would be staged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := f.connect(tc.role)
+			defer func() {
+				_ = c.conn.Close()
+				f.waitSessions(0)
+			}()
+			c.mustSnapshot()
+			re := wantCode(t, tc.send(c), dbwire.CodeLimit)
+			if re.Msg != tc.want {
+				t.Errorf("the text is %q, want %q", re.Msg, tc.want)
+			}
+		})
+	}
+}
+
 // TestNoValuesLeak: the keys, the values, the objects and the events that the peer sends hold a marker, and no reply
 // of a refusal and no line of the log may hold it.
 func TestNoValuesLeak(t *testing.T) {

@@ -490,4 +490,49 @@ func TestShutdown(t *testing.T) {
 		<-done
 		r.wantClosed()
 	})
+
+	// The reply to a request that ends is held only while the server is not shutting down: once it is, the reply is written
+	// before the request ends, and the request behind it is refused, as it begins after Shutdown has.
+	t.Run("a window that has begun, with a request behind the second", func(t *testing.T) {
+		held, release := make(chan struct{}, 4), make(chan struct{})
+		var unblock sync.Once
+		f := newFixture(t, func(o *Options) {
+			o.Hook = func(point string) error {
+				if point == "reply:held" {
+					held <- struct{}{}
+					<-release
+				}
+				return nil
+			}
+		})
+		t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+		seedWindow(f)
+		r := f.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		var w window
+		w.get(2, "k001", "")
+		w.get(2, "k002", "")
+		w.get(2, "k003", "")
+		r.writeWindow(w.bytes)
+		<-held
+		done := shuttingDown(t, f)
+		unblock.Do(func() { close(release) })
+		for i, want := range []string{`get true "v001"`, `get true "v002"`} {
+			if got := r.readOne(dbwire.KindGet); got != want {
+				t.Errorf("the reply to request %d: %s, want %s", i+1, got, want)
+			}
+		}
+		// The third is refused, unless the end of Shutdown, which follows the end of the second request, closes the connection
+		// first: it is not answered either way.
+		_ = r.conn.SetReadDeadline(time.Now().Add(waitLimit))
+		var re *dbwire.RemoteError
+		if err := r.rd.Reply(); err == nil || errors.As(err, &re) && re.Code != dbwire.CodeBusy {
+			t.Errorf("the third request: %v, want it refused as busy or the connection closed", err)
+		}
+		<-done
+		r.wantClosed()
+		if len(held) != 0 {
+			t.Error("a reply was held after Shutdown had begun")
+		}
+	})
 }
