@@ -242,8 +242,8 @@ func count(n int, noun string) string {
 }
 
 // errorPrinter prints on w the problems and the errors of command, such as "whiteroom build", on the site in the
-// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of a
-// data directory, which have no files in site: only the schema file and the theme are there.
+// directory site, with the theme in the directory theme if it is not "". If stored is true, the documents are those of the
+// store of a daemon, which have no files in site: only the schema file and the theme are there.
 type errorPrinter struct {
 	w                    io.Writer
 	command, site, theme string
@@ -259,8 +259,8 @@ func (p errorPrinter) printProblem(e *content.Error) {
 	printf(p.w, "%s\n", c.Error())
 }
 
-// path returns the path from the working directory of file, a path with "/" in the site directory; for a data directory,
-// the name of the document in it, which is not a path of the site directory, is the same.
+// path returns the path from the working directory of file, a path with "/" in the site directory; for a store, the name
+// of the document in it, which is not a path of the site directory, is the same.
 func (p errorPrinter) path(file string) string {
 	if rest, ok := strings.CutPrefix(file, "theme"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
 		if p.theme != "" {

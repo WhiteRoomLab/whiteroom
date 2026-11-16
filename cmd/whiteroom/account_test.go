@@ -720,7 +720,7 @@ func TestAccountBesideAdmin(t *testing.T) {
 				if code != 1 || stdout != "" || len(lines) != 2 || !strings.HasPrefix(lines[0], name+": ") ||
 					!strings.HasSuffix(lines[0], ": another process is connected as the writer") ||
 					!strings.HasPrefix(lines[1], name+": stop whiteroom serve admin") || !strings.Contains(lines[1], tt.advice) {
-					t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the writer lock and the advice", name,
+					t.Errorf("%s beside the server = %d, with stdout %q and stderr:\n%s\nwant 1, the error of the second writer and the advice", name,
 						code, stdout, stderr)
 				}
 				if status, _, _, err := a.try(http.MethodGet, "/api/builds", "", "Cookie", cookie); err != nil || status != http.StatusOK {

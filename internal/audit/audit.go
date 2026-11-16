@@ -1,6 +1,7 @@
 // Package audit is the form of the records of the login history and the activity log (7.4): their types, the actions,
 // the JSON that the Content Store keeps, the filter that selects them and the line that names the head of a chain, which
-// Export writes outside the store. The store (internal/store) adds, chains, reads and verifies the records.
+// the DB daemon writes outside the store (internal/dbserver). The store (internal/store) adds, chains, reads and
+// verifies the records.
 package audit
 
 import (

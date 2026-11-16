@@ -55,7 +55,7 @@ is read.
 Flags:
 `
 
-// storeOptions are the options of the store, as internal/store has them today.
+// storeOptions are the options of the engine of a store, which serve uses too.
 func storeOptions() dbserver.Options {
 	return dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
 }

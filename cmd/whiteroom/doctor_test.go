@@ -832,7 +832,7 @@ func TestReportLimit(t *testing.T) {
 // to itself under the URL, which a server without it has saved, is a problem of the part site; it is none without the URL,
 // under the URL of the settings, and under another URL. The flag wins over the item. Without SITE, -url is a usage error and
 // the item is not used, and not looked at. A URL that does not pass is a usage error that prints nothing on stdout and does
-// not open the data directory.
+// not connect to the daemon.
 func TestDoctorURL(t *testing.T) {
 	const (
 		staging = "https://staging.example.com"

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -430,6 +431,144 @@ func TestRunShutdown(t *testing.T) {
 	if got := (&fixture{t: t, srv: srv}).dump().Seq; got != 1 {
 		t.Errorf("the store has the sequence number %d, want 1: the request in progress has been committed", got)
 	}
+}
+
+// blockedHeads is the Heads of a daemon whose first Write does not return until unblock is called.
+type blockedHeads struct {
+	lines    lineWriter
+	entered  chan struct{} // closed when the first Write has begun
+	release  chan struct{}
+	first    sync.Once
+	released sync.Once
+}
+
+func newBlockedHeads() *blockedHeads {
+	return &blockedHeads{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *blockedHeads) Write(p []byte) (int, error) {
+	w.first.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	return w.lines.Write(p)
+}
+
+func (w *blockedHeads) unblock() { w.released.Do(func() { close(w.release) }) }
+
+// startBlockedHeads starts a daemon whose store has the head 1, so that the write of the heads at its start blocks, and
+// returns it once that write has begun, with the channel of its ticks, which holds one, as that of a time.Ticker does.
+func startBlockedHeads(t *testing.T) (*daemon, *blockedHeads, chan time.Time) {
+	t.Helper()
+	w, ticks := newBlockedHeads(), make(chan time.Time, 1)
+	d := startDaemon(t, func(c *client) {
+		c.mustCommit(put(2, "a", "1"), put(dbwire.TableHeads, "activity", headLine(1)))
+	}, func(c *Config) {
+		c.Heads = w
+		c.Ticks = func() (<-chan time.Time, func()) { return ticks, func() {} }
+	})
+	// This runs before the end of the daemon, which waits for the write.
+	t.Cleanup(w.unblock)
+	select {
+	case <-w.entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the daemon has not begun to write the heads at its start")
+	}
+	return d, w, ticks
+}
+
+// keepsGoing makes a Commit of the writer, which puts the head 2, and then a View of a reader, which reads what it has
+// put, and fails the test if either does not return or is wrong.
+func (d *daemon) keepsGoing(t *testing.T) {
+	t.Helper()
+	w, r := d.dial(dbwire.WriterSocket, false), d.dial(dbwire.ReaderSocket, false)
+	done := make(chan error, 1)
+	go func() {
+		if _, _, err := w.tryCommit(put(2, "b", "2"), put(dbwire.TableHeads, "activity", headLine(2))); err != nil {
+			done <- fmt.Errorf("Commit: %w", err)
+			return
+		}
+		if _, err := r.snapshot(); err != nil {
+			done <- fmt.Errorf("Snapshot: %w", err)
+			return
+		}
+		found, value, err := r.get(2, "b")
+		if err == nil && (!found || string(value) != "2") {
+			err = fmt.Errorf("the reader reads %v %q, want the value that the writer has put", found, value)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("while the write of a head has not returned, %v", err)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("a Commit and a View do not go on while the write of a head has not returned")
+	}
+}
+
+// TestRunBlockedHeads checks that a Write of the heads that does not return holds up the export of the heads and nothing
+// else: a Commit of the writer and a View of a reader go on, and a tick that comes meanwhile waits in its channel and is
+// taken when the write has returned, which writes the head that was put meanwhile. It checks that Run, whose context has
+// ended, does not return before that write has, and then returns nil, having written the last head.
+func TestRunBlockedHeads(t *testing.T) {
+	want := []string{headLine(1) + "\n", headLine(2) + "\n"}
+	t.Run("a tick comes while the write is blocked", func(t *testing.T) {
+		d, w, ticks := startBlockedHeads(t)
+		d.keepsGoing(t)
+		ticks <- time.Time{}
+		if got := w.lines.all(); len(got) != 0 {
+			t.Errorf("the lines of the heads are %q while no write has returned", got)
+		}
+		w.unblock()
+		eventually(t, "the tick to be taken, which writes the head that was put while the write was blocked", func() bool {
+			return len(w.lines.all()) == 2
+		})
+		if got := w.lines.all(); !slices.Equal(got, want) {
+			t.Errorf("the lines of the heads are %q, want %q", got, want)
+		}
+		if err := d.stop(); err != nil {
+			t.Errorf("Run = %v after the end of its context", err)
+		}
+		if got := w.lines.all(); !slices.Equal(got, want) {
+			t.Errorf("the lines of the heads after the stop are %q, want %q: the head is written once", got, want)
+		}
+	})
+	t.Run("the context ends while the write is blocked", func(t *testing.T) {
+		d, w, _ := startBlockedHeads(t)
+		d.keepsGoing(t)
+		d.cancel()
+		eventually(t, "the sockets to be closed", func() bool {
+			_, err := net.Dial("unix", filepath.Join(d.socks, dbwire.ReaderSocket))
+			return err != nil
+		})
+		select {
+		case err := <-d.done:
+			d.stopped = true
+			t.Fatalf("Run returned %v while the write of a head has not", err)
+		case <-time.After(500 * time.Millisecond):
+		}
+		w.unblock()
+		select {
+		case err := <-d.done:
+			d.stopped = true
+			if err != nil {
+				t.Errorf("Run = %v after the write of the head has returned, want nil", err)
+			}
+		case <-time.After(waitLimit):
+			t.Fatal("Run has not returned after the write of the head has")
+		}
+		if got := w.lines.all(); !slices.Equal(got, want) {
+			t.Errorf("the lines of the heads are %q, want %q: the last write has the head that was put while the first was blocked",
+				got, want)
+		}
+		srv, err := OpenDir(d.data, d.cfg.Options)
+		if err != nil {
+			t.Fatalf("OpenDir() after Run has returned = %v", err)
+		}
+		_ = srv.Close()
+	})
 }
 
 // TestRunErrors checks what stops Run before it serves: a path of a socket that is too long, a data directory that is not

@@ -50,7 +50,7 @@ jobs:
         run: nix develop -c golangci-lint run
 
       - name: test
-        run: nix develop -c go test -race ./...
+        run: nix develop -c go test -race -timeout 20m ./...
 
       # Everything must build and pass without cgo (docs 3.4); -race above needs cgo.
       - name: build without cgo

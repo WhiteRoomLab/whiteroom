@@ -1091,8 +1091,8 @@ func TestInitFailures(t *testing.T) {
 }
 
 // TestInitBesideWriter runs whiteroom init while another process is connected as the writer of the daemon, such as a whiteroom
-// serve admin: it fails after the wait of the client, with the sentence of the writer lock, without reading its standard input,
-// and the store is as it was.
+// serve admin: it fails after the wait of the client, with the sentence of the daemon's refusal of a second writer, without
+// reading its standard input, and the store is as it was.
 func TestInitBesideWriter(t *testing.T) {
 	t.Parallel()
 	db := newDB(t)

@@ -96,6 +96,18 @@ linters:
           deny:
             - pkg: github.com/WhiteRoomLab/whiteroom/internal/store/storetest$
               desc: storetest は、データのディレクトリから保存先を開く、テストの土台で、テストだけが使う
+        to-engine:
+          list-mode: lax
+          files:
+            - "!$test"
+            - "!**/internal/logdb/**"
+            - "!**/internal/dbserver/**"
+            - "!**/cmd/whiteroom-db/*.go"
+          deny:
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/logdb$
+              desc: エンジンを開くのは、DB のデーモン（cmd/whiteroom-db と internal/dbserver）だけ（3.6）。ほかは、internal/dbclient で繋ぐ
+            - pkg: github.com/WhiteRoomLab/whiteroom/internal/dbserver$
+              desc: エンジンを開くのは、DB のデーモン（cmd/whiteroom-db と internal/dbserver）だけ（3.6）。ほかは、internal/dbclient で繋ぐ
         stdlib-only:
           list-mode: strict
           # Every package with a rule of its own is excluded here; other files may import only the standard library.

@@ -59,12 +59,12 @@ as the url of the site settings, for the site of another environment, such as
 https://staging.example.com; the settings are not changed. URL is checked as the
 url of the settings is, and is used with SITE only.
 
--heads reads the heads of the audit logs that a whiteroom serve admin has written
-to its standard error, or whiteroom backup to its standard output, which were kept
+-heads reads the heads of the audit logs that whiteroom-db serve has written to its
+standard error, or whiteroom backup to its standard output, which were kept
 outside the store: the lines that have "audit head " are used, the others
 skipped, so that a log can be given as it is. Each must be the hash of the record
 of its number. After a restore, give the heads that whiteroom backup printed, not
-those that the server wrote after the copy was taken.
+those that the daemon wrote after the copy was taken.
 
 With -config, the items db, site, theme and url of the YAML file give what -db,
 SITE, -theme and -url leave out; the other items are checked and not used: one file
