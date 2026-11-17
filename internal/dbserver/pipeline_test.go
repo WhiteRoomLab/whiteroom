@@ -439,11 +439,11 @@ func TestClockDeadlineBounds(t *testing.T) {
 	for range 300 {
 		time.Sleep(time.Millisecond)
 		var d deadline
-		before := time.Since(f.srv.started)
 		at := tc.stamp(&d, limit).Sub(f.srv.started)
 		after := time.Since(f.srv.started)
-		if at > before+limit+4*tick {
-			t.Fatalf("the deadline is %v, and the time was %v: it is more than %v after the time", at, before, limit+4*tick)
+		// The clock may be read while stamp runs, so the bound counts from its end.
+		if at > after+limit+4*tick {
+			t.Fatalf("the deadline is %v, and the time was %v: it is more than %v after the time", at, after, limit+4*tick)
 		}
 		if after-time.Duration(d.at) > 4*tick {
 			continue // the goroutine of the clock did not run in time
