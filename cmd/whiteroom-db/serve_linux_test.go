@@ -66,9 +66,10 @@ func newDirs(t *testing.T) dirs {
 	return d
 }
 
-// args are the flags that name the directories, and lower the free space that the daemon keeps to what a test disk has.
+// args are the flags that name the directories, and lower the free space and inodes that the daemon keeps to what a test
+// disk has.
 func (d dirs) args(more ...string) []string {
-	return append([]string{"-data", d.data, "-db", d.socks, "-min-free", "1"}, more...)
+	return append([]string{"-data", d.data, "-db", d.socks, "-min-free", "1", "-min-free-inodes", "1"}, more...)
 }
 
 // daemon is a whiteroom-db serve in a goroutine of the test.
@@ -346,7 +347,7 @@ func TestServeFailures(t *testing.T) {
 	if err := os.Mkdir(other, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, stderr = runCmd(t, "serve", "-data", d.data, "-db", other, "-min-free", "1")
+	code, stdout, stderr = runCmd(t, "serve", "-data", d.data, "-db", other, "-min-free", "1", "-min-free-inodes", "1")
 	want = "whiteroom-db serve: " + filepath.Join(d.data, "logdb") + ": another process holds the writer lock\n"
 	if code != 1 || stdout != "" || stderr != want {
 		t.Errorf("a second serve on the data directory = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
@@ -453,7 +454,7 @@ func TestServeUsers(t *testing.T) {
 	}
 	// The same from the config file.
 	d = newDirs(t)
-	file := writeFile(t, d.root, "whiteroom.yaml", fmt.Sprintf("data: data\ndb: s\nminFree: 1\nreaderGroup: %d\n", other))
+	file := writeFile(t, d.root, "whiteroom.yaml", fmt.Sprintf("data: data\ndb: s\nminFree: 1\nminFreeInodes: 1\nreaderGroup: %d\n", other))
 	s = d.startServe(t, "-config", file)
 	if got := socketGroup(t, d.socks, dbwire.ReaderSocket); got != other {
 		t.Errorf("with readerGroup in the file the group of the reader socket is %d, want %d", got, other)
@@ -574,7 +575,7 @@ func TestServeLimits(t *testing.T) {
 	}
 
 	for _, c := range []limitCase{
-		{name: "max-readers", flags: []string{"-max-readers", "1", "-min-free", "1"}, item: "maxReaders: 1\nminFree: 1\n",
+		{name: "max-readers", flags: []string{"-max-readers", "1", "-min-free", "1"}, item: "maxReaders: 1\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
 				openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
 				_, err := dbclient.Open(t.Context(), dbclient.SocketDir(d.socks), dbwire.RoleReader, dbclient.Options{DialWait: -1})
@@ -616,7 +617,7 @@ func TestServeLimits(t *testing.T) {
 				w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
 				mustCommit(t, w, row{2, "a", "1"})
 			}},
-		{name: "max-staged", flags: []string{"-max-staged", "100", "-min-free", "1"}, item: "maxStaged: 100\nminFree: 1\n",
+		{name: "max-staged", flags: []string{"-max-staged", "100", "-min-free", "1"}, item: "maxStaged: 100\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
 				w := seed(t, d)
 				object := func(n int) error {
@@ -635,39 +636,39 @@ func TestServeLimits(t *testing.T) {
 					t.Errorf("an object of 101 bytes = %v, want it refused for the limit of 100 bytes", err)
 				}
 			}},
-		{name: "snapshot-idle", flags: []string{"-snapshot-idle", "100ms", "-min-free", "1"}, item: "snapshotIdle: 100ms\nminFree: 1\n",
+		{name: "snapshot-idle", flags: []string{"-snapshot-idle", "100ms", "-min-free", "1"}, item: "snapshotIdle: 100ms\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
 				seed(t, d)
 				wantCode(t, snapshotAfterSleep(d), dbwire.CodeNoSnapshot)
 			}},
 		{name: "snapshot-idle of 0 over the item", flags: []string{"-snapshot-idle", "0", "-min-free", "1"},
-			item: "snapshotIdle: 100ms\nminFree: 1\n", over: true,
+			item: "snapshotIdle: 100ms\nminFree: 1\nminFreeInodes: 1\n", over: true,
 			check: func(t *testing.T, d dirs) {
 				seed(t, d)
 				if err := snapshotAfterSleep(d); err != nil {
 					t.Errorf("a snapshot that the daemon should never release: %v", err)
 				}
 			}},
-		{name: "stall", flags: []string{"-stall", "200ms", "-min-free", "1"}, item: "stall: 200ms\nminFree: 1\n",
+		{name: "stall", flags: []string{"-stall", "200ms", "-min-free", "1"}, item: "stall: 200ms\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
 				if err := cutAfter(t, d, 10*time.Second); err != nil {
 					t.Errorf("a connection that says nothing: %v, want it closed by the daemon", err)
 				}
 			}},
-		{name: "stall of 0 over the item", flags: []string{"-stall", "0", "-min-free", "1"}, item: "stall: 200ms\nminFree: 1\n", over: true,
+		{name: "stall of 0 over the item", flags: []string{"-stall", "0", "-min-free", "1"}, item: "stall: 200ms\nminFree: 1\nminFreeInodes: 1\n", over: true,
 			check: func(t *testing.T, d dirs) {
 				if err := cutAfter(t, d, time.Second); !errors.Is(err, os.ErrDeadlineExceeded) {
 					t.Errorf("a connection that says nothing: %v, want it left open", err)
 				}
 			}},
-		{name: "commit-rate", flags: []string{"-commit-rate", "2", "-min-free", "1"}, item: "commitRate: 2\nminFree: 1\n",
+		{name: "commit-rate", flags: []string{"-commit-rate", "2", "-min-free", "1"}, item: "commitRate: 2\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
 				w := seed(t, d) // takes one of the two
 				if took := commits(t, w, 4); took < time.Second {
 					t.Errorf("5 commits at 2 a second took %v, want a second or more", took)
 				}
 			}},
-		{name: "commit-rate of 0 over the item", flags: []string{"-commit-rate", "0", "-min-free", "1"}, item: "commitRate: 2\nminFree: 1\n",
+		{name: "commit-rate of 0 over the item", flags: []string{"-commit-rate", "0", "-min-free", "1"}, item: "commitRate: 2\nminFree: 1\nminFreeInodes: 1\n",
 			over: true,
 			check: func(t *testing.T, d dirs) {
 				w := seed(t, d)
@@ -711,7 +712,7 @@ func TestServeCommitRateOff(t *testing.T) {
 			d := newDirs(t)
 			args := append(d.args(), form.flags...)
 			if form.item != "" {
-				args = []string{"-config", writeFile(t, d.root, "whiteroom.yaml", "data: data\ndb: s\nminFree: 1\n"+form.item)}
+				args = []string{"-config", writeFile(t, d.root, "whiteroom.yaml", "data: data\ndb: s\nminFree: 1\nminFreeInodes: 1\n"+form.item)}
 			}
 			s := d.startServe(t, args...)
 			w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
@@ -749,6 +750,7 @@ writerUser: %d
 maxReaders: 8
 commitRate: 100
 minFree: 1
+minFreeInodes: 1
 snapshotIdle: 10m
 stall: 1m
 maxStaged: 1000000

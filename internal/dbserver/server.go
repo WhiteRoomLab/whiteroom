@@ -25,7 +25,8 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
-// Space is what a process that is not the superuser can still use of a file system.
+// Space is the free space of a file system: the bytes that a process that is not the superuser can still use, and the
+// free inodes.
 type Space struct {
 	Bytes uint64
 	// Inodes are the free inodes, if HasInodes: a file system such as btrfs does not count them.

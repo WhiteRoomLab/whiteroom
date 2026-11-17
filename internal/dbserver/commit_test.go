@@ -733,7 +733,14 @@ func TestMinFreeInodes(t *testing.T) {
 	if _, err := w.putOriginal([]byte("original")); err != nil {
 		t.Fatalf("PutOriginal with exactly enough: %v", err)
 	}
+	inodes.Store(50)
+	_, err = w.putOriginal([]byte("another"))
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != "the free inodes are 50; a write that may make a file must leave 100" {
+		t.Errorf("PutOriginal with 50 inodes: got %q", re.Msg)
+	}
+	w = f.connectAfter(w)
 
+	inodes.Store(101)
 	free.Store(1000) // enough inodes, and too few bytes
 	w.mustSnapshot()
 	_, err = w.putObject("x")
