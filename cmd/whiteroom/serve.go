@@ -30,6 +30,9 @@ func runServe(ctx context.Context, args []string, e env) int {
 		printf(e.stderr, "%s", usage)
 		return 2
 	}
+	if e.catchSIGPIPE != nil && (args[0] == "public" || args[0] == "admin") {
+		e.catchSIGPIPE()
+	}
 	switch args[0] {
 	case "public":
 		return servePublic(ctx, args[1:], e.stdout, e.stderr)

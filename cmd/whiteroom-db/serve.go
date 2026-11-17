@@ -36,7 +36,9 @@ user who connects to writer.sock is refused. Whoever connects to reader.sock rea
 It writes the heads of the chains of the audit logs to the standard error, a line
 each: when it starts, then every minute those that have changed, and when it
 stops, so that the journal keeps them outside the data directory. Its log lines go
-there too, with the date and time, and tell no key or value of a row.
+there too, with the date and time, and tell no key or value of a row. A head that
+cannot be written is tried again the next minute, and the daemon serves on, also
+when the standard error is a pipe whose reader has ended.
 
 The sizes of a frame, of a Commit and of an object are tied to the engine and to
 the limits of the documents, and have no flag. The other limits are the flags
@@ -250,6 +252,9 @@ func lookupGroup(name string) (string, error) {
 
 // runServe runs whiteroom-db serve with args, those after serve, until ctx is done.
 func runServe(ctx context.Context, args []string, e env) int {
+	if e.catchSIGPIPE != nil {
+		e.catchSIGPIPE()
+	}
 	flags, f := newServeFlags(e.stderr)
 	if code, ok := parse(flags, args); !ok {
 		return code
