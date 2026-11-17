@@ -509,7 +509,7 @@ func (b *bench) markdown(work string, started time.Time, elapsed time.Duration, 
 		"timed with time.Now before it and time.Since after it, so the time of a call includes one such read of the clock "+
 		"(its cost is in the list below). The daemon has the limits of dbtest (%+v), except in the "+
 		"measurement that says that it has the defaults. Started %s; %.0f s.\n\n",
-		dbwire.Limits{CommitsPerSecond: -1, MinFree: -1}.WithDefaults(), started.Format(time.RFC3339), elapsed.Seconds())
+		dbwire.Limits{CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}.WithDefaults(), started.Format(time.RFC3339), elapsed.Seconds())
 	memory, _ := strconv.ParseInt(strings.TrimSuffix(benchFirst("/proc/meminfo", "MemTotal"), " kB"), 10, 64)
 	fmt.Fprintf(&h, "- %s %s/%s\n- %s, %d CPUs, %d MiB of memory, Linux %s\n- Work directory %s (%s)\n",
 		runtime.Version(), runtime.GOOS, runtime.GOARCH, benchFirst("/proc/cpuinfo", "model name"), runtime.NumCPU(),
@@ -807,9 +807,9 @@ func (b *bench) defaultLimits() {
 	})
 	var re *dbwire.RemoteError
 	if errors.As(err, &re) && re.Code == dbwire.CodeNoSpace {
-		refused = "The check of the free space (1 GiB, the default) refused the first commit: " + re.Msg + ". "
+		refused = "The check of the free space (the defaults: 1 GiB and 65536 inodes) refused the first commit: " + re.Msg + ". "
 		d.stop()
-		d.limits = &dbwire.Limits{MinFree: -1}
+		d.limits = &dbwire.Limits{MinFree: -1, MinFreeInodes: -1}
 		d.start()
 		err = nil
 		d.seed()

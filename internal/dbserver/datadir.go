@@ -41,7 +41,7 @@ func OpenDir(dir string, o Options) (*Server, error) {
 	}
 	defer func() { _ = root.Close() }()
 	if o.FreeSpace == nil && spaceChecked {
-		o.FreeSpace = func() (uint64, error) { return freeSpace(resolved) }
+		o.FreeSpace = func() (Space, error) { return freeSpace(resolved) }
 	}
 	return Open(root, dir, o)
 }

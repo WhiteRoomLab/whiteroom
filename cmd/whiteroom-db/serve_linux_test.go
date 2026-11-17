@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -585,6 +586,32 @@ func TestServeLimits(t *testing.T) {
 				wantCode(t, commit(t.Context(), w, row{2, "a", "1"}), dbwire.CodeNoSpace)
 			}},
 		{name: "min-free of 0 over the item", flags: []string{"-min-free", "0"}, item: "minFree: 4611686018427387904\n", over: true,
+			check: func(t *testing.T, d dirs) {
+				w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
+				mustCommit(t, w, row{2, "a", "1"})
+			}},
+		{name: "min-free-inodes", flags: []string{"-min-free-inodes", "4611686018427387904", "-min-free", "1"},
+			item: "minFreeInodes: 4611686018427387904\nminFree: 1\n",
+			check: func(t *testing.T, d dirs) {
+				w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
+				err := commit(t.Context(), w, row{2, "a", "1"})
+				var st syscall.Statfs_t
+				if serr := syscall.Statfs(d.data, &st); serr != nil {
+					t.Fatal(serr)
+				}
+				if st.Files == 0 || st.Files == math.MaxUint64 || st.Ffree == math.MaxUint64 {
+					if err != nil {
+						t.Errorf("a commit on a file system that does not count its inodes = %v, want it accepted", err)
+					}
+					return
+				}
+				wantCode(t, err, dbwire.CodeNoSpace)
+				if err == nil || !strings.Contains(err.Error(), "must leave 4611686018427387904") {
+					t.Errorf("the refusal is %v, want it to tell the limit", err)
+				}
+			}},
+		{name: "min-free-inodes of 0 over the item", flags: []string{"-min-free-inodes", "0", "-min-free", "1"},
+			item: "minFreeInodes: 4611686018427387904\nminFree: 1\n", over: true,
 			check: func(t *testing.T, d dirs) {
 				w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
 				mustCommit(t, w, row{2, "a", "1"})

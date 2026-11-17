@@ -16,7 +16,7 @@ const (
 )
 
 // Limits are the limits that the daemon keeps, and tells its clients in the reply to a Hello. A zero field is the
-// default; a negative SnapshotIdle, Stall, CommitsPerSecond or MinFree turns that limit off.
+// default; a negative SnapshotIdle, Stall, CommitsPerSecond, MinFree or MinFreeInodes turns that limit off.
 type Limits struct {
 	// Frame is the largest payload of a frame.
 	Frame int
@@ -32,6 +32,7 @@ type Limits struct {
 	Stall            time.Duration
 	CommitsPerSecond int
 	MinFree          int64
+	MinFreeInodes    int64
 }
 
 // WithDefaults returns l with each zero field replaced by its default. A negative field stays as it is.
@@ -62,6 +63,9 @@ func (l Limits) WithDefaults() Limits {
 	}
 	if l.MinFree == 0 {
 		l.MinFree = 1 << 30
+	}
+	if l.MinFreeInodes == 0 {
+		l.MinFreeInodes = 1 << 16
 	}
 	return l
 }

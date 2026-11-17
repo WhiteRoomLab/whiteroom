@@ -852,7 +852,7 @@ func TestInitFailsAfterAdmin(t *testing.T) {
 // TestInitDefaultCommitRate runs whiteroom init of the sample site on a daemon with the default limit of commits per second,
 // which is whiteroom-db's, 50: its 3 commits are not slowed down. The free space is not checked, as in the other tests.
 func TestInitDefaultCommitRate(t *testing.T) {
-	db := newDBWith(t, dbwire.Limits{MinFree: -1})
+	db := newDBWith(t, dbwire.Limits{MinFree: -1, MinFreeInodes: -1})
 	start := time.Now()
 	code, _, stderr := initDB(t, db, initPassword+"\n", "-theme", exampleTheme, sampleSite)
 	if code != 0 {

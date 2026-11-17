@@ -501,10 +501,26 @@ func TestOpenDirFreeSpace(t *testing.T) {
 			t.Errorf("the text is %q", re.Msg)
 		}
 	})
+	t.Run("the free inodes of the file system", func(t *testing.T) {
+		f := newDirFixture(t, func(o *Options) { o.Limits.MinFreeInodes = 1 << 60 })
+		w := f.connect(dbwire.RoleWriter)
+		w.mustSnapshot()
+		_, err := w.putObject("object")
+		if !spaceChecked || !inodesCounted(t, f.dir) {
+			if err != nil {
+				t.Errorf("PutObject = %v, want it accepted where the free inodes are not known", err)
+			}
+			return
+		}
+		re := wantCode(t, err, dbwire.CodeNoSpace)
+		if !strings.HasPrefix(re.Msg, "the free inodes are ") || !strings.HasSuffix(re.Msg, " must leave 1152921504606846976") {
+			t.Errorf("the text is %q", re.Msg)
+		}
+	})
 	t.Run("a function in the options", func(t *testing.T) {
 		f := newDirFixture(t, func(o *Options) {
-			o.Limits.MinFree = 1 << 60
-			o.FreeSpace = func() (uint64, error) { return 1 << 62, nil }
+			o.Limits.MinFree, o.Limits.MinFreeInodes = 1<<60, 1<<60
+			o.FreeSpace = func() (Space, error) { return Space{Bytes: 1 << 62, Inodes: 1 << 62, HasInodes: true}, nil }
 		})
 		w := f.connect(dbwire.RoleWriter)
 		w.mustSnapshot()
@@ -524,9 +540,10 @@ func TestOpenDirFreeSpace(t *testing.T) {
 		if !spaceChecked {
 			t.Skip("the free space is not known on this system")
 		}
-		free, err := freeSpace(t.TempDir())
-		if err != nil || free == 0 {
-			t.Errorf("freeSpace() = %d, %v", free, err)
+		dir := t.TempDir()
+		free, err := freeSpace(dir)
+		if err != nil || free.Bytes == 0 || free.HasInodes != inodesCounted(t, dir) || free.HasInodes && free.Inodes == 0 {
+			t.Errorf("freeSpace() = %+v, %v", free, err)
 		}
 		missing := filepath.Join(t.TempDir(), "missing")
 		_, err = freeSpace(missing)

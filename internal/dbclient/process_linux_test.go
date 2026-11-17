@@ -67,7 +67,7 @@ func helperOptions() dbtest.Options {
 	return dbtest.Options{
 		Log: &logdb.Options{Placement: logdb.Hybrid, Threshold: 64, WriterWait: 5 * time.Second},
 		Limits: &dbwire.Limits{Frame: testFrame, SnapshotIdle: -1, Stall: waitLimit, CommitsPerSecond: -1, MinFree: -1,
-			Readers: 8},
+			MinFreeInodes: -1, Readers: 8},
 	}
 }
 

@@ -19,7 +19,8 @@ import (
 // itemNames are the items of the config file: every one has a field of File, and is not "unknown item".
 var itemNames = []string{
 	"data", "site", "theme", "out", "cache", "tmp", "db", "socket", "addr", "origin", "url", "trustedProxies", "workers", "memory",
-	"writerUser", "writerGroup", "readerGroup", "maxReaders", "maxStaged", "commitRate", "minFree", "snapshotIdle", "stall",
+	"writerUser", "writerGroup", "readerGroup", "maxReaders", "maxStaged", "commitRate", "minFree", "minFreeInodes", "snapshotIdle",
+	"stall",
 }
 
 // writeFile writes text as the file name in dir, which it makes, and returns the path of the file.
@@ -103,6 +104,7 @@ maxReaders: 16
 maxStaged: 1048576
 commitRate: 100
 minFree: 2097152
+minFreeInodes: 4096
 snapshotIdle: 30s
 stall: 1m30s
 `, strconv.Quote(abs), strconv.Quote(filepath.Join(abs, "admin.sock")))
@@ -120,7 +122,7 @@ stall: 1m30s
 				Origin: "https://admin.example.com", URL: "https://staging.example.com",
 				TrustedProxies: []string{"10.0.0.0/8", "::1"}, Workers: 4, Memory: 512,
 				WriterUser: "whiteroom", WriterGroup: "1001", ReaderGroup: "www-data", MaxReaders: 16, MaxStaged: 1048576,
-				CommitRate: 100, MinFree: 2097152, SnapshotIdle: 30 * time.Second, Stall: 90 * time.Second,
+				CommitRate: 100, MinFree: 2097152, MinFreeInodes: 4096, SnapshotIdle: 30 * time.Second, Stall: 90 * time.Second,
 			},
 		},
 		{"a url as written", "url: \"HTTPS://Example.com/\"\n", File{URL: "HTTPS://Example.com/"}},
@@ -130,7 +132,7 @@ stall: 1m30s
 		{"tmp, from the directory of the file", "tmp: t\n", File{Tmp: in("t")}},
 		{"tmp, an absolute path", "tmp: " + strconv.Quote(abs) + "\n", File{Tmp: abs}},
 		{"an address with brackets", "addr: \"[::1]:8081\"\n", File{Addr: "[::1]:8081"}},
-		{"numbers of 0", "workers: 0\nmemory: 0\ncommitRate: 0\nminFree: 0\n", File{}},
+		{"numbers of 0", "workers: 0\nmemory: 0\ncommitRate: 0\nminFree: 0\nminFreeInodes: 0\n", File{}},
 		{"the largest memory", fmt.Sprintf("memory: %d\n", MaxMemory), File{Memory: MaxMemory}},
 		{"no proxies", "trustedProxies: []\n", File{}},
 		{"an empty mapping", "{}\n", File{}},
@@ -142,8 +144,8 @@ stall: 1m30s
 		{"a group by name", "writerGroup: www\nreaderGroup: web\n", File{WriterGroup: "www", ReaderGroup: "web"}},
 		{"a group by number", "writerGroup: 33\nreaderGroup: \"34\"\n", File{WriterGroup: "33", ReaderGroup: "34"}},
 		{"the smallest limits", "maxReaders: 1\nmaxStaged: 1\n", File{MaxReaders: 1, MaxStaged: 1}},
-		{"the largest limits", "maxStaged: 9223372036854775807\nminFree: 9223372036854775807\n",
-			File{MaxStaged: 1<<63 - 1, MinFree: 1<<63 - 1}},
+		{"the largest limits", "maxStaged: 9223372036854775807\nminFree: 9223372036854775807\nminFreeInodes: 9223372036854775807\n",
+			File{MaxStaged: 1<<63 - 1, MinFree: 1<<63 - 1, MinFreeInodes: 1<<63 - 1}},
 		{"durations of 0", "snapshotIdle: \"0s\"\nstall: \"0\"\n", File{}},
 		{"durations", "snapshotIdle: 30s\nstall: 5m\n", File{SnapshotIdle: 30 * time.Second, Stall: 5 * time.Minute}},
 		{"a duration of several units", "stall: \"1h2m3.5s\"\n", File{Stall: time.Hour + 2*time.Minute + 3500*time.Millisecond}},
@@ -243,7 +245,7 @@ func TestLoadAll(t *testing.T) {
 		"data": "d", "site": "s", "theme": "t", "out": "o", "cache": "c", "tmp": "m", "db": "b", "socket": "k", "addr": "127.0.0.1:1",
 		"origin": "http://o", "url": "https://example.com", "trustedProxies": "[10.0.0.1]", "workers": "1", "memory": "1",
 		"writerUser": "u", "writerGroup": "g", "readerGroup": "r", "maxReaders": "1", "maxStaged": "1", "commitRate": "1",
-		"minFree": "1", "snapshotIdle": "1s", "stall": "1s",
+		"minFree": "1", "minFreeInodes": "1", "snapshotIdle": "1s", "stall": "1s",
 	}
 	var b strings.Builder
 	for _, item := range itemNames {
@@ -402,6 +404,8 @@ func TestLoadProblems(t *testing.T) {
 		{"a text for minFree", "minFree: \"1GiB\"\n", []string{"1:1: /minFree: " + notWorkers}, []string{"1GiB"}},
 		{"a minFree over int64", "minFree: 9223372036854775808\n", []string{"1:1: /minFree: " + notWorkers},
 			[]string{"9223372036854775808"}},
+		{"a negative minFreeInodes", "minFreeInodes: -1\n", []string{"1:1: /minFreeInodes: " + notWorkers}, []string{"-1"}},
+		{"a fraction for minFreeInodes", "minFreeInodes: 0.5\n", []string{"1:1: /minFreeInodes: " + notWorkers}, []string{"0.5"}},
 
 		{"a negative snapshotIdle", "snapshotIdle: \"-1s\"\n", []string{"1:1: /snapshotIdle: " + notDuration}, []string{"-1s"}},
 		{"a text for snapshotIdle", "snapshotIdle: soon\n", []string{"1:1: /snapshotIdle: " + notDuration}, []string{"soon"}},

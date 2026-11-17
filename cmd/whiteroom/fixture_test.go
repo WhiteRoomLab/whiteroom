@@ -77,7 +77,7 @@ func leakedGoroutines() []string {
 // space, where whiteroom-db serve limits the commits to 50 a second and wants 1 GiB free by default. A test must not depend
 // on how fast the commands go, or on the disk that its temporary directory is on. TestInitDefaultCommitRate runs a daemon with
 // the default commit rate of whiteroom-db.
-var dbLimits = dbwire.Limits{CommitsPerSecond: -1, MinFree: -1}
+var dbLimits = dbwire.Limits{CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}
 
 // testDB is a daemon that runs inside the test process, until the test ends: the data directory that it serves, and the
 // directory of its sockets, which the commands, whiteroom serve admin among them, get as -db. The helpers that read the data

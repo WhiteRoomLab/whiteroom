@@ -326,7 +326,7 @@ func TestOpenOriginalErrors(t *testing.T) {
 func TestOriginalLimit(t *testing.T) {
 	forBackends(t, oneBackend, func(t *testing.T, tb testBackend) {
 		o := tb.options()
-		o.limits = &dbwire.Limits{Object: 2 * content.MaxMediaBytes, CommitsPerSecond: -1, MinFree: -1}
+		o.limits = &dbwire.Limits{Object: 2 * content.MaxMediaBytes, CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}
 		dir := filepath.Join(t.TempDir(), "data")
 		s, err := create(dir, o)
 		if err != nil {
