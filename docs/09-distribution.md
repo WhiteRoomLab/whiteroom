@@ -280,7 +280,7 @@ DBのデーモン（3.6）の実行ファイル。データのディレクトリ
 | `-data DIR` | 開くデータのディレクトリ（`whiteroom-db init` が作ったもの） | 設定ファイルの `data`（必須） |
 | `-db DIR` | `writer.sock` と `reader.sock` を作るディレクトリ。あらかじめ、あること | 設定ファイルの `db`（必須） |
 | `-writer-user USER` | 書き手として繋げるUnixユーザー（名前か数） | 設定ファイルの `writerUser`、無ければ、デーモンを動かすユーザー |
-| `-writer-group GROUP` | `writer.sock` のグループ（名前か数） | 設定ファイルの `writerGroup`、無ければ、システムが付けるグループ |
+| `-writer-group GROUP` | `writer.sock` と `writer.lock` のグループ（名前か数） | 設定ファイルの `writerGroup`、無ければ、システムが付けるグループ |
 | `-reader-group GROUP` | `reader.sock` のグループ（名前か数） | 設定ファイルの `readerGroup`、無ければ、システムが付けるグループ |
 | `-max-readers N` | 同時に繋げる読み手の数。1以上 | 設定ファイルの `maxReaders`、無ければ `64` |
 | `-commit-rate N` | 書き手が、1秒に確定できる回数。0は、制限なし | 設定ファイルの `commitRate`、無ければ `50` |

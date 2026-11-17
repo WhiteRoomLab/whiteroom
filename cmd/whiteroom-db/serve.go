@@ -79,7 +79,7 @@ func newServeFlags(stderr io.Writer) (*flag.FlagSet, *serveFlags) {
 		"let only the Unix user `USER`, a name or a number, write (default writerUser of the config file, else the user "+
 			"of this process)")
 	flags.StringVar(&f.writerGroup, "writer-group", "",
-		"give writer.sock the group `GROUP`, a name or a number (default writerGroup of the config file, else the group "+
+		"give writer.sock and writer.lock the group `GROUP`, a name or a number (default writerGroup of the config file, else the group "+
 			"that the system gives)")
 	flags.StringVar(&f.readerGroup, "reader-group", "",
 		"give reader.sock the group `GROUP`, a name or a number (default readerGroup of the config file, else the group "+
