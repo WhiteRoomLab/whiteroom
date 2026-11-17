@@ -199,7 +199,7 @@ func (c *Client) openOriginal(ctx context.Context, cn *conn, hash [32]byte) (*Or
 func (o *Original) Size() int64 { return o.size }
 
 // Read reads the bytes of the original, and returns io.EOF after the last. If the daemon ends its reply with an error,
-// that is the error of the Read that comes to it.
+// that is the error of the Read that comes to it. Once the context of the original has ended, Read fails with its error.
 func (o *Original) Read(p []byte) (int, error) {
 	switch {
 	case o.closed:
@@ -208,6 +208,11 @@ func (o *Original) Read(p []byte) (int, error) {
 		return 0, o.err
 	case o.done:
 		return 0, io.EOF
+	}
+	// The deadline that the end of ctx sets on the connection comes later, from another goroutine.
+	if err := o.ctx.Err(); err != nil {
+		o.fail(err)
+		return 0, o.err
 	}
 	n, err := o.body.Read(p)
 	o.read += int64(n)

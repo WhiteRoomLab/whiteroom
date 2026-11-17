@@ -580,15 +580,9 @@ func TestOriginalContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		cancel()
-		// The bytes of a frame that has come are read first; the next frame is not.
-		var rerr error
-		for range 1900 {
-			if _, rerr = o.Read(buf); rerr != nil {
-				break
-			}
-		}
-		if !errors.Is(rerr, context.Canceled) {
-			t.Errorf("Read after the context ended: %v", rerr)
+		// Whatever has come: the deadline that the end of the context sets on the connection may come later.
+		if _, err := o.Read(buf); !errors.Is(err, context.Canceled) {
+			t.Errorf("Read after the context ended: %v", err)
 		}
 		if _, err := o.Read(buf); !errors.Is(err, context.Canceled) {
 			t.Errorf("the next Read: %v", err)
