@@ -60,9 +60,11 @@ func (c *session) writeGate(what string) (dbwire.Code, string) {
 	return 0, ""
 }
 
-func (c *session) space(need int64) (dbwire.Code, string) {
+// space returns why a write of need bytes, which may make a file if file, may not be done for the free space, or 0.
+func (c *session) space(need int64, file bool) (dbwire.Code, string) {
 	s := c.s
-	if s.o.FreeSpace == nil || s.limits.MinFree < 0 {
+	checkBytes, checkInodes := s.limits.MinFree >= 0, file && s.limits.MinFreeInodes >= 0
+	if s.o.FreeSpace == nil || !checkBytes && !checkInodes {
 		return 0, ""
 	}
 	free, err := s.o.FreeSpace()
@@ -70,9 +72,13 @@ func (c *session) space(need int64) (dbwire.Code, string) {
 		s.logf("cannot read the free space (%s)", safeText(err))
 		return dbwire.CodeFailed, "cannot read the free space"
 	}
-	if free < uint64(s.limits.MinFree)+uint64(need) {
+	switch {
+	case checkBytes && free.Bytes < uint64(s.limits.MinFree)+uint64(need):
 		return dbwire.CodeNoSpace, fmt.Sprintf("the free space is %d bytes; a write of %d bytes must leave %d",
-			free, need, s.limits.MinFree)
+			free.Bytes, need, s.limits.MinFree)
+	case checkInodes && free.HasInodes && free.Inodes <= uint64(s.limits.MinFreeInodes):
+		return dbwire.CodeNoSpace, fmt.Sprintf("the free inodes are %d; a write that may make a file must leave %d",
+			free.Inodes, s.limits.MinFreeInodes)
 	}
 	return 0, ""
 }
@@ -98,7 +104,7 @@ func (c *session) putObjectRequest() bool {
 	if sha256.Sum256(data) != hash {
 		return c.fail(dbwire.CodeHash, "the data do not have the hash that was given")
 	}
-	if code, msg := c.space(int64(len(data))); code != 0 {
+	if code, msg := c.space(int64(len(data)), true); code != 0 {
 		return c.fail(code, msg)
 	}
 	c.staged.add(hash, data)
@@ -140,7 +146,7 @@ func (c *session) commitRequest() bool {
 	if r := checkOps(ops, len(c.staged.order) > 0); r != nil {
 		return c.fail(r.code, r.msg)
 	}
-	if code, msg := c.space(used + c.staged.total); code != 0 {
+	if code, msg := c.space(used+c.staged.total, true); code != 0 {
 		return c.fail(code, msg)
 	}
 	if err := c.s.bucket.take(c.ctx); err != nil {

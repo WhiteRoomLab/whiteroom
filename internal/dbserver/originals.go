@@ -132,7 +132,7 @@ func (c *session) originalGate() (dbwire.Code, string) {
 	case c.s.stopped.Load():
 		return dbwire.CodeStopped, stoppedText
 	}
-	return c.space(1)
+	return c.space(1, true)
 }
 
 func (c *session) putOriginalRequest() bool {
@@ -200,7 +200,8 @@ func (c *session) storeOriginal(f vfs.File, tmp string) (r *refusal, closes bool
 			}
 			if size-checked >= s.spaceStep {
 				checked = size
-				if code, msg := c.space(s.spaceStep); code != 0 {
+				// The file of the original is made: the step needs bytes only.
+				if code, msg := c.space(s.spaceStep, false); code != 0 {
 					return &refusal{code, msg}, true, nil
 				}
 			}

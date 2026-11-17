@@ -109,8 +109,8 @@ func TestUsage(t *testing.T) {
 		flags       []string
 	}{
 		{"serve", serveUsage, []string{"-config FILE", "-data DIR", "-db DIR", "-writer-user USER", "-writer-group GROUP",
-			"-reader-group GROUP", "-max-readers N", "-commit-rate N", "-min-free BYTES", "-snapshot-idle DURATION",
-			"-stall DURATION", "-max-staged BYTES"}},
+			"-reader-group GROUP", "-max-readers N", "-commit-rate N", "-min-free BYTES", "-min-free-inodes N",
+			"-snapshot-idle DURATION", "-stall DURATION", "-max-staged BYTES"}},
 		{"init", initUsage, []string{"-config FILE", "-data DIR"}},
 		{"compact", compactUsage, []string{"-config FILE", "-data DIR"}},
 		{"gc", gcUsage, []string{"-config FILE", "-data DIR"}},
@@ -130,14 +130,14 @@ func TestUsage(t *testing.T) {
 		}
 		help[c.name] = stderr
 	}
-	for _, text := range []string{"(default 64)", "(default 50)", "(default 1073741824)", "(default 5m0s)", "(default 30s)",
-		"(default 268435446)"} {
+	for _, text := range []string{"(default 64)", "(default 50)", "(default 1073741824)", "(default 65536)", "(default 5m0s)",
+		"(default 30s)", "(default 268435446)"} {
 		if !strings.Contains(help["serve"], text) {
 			t.Errorf("the usage of whiteroom-db serve does not tell the default %s:\n%s", text, help["serve"])
 		}
 	}
 	for _, text := range []string{"must exist", "serve does not make it", "writer.sock", "reader.sock", "0660", "standard error",
-		"data, db, writerUser, writerGroup, readerGroup,\nmaxReaders, commitRate, minFree, snapshotIdle, stall and maxStaged"} {
+		"data, db, writerUser, writerGroup, readerGroup,\nmaxReaders, commitRate, minFree, minFreeInodes, snapshotIdle, stall and maxStaged"} {
 		if !strings.Contains(serveUsage, text) {
 			t.Errorf("the usage of whiteroom-db serve does not say %q", text)
 		}

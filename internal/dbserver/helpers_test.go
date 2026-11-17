@@ -131,7 +131,7 @@ func testOptions() Options {
 	return Options{
 		Log: logdb.Options{Placement: logdb.Hybrid, Threshold: 256, WriterWait: 20 * time.Millisecond},
 		Limits: dbwire.Limits{Frame: 4096, SnapshotIdle: -1, Stall: waitLimit, CommitsPerSecond: -1, MinFree: -1,
-			Readers: 4},
+			MinFreeInodes: -1, Readers: 4},
 	}
 }
 

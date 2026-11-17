@@ -85,7 +85,7 @@ type File struct {
 
 	WriterUser, WriterGroup, ReaderGroup string // a name, or a number in decimal
 	MaxReaders, CommitRate               int
-	MinFree, MaxStaged                   int64
+	MinFree, MinFreeInodes, MaxStaged    int64
 	SnapshotIdle, Stall                  time.Duration
 
 	items map[string]bool
@@ -221,6 +221,8 @@ func (r *reader) read(data []byte) error {
 			f.CommitRate = int(n)
 		case "minFree":
 			f.MinFree, _ = r.integer(ptr, raw, 0, math.MaxInt64, "must be an integer of 0 or more")
+		case "minFreeInodes":
+			f.MinFreeInodes, _ = r.integer(ptr, raw, 0, math.MaxInt64, "must be an integer of 0 or more")
 		case "snapshotIdle":
 			f.SnapshotIdle = r.duration(ptr, raw)
 		case "stall":

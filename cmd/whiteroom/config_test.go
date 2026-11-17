@@ -59,6 +59,7 @@ maxReaders: 16
 maxStaged: 1048576
 commitRate: 0
 minFree: 2097152
+minFreeInodes: 4096
 snapshotIdle: 30s
 stall: 1m30s
 `
@@ -690,6 +691,7 @@ func TestConfigDaemonItems(t *testing.T) {
 		{"maxStaged", `"8"`, notPositive},
 		{"commitRate", "-1", notNumber},
 		{"minFree", "1.5", notNumber},
+		{"minFreeInodes", "-1", notNumber},
 		{"snapshotIdle", "5", notDuration},
 		{"stall", "soon", notDuration},
 	} {

@@ -25,6 +25,15 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
+// Space is the free space of a file system: the bytes that a process that is not the superuser can still use, and the
+// free inodes.
+type Space struct {
+	Bytes uint64
+	// Inodes are the free inodes, if HasInodes: a file system such as btrfs does not count them.
+	Inodes    uint64
+	HasInodes bool
+}
+
 // Options are the options of Create and Open.
 type Options struct {
 	// Log are the options of the engine; Open sets its Accept.
@@ -33,8 +42,8 @@ type Options struct {
 	Limits dbwire.Limits
 	// Now is the clock of the marks; nil: time.Now.
 	Now func() time.Time
-	// FreeSpace returns the free bytes of the file system of the data directory; nil: no check.
-	FreeSpace func() (uint64, error)
+	// FreeSpace returns the free space of the file system of the data directory; nil: no check.
+	FreeSpace func() (Space, error)
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
 	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal), "original:renamed" (after

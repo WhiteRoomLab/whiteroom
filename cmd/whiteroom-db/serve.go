@@ -42,12 +42,13 @@ when the standard error is a pipe whose reader has ended.
 
 The sizes of a frame, of a Commit and of an object are tied to the engine and to
 the limits of the documents, and have no flag. The other limits are the flags
-below; the default of each is the value that the daemon tells its clients.
+below. The daemon tells its clients these sizes, the limit of -max-staged and the
+largest key; it keeps the other limits by itself.
 
 With -config, the items data, db, writerUser, writerGroup, readerGroup,
-maxReaders, commitRate, minFree, snapshotIdle, stall and maxStaged of the YAML
-file give what the flags leave out; the file may hold the items of whiteroom too,
-which are checked and not used. Without it, no config file is read.
+maxReaders, commitRate, minFree, minFreeInodes, snapshotIdle, stall and maxStaged
+of the YAML file give what the flags leave out; the file may hold the items of
+whiteroom too, which are checked and not used. Without it, no config file is read.
 
 Flags:
 `
@@ -57,7 +58,7 @@ type serveFlags struct {
 	config, data, db                     string
 	writerUser, writerGroup, readerGroup string
 	maxReaders, commitRate               int
-	minFree, maxStaged                   int64
+	minFree, minFreeInodes, maxStaged    int64
 	snapshotIdle, stall                  time.Duration
 }
 
@@ -82,6 +83,9 @@ func newServeFlags(stderr io.Writer) (*flag.FlagSet, *serveFlags) {
 	flags.IntVar(&f.commitRate, "commit-rate", def.CommitsPerSecond, "let the writer commit `N` times a second at most; 0 turns the limit off")
 	flags.Int64Var(&f.minFree, "min-free", def.MinFree,
 		"refuse a write that would leave fewer than `BYTES` free on the file system of the data directory; 0 turns the check off")
+	flags.Int64Var(&f.minFreeInodes, "min-free-inodes", def.MinFreeInodes,
+		"refuse a write that may make a file when the file system of the data directory has `N` free inodes or fewer, unless "+
+			"it does not count them; 0 turns the check off")
 	flags.DurationVar(&f.snapshotIdle, "snapshot-idle", def.SnapshotIdle,
 		"release the snapshot of a connection that sends nothing for `DURATION`; 0 never releases")
 	flags.DurationVar(&f.stall, "stall", def.Stall,
@@ -177,6 +181,10 @@ func (f *serveFlags) resolve(flags *flag.FlagSet, cfg configfile.File, stderr io
 	if minFree < 0 {
 		return s, bad(fromFile, "min-free", "minFree", "must be an integer of 0 or more")
 	}
+	minFreeInodes, fromFile := setting(flags, "min-free-inodes", f.minFreeInodes, cfg, "minFreeInodes", cfg.MinFreeInodes)
+	if minFreeInodes < 0 {
+		return s, bad(fromFile, "min-free-inodes", "minFreeInodes", "must be an integer of 0 or more")
+	}
 	idle, fromFile := setting(flags, "snapshot-idle", f.snapshotIdle, cfg, "snapshotIdle", cfg.SnapshotIdle)
 	if idle < 0 {
 		return s, bad(fromFile, "snapshot-idle", "snapshotIdle", durationText)
@@ -191,7 +199,7 @@ func (f *serveFlags) resolve(flags *flag.FlagSet, cfg configfile.File, stderr io
 	}
 	// A limit that 0 turns off is negative for the daemon, whose 0 is the default.
 	s.limits = dbwire.Limits{Readers: readers, Staged: staged, CommitsPerSecond: offIfZero(rate), MinFree: offIfZero(minFree),
-		SnapshotIdle: offIfZero(idle), Stall: offIfZero(stall)}
+		MinFreeInodes: offIfZero(minFreeInodes), SnapshotIdle: offIfZero(idle), Stall: offIfZero(stall)}
 	return s, true
 }
 

@@ -145,7 +145,7 @@ func FuzzSession(f *testing.F) {
 	f.Fuzz(func(t *testing.T, role byte, data []byte) {
 		fx := newFixture(t, func(o *Options) {
 			o.Limits = dbwire.Limits{Frame: 64, Commit: 512, Object: 256, Staged: 512, Readers: 2, SnapshotIdle: -1,
-				Stall: 2 * time.Second, CommitsPerSecond: -1, MinFree: -1}
+				Stall: 2 * time.Second, CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}
 		})
 		fx.update(func(tx *logdb.Tx) {
 			_ = tx.Put(2, []byte("k"), []byte("v"))

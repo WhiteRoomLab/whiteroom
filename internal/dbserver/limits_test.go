@@ -159,11 +159,11 @@ func TestNoValuesLeak(t *testing.T) {
 	var freeFail, hookFail atomic.Bool
 	f := newFixture(t, func(o *Options) {
 		o.Limits.Commit, o.Limits.Object, o.Limits.Staged, o.Limits.MinFree = 3000, 3000, 4000, 1
-		o.FreeSpace = func() (uint64, error) {
+		o.FreeSpace = func() (Space, error) {
 			if freeFail.Load() {
-				return 0, errors.New("no free space of " + secret)
+				return Space{}, errors.New("no free space of " + secret)
 			}
-			return 1 << 40, nil
+			return Space{Bytes: 1 << 40, Inodes: 1 << 40, HasInodes: true}, nil
 		}
 		o.Hook = func(point string) error {
 			if point == "commit:gate" && hookFail.Load() {

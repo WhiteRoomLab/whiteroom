@@ -116,6 +116,7 @@
 | `maxReaders` | 1以上の整数 | `-max-readers` |
 | `commitRate` | 0以上の整数（1秒あたりの回数） | `-commit-rate` |
 | `minFree` | 0以上の整数（バイト） | `-min-free` |
+| `minFreeInodes` | 0以上の整数（inode の数） | `-min-free-inodes` |
 | `snapshotIdle` | 期間の文字列（`5m`・`0s`。0以上） | `-snapshot-idle` |
 | `stall` | 期間の文字列（`30s`・`0s`。0以上） | `-stall` |
 | `maxStaged` | 1以上の整数（バイト） | `-max-staged` |
@@ -129,6 +130,7 @@
 | `maxReaders` | 1以上の整数 | 64 |
 | `commitRate` | 0以上の整数。0は、制限なし | 50 |
 | `minFree` | 0以上の整数。0は、空きを確かめない | 1073741824（1GiB） |
+| `minFreeInodes` | 0以上の整数。0は、inode の空きを確かめない | 65536 |
 | `snapshotIdle` | 期間（`5m`・`0s`）。0は、放さない | `5m` |
 | `stall` | 期間（`30s`・`0s`）。0は、切らない | `30s` |
 | `maxStaged` | 1以上の整数 | 268435446 |
@@ -147,7 +149,7 @@
 | `tmp` | | | ○ | | | | | |
 | `url` | ○（`SITE` があるとき） | ○ | ○ | ○（`SITE` があるとき） | | | | |
 | `addr`・`socket`・`origin`・`trustedProxies` | | | ○ | | | | | |
-| `writerUser`・`writerGroup`・`readerGroup`・`maxReaders`・`commitRate`・`minFree`・`snapshotIdle`・`stall`・`maxStaged` | | | | | | | ○ | |
+| `writerUser`・`writerGroup`・`readerGroup`・`maxReaders`・`commitRate`・`minFree`・`minFreeInodes`・`snapshotIdle`・`stall`・`maxStaged` | | | | | | | ○ | |
 
 - コマンドが使わない項目は、型と、値の範囲（文字列が空でないこと、`workers`・`memory` と、デーモンの項目の範囲）だけを確かめる。そのため、1つの設定ファイルを、どのコマンドにも、どちらの実行ファイルにも渡せる：`data` とデーモンの項目は `whiteroom-db` のもの、`db` は、どちらも読む（デーモンは、ソケットを作る所として、`whiteroom` は、繋ぐ所として）ので、デーモンと、それに繋ぐコマンドが、同じ `db` を指す。ユーザーとグループが、システムにあるかは、`whiteroom-db serve` が使うときだけ確かめる。デーモンを複数動かすとき（本番とステージング）は、`data` と `db` が違うので、デーモンごとにファイルを分ける（下記の「設定の例」）。
 - 誤り：知らない項目、型の誤り（`workers: many`・文字列でない `addr` など）、範囲の外の値、空の文字列、空のファイル、YAMLの誤り、1MiBを超えるファイル、読めないファイルは、問題を標準エラーに示して、2で終わる（使い方の文は示さず、何も作らない）。問題の行は `FILE:行:列: /項目: 理由` で、値は理由に入れない（`bad.yaml:2:1: /workers: must be an integer of 0 or more`・`bad.yaml:3:1: /colour: unknown item`・`bad.yaml:3:1: /maxReaders: must be an integer of 1 or more`）。期間の項目は、文字列で、`0s` と書く（数だけの `0` や `30` は断る。`bad.yaml:4:1: /stall: must be a duration of 0 or more, such as 30s or 5m`）。YAMLの誤りは `FILE:行:列: 理由`、読めないファイルは `whiteroom build: open nope.yaml: no such file or directory` の形。`addr` と `trustedProxies` の値の誤りと、`addr` と `socket` の両方は、`serve admin` が使うときに確かめるので、行と列の無い形で、`addr` と `trustedProxies` の誤りの行には、その値が入る（待ち受けのアドレスで、秘密ではない。`badaddr.yaml: /addr: "0.0.0.0:8081" is not a loopback IP address and a port, such as 127.0.0.1:8081 or [::1]:8081`・`both.yaml: addr and socket are both given: give one of them, as the server listens on one`）。名前の見つからないユーザーとグループも、`whiteroom-db serve` が使うときに確かめるので、行と列の無い形（`usr.yaml: /writerUser: unknown user "name"`。フラグなら `whiteroom-db serve: -writer-user: unknown user "nosuchuser"` と使い方）。
@@ -262,7 +264,7 @@ whiteroom serve public [-addr ADDR] [OUT]
 **`whiteroom-db`**
 
 ```text
-whiteroom-db serve [-config FILE] [-data DIR] [-db DIR] [-writer-user USER] [-writer-group GROUP] [-reader-group GROUP] [-max-readers N] [-commit-rate N] [-min-free BYTES] [-snapshot-idle DURATION] [-stall DURATION] [-max-staged BYTES]
+whiteroom-db serve [-config FILE] [-data DIR] [-db DIR] [-writer-user USER] [-writer-group GROUP] [-reader-group GROUP] [-max-readers N] [-commit-rate N] [-min-free BYTES] [-min-free-inodes N] [-snapshot-idle DURATION] [-stall DURATION] [-max-staged BYTES]
 whiteroom-db init [-config FILE] [-data DIR]
 whiteroom-db compact [-config FILE] [-data DIR]
 whiteroom-db gc [-config FILE] [-data DIR]
@@ -283,13 +285,14 @@ DBのデーモン（3.6）の実行ファイル。データのディレクトリ
 | `-max-readers N` | 同時に繋げる読み手の数。1以上 | 設定ファイルの `maxReaders`、無ければ `64` |
 | `-commit-rate N` | 書き手が、1秒に確定できる回数。0は、制限なし | 設定ファイルの `commitRate`、無ければ `50` |
 | `-min-free BYTES` | 書き込みの後に、データのディレクトリのファイルシステムに残る空きの下限。0は、確かめない | 設定ファイルの `minFree`、無ければ `1073741824` |
+| `-min-free-inodes N` | ファイルを作りうる書き込みの後に、データのディレクトリのファイルシステムに残る inode の空きの下限。0は、確かめない。inode を数えないファイルシステム（btrfs など）では、確かめない | 設定ファイルの `minFreeInodes`、無ければ `65536` |
 | `-snapshot-idle DURATION` | 何も送らない接続の、スナップショットを放すまでの時間。0は、放さない | 設定ファイルの `snapshotIdle`、無ければ `5m` |
 | `-stall DURATION` | 要求の途中で進まない接続を、切るまでの時間。0は、切らない | 設定ファイルの `stall`、無ければ `30s` |
 | `-max-staged BYTES` | `Commit` の前に、書き手が置けるオブジェクトの合計。1以上 | 設定ファイルの `maxStaged`、無ければ `268435446` |
 
 規則：
 
-- 上限：値は、仮置き（3.6の「上限」。見直しは6.12の267）。枠・`Commit` の大きさ・オブジェクトと原本の大きさは、エンジンと文書の上限に結びついているので、フラグも、設定の項目も無い。フラグの説明に書く既定は、デーモンが相手に伝える値（`Hello` の答え）と同じ。範囲の外の値は、使い方の誤り（2）：フラグは `whiteroom-db serve: -commit-rate: must be an integer of 0 or more` と使い方、設定ファイルの項目は `FILE:行:列: /項目: 理由`（上記の「設定ファイル」）。
+- 上限：値は、仮置き（3.6の「上限」。見直しは6.12の267）。枠・`Commit` の大きさ・オブジェクトと原本の大きさは、エンジンと文書の上限に結びついているので、フラグも、設定の項目も無い。既定は、フラグの説明にも書く。デーモンが相手に伝える（`Hello` の答え）上限は、枠・`Commit`・オブジェクトと原本・置いたオブジェクトの合計（`-max-staged`）・キーだけ（3.6）。範囲の外の値は、使い方の誤り（2）：フラグは `whiteroom-db serve: -commit-rate: must be an integer of 0 or more` と使い方、設定ファイルの項目は `FILE:行:列: /項目: 理由`（上記の「設定ファイル」）。
 - ユーザーとグループ（案）：`-writer-user` のユーザーだけが、書き手用のソケットに書き手として繋げる。デーモンは、繋いだ相手のユーザーを、OSから受け取って（Linuxの `SO_PEERCRED`）確かめる。別のユーザーが繋ぐと、`the user 1000 is not the writer of this daemon` で断る（`whiteroom init`・`account`・`serve admin` は、すぐにこの文で、1で終わる。読み手用のソケットは、相手のユーザーを見ず、`whiteroom doctor`・`backup` は動く）。ソケットのファイルのモードは0660で、`-writer-group`・`-reader-group` を書けば、そのグループにする（`chown`）。ソケットのディレクトリのモードと持ち主は、変えない。名前のユーザー・グループがシステムに無ければ、`whiteroom-db serve: -writer-user: unknown user "x"`（`unknown group "x"`）で、2で終わる。
 - 起動の順（失敗したら、そこで止め、開いたものを閉じて、1で終わる。フラグと設定ファイルの誤りは2）：フラグと設定ファイル → ソケットのディレクトリがあること（無ければ `whiteroom-db serve: DIR: the directory of the sockets does not exist; make it first, which serve does not`。ディレクトリでなければ `…: not a directory; the sockets are made in a directory that exists`）→ データのディレクトリを開く（エンジンの書くロック。別のプロセスが開いていれば、約2秒待って、`whiteroom-db serve: data/logdb: another process holds the writer lock` で失敗する。`logdb/` が無ければ `whiteroom-db serve: emptydir/logdb: missing directory`。保守が動いていれば、すぐに `maintenance is running`）。ロックを取った後に、`files/` の、途中で止まった原本の一時のファイルを消す（3.4の「原本」）→ ソケットを作る（古いソケットのファイルは、置き換える。ほかのプロセスが待ち受けていれば、失敗する）。
 - 起動の行：2つのソケットを作ったら、標準出力に1行（`serving the data directory DATA on the sockets in DB (writer: user N)`）。`DATA` と `DB` は、フラグか設定ファイルの値のまま、`N` は、書き手のユーザーの番号。管理用のサーバーと、ほかのコマンドは、この後で動かす（下記の「設定の例」）。

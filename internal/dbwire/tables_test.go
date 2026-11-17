@@ -12,6 +12,7 @@ func TestLimits(t *testing.T) {
 	want := Limits{
 		Frame: 1 << 20, Commit: 268435446, Object: 64 << 20, Staged: 268435446, Readers: 64,
 		SnapshotIdle: 5 * time.Minute, Stall: 30 * time.Second, CommitsPerSecond: 50, MinFree: 1 << 30,
+		MinFreeInodes: 1 << 16,
 	}
 	if got := (Limits{}).WithDefaults(); got != want {
 		t.Errorf("the defaults are %+v, want %+v", got, want)
@@ -23,13 +24,14 @@ func TestLimits(t *testing.T) {
 	set := Limits{
 		Frame: 7, Commit: 8, Object: 9, Staged: 10, Readers: 11,
 		SnapshotIdle: time.Second, Stall: 2 * time.Second, CommitsPerSecond: 12, MinFree: 13,
+		MinFreeInodes: 14,
 	}
 	if got := set.WithDefaults(); got != set {
 		t.Errorf("a field that is set changed: %+v", got)
 	}
 
-	off := Limits{SnapshotIdle: -1, Stall: -1, CommitsPerSecond: -1, MinFree: -1}.WithDefaults()
-	if off.SnapshotIdle != -1 || off.Stall != -1 || off.CommitsPerSecond != -1 || off.MinFree != -1 {
+	off := Limits{SnapshotIdle: -1, Stall: -1, CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}.WithDefaults()
+	if off.SnapshotIdle != -1 || off.Stall != -1 || off.CommitsPerSecond != -1 || off.MinFree != -1 || off.MinFreeInodes != -1 {
 		t.Errorf("a negative limit is not kept: %+v", off)
 	}
 	if off.Frame != want.Frame || off.Commit != want.Commit || off.Readers != want.Readers {

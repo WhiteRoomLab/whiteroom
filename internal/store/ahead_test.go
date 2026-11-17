@@ -1056,7 +1056,7 @@ func TestAheadConnectionEnds(t *testing.T) {
 // the end of the connection has cut is no list that ends early.
 func TestScanConnectionEnds(t *testing.T) {
 	o := oneBackend[0].options()
-	o.limits = &dbwire.Limits{Frame: 4096, CommitsPerSecond: -1, MinFree: -1}
+	o.limits = &dbwire.Limits{Frame: 4096, CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}
 	s, w := countedStoreOf(t, o)
 	putAheadSite(t, s, 60)
 	const revisions = 150

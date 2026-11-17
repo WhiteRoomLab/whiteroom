@@ -52,10 +52,10 @@ func TestResolve(t *testing.T) {
 	uid := uint32(os.Getuid())
 	userName, groupName := currentNames(t)
 	gid := os.Getgid()
-	defaults := dbwire.Limits{Readers: 64, Staged: 268435446, CommitsPerSecond: 50, MinFree: 1 << 30, SnapshotIdle: 5 * time.Minute,
-		Stall: 30 * time.Second}
+	defaults := dbwire.Limits{Readers: 64, Staged: 268435446, CommitsPerSecond: 50, MinFree: 1 << 30, MinFreeInodes: 65536,
+		SnapshotIdle: 5 * time.Minute, Stall: 30 * time.Second}
 	if got := defaults.WithDefaults(); got.Readers != 64 || got.Staged != 268435446 || got.CommitsPerSecond != 50 ||
-		got.MinFree != 1<<30 || got.SnapshotIdle != 5*time.Minute || got.Stall != 30*time.Second {
+		got.MinFree != 1<<30 || got.MinFreeInodes != 65536 || got.SnapshotIdle != 5*time.Minute || got.Stall != 30*time.Second {
 		t.Fatalf("the defaults of the daemon are not those that the usage tells: %+v", got)
 	}
 	base := serveSettings{data: "d", db: "s", writerUID: uid, writerGID: -1, readerGID: -1, limits: defaults}
@@ -73,36 +73,43 @@ func TestResolve(t *testing.T) {
 	}{
 		{"defaults", "", nil, base},
 		{"flags", "", []string{"-writer-user", "7", "-writer-group", "8", "-reader-group", "9", "-max-readers", "5", "-commit-rate", "6",
-			"-min-free", "7", "-snapshot-idle", "8s", "-stall", "9m", "-max-staged", "10"},
+			"-min-free", "7", "-min-free-inodes", "11", "-snapshot-idle", "8s", "-stall", "9m", "-max-staged", "10"},
 			with(func(s *serveSettings) {
 				s.writerUID, s.writerGID, s.readerGID = 7, 8, 9
-				s.limits = dbwire.Limits{Readers: 5, CommitsPerSecond: 6, MinFree: 7, SnapshotIdle: 8 * time.Second, Stall: 9 * time.Minute, Staged: 10}
+				s.limits = dbwire.Limits{Readers: 5, CommitsPerSecond: 6, MinFree: 7, MinFreeInodes: 11, SnapshotIdle: 8 * time.Second,
+					Stall: 9 * time.Minute, Staged: 10}
 			})},
-		{"items", "writerUser: 7\nwriterGroup: 8\nreaderGroup: \"9\"\nmaxReaders: 5\ncommitRate: 6\nminFree: 7\nsnapshotIdle: 8s\n" +
-			"stall: 9m\nmaxStaged: 10\n", nil,
+		{"items", "writerUser: 7\nwriterGroup: 8\nreaderGroup: \"9\"\nmaxReaders: 5\ncommitRate: 6\nminFree: 7\nminFreeInodes: 11\n" +
+			"snapshotIdle: 8s\nstall: 9m\nmaxStaged: 10\n", nil,
 			with(func(s *serveSettings) {
 				s.writerUID, s.writerGID, s.readerGID = 7, 8, 9
-				s.limits = dbwire.Limits{Readers: 5, CommitsPerSecond: 6, MinFree: 7, SnapshotIdle: 8 * time.Second, Stall: 9 * time.Minute, Staged: 10}
+				s.limits = dbwire.Limits{Readers: 5, CommitsPerSecond: 6, MinFree: 7, MinFreeInodes: 11, SnapshotIdle: 8 * time.Second,
+					Stall: 9 * time.Minute, Staged: 10}
 			})},
-		{"flags over items", "writerUser: 7\nwriterGroup: 8\nreaderGroup: 9\nmaxReaders: 5\ncommitRate: 6\nminFree: 7\nsnapshotIdle: 8s\n" +
-			"stall: 9m\nmaxStaged: 10\n",
+		{"flags over items", "writerUser: 7\nwriterGroup: 8\nreaderGroup: 9\nmaxReaders: 5\ncommitRate: 6\nminFree: 7\nminFreeInodes: 11\n" +
+			"snapshotIdle: 8s\nstall: 9m\nmaxStaged: 10\n",
 			[]string{"-writer-user", "1", "-writer-group", "2", "-reader-group", "3", "-max-readers", "4", "-commit-rate", "5",
-				"-min-free", "6", "-snapshot-idle", "7s", "-stall", "8m", "-max-staged", "9"},
+				"-min-free", "6", "-min-free-inodes", "10", "-snapshot-idle", "7s", "-stall", "8m", "-max-staged", "9"},
 			with(func(s *serveSettings) {
 				s.writerUID, s.writerGID, s.readerGID = 1, 2, 3
-				s.limits = dbwire.Limits{Readers: 4, CommitsPerSecond: 5, MinFree: 6, SnapshotIdle: 7 * time.Second, Stall: 8 * time.Minute, Staged: 9}
+				s.limits = dbwire.Limits{Readers: 4, CommitsPerSecond: 5, MinFree: 6, MinFreeInodes: 10, SnapshotIdle: 7 * time.Second,
+					Stall: 8 * time.Minute, Staged: 9}
 			})},
 		// 0 turns a limit off, which the daemon says with a negative value, as its 0 is the default; a flag with the value
 		// 0 overrides the item, and an item with the value 0 overrides the default.
-		{"flags of 0", "commitRate: 6\nminFree: 7\nsnapshotIdle: 8s\nstall: 9m\n",
-			[]string{"-commit-rate", "0", "-min-free", "0", "-snapshot-idle", "0", "-stall", "0s"},
+		{"flags of 0", "commitRate: 6\nminFree: 7\nminFreeInodes: 8\nsnapshotIdle: 8s\nstall: 9m\n",
+			[]string{"-commit-rate", "0", "-min-free", "0", "-min-free-inodes", "0", "-snapshot-idle", "0", "-stall", "0s"},
 			with(func(s *serveSettings) {
 				s.limits.CommitsPerSecond, s.limits.MinFree, s.limits.SnapshotIdle, s.limits.Stall = -1, -1, -1, -1
+				s.limits.MinFreeInodes = -1
 			})},
-		{"items of 0", "commitRate: 0\nminFree: 0\nsnapshotIdle: 0s\nstall: \"0\"\n", nil,
+		{"items of 0", "commitRate: 0\nminFree: 0\nminFreeInodes: 0\nsnapshotIdle: 0s\nstall: \"0\"\n", nil,
 			with(func(s *serveSettings) {
 				s.limits.CommitsPerSecond, s.limits.MinFree, s.limits.SnapshotIdle, s.limits.Stall = -1, -1, -1, -1
+				s.limits.MinFreeInodes = -1
 			})},
+		{"inodes only", "minFreeInodes: 0\n", []string{"-min-free", "0", "-min-free-inodes", "12"},
+			with(func(s *serveSettings) { s.limits.MinFree, s.limits.MinFreeInodes = -1, 12 })},
 		{"flags that are the defaults", "commitRate: 6\n", []string{"-commit-rate", "50"}, base},
 		{"the file does not name the limits", "workers: 2\nurl: https://example.com\n", nil, base},
 		{"writer-user 0", "", []string{"-writer-user", "0"}, with(func(s *serveSettings) { s.writerUID = 0 })},
@@ -163,6 +170,8 @@ func TestResolve(t *testing.T) {
 		{"max-readers -1", "", []string{"-max-readers", "-1"}, "whiteroom-db serve: -max-readers: must be an integer of 1 or more"},
 		{"commit-rate -1", "", []string{"-commit-rate", "-1"}, "whiteroom-db serve: -commit-rate: must be an integer of 0 or more"},
 		{"min-free -1", "", []string{"-min-free", "-1"}, "whiteroom-db serve: -min-free: must be an integer of 0 or more"},
+		{"min-free-inodes -1", "", []string{"-min-free-inodes", "-1"},
+			"whiteroom-db serve: -min-free-inodes: must be an integer of 0 or more"},
 		{"snapshot-idle -1s", "", []string{"-snapshot-idle", "-1s"},
 			"whiteroom-db serve: -snapshot-idle: must be a duration of 0 or more, such as 30s or 5m"},
 		{"stall -1s", "", []string{"-stall", "-1s"}, "whiteroom-db serve: -stall: must be a duration of 0 or more, such as 30s or 5m"},

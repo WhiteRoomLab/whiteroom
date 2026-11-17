@@ -877,9 +877,9 @@ func TestPutOriginalSpace(t *testing.T) {
 	var calls atomic.Int64
 	f := newFixture(t, func(o *Options) {
 		o.Limits.MinFree = 1000
-		o.FreeSpace = func() (uint64, error) {
+		o.FreeSpace = func() (Space, error) {
 			calls.Add(1)
-			return free.Load(), nil
+			return Space{Bytes: free.Load()}, nil
 		}
 	})
 	f.srv.spaceStep = 2048
@@ -918,6 +918,29 @@ func TestPutOriginalSpace(t *testing.T) {
 	h := mustPut(t, w, data)
 	if got, err := w.original(h); err != nil || !bytes.Equal(got, data) {
 		t.Errorf("Original reads %d bytes, %v", len(got), err)
+	}
+}
+
+// TestPutOriginalSpaceSteps checks that the steps of a PutOriginal look at the free bytes only: its file is made, and the
+// inode that it took is not asked for again.
+func TestPutOriginalSpaceSteps(t *testing.T) {
+	var calls atomic.Int64
+	f := newFixture(t, func(o *Options) {
+		o.Limits.MinFree, o.Limits.MinFreeInodes = 1, 100
+		o.FreeSpace = func() (Space, error) {
+			if calls.Add(1) == 1 {
+				return Space{Bytes: 1 << 62, Inodes: 101, HasInodes: true}, nil
+			}
+			return Space{Bytes: 1 << 62, Inodes: 100, HasInodes: true}, nil
+		}
+	})
+	f.srv.spaceStep = 2048
+	w := f.connect(dbwire.RoleWriter)
+	if _, err := w.putOriginal(bytes.Repeat([]byte("o"), 5000)); err != nil {
+		t.Fatalf("PutOriginal = %v, want it stored", err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("the free space was read %d times, want 2: at the start and after the first step", n)
 	}
 }
 

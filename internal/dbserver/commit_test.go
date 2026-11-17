@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -627,11 +628,11 @@ func TestMinFree(t *testing.T) {
 	var ferr atomic.Pointer[error]
 	f := newFixture(t, func(o *Options) {
 		o.Limits.MinFree = 1000
-		o.FreeSpace = func() (uint64, error) {
+		o.FreeSpace = func() (Space, error) {
 			if e := ferr.Load(); e != nil {
-				return 0, *e
+				return Space{}, *e
 			}
-			return free.Load(), nil
+			return Space{Bytes: free.Load()}, nil
 		}
 	})
 	f.update(func(*logdb.Tx) {}) // the schema row, so that the commits below are of the sizes that they say
@@ -684,13 +685,93 @@ func TestMinFree(t *testing.T) {
 	})
 }
 
+// TestMinFreeInodes checks the free inodes: a write that may make a file is refused with CodeNoSpace if it would leave fewer
+// than Limits.MinFreeInodes, and the refusal changes nothing. The free bytes are checked too.
+func TestMinFreeInodes(t *testing.T) {
+	var free, inodes atomic.Uint64
+	free.Store(1 << 62)
+	f := newFixture(t, func(o *Options) {
+		o.Limits.MinFree, o.Limits.MinFreeInodes = 1000, 100
+		o.FreeSpace = func() (Space, error) { return Space{Bytes: free.Load(), Inodes: inodes.Load(), HasInodes: true}, nil }
+	})
+	f.update(func(*logdb.Tx) {})
+	w := f.connect(dbwire.RoleWriter)
+	seq := w.mustSnapshot()
+	before, counted := f.dump(), f.fs.Counted()
+	const want = "the free inodes are 100; a write that may make a file must leave 100"
+
+	inodes.Store(100)
+	_, err := w.putObject("object")
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != want {
+		t.Errorf("PutObject: got %q, want %q", re.Msg, want)
+	}
+	_, _, err = w.commit(seq, put(2, "k", "v"), event("e"))
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != want {
+		t.Errorf("Commit: got %q, want %q", re.Msg, want)
+	}
+	_, err = w.putOriginal([]byte("original"))
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != want {
+		t.Errorf("PutOriginal: got %q, want %q", re.Msg, want)
+	}
+	w = f.connectAfter(w)
+	f.unchanged(before)
+	if f.fs.Counted() != counted {
+		t.Error("the refusals wrote")
+	}
+	if got := filesOf(f.fs, "files"); len(got) != 0 {
+		t.Errorf("files/ has %q after the refusal, want nothing", slices.Sorted(maps.Keys(got)))
+	}
+
+	inodes.Store(101)
+	seq = w.mustSnapshot()
+	if _, err := w.putObject("object"); err != nil {
+		t.Fatalf("PutObject with exactly enough: %v", err)
+	}
+	if _, _, err := w.commit(seq, put(2, "k", "v"), event("e")); err != nil {
+		t.Fatalf("Commit with exactly enough: %v", err)
+	}
+	if _, err := w.putOriginal([]byte("original")); err != nil {
+		t.Fatalf("PutOriginal with exactly enough: %v", err)
+	}
+	inodes.Store(50)
+	_, err = w.putOriginal([]byte("another"))
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != "the free inodes are 50; a write that may make a file must leave 100" {
+		t.Errorf("PutOriginal with 50 inodes: got %q", re.Msg)
+	}
+	w = f.connectAfter(w)
+
+	inodes.Store(101)
+	free.Store(1000) // enough inodes, and too few bytes
+	w.mustSnapshot()
+	_, err = w.putObject("x")
+	if re := wantCode(t, err, dbwire.CodeNoSpace); re.Msg != "the free space is 1000 bytes; a write of 1 bytes must leave 1000" {
+		t.Errorf("PutObject with too few bytes: got %q", re.Msg)
+	}
+}
+
+// TestMinFreeInodesAlone checks the free inodes with the check of the bytes off.
+func TestMinFreeInodesAlone(t *testing.T) {
+	f := newFixture(t, func(o *Options) {
+		o.Limits.MinFree, o.Limits.MinFreeInodes = -1, 100
+		o.FreeSpace = func() (Space, error) { return Space{Inodes: 100, HasInodes: true}, nil }
+	})
+	w := f.connect(dbwire.RoleWriter)
+	_, err := w.putOriginal([]byte("original"))
+	wantCode(t, err, dbwire.CodeNoSpace)
+}
+
 func TestNoFreeSpaceCheck(t *testing.T) {
-	// Without FreeSpace, or with a negative MinFree, nothing is refused for the space.
+	// Without FreeSpace, with negative limits, or on a file system that does not count its inodes, nothing is refused for
+	// the space.
 	for name, mod := range map[string]func(*Options){
-		"no function": func(o *Options) { o.Limits.MinFree = 1 << 60 },
+		"no function": func(o *Options) { o.Limits.MinFree, o.Limits.MinFreeInodes = 1<<60, 1<<60 },
 		"negative": func(o *Options) {
-			o.Limits.MinFree = -1
-			o.FreeSpace = func() (uint64, error) { return 0, nil }
+			o.Limits.MinFree, o.Limits.MinFreeInodes = -1, -1
+			o.FreeSpace = func() (Space, error) { return Space{HasInodes: true}, nil }
+		},
+		"inodes not counted": func(o *Options) {
+			o.Limits.MinFreeInodes = 1 << 60
+			o.FreeSpace = func() (Space, error) { return Space{Bytes: 1 << 62}, nil }
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

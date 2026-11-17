@@ -47,7 +47,7 @@ func (o Options) server() dbserver.Options {
 	if o.Limits != nil {
 		so.Limits = *o.Limits
 	} else {
-		so.Limits = dbwire.Limits{CommitsPerSecond: -1, MinFree: -1}
+		so.Limits = dbwire.Limits{CommitsPerSecond: -1, MinFree: -1, MinFreeInodes: -1}
 	}
 	return so
 }
