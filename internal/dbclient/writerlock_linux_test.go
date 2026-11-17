@@ -47,7 +47,8 @@ func TestWriterLock(t *testing.T) {
 		must(t, err)
 		must(t, r.Close())
 		must(t, a.Close())
-		b, err := openWriter(dir, -1)
+		// The daemon ends the session of a after its connection: the next writer waits for it.
+		b, err := openWriter(dir, 0)
 		must(t, err)
 		must(t, b.Close())
 	})
@@ -104,6 +105,20 @@ func TestWriterLock(t *testing.T) {
 		}
 	})
 
+	t.Run("a directory that is not readable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every directory")
+		}
+		f := newFixture(t, nil)
+		dir := socketDir(t)
+		must(t, f.root.Listen(dir))
+		must(t, os.Chmod(dir, 0o100))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		a, err := openWriter(dir, 0)
+		must(t, err)
+		must(t, a.Close())
+	})
+
 	t.Run("no lock", func(t *testing.T) {
 		// The daemon makes the file of the lock when it starts: until then, there is no daemon to reach either, and the
 		// error says why, as without a lock.
@@ -113,16 +128,20 @@ func TestWriterLock(t *testing.T) {
 		if err == nil || err.Error() != want || !errors.Is(err, dbclient.ErrUnavailable) || errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("a writer without a daemon: %v, want %q", err, want)
 		}
-		// A daemon without the file, as one of another program: the error is that of the lock, and the place of the writer
-		// is free again.
+		// A daemon without the file, as one of another program: the error is that of the lock, at once, as such a daemon
+		// does not make it later, and the place of the writer is free again.
 		f := newFixture(t, nil)
 		must(t, f.root.Listen(dir))
 		must(t, os.Remove(filepath.Join(dir, dbwire.WriterLock)))
-		_, err = openWriter(dir, 100*time.Millisecond)
-		want = dir + ": cannot reach the daemon: openat " + filepath.Join(dir, dbwire.WriterLock) + ": no such file or directory"
+		start := time.Now()
+		_, err = openWriter(dir, 5*time.Second)
+		want = dir + ": cannot reach the daemon: open " + filepath.Join(dir, dbwire.WriterLock) + ": no such file or directory"
 		if err == nil || err.Error() != want || !errors.Is(err, dbclient.ErrUnavailable) || errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("a writer of a daemon without the file of the lock: %v, want %q", err, want)
 		}
-		f.open(dbwire.RoleWriter, dbclient.Options{DialWait: -1})
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("a writer of a daemon without the file of the lock gave up after %v, want at once", d)
+		}
+		f.open(dbwire.RoleWriter, dbclient.Options{DialWait: 5 * time.Second})
 	})
 }

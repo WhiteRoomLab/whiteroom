@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"path/filepath"
 	"sync"
@@ -77,18 +76,10 @@ func (s SocketDir) String() string { return string(s) }
 
 // LockWriter takes the lock of the file dbwire.WriterLock in the directory, which the daemon makes, so that the writer of
 // the daemon is one process also while it has no connection: after a restart of the daemon, and after a connection has
-// ended in a request.
+// ended in a request. It opens the file by its path, which needs only the search permission of the directory, as the
+// sockets do.
 func (s SocketDir) LockWriter() (unlock func() error, err error) {
-	root, err := vfs.OpenRoot(string(s))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-	unlock, err = root.Lock(dbwire.WriterLock, vfs.Exclusive)
-	if pe, ok := errors.AsType[*fs.PathError](err); ok {
-		pe.Path = filepath.Join(string(s), dbwire.WriterLock)
-	}
-	return unlock, err
+	return lockFile(filepath.Join(string(s), dbwire.WriterLock))
 }
 
 // Options are the options of Open; a zero field is its default.
@@ -177,7 +168,8 @@ func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, 
 // lockWriter takes the lock of the writer of l, trying again every 50 milliseconds for Options.DialWait while another
 // process holds it. A lock that cannot be taken otherwise, as one that is missing until the daemon has started once, is
 // tried again too, but the error is that of a connection to the daemon, if that fails: why it cannot be reached, or its
-// refusal, which is not tried again.
+// refusal, which is not tried again. If the connection is made, the daemon has no lock to take, which a daemon that has
+// started does not make later: its error ends the wait.
 func (c *Client) lockWriter(ctx context.Context, l writerLocker) (unlock func() error, err error) {
 	deadline := time.Now().Add(max(c.o.DialWait, 0))
 	for {
@@ -190,7 +182,7 @@ func (c *Client) lockWriter(ctx context.Context, l writerLocker) (unlock func() 
 			err = &busyError{name: c.name, err: err}
 		} else if cn, again, cerr := c.attempt(ctx, dbwire.RoleWriter); cerr == nil {
 			cn.close()
-			err = &ioError{c.name, dialFailure{err}}
+			err, retry = &ioError{c.name, dialFailure{err}}, false
 		} else {
 			err, retry = cerr, again
 		}

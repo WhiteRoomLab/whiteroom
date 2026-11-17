@@ -1027,10 +1027,16 @@ func TestDaemonOfAnotherVersion(t *testing.T) {
 			{"doctor", "-db", dir},
 		} {
 			var o, e bytes.Buffer
+			start := time.Now()
 			code := run(t.Context(), args, testEnv(failingReader{t}, &o, &e))
 			text := o.String() + e.String()
 			if code != 1 || !strings.Contains(text, d.want) || strings.Count(text, "\n") > 2 {
 				t.Errorf("%s: whiteroom %s = %d, with stdout %q and stderr %q, want 1, and %q", d.what, args[0], code, &o, &e, d.want)
+			}
+			// The fake daemon makes no lock of the writer: the refusal of the connection that a writer tries instead is not
+			// tried again for 2 seconds either.
+			if took := time.Since(start); took > 1500*time.Millisecond {
+				t.Errorf("%s: whiteroom %s took %v, want the refusal at once", d.what, args[0], took)
 			}
 		}
 		for _, name := range []string{out, cache, dest} {

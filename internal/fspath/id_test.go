@@ -21,10 +21,10 @@ func TestIn(t *testing.T) {
 		}
 		return dev, ino
 	}
+	linkDev, linkIno := id("c")
 	if _, _, _, err := FileID(in("missing")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("FileID of a missing file: %v", err)
 	}
-	linkDev, linkIno := id("c")
 	if dev, ino := id("b/entries"); linkDev != dev || linkIno != ino {
 		t.Error("FileID does not follow a symbolic link")
 	}

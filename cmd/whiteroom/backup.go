@@ -85,8 +85,9 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		return 1
 	}
 	// The store connects to the daemon and checks that DEST is not in its data directory before prepare makes DEST.
-	made := false
+	prepared, made := false, false
 	prepare := func() error {
+		prepared = true
 		if !missing {
 			return nil
 		}
@@ -100,8 +101,8 @@ func runBackup(ctx context.Context, args []string, e env) int {
 	heads, err := store.Backup(ctx, dbDialer(db), dest, prepare)
 	if err != nil {
 		p.printError(ctx, err)
-		// What the command has made in DEST is removed: DEST was empty, or missing and made by prepare.
-		if missing && !made {
+		// What the command has made in DEST is removed: nothing before prepare, which makes DEST if it was missing.
+		if !prepared || missing && !made {
 			return 1
 		}
 		if err := cleanupNewDataDir(dest, missing); err != nil {
