@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
@@ -506,9 +507,8 @@ func TestBackupErrors(t *testing.T) {
 	})
 
 	t.Run("a daemon that cannot be reached", func(t *testing.T) {
-		// A directory that cannot be written, where DEST could not be made, is not what is reported: DEST is made first, and
-		// removed when the connection fails. Each case waits for the client's 2 seconds, so they run together, each with a
-		// DEST of its own.
+		// DEST is not made: the command connects to the daemon first. Each case waits for the client's 2 seconds, so they
+		// run together, each with a DEST of its own.
 		for _, tt := range []struct {
 			what string
 			db   func(t *testing.T) string
@@ -541,9 +541,32 @@ func TestBackupErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("what another process puts in DEST meanwhile", func(t *testing.T) {
+		// DEST is empty when the command looks at it, and the command waits 2 seconds for a daemon that cannot be reached:
+		// the failure removes nothing that it has not made.
+		t.Parallel()
+		db, dest := t.TempDir(), t.TempDir()
+		done := async(func() string {
+			return failingBackup(t, "a daemon that cannot be reached", t.Context(), "-db", db, dest)
+		})
+		time.Sleep(500 * time.Millisecond)
+		keep := filepath.Join(dest, "files", "keep")
+		if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keep, []byte("not the command's"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := receive(t, done, "whiteroom backup"); !strings.Contains(got, "cannot reach the daemon") {
+			t.Errorf("whiteroom backup printed %q, want that the daemon cannot be reached", got)
+		}
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("what another process put in DEST: %v, want it kept", err)
+		}
+	})
+
 	t.Run("a DEST that is the data directory", func(t *testing.T) {
-		// The command does not know the data directory of the daemon, so it cannot tell a DEST in it: only a DEST that is not
-		// empty is refused, which the data directory is.
+		// It is not empty, which the command finds before it connects to the daemon.
 		s := initSample(t)
 		before := stateOf(t, s.data)
 		want := "whiteroom backup: " + s.data + ": not empty; DEST must be missing or an empty directory\n"
@@ -552,6 +575,39 @@ func TestBackupErrors(t *testing.T) {
 		}
 		if after := stateOf(t, s.data); after != before {
 			t.Errorf("the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+	})
+
+	t.Run("a DEST in the data directory", func(t *testing.T) {
+		// The daemon sends the files of its data directory as it finds them, and would send what the command writes there
+		// too (#124): the command compares DEST and its parents with the data directory that the daemon tells.
+		s := initSample(t)
+		empty := filepath.Join(s.data, "empty")
+		if err := os.Mkdir(empty, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(filepath.Join(s.data, "files"), link); err != nil {
+			t.Fatal(err)
+		}
+		before := stateOf(t, s.data)
+		for _, tt := range []struct{ what, dest string }{
+			{"a missing DEST in files", filepath.Join(s.data, "files", "b")},
+			{"a missing DEST in the data directory", filepath.Join(s.data, "elsewhere")},
+			{"an empty DEST in the data directory", empty},
+			{"a DEST through a symbolic link", filepath.Join(link, "b")},
+		} {
+			want := "whiteroom backup: " + tt.dest + ": DEST is in the data directory of the daemon\n"
+			if got := failingBackup(t, tt.what, t.Context(), "-db", s.db, tt.dest); got != want {
+				t.Errorf("%s: whiteroom backup printed %q, want %q", tt.what, got, want)
+			}
+		}
+		if after := stateOf(t, s.data); after != before {
+			t.Errorf("the data directory is changed:\n%s\nwas:\n%s", after, before)
+		}
+		// Beside the data directory is outside it.
+		if code, _, stderr := runCmd(t, "backup", "-db", s.db, s.data+"-copy"); code != 0 {
+			t.Errorf("a DEST beside the data directory: whiteroom backup = %d, with stderr:\n%s", code, stderr)
 		}
 	})
 

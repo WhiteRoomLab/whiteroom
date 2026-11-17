@@ -33,6 +33,11 @@ Who may connect is decided by the mode and the group of each socket file
 Unix user of -writer-user, by default the user of this process, may write: another
 user who connects to writer.sock is refused. Whoever connects to reader.sock reads.
 
+The file writer.lock is made there too, with the mode and the group of
+writer.sock, if it is missing, and stays when the daemon stops: a writer (whiteroom
+serve admin, init, account) holds a lock on it while it runs, so that no other
+process becomes the writer, also after the daemon has started again.
+
 It writes the heads of the chains of the audit logs to the standard error, a line
 each: when it starts, then every minute those that have changed, and when it
 stops, so that the journal keeps them outside the data directory. Its log lines go
@@ -74,7 +79,7 @@ func newServeFlags(stderr io.Writer) (*flag.FlagSet, *serveFlags) {
 		"let only the Unix user `USER`, a name or a number, write (default writerUser of the config file, else the user "+
 			"of this process)")
 	flags.StringVar(&f.writerGroup, "writer-group", "",
-		"give writer.sock the group `GROUP`, a name or a number (default writerGroup of the config file, else the group "+
+		"give writer.sock and writer.lock the group `GROUP`, a name or a number (default writerGroup of the config file, else the group "+
 			"that the system gives)")
 	flags.StringVar(&f.readerGroup, "reader-group", "",
 		"give reader.sock the group `GROUP`, a name or a number (default readerGroup of the config file, else the group "+

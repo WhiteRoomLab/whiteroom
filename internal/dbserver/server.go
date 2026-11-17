@@ -44,6 +44,8 @@ type Options struct {
 	Now func() time.Time
 	// FreeSpace returns the free space of the file system of the data directory; nil: no check.
 	FreeSpace func() (Space, error)
+	// DataDir is the identity of the data directory, which the reply to a Hello tells; zero: unknown.
+	DataDir dbwire.DirID
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
 	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal), "original:renamed" (after

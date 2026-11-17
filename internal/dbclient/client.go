@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 var (
@@ -47,10 +48,16 @@ const (
 	maxObject = 1 << 30
 )
 
-// A Dialer connects to the daemon as a role. It may also have String, its name in errors, and Close, which Client.Close
-// calls. The connections that it returns must honor deadlines.
+// A Dialer connects to the daemon as a role. It may also have String, its name in errors, Close, which Client.Close
+// calls, and LockWriter, as SocketDir has. The connections that it returns must honor deadlines.
 type Dialer interface {
 	Dial(ctx context.Context, role dbwire.Role) (net.Conn, error)
+}
+
+// writerLocker is a Dialer that has a lock of the writer, which a Client of the writer holds from before its first
+// connection until Close. LockWriter fails with an error that wraps vfs.ErrLocked while another holds it.
+type writerLocker interface {
+	LockWriter() (unlock func() error, err error)
 }
 
 // SocketDir is the Dialer of the sockets writer.sock and reader.sock in a directory.
@@ -67,12 +74,21 @@ func (s SocketDir) Dial(ctx context.Context, role dbwire.Role) (net.Conn, error)
 
 func (s SocketDir) String() string { return string(s) }
 
+// LockWriter takes the lock of the file dbwire.WriterLock in the directory, which the daemon makes, so that the writer of
+// the daemon is one process also while it has no connection: after a restart of the daemon, and after a connection has
+// ended in a request. It opens the file by its path, which needs only the search permission of the directory, as the
+// sockets do.
+func (s SocketDir) LockWriter() (unlock func() error, err error) {
+	return lockFile(filepath.Join(string(s), dbwire.WriterLock))
+}
+
 // Options are the options of Open; a zero field is its default.
 type Options struct {
 	// Readers is how many connections to the reader socket Views use at once; 0: 16.
 	Readers int
 	// DialWait is how long to try to connect, every 50 milliseconds, when the daemon cannot be reached or says that it is
-	// busy, which a writer meets for a moment after another writer's connection has ended; 0: 2 seconds, negative: once.
+	// busy, which a writer meets for a moment after another writer's connection has ended, and how long Open tries to take
+	// the lock of the writer; 0: 2 seconds, negative: once.
 	DialWait time.Duration
 }
 
@@ -94,11 +110,14 @@ type Client struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	wconn *conn // the writer connection, for the holder of turn; nil if the last dial failed, dead if it has ended
+	wconn   *conn        // the writer connection, for the holder of turn; nil if the last dial failed, dead if it has ended
+	unlock  func() error // gives up the lock of the writer, if the client holds it
+	dataDir dbwire.DirID
 }
 
-// Open connects to the daemon as role and says Hello. The Client owns d from the call on: Close closes it, and so does an
-// Open that fails.
+// Open connects to the daemon as role and says Hello. A writer first takes the lock of the writer, if d has one: while
+// another process holds it, Open fails with the error that says that another process is connected as the writer. The
+// Client owns d from the call on: Close closes it, and so does an Open that fails.
 func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, error) {
 	closeDialer := func() {
 		if cl, ok := d.(io.Closer); ok {
@@ -121,11 +140,23 @@ func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, 
 	}
 	c := &Client{d: d, name: nameOf(d), role: role, o: o, conns: map[*conn]struct{}{},
 		slots: make(chan struct{}, o.Readers), turn: make(chan struct{}, 1), done: make(chan struct{})}
+	if l, ok := d.(writerLocker); ok && role == dbwire.RoleWriter {
+		unlock, err := c.lockWriter(ctx, l)
+		if err != nil {
+			closeDialer()
+			return nil, err
+		}
+		c.unlock = unlock
+	}
 	cn, err := c.connect(ctx, role)
 	if err != nil {
+		if c.unlock != nil {
+			_ = c.unlock()
+		}
 		closeDialer()
 		return nil, err
 	}
+	c.dataDir = cn.hello.DataDir
 	if role == dbwire.RoleWriter {
 		c.wconn = cn
 	} else {
@@ -133,6 +164,46 @@ func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, 
 	}
 	return c, nil
 }
+
+// lockWriter takes the lock of the writer of l, trying again every 50 milliseconds for Options.DialWait while another
+// process holds it. A lock that cannot be taken otherwise, as one that is missing until the daemon has started once, is
+// tried again too, but the error is that of a connection to the daemon, if that fails: why it cannot be reached, or its
+// refusal, which is not tried again. If the connection is made, the daemon has no lock to take, which a daemon that has
+// started does not make later: its error ends the wait.
+func (c *Client) lockWriter(ctx context.Context, l writerLocker) (unlock func() error, err error) {
+	deadline := time.Now().Add(max(c.o.DialWait, 0))
+	for {
+		unlock, err := l.LockWriter()
+		if err == nil {
+			return unlock, nil
+		}
+		retry := true
+		if errors.Is(err, vfs.ErrLocked) {
+			err = &busyError{name: c.name, err: err}
+		} else if cn, again, cerr := c.attempt(ctx, dbwire.RoleWriter); cerr == nil {
+			cn.close()
+			err, retry = &ioError{c.name, dialFailure{err}}, false
+		} else {
+			err, retry = cerr, again
+		}
+		switch {
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case !retry || !time.Now().Before(deadline):
+			return nil, err
+		}
+		t := time.NewTimer(min(dialEvery, time.Until(deadline)))
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// DataDir returns the identity of the data directory of the daemon, as its first Hello told it: zero if it is unknown.
+func (c *Client) DataDir() dbwire.DirID { return c.dataDir }
 
 func nameOf(d Dialer) string {
 	if s, ok := d.(fmt.Stringer); ok {
@@ -157,9 +228,14 @@ func (c *Client) Close() error {
 		for _, cn := range conns {
 			cn.close()
 		}
-		if cl, ok := c.d.(io.Closer); ok {
-			c.closeErr = cl.Close()
+		var errs []error
+		if c.unlock != nil {
+			errs = append(errs, c.unlock())
 		}
+		if cl, ok := c.d.(io.Closer); ok {
+			errs = append(errs, cl.Close())
+		}
+		c.closeErr = errors.Join(errs...)
 	})
 	return c.closeErr
 }
@@ -209,14 +285,28 @@ func (e *refusedError) Error() string {
 func (e *refusedError) Unwrap() error        { return e.err }
 func (e *refusedError) Is(target error) bool { return target == ErrUnavailable }
 
-// busyError is the refusal of a writer, which another writer's connection keeps out.
+// busyError is the refusal of a writer, which another writer's connection, or the lock of another process, keeps out.
 type busyError struct {
 	name string
-	err  *dbwire.RemoteError
+	err  error
 }
 
 func (e *busyError) Error() string { return e.name + ": another process is connected as the writer" }
 func (e *busyError) Unwrap() error { return e.err }
+
+// lastWriterError is the refusal busy of a writer that holds the lock of the writer: the connection that keeps it out is
+// not that of another process that takes the lock, but the last one of this client, or of a writer that has just ended,
+// whose session the daemon has not ended yet, as while its Commit waits for a Verify.
+type lastWriterError struct {
+	name string
+	err  *dbwire.RemoteError
+}
+
+func (e *lastWriterError) Error() string {
+	return e.name + ": " + ErrUnavailable.Error() + ": the last connection of the writer has not ended yet"
+}
+func (e *lastWriterError) Unwrap() error        { return e.err }
+func (e *lastWriterError) Is(target error) bool { return target == ErrUnavailable }
 
 // conn is a connection after its Hello. One goroutine at a time uses it.
 type conn struct {
@@ -309,7 +399,10 @@ func (c *Client) attempt(ctx context.Context, role dbwire.Role) (cn *conn, retry
 	)
 	switch {
 	case errors.As(err, &re) && re.Code == dbwire.CodeBusy:
-		if role == dbwire.RoleWriter {
+		switch {
+		case role == dbwire.RoleWriter && c.unlock != nil:
+			return nil, true, &lastWriterError{c.name, re}
+		case role == dbwire.RoleWriter:
 			return nil, true, &busyError{c.name, re}
 		}
 		return nil, true, &refusedError{c.name, re}

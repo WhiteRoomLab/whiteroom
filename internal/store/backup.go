@@ -17,21 +17,23 @@ import (
 // Backup copies the store that the daemon of d serves, whose writer may go on writing, to the data directory dstDir,
 // which must be missing or an empty directory: the daemon's copy of its data directory at the last commit that is
 // durable when its Backup begins, which has the originals of that commit. It returns the heads of the audit logs of the
-// copy. A store of a table schema before 7 has no rows of the heads, and is refused before anything is copied, as is a
-// data directory that has no store yet, with an error that wraps ErrNoStore. If Backup fails, dstDir must be emptied before
-// it can try again.
-func Backup(ctx context.Context, d dbclient.Dialer, dstDir string) ([]audit.Head, error) {
+// copy. Before it makes anything, it refuses a store of a table schema before 7, which has no rows of the heads, a data
+// directory that has no store yet, with an error that wraps ErrNoStore, and a dstDir that is the data directory of the
+// daemon or is in it, as the device and inode numbers that the daemon tells say (on Linux): the daemon sends the files of
+// its data directory as it finds them, and would send what Backup writes there too. Then it calls prepare, if it is not
+// nil, which may make dstDir. If Backup fails, dstDir must be emptied before it can try again.
+func Backup(ctx context.Context, d dbclient.Dialer, dstDir string, prepare func() error) ([]audit.Head, error) {
 	c, err := dbclient.Open(ctx, d, dbwire.RoleReader, dbclient.Options{})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	return backupTo(ctx, c, dialerName(d), dstDir, nil)
+	return backupTo(ctx, c, dialerName(d), dstDir, nil, prepare)
 }
 
 // backupTo is Backup with the client c of a reader of the daemon that the errors call name, to dstDir on the OS, or to dst
 // if it is not nil, which dstDir only names in errors.
-func backupTo(ctx context.Context, c *dbclient.Client, name, dstDir string, dst vfs.FS) ([]audit.Head, error) {
+func backupTo(ctx context.Context, c *dbclient.Client, name, dstDir string, dst vfs.FS, prepare func() error) ([]audit.Head, error) {
 	if err := c.View(ctx, func(tx *dbclient.Tx) error {
 		v, ok, err := tx.Get(tableMeta, schemaKey)
 		if err != nil {
@@ -47,6 +49,16 @@ func backupTo(ctx context.Context, c *dbclient.Client, name, dstDir string, dst 
 		return nil
 	}); err != nil {
 		return nil, err
+	}
+	if dst == nil {
+		if err := outsideDataDir(dstDir, c.DataDir()); err != nil {
+			return nil, err
+		}
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return nil, err
+		}
 	}
 	if err := newDataDir(dstDir, dst); err != nil {
 		return nil, err
@@ -69,6 +81,24 @@ func backupTo(ctx context.Context, c *dbclient.Client, name, dstDir string, dst 
 		heads = append(heads, h)
 	}
 	return heads, nil
+}
+
+// outsideDataDir refuses dir if it is the data directory whose identity is id, or is in it. A zero id is not known, and
+// refuses nothing.
+func outsideDataDir(dir string, id dbwire.DirID) error {
+	if id == (dbwire.DirID{}) {
+		return nil
+	}
+	switch in, err := fspath.In(dir, id.Dev, id.Ino); {
+	case err != nil:
+		return err
+	case !in:
+		return nil
+	}
+	if dev, ino, _, err := fspath.FileID(dir); err == nil && dev == id.Dev && ino == id.Ino {
+		return fmt.Errorf("%s: DEST is the data directory of the daemon", dir)
+	}
+	return fmt.Errorf("%s: DEST is in the data directory of the daemon", dir)
 }
 
 // newDataDir checks that dir, a new data directory, is empty: fsys if it is not nil, else the directory on the OS,

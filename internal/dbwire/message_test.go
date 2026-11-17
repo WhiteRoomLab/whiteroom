@@ -301,15 +301,17 @@ func TestMessages(t *testing.T) {
 		{"Hello request", func(e *Enc) { e.HelloRequest() }, Version},
 		{"Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 15: 16}, Seq: 1 << 40, Stopped: true,
-				Frame: 1 << 20, Commit: 268435446, Object: 64 << 20, Staged: 268435446, MaxKey: MaxKey})
+				Frame: 1 << 20, Commit: 268435446, Object: 64 << 20, Staged: 268435446, MaxKey: MaxKey, DataDir: DirID{Dev: 66306, Ino: 2}})
 		}, HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 15: 16}, Seq: 1 << 40, Stopped: true,
-			Frame: 1 << 20, Commit: 268435446, Object: 64 << 20, Staged: 268435446, MaxKey: MaxKey}},
+			Frame: 1 << 20, Commit: 268435446, Object: 64 << 20, Staged: 268435446, MaxKey: MaxKey, DataDir: DirID{Dev: 66306, Ino: 2}}},
 		{"Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleReader, Frame: 1})
 		}, HelloReply{Version: Version, Role: RoleReader, Frame: 1}},
 		{"Hello reply", func(e *Enc) {
-			e.HelloReply(HelloReply{Version: Version, Role: RoleReader, Frame: MaxFrame, Commit: math.MaxInt64, MaxKey: math.MaxInt32})
-		}, HelloReply{Version: Version, Role: RoleReader, Frame: MaxFrame, Commit: math.MaxInt64, MaxKey: math.MaxInt32}},
+			e.HelloReply(HelloReply{Version: Version, Role: RoleReader, Frame: MaxFrame, Commit: math.MaxInt64, MaxKey: math.MaxInt32,
+				DataDir: DirID{Dev: math.MaxUint64, Ino: math.MaxUint64}})
+		}, HelloReply{Version: Version, Role: RoleReader, Frame: MaxFrame, Commit: math.MaxInt64, MaxKey: math.MaxInt32,
+			DataDir: DirID{Dev: math.MaxUint64, Ino: math.MaxUint64}}},
 		{"Snapshot request", func(*Enc) {}, nil},
 		{"Snapshot reply", func(e *Enc) { e.SnapshotReply(0) }, uint64(0)},
 		{"Snapshot reply", func(e *Enc) { e.SnapshotReply(math.MaxUint64) }, uint64(math.MaxUint64)},
@@ -486,7 +488,7 @@ func TestMessageRefusals(t *testing.T) {
 			h    HelloReply
 			want string
 		}{
-			{"another version", HelloReply{Version: 2, Role: RoleReader, Frame: 100}, "version 2"},
+			{"another version", HelloReply{Version: 1, Role: RoleReader, Frame: 100}, "version 1"},
 			{"role 0", HelloReply{Version: Version, Frame: 100}, "role 0"},
 			{"role 3", HelloReply{Version: Version, Role: 3, Frame: 100}, "role 3"},
 			{"frame 0", HelloReply{Version: Version, Role: RoleReader}, "limit 0"},

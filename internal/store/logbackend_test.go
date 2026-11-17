@@ -1527,6 +1527,28 @@ func TestBackup(t *testing.T) {
 			err.Error() != copied+": not empty; a new data directory needs a missing or empty directory" {
 			t.Errorf("Backup() to a data directory = %v, want an error", err)
 		}
+		// The daemon's own data directory, which it tells, is refused before what is in it is looked at.
+		inFiles := filepath.Join(dir, "files", "b")
+		for _, c := range []struct{ dst, want string }{
+			{dir, dir + ": DEST is the data directory of the daemon"},
+			{inFiles, inFiles + ": DEST is in the data directory of the daemon"},
+		} {
+			if _, err := backup(t.Context(), dir, nil, c.dst, nil); err == nil || err.Error() != c.want {
+				t.Errorf("Backup() to %s = %v, want %q", c.dst, err, c.want)
+			}
+		}
+		if _, err := os.Lstat(inFiles); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s after the refusal: %v, want it missing", inFiles, err)
+		}
+		// Nor is prepare called, which makes DEST.
+		_, d, err := acquire(dir, options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared := false
+		if _, err := Backup(t.Context(), d, inFiles, func() error { prepared = true; return nil }); err == nil || prepared {
+			t.Errorf("Backup() to %s = %v, and prepare was called: %v, want neither", inFiles, err, prepared)
+		}
 		noLog := dataDirWithoutLog(t)
 		if _, err := backup(t.Context(), noLog, nil, filepath.Join(t.TempDir(), "copy"), nil); err == nil ||
 			err.Error() != noLog+"/logdb: missing directory" {

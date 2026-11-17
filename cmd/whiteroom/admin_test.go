@@ -1753,7 +1753,7 @@ const unreachableLog = "the daemon of the store cannot be reached: "
 
 // TestServeAdminDaemon stops the daemon under a running server, and starts it again. While it is away the requests that need
 // the store are 503 with the problem code busy, and the log has one line that says that the daemon cannot be reached; a server
-// that is started then fails, with the name of the socket that it cannot reach, and the one that runs stays up. When the daemon
+// that is started then fails, as the one that runs, which stays up, holds the lock of the writer. When the daemon
 // is back the next requests work with no new server, the session that was valid is valid, the Publisher builds what a page that
 // the API publishes needs, and a second server on the daemon fails because the first is its writer. A server can be stopped
 // while the daemon is away.
@@ -1790,10 +1790,10 @@ func TestServeAdminDaemon(t *testing.T) {
 		{"a login", probe(http.MethodPost, "/api/session", fmt.Sprintf(`{"login":%q,"password":%q}`, initLogin, initPassword))},
 		{"a new entry", probe(http.MethodPost, "/api/entries", `{"type":"page","language":"en"}`, "Cookie", cookie)},
 	}
-	// A server that is started now cannot reach the daemon, and says which socket.
+	// A server that is started now is not the writer: the one that runs holds the lock of the writer, also while the daemon
+	// is away (#126).
 	code, stdout, stderr := runAdminCmd(t, s.args("-addr", "127.0.0.1:0")...)
-	want := "whiteroom serve admin: " + s.db + ": " + dbclient.ErrUnavailable.Error() + ": dial unix " +
-		filepath.Join(s.db, dbwire.WriterSocket) + ": connect: no such file or directory\n"
+	want := "whiteroom serve admin: " + s.db + ": another process is connected as the writer\n"
 	if code != 1 || stdout != "" || stderr != want {
 		t.Errorf("a server that is started while the daemon is away = %d, with stdout %q and stderr:\n%s\nwant 1, and %q", code, stdout,
 			stderr, want)

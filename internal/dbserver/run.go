@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"os"
@@ -48,6 +49,39 @@ const connectionSlack = 16
 // errNotLinux is the error of Run on a system that does not tell the user of a peer.
 var errNotLinux = errors.New("runs on Linux only: it needs SO_PEERCRED to know the user of a peer")
 
+// MakeWriterLock makes the file dbwire.WriterLock in the directory of the sockets if it is missing, and gives it the mode
+// 0660, and the group gid unless it is -1. A client of the writer holds a lock on that file while it is open (dbclient):
+// the file outlives the daemon, and is never removed or made anew, so that a client that holds its lock across a restart
+// of the daemon holds that of the next one too. made reports that it has made the file; if MakeWriterLock fails, a file
+// that it has made is removed.
+func MakeWriterLock(sockets string, gid int) (made bool, err error) {
+	p := filepath.Join(sockets, dbwire.WriterLock)
+	info, err := os.Lstat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		var f *os.File
+		if f, err = os.OpenFile(p, os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0o660); err == nil {
+			made = true
+			err = f.Close()
+		} else if errors.Is(err, fs.ErrExist) {
+			info, err = os.Lstat(p)
+		}
+	}
+	switch {
+	case err != nil:
+	case info != nil && !info.Mode().IsRegular():
+		err = fmt.Errorf("%s: not a regular file; it is the lock of the writer", p)
+	default:
+		err = os.Chmod(p, 0o660)
+		if err == nil && gid >= 0 {
+			err = os.Chown(p, -1, gid)
+		}
+	}
+	if err != nil && made {
+		return false, errors.Join(err, os.Remove(p))
+	}
+	return made, err
+}
+
 // Run is the daemon: it opens the data directory, serves the writer socket to the connections whose peer has the Unix
 // user cfg.WriterUID, and the reader socket, as readers, to every peer, and exports the heads of the audit logs to
 // cfg.Heads, until ctx ends. Then it stops listening, which removes the socket files, lets the requests in progress end
@@ -64,6 +98,11 @@ func Run(ctx context.Context, cfg Config) error {
 	s, err := OpenDir(cfg.Data, cfg.Options)
 	if err != nil {
 		return err
+	}
+	// Before the sockets: a client that reaches the daemon finds the lock. A start that fails leaves nothing that it made.
+	madeLock, err := MakeWriterLock(cfg.Sockets, cfg.WriterGID)
+	if err != nil {
+		return errors.Join(err, s.Close())
 	}
 	var listeners []net.Listener
 	closeListeners := func() {
@@ -85,6 +124,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if err != nil {
 			closeListeners()
+			if madeLock {
+				_ = os.Remove(filepath.Join(cfg.Sockets, dbwire.WriterLock))
+			}
 			return errors.Join(err, s.Close())
 		}
 	}

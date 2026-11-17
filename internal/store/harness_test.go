@@ -348,7 +348,7 @@ func backup(ctx context.Context, srcDir string, src vfs.FS, dstDir string, dst v
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	return backupTo(ctx, c, srcDir, dstDir, dst)
+	return backupTo(ctx, c, srcDir, dstDir, dst, nil)
 }
 
 // failedAtHook reports whether err is what a call returns when the hook of the store fails with errHook at point: at

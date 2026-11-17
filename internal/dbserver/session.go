@@ -363,7 +363,7 @@ func (c *session) handshake() bool {
 	l := c.s.limits
 	h := dbwire.HelloReply{Version: dbwire.Version, Role: c.role, BootID: c.s.bootID, Seq: seq,
 		Stopped: c.s.stopped.Load(), Frame: l.Frame, Commit: l.Commit, Object: l.Object, Staged: l.Staged,
-		MaxKey: dbwire.MaxKey}
+		MaxKey: dbwire.MaxKey, DataDir: c.s.o.DataDir}
 	if !c.ok(func(e *dbwire.Enc) { e.HelloReply(h) }) {
 		return false
 	}

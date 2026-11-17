@@ -50,7 +50,7 @@ WordPress の PHP との突き合わせのテスト（構想書の 6.10.5 の「
 
 見本のサイト（`internal/build/testdata/site/`）をブラウザーで見るには、`go run ./cmd/whiteroom build -theme internal/theme/testdata/example -out <dir>/out -cache <dir>/cache internal/build/testdata/site` でビルドしてから、`go run ./cmd/whiteroom serve public <dir>/out` として、`http://127.0.0.1:8080/` を開く（Ctrl-C で止める）。`<dir>` はリポジトリの外にする（`-out`・`-cache` を省くと、見本のサイトの中の `out/`・`cache/` に書く）。
 
-保存先から動かして、管理のAPIを呼ぶには、DB のデーモン `whiteroom-db`（Linux だけで動く）と管理のサーバー `whiteroom serve admin` を、リポジトリの外の `<dir>` で、次のとおりに動かす（構想書の 9.4 の例と同じ流れ）。データのディレクトリを開くのは、デーモンだけで、`whiteroom` は、ソケットで繋ぐ。`<sock>` は、デーモンが `writer.sock` と `reader.sock` を作るディレクトリで、あらかじめ作っておく（`mkdir -m 0700 <sock>`）。ソケットのパスは107バイトまでなので、長い `<dir>` の下ではなく、リポジトリの外の短いパスにする（例：`$XDG_RUNTIME_DIR/whiteroom`）。
+保存先から動かして、管理のAPIを呼ぶには、DB のデーモン `whiteroom-db`（Linux だけで動く）と管理のサーバー `whiteroom serve admin` を、リポジトリの外の `<dir>` で、次のとおりに動かす（構想書の 9.4 の例と同じ流れ）。データのディレクトリを開くのは、デーモンだけで、`whiteroom` は、ソケットで繋ぐ。`<sock>` は、デーモンが `writer.sock` と `reader.sock`（と、書き手のロックの `writer.lock`）を作るディレクトリで、あらかじめ作っておく（`mkdir -m 0700 <sock>`）。ソケットのパスは107バイトまでなので、長い `<dir>` の下ではなく、リポジトリの外の短いパスにする（例：`$XDG_RUNTIME_DIR/whiteroom`）。
 
 - 設定：2つの実行ファイルは、1つの設定ファイル（`-config`）を読める。`<dir>/config.yaml` に、`data: data`・`db: <sock>`・`site: <リポジトリ>/internal/build/testdata/site`・`theme: <リポジトリ>/internal/theme/testdata/example`・`out: out`・`cache: cache`・`tmp: tmp` を書く（パスは、このファイルのディレクトリからの相対か、絶対。`<リポジトリ>` は、このリポジトリの絶対パス）。以下の `-config <dir>/config.yaml` の代わりに、括弧の中のフラグでも渡せる（パスは、リポジトリの直下から）。
 - `go run ./cmd/whiteroom-db init -config <dir>/config.yaml`（`-data <dir>/data`）：データのディレクトリ `<dir>/data` を作る。

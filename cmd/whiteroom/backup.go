@@ -17,7 +17,9 @@ const backupUsage = `Usage: whiteroom backup [flags] DEST
 
 Copy the data directory of the daemon whiteroom-db whose sockets are in the
 directory of -db to DEST, which must be missing or an empty directory, and whose
-parent must exist. The copy is the data directory as it was at the last commit
+parent must exist. DEST must not be in the data directory of the daemon, which
+the daemon tells the command on Linux: the command connects to the daemon before
+it makes DEST. The copy is the data directory as it was at the last commit
 that was durable when the command began: a whiteroom serve admin may go on writing
 meanwhile, and the command writes nothing in the store. The daemon copies it, and
 the command writes DEST.
@@ -82,30 +84,31 @@ func runBackup(ctx context.Context, args []string, e env) int {
 		p.printError(ctx, err)
 		return 1
 	}
-	if missing {
+	// The store connects to the daemon and checks that DEST is not in its data directory before prepare makes DEST.
+	prepared, made := false, false
+	prepare := func() error {
+		prepared = true
+		if !missing {
+			return nil
+		}
 		// Not MkdirAll: a parent that is missing is a mistake in DEST, not something to make.
 		if err := os.Mkdir(dest, 0o700); err != nil {
-			p.printError(ctx, err)
+			return err
+		}
+		made = true
+		return fspath.SyncParent(dest)
+	}
+	heads, err := store.Backup(ctx, dbDialer(db), dest, prepare)
+	if err != nil {
+		p.printError(ctx, err)
+		// What the command has made in DEST is removed: nothing before prepare, which makes DEST if it was missing.
+		if !prepared || missing && !made {
 			return 1
 		}
-	}
-
-	// From here on, what the command has made in DEST is removed when it fails: DEST was missing or empty.
-	fail := func(err error) int {
-		p.printError(ctx, err)
 		if err := cleanupNewDataDir(dest, missing); err != nil {
 			printf(e.stderr, "%s: cleaning up %s: %v\n", flags.Name(), dest, err)
 		}
 		return 1
-	}
-	if missing {
-		if err := fspath.SyncParent(dest); err != nil {
-			return fail(err)
-		}
-	}
-	heads, err := store.Backup(ctx, dbDialer(db), dest)
-	if err != nil {
-		return fail(err)
 	}
 	printf(e.stdout, "backed up the store of %s to %s\n", db, dest)
 	for _, h := range heads {

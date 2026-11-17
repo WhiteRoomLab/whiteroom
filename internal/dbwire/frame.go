@@ -6,15 +6,17 @@ import (
 )
 
 // Version is the version of the protocol. A Hello of another version is refused.
-const Version uint32 = 1
+const Version uint32 = 2
 
 // Magic starts the body of a Hello request.
 var Magic = [4]byte{'W', 'R', 'D', 'B'}
 
-// The names of the two socket files in the directory of the sockets of a daemon.
+// The names of the two socket files in the directory of the sockets of a daemon, and of the file whose lock a client of the
+// writer holds while it is open, so that the writer is one process also while it has no connection.
 const (
 	WriterSocket = "writer.sock"
 	ReaderSocket = "reader.sock"
+	WriterLock   = "writer.lock"
 )
 
 // Role is what a connection may do: a reader reads, and the one writer also puts and commits.
