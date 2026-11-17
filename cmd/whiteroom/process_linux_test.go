@@ -34,9 +34,18 @@ type proc struct {
 // directory of the temporary files. The process is killed when the test ends if it still runs, and when the test process dies.
 func startProc(t *testing.T, name, bin, tmp string, stdin io.Reader, args ...string) *proc {
 	t.Helper()
+	return startProcTo(t, nil, name, bin, tmp, stdin, args...)
+}
+
+// startProcTo is startProc with the standard error stderr, if it is not nil, instead of the buffer, which stays empty.
+func startProcTo(t *testing.T, stderr *os.File, name, bin, tmp string, stdin io.Reader, args ...string) *proc {
+	t.Helper()
 	p := &proc{name: name + " " + strings.Join(args, " "), stdout: new(syncBuffer), stderr: new(syncBuffer), done: make(chan struct{})}
 	p.cmd = exec.Command(bin, args...)
 	p.cmd.Stdin, p.cmd.Stdout, p.cmd.Stderr = stdin, p.stdout, p.stderr
+	if stderr != nil {
+		p.cmd.Stderr = stderr // a file, which the process writes itself, with no copy by this process
+	}
 	p.cmd.Env = []string{"TMPDIR=" + tmp}
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := p.cmd.Start(); err != nil {
@@ -105,6 +114,21 @@ func (p *proc) stop(t *testing.T) {
 	if code := p.exited(t); code != 0 {
 		t.Errorf("%s ended with %d after SIGTERM, want 0\nstdout:\n%s\nstderr:\n%s", p.name, code, p.stdout, p.stderr)
 	}
+}
+
+// brokenPipe returns the end of a pipe that a process writes, whose reader has already gone: a write to it fails with
+// EPIPE, and raises SIGPIPE.
+func brokenPipe(t *testing.T) *os.File {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return w
 }
 
 // buildExecutables builds whiteroom and whiteroom-db into the directory dir with one go build, which the race detector is in
@@ -201,9 +225,10 @@ func headLines(text string) []string {
 // whiteroom-db makes the data directory and serves it; whiteroom init imports the sample site and makes the administrator,
 // with the password on a pipe; whiteroom serve admin connects to the daemon and listens on a Unix socket; a login, a page that
 // the API saves and publishes, and the build that follows; whiteroom build into another output directory; whiteroom backup;
-// a second daemon on the copy, which whiteroom doctor checks with the heads that backup printed; and whiteroom doctor with the
-// heads that the first daemon has written to its standard error. The server has no file of the data directory open and
-// writes no head. Every process ends with 0 after SIGTERM.
+// a second daemon on the copy, which whiteroom doctor checks with the heads that backup printed; whiteroom doctor with the
+// heads that the first daemon has written to its standard error; and the daemon and the two servers, each with a standard
+// error that is a pipe that no one reads (#130). The server has no file of the data directory open and writes no head.
+// Every process ends with 0 after SIGTERM.
 func TestProcesses(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -346,6 +371,44 @@ func TestProcesses(t *testing.T) {
 		t.Errorf("whiteroom doctor with the heads that the daemon wrote printed %q, and on stderr %q, want %q", stdout, stderr, want)
 	}
 	again.stop(t)
+
+	// The servers outlive the reader of their standard error, which has gone (#130): the daemon writes the heads to it when it
+	// starts and when it stops, and the server logs that the daemon cannot be reached, which writing to such a pipe on the
+	// standard error would end, as SIGPIPE does by default. Each goes on serving, and ends with 0. What they write to the
+	// standard error is lost, also for the messages of a failure here.
+	quiet := startProcTo(t, brokenPipe(t), "whiteroom-db", whiteroomDB, procTmp, nil, "serve", "-config", cfg)
+	quiet.firstLine(t)
+	quietAdmin := startProcTo(t, brokenPipe(t), "whiteroom", whiteroom, procTmp, nil, "serve", "admin", "-config", cfg)
+	quietAdmin.firstLine(t)
+	quietAPI := socketClient(t, adminSock, quietAdmin.stderr)
+	quietAPI.login(t)
+	quiet.stop(t)
+	if status, _ := quietAPI.tryLogin(t, initLogin, initPassword); status != http.StatusServiceUnavailable {
+		t.Errorf("a login while the daemon is away has the status %d, want %d", status, http.StatusServiceUnavailable)
+	}
+	quietAdmin.stop(t)
+	// serve public logs a link that leaves the public directory, which it does not follow.
+	if err := os.Symlink(cfg, filepath.Join(out, "current", "public", "escape.html")); err != nil {
+		t.Fatal(err)
+	}
+	quietPublic := startProcTo(t, brokenPipe(t), "whiteroom", whiteroom, procTmp, nil, "serve", "public", "-addr", "127.0.0.1:0", out)
+	_, publicURL, _ := strings.Cut(strings.TrimSuffix(quietPublic.firstLine(t), "\n"), " at ")
+	client := &http.Client{Timeout: processWait}
+	for _, tt := range []struct {
+		path   string
+		status int
+	}{{"escape.html", http.StatusInternalServerError}, {"", http.StatusOK}} {
+		res, err := client.Get(publicURL + tt.path)
+		if err != nil {
+			t.Fatalf("GET %s%s from whiteroom serve public: %v", publicURL, tt.path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != tt.status {
+			t.Errorf("GET %s%s from whiteroom serve public has the status %d, want %d", publicURL, tt.path, res.StatusCode, tt.status)
+		}
+	}
+	client.CloseIdleConnections()
+	quietPublic.stop(t)
 	second.stop(t)
 	for _, p := range []*proc{daemon, again, second} {
 		if strings.Contains(p.stderr.String(), "DATA RACE") {

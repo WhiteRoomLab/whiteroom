@@ -57,7 +57,7 @@ func main() {
 		stop()
 	}()
 	code := run(ctx, os.Args[1:], env{
-		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, newAccounts: account.New,
+		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, newAccounts: account.New, catchSIGPIPE: catchSIGPIPE,
 		ticks: func() (<-chan time.Time, func()) {
 			t := time.NewTicker(time.Minute)
 			return t.C, t.Stop
@@ -75,7 +75,14 @@ type env struct {
 	newAccounts func(*store.Store) (*account.Manager, error)
 	// ticks makes the minutes of serve admin: the channel that gets a time every minute, and the function that stops it.
 	ticks func() (<-chan time.Time, func())
+	// catchSIGPIPE is called by the servers before they write: nil in the tests, which run in the process of the test.
+	catchSIGPIPE func()
 }
+
+// catchSIGPIPE makes a write to a pipe whose reader has gone fail with EPIPE, also on the standard output and error, where
+// it would end the process (os/signal), so that a server outlives the reader of its log. The commands that end by themselves
+// do not call it, and end as other commands do.
+func catchSIGPIPE() { signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE) }
 
 // run runs the command with args, those after its name, and returns its exit code: 0 on success, 1 on failure and 2
 // on a usage error.

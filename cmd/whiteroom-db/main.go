@@ -41,7 +41,7 @@ func main() {
 		stop()
 	}()
 	code := run(ctx, os.Args[1:], env{
-		stdout: os.Stdout, stderr: os.Stderr,
+		stdout: os.Stdout, stderr: os.Stderr, catchSIGPIPE: catchSIGPIPE,
 		ticks: func() (<-chan time.Time, func()) {
 			t := time.NewTicker(time.Minute)
 			return t.C, t.Stop
@@ -57,7 +57,13 @@ type env struct {
 	// ticks makes the minutes of the export of the heads: the channel that gets a time every minute, and the function that
 	// stops it.
 	ticks func() (<-chan time.Time, func())
+	// catchSIGPIPE is called by serve before it writes: nil in the tests, which run in the process of the test.
+	catchSIGPIPE func()
 }
+
+// catchSIGPIPE makes a write to a pipe whose reader has gone fail with EPIPE, also on the standard output and error, where
+// it would end the process (os/signal), so that the daemon outlives the reader of its standard error.
+func catchSIGPIPE() { signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE) }
 
 // run runs the command with args, those after its name, and returns its exit code: 0 on success, 1 on failure and 2 on a
 // usage error.
