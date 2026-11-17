@@ -15,8 +15,9 @@ const (
 	WindowBytes    = ReadBuffer
 )
 
-// Limits are the limits that the daemon keeps, and tells its clients in the reply to a Hello. A zero field is the
-// default; a negative SnapshotIdle, Stall, CommitsPerSecond, MinFree or MinFreeInodes turns that limit off.
+// Limits are the limits that the daemon keeps; the reply to a Hello tells its clients Frame, Commit, Object and Staged.
+// A zero field is the default; a negative SnapshotIdle, Stall, CommitsPerSecond, MinFree or MinFreeInodes turns that limit
+// off.
 type Limits struct {
 	// Frame is the largest payload of a frame.
 	Frame int

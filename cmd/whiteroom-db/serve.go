@@ -42,7 +42,8 @@ when the standard error is a pipe whose reader has ended.
 
 The sizes of a frame, of a Commit and of an object are tied to the engine and to
 the limits of the documents, and have no flag. The other limits are the flags
-below; the default of each is the value that the daemon tells its clients.
+below. The daemon tells its clients these sizes, the limit of -max-staged and the
+largest key; it keeps the other limits by itself.
 
 With -config, the items data, db, writerUser, writerGroup, readerGroup,
 maxReaders, commitRate, minFree, minFreeInodes, snapshotIdle, stall and maxStaged
