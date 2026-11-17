@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/account"
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
@@ -537,6 +538,30 @@ func TestBackupErrors(t *testing.T) {
 					}
 				})
 			}
+		}
+	})
+
+	t.Run("what another process puts in DEST meanwhile", func(t *testing.T) {
+		// DEST is empty when the command looks at it, and the command waits 2 seconds for a daemon that cannot be reached:
+		// the failure removes nothing that it has not made.
+		t.Parallel()
+		db, dest := t.TempDir(), t.TempDir()
+		done := async(func() string {
+			return failingBackup(t, "a daemon that cannot be reached", t.Context(), "-db", db, dest)
+		})
+		time.Sleep(500 * time.Millisecond)
+		keep := filepath.Join(dest, "files", "keep")
+		if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keep, []byte("not the command's"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := receive(t, done, "whiteroom backup"); !strings.Contains(got, "cannot reach the daemon") {
+			t.Errorf("whiteroom backup printed %q, want that the daemon cannot be reached", got)
+		}
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("what another process put in DEST: %v, want it kept", err)
 		}
 	})
 
