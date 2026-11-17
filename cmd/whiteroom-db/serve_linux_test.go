@@ -252,8 +252,9 @@ func TestServe(t *testing.T) {
 	if got, want := s.stdout.String(), d.startLine(os.Getuid()); got != want {
 		t.Errorf("stdout after the stop is %q, want only the start line", got)
 	}
-	if got, err := os.ReadDir(d.socks); err != nil || len(got) != 0 {
-		t.Errorf("the socket directory after the stop has %v (%v), want it empty", got, err)
+	// The lock of the writer stays, for the writer that holds it across a restart.
+	if got, err := os.ReadDir(d.socks); err != nil || len(got) != 1 || got[0].Name() != dbwire.WriterLock {
+		t.Errorf("the socket directory after the stop has %v (%v), want only %s", got, err, dbwire.WriterLock)
 	}
 
 	// Started again, it serves what was committed, and writes the heads at its start.
@@ -795,8 +796,8 @@ maxStaged: 1000000
 	if got := files(t, d.data); !maps.Equal(got, before) {
 		t.Errorf("a refused serve changed the data directory:\n%v\nwas\n%v", got, before)
 	}
-	if got, err := os.ReadDir(d.socks); err != nil || len(got) != 0 {
-		t.Errorf("a refused serve made %v (%v) in the directory of the sockets", got, err)
+	if got, err := os.ReadDir(d.socks); err != nil || len(got) != 1 || got[0].Name() != dbwire.WriterLock {
+		t.Errorf("a refused serve made %v (%v) in the directory of the sockets, which has only the lock of the serve before", got, err)
 	}
 
 	// Without -config no file is read, whatever the working directory has: the flags are all that serve has.

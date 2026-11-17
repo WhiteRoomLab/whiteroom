@@ -1005,15 +1005,15 @@ func TestDaemonOfAnotherVersion(t *testing.T) {
 	}{
 		{"a Hello that is refused", func(_ dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer) {
 			hello(rd)
-			_ = wr.Fail(dbwire.CodeVersion, fmt.Sprintf("protocol version %d, but the daemon speaks version 2", dbwire.Version))
-		}, fmt.Sprintf("version %d, but the daemon speaks version 2", dbwire.Version)},
+			_ = wr.Fail(dbwire.CodeVersion, fmt.Sprintf("protocol version %d, but the daemon speaks version %d", dbwire.Version, dbwire.Version+1))
+		}, fmt.Sprintf("version %d, but the daemon speaks version %d", dbwire.Version, dbwire.Version+1)},
 		{"a Hello that is answered", func(role dbwire.Role, rd *dbwire.Reader, wr *dbwire.Writer) {
 			hello(rd)
 			wr.Begin(dbwire.KindOK)
 			e := &dbwire.Enc{W: wr}
-			e.HelloReply(dbwire.HelloReply{Version: 2, Role: role, Frame: 4096, MaxKey: 4096})
+			e.HelloReply(dbwire.HelloReply{Version: dbwire.Version + 1, Role: role, Frame: 4096, MaxKey: 4096})
 			_ = wr.End()
-		}, fmt.Sprintf("the daemon speaks version 2, this program %d", dbwire.Version)},
+		}, fmt.Sprintf("the daemon speaks version %d, this program %d", dbwire.Version+1, dbwire.Version)},
 	} {
 		dir := fakeDaemon(t, d.serve)
 		work := t.TempDir()

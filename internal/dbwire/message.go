@@ -60,8 +60,8 @@ func ReadHelloRequest(d *Dec) (version uint32, err error) {
 }
 
 // HelloReply is the reply to a Hello: the version of the protocol, the role of the connection, the ID of the start of
-// the daemon (random at each start), the last commit, whether the daemon has stopped writing, and the limits that the
-// client keeps to.
+// the daemon (random at each start), the last commit, whether the daemon has stopped writing, the limits that the
+// client keeps to, and the identity of the data directory.
 type HelloReply struct {
 	Version uint32
 	Role    Role
@@ -73,7 +73,12 @@ type HelloReply struct {
 	Object  int64
 	Staged  int64
 	MaxKey  int
+	DataDir DirID
 }
+
+// DirID is the identity of a directory on its system: its device and inode numbers, as stat(2) tells them. The zero DirID
+// is unknown.
+type DirID struct{ Dev, Ino uint64 }
 
 func (e *Enc) HelloReply(h HelloReply) {
 	if h.Frame < 0 || uint64(h.Frame) > math.MaxUint32 || h.MaxKey < 0 || uint64(h.MaxKey) > math.MaxUint32 {
@@ -90,6 +95,8 @@ func (e *Enc) HelloReply(h HelloReply) {
 	e.size(h.Object)
 	e.size(h.Staged)
 	e.U32(uint32(h.MaxKey))
+	e.U64(h.DataDir.Dev)
+	e.U64(h.DataDir.Ino)
 }
 
 // ReadHelloReply reads a Hello reply of this version of the protocol: another version is refused at once, and so are a
@@ -109,6 +116,7 @@ func ReadHelloReply(d *Dec) (HelloReply, error) {
 	h.Object = d.size()
 	h.Staged = d.size()
 	maxKey := d.U32()
+	h.DataDir = DirID{Dev: d.U64(), Ino: d.U64()}
 	switch {
 	case d.Err != nil:
 	case h.Role != RoleReader && h.Role != RoleWriter:

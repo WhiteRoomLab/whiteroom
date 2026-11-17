@@ -243,14 +243,18 @@ func (x dialer) String() string { return x.h.d.dir }
 
 func (x dialer) Close() error { return x.h.Release() }
 
-// Listen makes the sockets of the daemon in the directory sockets, dbwire.WriterSocket and dbwire.ReaderSocket, for the
-// clients of other processes, and serves them until the daemon is released. The writer socket has no check of the user.
+// Listen makes the sockets of the daemon in the directory sockets, dbwire.WriterSocket and dbwire.ReaderSocket, and the
+// lock of the writer (dbserver.MakeWriterLock), for the clients of other processes, and serves them until the daemon is
+// released. The writer socket has no check of the user.
 func (h *Daemon) Listen(sockets string) error {
 	d := h.d
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.gone {
 		return fmt.Errorf("the daemon of %s has been released", d.dir)
+	}
+	if _, err := dbserver.MakeWriterLock(sockets, -1); err != nil {
+		return err
 	}
 	var ls []net.Listener
 	roles := []dbwire.Role{dbwire.RoleWriter, dbwire.RoleReader}

@@ -120,6 +120,7 @@ func TestMaintain(t *testing.T) {
 		if code := s.stop(); code != 0 {
 			t.Fatalf("whiteroom-db serve = %d", code)
 		}
+		_ = w.Close() // its lock would keep out the writer below
 	}()
 
 	// Garbage: the file of an object that no commit names, and two temporary files.

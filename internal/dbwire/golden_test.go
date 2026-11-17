@@ -20,7 +20,7 @@ func hexBytes(t testing.TB, s string) []byte {
 	return b
 }
 
-// TestGolden pins the bytes of protocol version 1: every request and every reply, as the whole message with its frame, from
+// TestGolden pins the bytes of protocol version 2: every request and every reply, as the whole message with its frame, from
 // fixed inputs, written here as hexadecimal text and not made by the code that is tested, and read back from those bytes.
 // A daemon and a client of another build speak these bytes, so they do not change once this version is released: a change
 // that makes this test fail is a change of the protocol, which is a new Version.
@@ -49,21 +49,23 @@ func TestGolden(t *testing.T) {
 		wire  string // the header of the message, a bar, and its body
 	}{
 		{"Hello request", "Hello request", func(e *Enc) { e.HelloRequest() }, Version,
-			"01 01 0000 00000008 | 57524442 00000001"},
+			"01 01 0000 00000008 | 57524442 00000002"},
 		{"Hello reply of the writer", "Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-				Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000})
+				Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000,
+				DataDir: DirID{Dev: 0x0103, Ino: 0x0a0b0c0d0e0f1011}})
 		}, HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-			Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000},
-			"80 01 0000 0000003e | 00000001 02 0102030405060708090a0b0c0d0e0f10 1122334455667788 01 00010000 " +
-				"0000000000100000 0000000000200000 0000000000300000 00001000"},
+			Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000,
+			DataDir: DirID{Dev: 0x0103, Ino: 0x0a0b0c0d0e0f1011}},
+			"80 01 0000 0000004e | 00000002 02 0102030405060708090a0b0c0d0e0f10 1122334455667788 01 00010000 " +
+				"0000000000100000 0000000000200000 0000000000300000 00001000 0000000000000103 0a0b0c0d0e0f1011"},
 		{"Hello reply of a reader", "Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleReader, BootID: [16]byte{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
 				Frame: 0x1000, Commit: 1, Object: 2, Staged: 3, MaxKey: 0x1000})
 		}, HelloReply{Version: Version, Role: RoleReader, BootID: [16]byte{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
 			Frame: 0x1000, Commit: 1, Object: 2, Staged: 3, MaxKey: 0x1000},
-			"80 01 0000 0000003e | 00000001 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000 00 00001000 " +
-				"0000000000000001 0000000000000002 0000000000000003 00001000"},
+			"80 01 0000 0000004e | 00000002 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000 00 00001000 " +
+				"0000000000000001 0000000000000002 0000000000000003 00001000 0000000000000000 0000000000000000"},
 		{"Snapshot request", "Snapshot request", func(*Enc) {}, nil, "02 01 0000 00000000 |"},
 		{"Snapshot reply", "Snapshot reply", func(e *Enc) { e.SnapshotReply(0x0102030405060708) }, uint64(0x0102030405060708),
 			"80 01 0000 00000008 | 0102030405060708"},

@@ -58,7 +58,7 @@ func Backup(ctx context.Context, srcDir, dstDir string) ([]audit.Head, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.Backup(ctx, d, dstDir)
+	return store.Backup(ctx, d, dstDir, nil)
 }
 
 // Dialer returns the Dialer of the daemon of the data directory dir, which it starts or joins. Closing it, which a

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -33,7 +34,8 @@ func CreateDir(dir string, o Options) error {
 }
 
 // OpenDir opens the data directory dir as the writer of its engine (Open), by the path that the kernel resolves. Unless
-// o.FreeSpace is given, the free space is that of the file system of dir (not checked on a system other than Linux).
+// o.FreeSpace is given, the free space is that of the file system of dir (not checked on a system other than Linux), and
+// unless o.DataDir is, the identity of dir is its own (unknown on a system other than Linux).
 func OpenDir(dir string, o Options) (*Server, error) {
 	root, resolved, err := dataRoot(dir)
 	if err != nil {
@@ -42,6 +44,15 @@ func OpenDir(dir string, o Options) (*Server, error) {
 	defer func() { _ = root.Close() }()
 	if o.FreeSpace == nil && spaceChecked {
 		o.FreeSpace = func() (Space, error) { return freeSpace(resolved) }
+	}
+	if o.DataDir == (dbwire.DirID{}) {
+		dev, ino, ok, err := fspath.FileID(resolved)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			o.DataDir = dbwire.DirID{Dev: dev, Ino: ino}
+		}
 	}
 	return Open(root, dir, o)
 }

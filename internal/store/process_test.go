@@ -760,6 +760,11 @@ func TestOtherWriterRefused(t *testing.T) {
 			s, dir := newStore(t, tb)
 			putWithRevision(t, s)
 			_, sockets := serve(t, dir, tb.options())
+			// s, over net.Pipe, takes no lock of the writer: the test takes it for s, as a client over the sockets does.
+			unlock, err := dbclient.SocketDir(sockets).LockWriter()
+			if err != nil {
+				t.Fatal(err)
+			}
 			want := sockets + ": another process is connected as the writer"
 			h := startHelper(t, tb, dir, "open", "open: "+want, envSockets+"="+sockets, envWait+"=100ms")
 			if err := h.wait(); err != nil {
@@ -769,7 +774,7 @@ func TestOtherWriterRefused(t *testing.T) {
 			put(t, s, content.RefEntry, pageID, data, userID, Version{Seq: 2, Kind: content.RefEntry, ID: pageID,
 				Hash: sum(data), SavedAt: testTime.UTC(), SavedBy: userID})
 			// After the first writer has ended, another process is the writer.
-			if err := s.Close(); err != nil {
+			if err := errors.Join(s.Close(), unlock()); err != nil {
 				t.Fatal(err)
 			}
 			h = startHelper(t, tb, dir, "open", "open: ok", envSockets+"="+sockets, envWait+"=2s")

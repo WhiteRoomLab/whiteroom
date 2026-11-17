@@ -78,6 +78,33 @@ func Resolve(name string) (string, error) {
 	}
 }
 
+// In reports whether name, as the kernel resolves it, is the directory with the device and inode numbers dev and ino
+// (FileID), or is in it: it compares name and each of its parents, all but the missing part at the end of name. On a
+// system other than Linux, it reports false.
+func In(name string, dev, ino uint64) (bool, error) {
+	p, err := Resolve(name)
+	if err != nil {
+		return false, err
+	}
+	for {
+		d, i, ok, err := FileID(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return false, err
+		case !ok:
+			return false, nil
+		case d == dev && i == ino:
+			return true, nil
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false, nil
+		}
+		p = parent
+	}
+}
+
 // clean returns filepath.Clean(name), but that it keeps a ".." after an element that is not a directory, such as a
 // symbolic link, or that it cannot look at, with the element: the kernel resolves the element first. It drops a ".."
 // after a missing element, which a directory that is made there will not change.

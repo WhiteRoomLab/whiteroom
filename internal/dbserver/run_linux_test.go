@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/fspath"
 )
 
 // A daemon is a Run in a goroutine, with a data directory and a directory of sockets that are short enough for a socket.
@@ -142,6 +143,10 @@ func TestRun(t *testing.T) {
 			t.Errorf("the group of %s is %d, want %d", name, gid, os.Getegid())
 		}
 	}
+	lock, err := os.Lstat(filepath.Join(d.socks, dbwire.WriterLock))
+	if err != nil || !lock.Mode().IsRegular() || lock.Mode().Perm() != 0o660 || int(lock.Sys().(*syscall.Stat_t).Gid) != os.Getegid() {
+		t.Errorf("%s is %v (%v), want a regular file with the mode 0660 and the group %d", dbwire.WriterLock, lock, err, os.Getegid())
+	}
 
 	// The heads at the start.
 	eventually(t, "the heads at the start", func() bool { return len(d.heads.all()) == 1 })
@@ -158,11 +163,14 @@ func TestRun(t *testing.T) {
 	if r.hello.Role != dbwire.RoleReader {
 		t.Errorf("the role on %s is %v", dbwire.ReaderSocket, r.hello.Role)
 	}
+	if dev, ino, _, err := fspath.FileID(d.data); err != nil || r.hello.DataDir != (dbwire.DirID{Dev: dev, Ino: ino}) {
+		t.Errorf("the reader is told the data directory %+v (%v), want the device %d and the inode %d", r.hello.DataDir, err, dev, ino)
+	}
 	seq := r.mustSnapshot()
 	if seq != 1 {
 		t.Errorf("the reader sees the sequence number %d, want 1", seq)
 	}
-	_, _, err := r.commit(seq, put(2, "x", "y"), event("e"))
+	_, _, err = r.commit(seq, put(2, "x", "y"), event("e"))
 	wantCode(t, err, dbwire.CodeDenied)
 	// A reader does not use the writer's place: the writer commits, and the reader sees it after a new snapshot.
 	w.mustCommit(put(2, "b", "2"), put(dbwire.TableHeads, "activity", headLine(2)))
@@ -190,6 +198,9 @@ func TestRun(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(d.socks, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s after the stop: %v, want it gone", name, err)
 		}
+	}
+	if after, err := os.Lstat(filepath.Join(d.socks, dbwire.WriterLock)); err != nil || !os.SameFile(lock, after) {
+		t.Errorf("%s after the stop: %v, want it kept", dbwire.WriterLock, err)
 	}
 	if _, err := net.Dial("unix", filepath.Join(d.socks, dbwire.WriterSocket)); err == nil {
 		t.Error("the writer socket takes a connection after the stop")
@@ -763,6 +774,9 @@ func TestRunGroups(t *testing.T) {
 	}
 	if got := group(d, dbwire.ReaderSocket); got != readerGID {
 		t.Errorf("the group of the reader socket is %d, want %d", got, readerGID)
+	}
+	if got := group(d, dbwire.WriterLock); got != writerGID {
+		t.Errorf("the group of the lock of the writer is %d, want %d", got, writerGID)
 	}
 	if err := d.stop(); err != nil {
 		t.Fatal(err)

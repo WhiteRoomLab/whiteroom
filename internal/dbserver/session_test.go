@@ -52,9 +52,9 @@ func TestHello(t *testing.T) {
 	t.Run("another version", func(t *testing.T) {
 		f := newFixture(t, nil)
 		c := f.dial(dbwire.RoleReader)
-		done := c.writeRaw(hello(2, dbwire.Magic[:]))
+		done := c.writeRaw(hello(1, dbwire.Magic[:]))
 		re := wantCode(t, c.readReply(), dbwire.CodeVersion)
-		if want := "protocol version 2, but the daemon speaks version 1"; re.Msg != want {
+		if want := "protocol version 1, but the daemon speaks version 2"; re.Msg != want {
 			t.Errorf("got %q, want %q", re.Msg, want)
 		}
 		<-done
