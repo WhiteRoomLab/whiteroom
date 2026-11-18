@@ -31,8 +31,8 @@ const SettingsKind content.RefKind = "settings"
 var ErrNoStore = errors.New("not a store of whiteroom (no schema version)")
 
 // ErrUnavailable is wrapped by the errors that the operations of a store return while the daemon cannot be reached, when the
-// connection to it ends, or when the daemon sends or reads nothing for the stall limit of the client (dbclient.Options.Stall;
-// 30 seconds). A store whose daemon is back works again with no new Open.
+// connection to it ends, or when the daemon sends no byte of a reply, or does not take a request, for the stall limit of the
+// client (dbclient.Options.Stall; 30 seconds). A store whose daemon is back works again with no new Open.
 var ErrUnavailable = dbclient.ErrUnavailable
 
 // Store is the Content Store of the data directory of a DB daemon. Its methods may be called concurrently.

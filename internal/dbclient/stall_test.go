@@ -26,6 +26,10 @@ const (
 	stallKeep = 400 * time.Millisecond
 	// stallLong is how long the daemon of those tests keeps a reply or a request back.
 	stallLong = 4 * stallKeep
+
+	// What the error of a cut says that the daemon did not do, for a Read of a reply and for a Write of a request.
+	notSent = "sent nothing"
+	notRead = "not read the request"
 )
 
 // hold reads what the client sends and gives no reply, until the client has closed the connection.
@@ -99,13 +103,13 @@ func (d *deafDialer) Close() error {
 	return nil
 }
 
-// wantStall checks the error of a request that the client has cut after the daemon had moved no byte of what it did
-// (sent or read) for the limit stallCut, cuts times in a row from began. The error says that the daemon is unavailable, and
-// the request did not end before the limit, which no context had set.
+// wantStall checks the error of a request that the client has cut after the daemon had not done what did says (notSent or
+// notRead) for the limit stallCut, cuts times in a row from began. The error says that the daemon is unavailable, and the
+// request did not end before the limit, which no context had set.
 func wantStall(t testing.TB, err error, began time.Time, did string, cuts int) {
 	t.Helper()
 	took := time.Since(began)
-	want := "peer: cannot reach the daemon: the daemon has " + did + " nothing for 100ms"
+	want := "peer: cannot reach the daemon: the daemon has " + did + " for 100ms"
 	switch {
 	case err == nil:
 		t.Fatal("the request did not fail")
@@ -152,7 +156,7 @@ func TestStall(t *testing.T) {
 			_ = c.Close()
 			t.Fatal("Open succeeded")
 		}
-		wantStall(t, err, began, "sent", 1)
+		wantStall(t, err, began, notSent, 1)
 		if got := pd.dialed(); got != 1 {
 			t.Errorf("the client dialed %d connections, want 1", got)
 		}
@@ -169,7 +173,7 @@ func TestStall(t *testing.T) {
 			_, _, err := tx.Get(2, k)
 			return err
 		})
-		wantStall(t, err, began, "sent", 1)
+		wantStall(t, err, began, notSent, 1)
 		wantConnections(t, pd, rec, 1, 0)
 	})
 
@@ -203,7 +207,7 @@ func TestStall(t *testing.T) {
 			})
 			began := time.Now()
 			err := c.View(bg, r.ask)
-			wantStall(t, err, began, "sent", 1)
+			wantStall(t, err, began, notSent, 1)
 			wantConnections(t, pd, rec, 1, 0)
 		})
 	}
@@ -224,13 +228,37 @@ func TestStall(t *testing.T) {
 		must(t, err)
 		began := time.Now()
 		got, err := io.ReadAll(o)
-		wantStall(t, err, began, "sent", 1)
+		wantStall(t, err, began, notSent, 1)
 		if len(got) != 10 {
 			t.Errorf("the reads gave %d bytes, want the 10 that came", len(got))
 		}
 		if err := o.Close(); err != nil && !errors.Is(err, dbclient.ErrUnavailable) {
 			t.Errorf("Close = %v", err)
 		}
+		wantConnections(t, pd, rec, 1, 0)
+	})
+
+	t.Run("the end of an original that the caller has read to its last byte", func(t *testing.T) {
+		c, rec, pd := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+			p.hello()
+			p.expect(dbwire.KindOriginal)
+			// Every byte of the original, and no frame that ends the reply: only Close waits for that.
+			p.raw(p.wire(false, func(e *dbwire.Enc) {
+				e.OriginalReply(100)
+				e.Raw(make([]byte, 100))
+			}))
+			p.hold()
+		})
+		// The context ends long after the limit: a Close that is not under it fails the test, and does not hang.
+		ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+		defer cancel()
+		o, err := c.Original(ctx, [32]byte{1})
+		must(t, err)
+		if _, err := io.ReadFull(o, make([]byte, 100)); err != nil {
+			t.Fatalf("the reads gave %v, want the 100 bytes", err)
+		}
+		began := time.Now()
+		wantStall(t, o.Close(), began, notSent, 1)
 		wantConnections(t, pd, rec, 1, 0)
 	})
 
@@ -249,7 +277,7 @@ func TestStall(t *testing.T) {
 		})
 		began := time.Now()
 		_, err := c.Backup(bg, simfs.New("copy"))
-		wantStall(t, err, began, "sent", 1)
+		wantStall(t, err, began, notSent, 1)
 		wantConnections(t, pd, rec, 2, 1) // the one of the pool is still open
 	})
 
@@ -262,7 +290,7 @@ func TestStall(t *testing.T) {
 		data := bytes.Repeat([]byte("an object "), 1<<20/len("an object "))
 		began := time.Now()
 		err = c.Update(bg, func(tx *dbclient.Tx) error { return tx.PutObject(sha256.Sum256(data), data) })
-		wantStall(t, err, began, "read", 1)
+		wantStall(t, err, began, notRead, 1)
 		dd.mu.Lock()
 		defer dd.mu.Unlock()
 		if dd.dials != 2 {
@@ -283,7 +311,7 @@ func TestStall(t *testing.T) {
 		})
 		began := time.Now()
 		err := c.Update(bg, func(tx *dbclient.Tx) error { return tx.Put(2, k, k) })
-		wantStall(t, err, began, "sent", 2) // the cut of the Snapshot, and that of the Hello after it
+		wantStall(t, err, began, notSent, 2) // the cut of the Snapshot, and that of the Hello after it
 		if got := pd.dialed(); got != 2 {
 			t.Errorf("the client dialed %d connections, want 2: the one that it made again, and no other for the Snapshot", got)
 		}
@@ -557,8 +585,33 @@ func TestStallOff(t *testing.T) {
 	})
 }
 
-// TestStallContext: the end of a context is what the request returns, when it comes before the limit, and the limit does
-// not make a context that has not ended fail.
+// cancelOnClose ends a context when the client closes the connection, as it does when it cuts it: the context has ended by
+// the time that the request that was blocked on the connection fails.
+type cancelOnClose struct {
+	net.Conn
+	cancel func()
+}
+
+func (c *cancelOnClose) Close() error {
+	c.cancel()
+	return c.Conn.Close()
+}
+
+type cancelDialer struct {
+	*peerDialer
+	cancel func()
+}
+
+func (d *cancelDialer) Dial(ctx context.Context, role dbwire.Role) (net.Conn, error) {
+	nc, err := d.peerDialer.Dial(ctx, role)
+	if err != nil {
+		return nil, err
+	}
+	return &cancelOnClose{Conn: nc, cancel: d.cancel}, nil
+}
+
+// TestStallContext: the end of a context is what the request returns, when it comes before the limit or with the cut, and
+// the limit does not make a context that has not ended fail.
 func TestStallContext(t *testing.T) {
 	t.Run("the Hello", func(t *testing.T) {
 		noLeaks(t)
@@ -593,6 +646,33 @@ func TestStallContext(t *testing.T) {
 		})
 		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, dbclient.ErrUnavailable) {
 			t.Errorf("View = %v, want the error of the context", err)
+		}
+	})
+
+	t.Run("a context that ends as the limit cuts the connection", func(t *testing.T) {
+		noLeaks(t)
+		ctx, cancel := context.WithCancel(bg)
+		defer cancel()
+		pd := &peerDialer{t: t, script: func(p *peer) {
+			p.hello()
+			p.snapshot(1)
+			p.expect(dbwire.KindGet)
+			p.hold()
+		}}
+		c, err := dbclient.Open(bg, &cancelDialer{peerDialer: pd, cancel: cancel}, dbwire.RoleReader,
+			dbclient.Options{DialWait: -1, Stall: stallCut})
+		must(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		began := time.Now()
+		err = c.View(ctx, func(tx *dbclient.Tx) error {
+			_, _, err := tx.Get(2, []byte("k"))
+			return err
+		})
+		if !errors.Is(err, context.Canceled) || errors.Is(err, dbclient.ErrUnavailable) {
+			t.Errorf("View = %v, want the error of the context, which the cut ended", err)
+		}
+		if took := time.Since(began); took < stallCut {
+			t.Errorf("View ended after %v, before the limit of %v: the context did not end with the cut", took, stallCut)
 		}
 	})
 }

@@ -28,8 +28,8 @@ import (
 var (
 	ErrReadOnly = errors.New("read-only transaction")
 	// ErrUnavailable is wrapped by the errors of a daemon that cannot be reached, of a connection that ends or that the
-	// client cuts because the daemon moves no byte for Options.Stall, of a request that a closing daemon refuses, and of a
-	// reader that a daemon at its limit of readers refuses.
+	// client cuts because the daemon sends no byte of a reply, or does not take a request, for Options.Stall, of a request
+	// that a closing daemon refuses, and of a reader that a daemon at its limit of readers refuses.
 	ErrUnavailable = errors.New("cannot reach the daemon")
 	ErrClosed      = errors.New("the client is closed")
 
@@ -94,9 +94,11 @@ type Options struct {
 	// busy, which a writer meets for a moment after another writer's connection has ended, and how long Open tries to take
 	// the lock of the writer; 0: 2 seconds, negative: once.
 	DialWait time.Duration
-	// Stall is how long a Read or a Write of a connection may move no byte, while the request or the reply that it carries
-	// is under the limit, before the connection is cut; 0: 30 seconds, negative: no limit. The wait for the reply to a
-	// Verify, a Commit, an Events and the first frame of a Backup is not under it, nor is the time between Reads and Writes.
+	// Stall is how long a Read of a reply may move no byte, and how long a Write of a request (one frame, at most 1 MiB; a
+	// window of reads, at most 32 KiB) may take, before the connection is cut; 0: 30 seconds, negative: no limit. A Write is
+	// cut also when the daemon reads it, but slowly: a frame of 1 MiB that it takes slower than about 30 KB per second is a
+	// stall. Not under the limit are the wait for the reply to a Verify and a Commit, the whole reply of an Events, a Backup
+	// up to its first frame, and the time between Reads and Writes.
 	Stall time.Duration
 }
 
@@ -293,9 +295,9 @@ type dialFailure struct{ err error }
 
 func (e dialFailure) Error() string { return e.err.Error() }
 
-// stallError is the failure of a connection that the client cut because the daemon moved no byte of a Read of a reply
-// (write is false) or of a Write of a request (write is true) for the stall limit. It is not an *ioError: a request that
-// is sent again to a daemon that does not answer waits as long again.
+// stallError is the failure of a connection that the client cut because the daemon sent no byte of a Read of a reply for the
+// stall limit (write is false), or did not take a Write of a request in it (write is true). It is not an *ioError: a request
+// that is sent again to a daemon that does not answer waits as long again.
 type stallError struct {
 	name  string
 	stall time.Duration
@@ -303,11 +305,11 @@ type stallError struct {
 }
 
 func (e *stallError) Error() string {
-	what := "sent"
+	what := "sent nothing"
 	if e.write {
-		what = "read"
+		what = "not read the request"
 	}
-	return e.name + ": " + ErrUnavailable.Error() + ": the daemon has " + what + " nothing for " + e.stall.String()
+	return e.name + ": " + ErrUnavailable.Error() + ": the daemon has " + what + " for " + e.stall.String()
 }
 func (e *stallError) Is(target error) bool { return target == ErrUnavailable }
 
