@@ -836,12 +836,29 @@ func TestWindowContext(t *testing.T) {
 
 // TestWindowIdleSnapshot: a snapshot that the daemon has released refuses every request of a window, and nothing is kept.
 func TestWindowIdleSnapshot(t *testing.T) {
-	f := newFixture(t, func(o *dbtest.Options) { o.Limits.SnapshotIdle = 100 * time.Millisecond })
+	released := make(chan struct{}, 8)
+	f := newFixture(t, func(o *dbtest.Options) {
+		// The daemon ends the connection after the same time again, and the calls that follow the release come before that.
+		o.Limits.SnapshotIdle = 500 * time.Millisecond
+		o.Hook = func(point string) error {
+			if point == "snapshot:idle" {
+				select {
+				case released <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		}
+	})
 	w, rec := f.writer(dbclient.Options{})
 	keys := manyKeys(t, w, 20)
 	must(t, w.View(bg, func(tx *dbclient.Tx) error {
 		get(t, tx, 2, "first") // takes the snapshot
-		time.Sleep(600 * time.Millisecond)
+		select {
+		case <-released:
+		case <-time.After(waitLimit):
+			t.Fatal("the snapshot was not released")
+		}
 		rec.reset()
 		if err := tx.GetMany(2, keys); err != nil {
 			t.Errorf("GetMany: %v", err)

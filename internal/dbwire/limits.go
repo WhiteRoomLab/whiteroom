@@ -27,8 +27,9 @@ type Limits struct {
 	// Object is the largest object or original.
 	Object int64
 	// Staged bounds the sum of the sizes of the objects that a writer has put since its Snapshot.
-	Staged           int64
-	Readers          int
+	Staged  int64
+	Readers int
+	// SnapshotIdle is the time without a request after which a snapshot is released and a reader's connection with none ends.
 	SnapshotIdle     time.Duration
 	Stall            time.Duration
 	CommitsPerSecond int

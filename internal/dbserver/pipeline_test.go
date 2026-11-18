@@ -646,6 +646,80 @@ func TestSnapshotIdleTimes(t *testing.T) {
 	}
 }
 
+// TestReaderIdleTimes: a reader's connection that holds no snapshot is ended, with no reply, after the idle limit and not
+// before, and each request puts it off; one that held a snapshot is ended the idle limit after the snapshot was released.
+func TestReaderIdleTimes(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	newTimed := func(t *testing.T) (f *fixture, released, ended chan time.Time) {
+		f = newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = idle })
+		released, ended = make(chan time.Time, 8), make(chan time.Time, 8)
+		f.srv.onIdle = func() { released <- time.Now() }
+		f.srv.onIdleClose = func() { ended <- time.Now() }
+		return f, released, ended
+	}
+
+	t.Run("a Hello and nothing after it", func(t *testing.T) {
+		f, released, ended := newTimed(t)
+		start := time.Now()
+		c := f.connect(dbwire.RoleReader)
+		select {
+		case at := <-ended:
+			if d := at.Sub(start); d < idle {
+				t.Errorf("the connection was ended %v after its Hello, before the limit of %v", d, idle)
+			}
+		case <-time.After(waitLimit):
+			t.Fatal("the connection was not ended")
+		}
+		c.wantClosed()
+		f.waitSessions(0)
+		if len(released) != 0 {
+			t.Error("a snapshot was released on a connection that held none")
+		}
+	})
+
+	t.Run("each request puts it off", func(t *testing.T) {
+		f, _, ended := newTimed(t)
+		c := f.connect(dbwire.RoleReader)
+		for range 30 {
+			time.Sleep(idle / 10)
+			if err := c.release(); err != nil {
+				t.Fatalf("a Release: %v", err)
+			}
+		}
+		select {
+		case <-ended:
+			t.Error("a connection that a request used every tenth of the limit was ended")
+		default:
+		}
+	})
+
+	t.Run("after its snapshot was released", func(t *testing.T) {
+		f, released, ended := newTimed(t)
+		c := f.connect(dbwire.RoleReader)
+		start := time.Now()
+		c.mustSnapshot()
+		var at time.Time
+		select {
+		case at = <-released:
+			if d := at.Sub(start); d < idle {
+				t.Errorf("the snapshot was released %v after its request, before the limit of %v", d, idle)
+			}
+		case <-time.After(waitLimit):
+			t.Fatal("the snapshot was not released")
+		}
+		select {
+		case end := <-ended:
+			if d := end.Sub(at); d < idle {
+				t.Errorf("the connection was ended %v after its snapshot was released, before the limit of %v", d, idle)
+			}
+		case <-time.After(waitLimit):
+			t.Fatal("the connection was not ended")
+		}
+		c.wantClosed()
+		f.waitSessions(0)
+	})
+}
+
 // TestClockHeld: the limits never fire early when the goroutine of the clock does not run, as when the process of the
 // daemon has been stopped for a while.
 func TestClockHeld(t *testing.T) {
@@ -691,6 +765,15 @@ func TestClockHeld(t *testing.T) {
 		time.Sleep(idle / 3)
 		if found, v := c.mustGet(2, "k001"); !found || v != "v001" {
 			t.Errorf("a Get after a third of the limit: %v %q", found, v)
+		}
+	})
+
+	t.Run("a reader that holds no snapshot is not ended early", func(t *testing.T) {
+		c := f.connect(dbwire.RoleReader)
+		defer func() { _ = c.conn.Close() }()
+		time.Sleep(idle / 3)
+		if err := c.release(); err != nil {
+			t.Errorf("a Release after a third of the limit: %v", err)
 		}
 	})
 

@@ -541,11 +541,10 @@ func TestServeLimits(t *testing.T) {
 		mustCommit(t, w, row{2, "a", "1"})
 		return w
 	}
-	// idle is how long a connection that sent nothing is let alone: with a snapshot that the daemon releases after
-	// 100 milliseconds, the next read is refused.
-	snapshotAfterSleep := func(d dirs) error {
-		r := openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
-		return r.View(t.Context(), func(tx *dbclient.Tx) error {
+	// snapshotAfterSleep reads in an Update of the writer, whose connection the daemon keeps when it releases the
+	// snapshot after 100 milliseconds of silence: the next read is refused. A reader's connection is ended soon after.
+	snapshotAfterSleep := func(w *dbclient.Client) error {
+		return w.Update(t.Context(), func(tx *dbclient.Tx) error {
 			if _, _, err := tx.Get(2, []byte("a")); err != nil {
 				return err
 			}
@@ -639,14 +638,12 @@ func TestServeLimits(t *testing.T) {
 			}},
 		{name: "snapshot-idle", flags: []string{"-snapshot-idle", "100ms", "-min-free", "1"}, item: "snapshotIdle: 100ms\nminFree: 1\nminFreeInodes: 1\n",
 			check: func(t *testing.T, d dirs) {
-				seed(t, d)
-				wantCode(t, snapshotAfterSleep(d), dbwire.CodeNoSnapshot)
+				wantCode(t, snapshotAfterSleep(seed(t, d)), dbwire.CodeNoSnapshot)
 			}},
 		{name: "snapshot-idle of 0 over the item", flags: []string{"-snapshot-idle", "0", "-min-free", "1"},
 			item: "snapshotIdle: 100ms\nminFree: 1\nminFreeInodes: 1\n", over: true,
 			check: func(t *testing.T, d dirs) {
-				seed(t, d)
-				if err := snapshotAfterSleep(d); err != nil {
+				if err := snapshotAfterSleep(seed(t, d)); err != nil {
 					t.Errorf("a snapshot that the daemon should never release: %v", err)
 				}
 			}},

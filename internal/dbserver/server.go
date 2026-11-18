@@ -50,8 +50,10 @@ type Options struct {
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
 	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal), "original:renamed" (after
 	// the sync of the directory of the original), "clock:tick" (by the goroutine of the clock of the deadlines, before each
-	// reading of the time) and "reply:held" (when a request that has a reply in the buffer is still counted, before the
-	// next one begins). Its error fails the operation; that of the last two is not used.
+	// reading of the time), "reply:held" (when a request that has a reply in the buffer is still counted, before the
+	// next one begins), "snapshot:idle" (after a snapshot is released for being idle) and "reader:idle" (before a reader's
+	// connection that holds no snapshot is ended for being idle). Its error fails the operation; that of the last four is
+	// not used.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
@@ -108,6 +110,8 @@ type Server struct {
 
 	scanned atomic.Int64 // the rows that the scans of the engine have given the server
 	onIdle  func()       // for the tests: a snapshot was released for being idle
+
+	onIdleClose func() // for the tests: a reader's connection that holds no snapshot is ended for being idle
 }
 
 // EngineOf returns the engine of s, for the tests.

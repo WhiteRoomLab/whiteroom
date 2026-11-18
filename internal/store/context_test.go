@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,58 @@ func TestOpenContext(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestOpenStall checks that Open, OpenReader and Create fail with an error that wraps ErrUnavailable, with no context that
+// ends, when the daemon stops answering at the Hello or at the first request that follows, for the stall limit of the
+// client; and the same for an original that stops coming.
+func TestOpenStall(t *testing.T) {
+	const stall = 100 * time.Millisecond
+	opens := []struct {
+		name string
+		open func(context.Context, dbclient.Dialer) (*Store, error)
+	}{
+		{"Open", func(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+			return openOn(ctx, d, dbwire.RoleWriter, time.Now, dbclient.Options{Stall: stall})
+		}},
+		{"OpenReader", func(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+			return openOn(ctx, d, dbwire.RoleReader, time.Now, dbclient.Options{Stall: stall})
+		}},
+		{"Create", func(ctx context.Context, d dbclient.Dialer) (*Store, error) {
+			return createOn(ctx, d, time.Now, dbclient.Options{Stall: stall})
+		}},
+	}
+	for _, stage := range []struct {
+		name  string
+		hello bool
+	}{{"the Hello", false}, {"the first request", true}} {
+		for _, o := range opens {
+			t.Run(o.name+" with no answer to "+stage.name, func(t *testing.T) {
+				type result struct {
+					s   *Store
+					err error
+				}
+				done := make(chan result, 1)
+				began := time.Now()
+				go func() {
+					s, err := o.open(t.Context(), &silentDaemon{hello: stage.hello})
+					done <- result{s, err}
+				}()
+				select {
+				case r := <-done:
+					if r.s != nil || !errors.Is(r.err, ErrUnavailable) || !strings.Contains(r.err.Error(), "the daemon has sent nothing for 100ms") {
+						t.Errorf("%s() = %v, %v, want no store and ErrUnavailable, with the time that the daemon was silent", o.name, r.s, r.err)
+					}
+					if took := time.Since(began); took < stall {
+						t.Errorf("%s() failed after %v, before the limit of %v", o.name, took, stall)
+					}
+				case <-time.After(waitLimit):
+					t.Fatalf("%s() has not returned %v after the limit of %v", o.name, waitLimit, stall)
+				}
+			})
+		}
+	}
+	t.Run("OpenOriginal", openOriginalStall)
 }
 
 const waitLimit = 20 * time.Second
@@ -269,5 +322,80 @@ func TestOpenOriginalContext(t *testing.T) {
 		case <-time.After(waitLimit):
 			t.Fatalf("the reads of the file have not returned %v after the context has ended", waitLimit)
 		}
+	})
+}
+
+// openOriginalStall checks that an original whose daemon gives no more bytes, in the open or in the reads, fails with
+// ErrUnavailable when the stall limit of the client has passed, with no context that ends.
+func openOriginalStall(t *testing.T) {
+	// Longer than that of the Hello tests: the daemon of this one answers, and its reads must not be cut by a slow machine.
+	const stall = 250 * time.Millisecond
+	dir := filepath.Join(t.TempDir(), "data")
+	o := oneBackend[0].options()
+	if err := dbtest.Init(dir, o.daemonOptions(nil)); err != nil {
+		t.Fatal(err)
+	}
+	// The writer has the default limit: the daemon syncs an original before it answers, which may take longer than the
+	// short limit of the reader that is tested.
+	w, err := start(dir, o, true, func(d dbclient.Dialer) (*Store, error) {
+		return createOn(context.Background(), d, o.clock(), o.client())
+	})
+	if err != nil {
+		t.Fatalf("createOn() = %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	data := bytes.Repeat([]byte("an original "), 200<<10) // 2.4 MB, more than the daemon sends in a frame
+	original, err := w.PutOriginal(context.Background(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("PutOriginal() = %v", err)
+	}
+	var d *stallDialer
+	s, err := start(dir, o, false, func(inner dbclient.Dialer) (*Store, error) {
+		d = &stallDialer{Dialer: inner, blocked: make(chan struct{}, 1)}
+		opts := o.client()
+		opts.Stall = stall
+		return openOn(context.Background(), d, dbwire.RoleReader, o.clock(), opts)
+	})
+	if err != nil {
+		t.Fatalf("openOn() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	want := func(t *testing.T, err error, began time.Time) {
+		t.Helper()
+		if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "the daemon has sent nothing for "+stall.String()) {
+			t.Errorf("error = %v, want ErrUnavailable, with the time that the daemon was silent", err)
+		}
+		if took := time.Since(began); took < stall {
+			t.Errorf("failed after %v, before the limit of %v", took, stall)
+		}
+	}
+
+	t.Run("the open", func(t *testing.T) {
+		warm(t, s)
+		d.stall.Store(true)
+		defer d.stall.Store(false)
+		began := time.Now()
+		f, err := s.OpenOriginal(t.Context(), original.Hash)
+		if f != nil {
+			_ = f.Close()
+		}
+		want(t, err, began)
+	})
+
+	t.Run("the reads", func(t *testing.T) {
+		warm(t, s)
+		f, err := s.OpenOriginal(t.Context(), original.Hash)
+		if err != nil {
+			t.Fatalf("OpenOriginal() = %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := io.ReadFull(f, make([]byte, 1<<10)); err != nil {
+			t.Fatalf("the first read = %v", err)
+		}
+		d.stall.Store(true)
+		defer d.stall.Store(false)
+		began := time.Now()
+		_, err = io.Copy(io.Discard, f)
+		want(t, err, began)
 	})
 }

@@ -768,10 +768,16 @@ func (p *peer) pageReply(more bool, kv ...string) {
 // openPeer opens a client as role of a peerDialer that runs script, and closes it at the end of the test.
 func openPeer(t *testing.T, role dbwire.Role, script func(p *peer)) (*dbclient.Client, *recorder, *peerDialer) {
 	t.Helper()
+	return openPeerWith(t, role, dbclient.Options{DialWait: -1}, script)
+}
+
+// openPeerWith is openPeer with the options o of the client.
+func openPeerWith(t *testing.T, role dbwire.Role, o dbclient.Options, script func(p *peer)) (*dbclient.Client, *recorder, *peerDialer) {
+	t.Helper()
 	noLeaks(t)
 	pd := &peerDialer{t: t, script: script}
 	rec := &recorder{Dialer: pd}
-	c, err := dbclient.Open(bg, rec, role, dbclient.Options{DialWait: -1})
+	c, err := dbclient.Open(bg, rec, role, o)
 	must(t, err)
 	t.Cleanup(func() { _ = c.Close() })
 	return c, rec, pd

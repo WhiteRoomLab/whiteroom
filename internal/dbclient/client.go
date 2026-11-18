@@ -27,7 +27,8 @@ import (
 
 var (
 	ErrReadOnly = errors.New("read-only transaction")
-	// ErrUnavailable is wrapped by the errors of a daemon that cannot be reached, of a connection that ends, of a request
+	// ErrUnavailable is wrapped by the errors of a daemon that cannot be reached, of a connection that ends or that the
+	// client cuts because the daemon sends no byte of a reply, or does not take a request, for Options.Stall, of a request
 	// that a closing daemon refuses, and of a reader that a daemon at its limit of readers refuses.
 	ErrUnavailable = errors.New("cannot reach the daemon")
 	ErrClosed      = errors.New("the client is closed")
@@ -38,7 +39,10 @@ var (
 const (
 	defaultReaders  = 16
 	defaultDialWait = 2 * time.Second
+	defaultStall    = 30 * time.Second
 	dialEvery       = 50 * time.Millisecond
+	// maxStallTick keeps a connection that stalls from being cut more than two ticks after its limit.
+	maxStallTick = 500 * time.Millisecond
 	// cleanupWait bounds a request that ends a transaction when its context has ended already.
 	cleanupWait = 5 * time.Second
 	// helloFrame is the limit of a frame until the daemon has said its own.
@@ -90,6 +94,12 @@ type Options struct {
 	// busy, which a writer meets for a moment after another writer's connection has ended, and how long Open tries to take
 	// the lock of the writer; 0: 2 seconds, negative: once.
 	DialWait time.Duration
+	// Stall is how long a Read of a reply may move no byte, and how long a Write of a request (one frame, at most 1 MiB; a
+	// window of reads, at most 32 KiB) may take, before the connection is cut; 0: 30 seconds, negative: no limit. A Write is
+	// cut also when the daemon reads it, but slowly: a frame of 1 MiB that it takes slower than about 30 KB per second is a
+	// stall. Not under the limit are the wait for the reply to a Verify and a Commit, the whole reply of an Events, a Backup
+	// up to its first frame, and the time between Reads and Writes.
+	Stall time.Duration
 }
 
 // A Client is connected to a daemon as a writer or as a reader. It is safe for concurrent use.
@@ -109,6 +119,10 @@ type Client struct {
 	idle      []*conn // reader connections that are not in use, with no snapshot
 	closeOnce sync.Once
 	closeErr  error
+
+	watchStop chan struct{} // closed to end watchStalls; nil if the limit is off
+	watchEnd  chan struct{} // closed when watchStalls has returned
+	watchOnce sync.Once
 
 	wconn   *conn        // the writer connection, for the holder of turn; nil if the last dial failed, dead if it has ended
 	unlock  func() error // gives up the lock of the writer, if the client holds it
@@ -138,11 +152,19 @@ func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, 
 	if o.DialWait == 0 {
 		o.DialWait = defaultDialWait
 	}
+	if o.Stall == 0 {
+		o.Stall = defaultStall
+	}
 	c := &Client{d: d, name: nameOf(d), role: role, o: o, conns: map[*conn]struct{}{},
 		slots: make(chan struct{}, o.Readers), turn: make(chan struct{}, 1), done: make(chan struct{})}
+	if o.Stall > 0 {
+		c.watchStop, c.watchEnd = make(chan struct{}), make(chan struct{})
+		go c.watchStalls()
+	}
 	if l, ok := d.(writerLocker); ok && role == dbwire.RoleWriter {
 		unlock, err := c.lockWriter(ctx, l)
 		if err != nil {
+			c.endWatch()
 			closeDialer()
 			return nil, err
 		}
@@ -150,6 +172,7 @@ func Open(ctx context.Context, d Dialer, role dbwire.Role, o Options) (*Client, 
 	}
 	cn, err := c.connect(ctx, role)
 	if err != nil {
+		c.endWatch()
 		if c.unlock != nil {
 			_ = c.unlock()
 		}
@@ -228,6 +251,7 @@ func (c *Client) Close() error {
 		for _, cn := range conns {
 			cn.close()
 		}
+		c.endWatch()
 		var errs []error
 		if c.unlock != nil {
 			errs = append(errs, c.unlock())
@@ -271,6 +295,24 @@ type dialFailure struct{ err error }
 
 func (e dialFailure) Error() string { return e.err.Error() }
 
+// stallError is the failure of a connection that the client cut because the daemon sent no byte of a Read of a reply for the
+// stall limit (write is false), or did not take a Write of a request in it (write is true). It is not an *ioError: a request
+// that is sent again to a daemon that does not answer waits as long again.
+type stallError struct {
+	name  string
+	stall time.Duration
+	write bool
+}
+
+func (e *stallError) Error() string {
+	what := "sent nothing"
+	if e.write {
+		what = "not read the request"
+	}
+	return e.name + ": " + ErrUnavailable.Error() + ": the daemon has " + what + " for " + e.stall.String()
+}
+func (e *stallError) Is(target error) bool { return target == ErrUnavailable }
+
 // refusedError is the refusal busy of a request, which the daemon sends while it shuts down and ends the connection after,
 // or of the Hello of a reader that it has no place for. It has the text of the daemon, and is not an *ioError: a request
 // that is sent again to the same daemon is refused again.
@@ -311,12 +353,125 @@ func (e *lastWriterError) Is(target error) bool { return target == ErrUnavailabl
 // conn is a connection after its Hello. One goroutine at a time uses it.
 type conn struct {
 	c     *Client
-	nc    net.Conn
+	nc    net.Conn // a *watchedConn, unless the limit of Options.Stall is off
 	rd    *dbwire.Reader
 	wr    *dbwire.Writer
 	hello dbwire.HelloReply
 	dead  atomic.Bool
 	once  sync.Once
+
+	watch   atomic.Bool   // the Reads and Writes that begin now are under the limit
+	state   atomic.Uint64 // see watchedConn
+	stalled atomic.Int32  // the direction of the Read or Write that watchStalls found with no byte moved, as in state
+}
+
+// The directions of a Read or a Write under the limit, in the low bits of the state of a conn.
+const (
+	ioNone  = 0
+	ioRead  = 1
+	ioWrite = 2
+)
+
+// watchedConn counts the Reads and Writes of a connection that are under the limit of Options.Stall, so that watchStalls
+// can tell a connection that moves no byte from one that does, with no clock and no deadline of the request. The state of
+// the conn is the number of the Reads and Writes that have begun and ended, in the bits above the two low ones, and the
+// direction of the one that is in progress, in the two low ones: it is never the same twice.
+type watchedConn struct {
+	net.Conn
+	cn *conn
+}
+
+func (w *watchedConn) Read(p []byte) (int, error) {
+	if !w.cn.watch.Load() {
+		return w.Conn.Read(p)
+	}
+	w.cn.state.Add(4 + ioRead)
+	n, err := w.Conn.Read(p)
+	w.cn.state.Add(4 - ioRead)
+	return n, err
+}
+
+func (w *watchedConn) Write(p []byte) (int, error) {
+	if !w.cn.watch.Load() {
+		return w.Conn.Write(p)
+	}
+	w.cn.state.Add(4 + ioWrite)
+	n, err := w.Conn.Write(p)
+	w.cn.state.Add(4 - ioWrite)
+	return n, err
+}
+
+// endWatch ends watchStalls, and waits for it.
+func (c *Client) endWatch() {
+	if c.watchStop == nil {
+		return
+	}
+	c.watchOnce.Do(func() { close(c.watchStop) })
+	<-c.watchEnd
+}
+
+// watchStalls cuts a connection when the same Read or Write under the limit is still there at the tick that is more than the
+// limit in ticks (rounded up) after the one that first saw it. A tick is a sixteenth of the limit, at least a millisecond
+// and at most maxStallTick, and the ticks are its own: a process that was stopped, or a tick that comes late, makes it cut
+// later, never earlier. So a connection is cut no earlier than the limit after the Read or the Write began, and at most two
+// ticks later when the limit is a multiple of a tick, as the default is.
+func (c *Client) watchStalls() {
+	defer close(c.watchEnd)
+	tick := min(max(c.o.Stall/16, time.Millisecond), maxStallTick)
+	limit := int(c.o.Stall / tick)
+	if c.o.Stall%tick != 0 {
+		limit++
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	type sighting struct {
+		state uint64
+		ticks int    // the ticks after the first that saw state
+		round uint64 // of the last tick that saw it
+	}
+	seen := map[*conn]*sighting{}
+	var conns []*conn
+	for round := uint64(1); ; round++ {
+		select {
+		case <-c.watchStop:
+			return
+		case <-t.C:
+		}
+		c.mu.Lock()
+		conns = conns[:0]
+		for cn := range c.conns {
+			conns = append(conns, cn)
+		}
+		c.mu.Unlock()
+		for _, cn := range conns {
+			state := cn.state.Load()
+			if state&3 == ioNone {
+				continue
+			}
+			g := seen[cn]
+			switch {
+			case g == nil:
+				g = &sighting{state: state}
+				seen[cn] = g
+			case g.state != state:
+				g.state, g.ticks = state, 0
+			default:
+				g.ticks++
+			}
+			g.round = round
+			if g.ticks > limit {
+				delete(seen, cn)
+				// The error is stored before the connection ends, which fails the Read or the Write.
+				cn.stalled.Store(int32(state & 3))
+				cn.close()
+			}
+		}
+		for cn, g := range seen {
+			if g.round != round {
+				delete(seen, cn)
+			}
+		}
+	}
 }
 
 func (cn *conn) close() {
@@ -371,7 +526,11 @@ func (c *Client) attempt(ctx context.Context, role dbwire.Role) (cn *conn, retry
 	if err != nil {
 		return nil, true, &ioError{c.name, dialFailure{err}}
 	}
-	cn = &conn{c: c, nc: nc, rd: dbwire.NewReader(nc, helloFrame), wr: dbwire.NewWriter(nc, helloFrame)}
+	cn = &conn{c: c, nc: nc}
+	if c.o.Stall > 0 {
+		cn.nc = &watchedConn{Conn: nc, cn: cn}
+	}
+	cn.rd, cn.wr = dbwire.NewReader(cn.nc, helloFrame), dbwire.NewWriter(cn.nc, helloFrame)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -454,6 +613,8 @@ func (cn *conn) failure(ctx context.Context, err error) error {
 		return ctx.Err()
 	case cn.c.isClosed():
 		return ErrClosed
+	case cn.stalled.Load() != ioNone:
+		return &stallError{cn.c.name, cn.c.o.Stall, cn.stalled.Load() == ioWrite}
 	case errors.Is(err, dbwire.ErrProtocol):
 		return fmt.Errorf("%s: %w", cn.c.name, err)
 	}
@@ -470,7 +631,12 @@ type localError struct{ err error }
 func (e *localError) Error() string { return e.err.Error() }
 func (e *localError) Unwrap() error { return e.err }
 
+// exchange writes the request and reads the reply. The Reads and Writes are under the limit of Options.Stall, except the
+// wait for the reply to a request that takes as long as the store is large (Verify and Commit, which waits for a Verify),
+// the first frame of a Backup, and the whole reply of Events, whose frames come as the log is read.
 func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*dbwire.Dec) error) error {
+	cn.watch.Store(true)
+	defer cn.watch.Store(false)
 	cn.wr.Begin(kind)
 	e := &dbwire.Enc{W: cn.wr}
 	if body != nil {
@@ -482,8 +648,14 @@ func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*db
 	if err := cn.wr.End(); err != nil {
 		return cn.refusedBefore(err)
 	}
+	if kind == dbwire.KindVerify || kind == dbwire.KindCommit || kind == dbwire.KindEvents || kind == dbwire.KindBackup {
+		cn.watch.Store(false)
+	}
 	if err := cn.rd.Reply(); err != nil {
 		return err
+	}
+	if kind != dbwire.KindEvents {
+		cn.watch.Store(true)
 	}
 	if read == nil {
 		return nil
