@@ -185,13 +185,13 @@ func TestSnapshot(t *testing.T) {
 		f := newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = 40 * time.Millisecond })
 		idle := make(chan struct{}, 4)
 		f.srv.onIdle = func() { idle <- struct{}{} }
-		r := f.connect(dbwire.RoleReader)
-		r.mustSnapshot()
+		w := f.connect(dbwire.RoleWriter) // the idle limit ends the connection of a reader that holds no snapshot
+		w.mustSnapshot()
 		<-idle
 		// No request has come since: the View has returned, and the session is still there.
 		eventually(t, "the View to return", func() bool { return len(stacksWith(snapshotMarker)) == 0 })
 		f.waitSessions(1)
-		_, _, err := r.get(2, "k")
+		_, _, err := w.get(2, "k")
 		wantCode(t, err, dbwire.CodeNoSnapshot)
 	})
 

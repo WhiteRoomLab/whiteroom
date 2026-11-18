@@ -304,26 +304,36 @@ const (
 )
 
 // wait returns when a byte of the next request has arrived. While a snapshot is held, it releases it after
-// Limits.SnapshotIdle without a request.
+// Limits.SnapshotIdle without a request; a reader's connection that holds none is ended after the same time, with no
+// reply. A writer waits with no limit: it keeps its place.
 func (c *session) wait() waited {
 	if c.br.Buffered() == 0 && c.wr.Flush() != nil {
 		return waitEnded
 	}
-	if c.snap != nil && c.s.limits.SnapshotIdle > 0 {
-		c.conn.readWithin(c.s.limits.SnapshotIdle)
+	if idle := c.s.limits.SnapshotIdle; idle > 0 && (c.snap != nil || c.role == dbwire.RoleReader) {
+		c.conn.readWithin(idle)
 	} else {
 		c.conn.readWithin(0)
 	}
 	_, err := c.br.Peek(1)
-	switch {
-	case err == nil:
+	if err == nil {
 		return waitRequest
-	case c.snap != nil && errors.Is(err, os.ErrDeadlineExceeded):
-		c.dropSnapshot()
-		if c.s.onIdle != nil {
-			c.s.onIdle()
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		switch {
+		case c.snap != nil:
+			c.dropSnapshot()
+			_ = c.s.hook("snapshot:idle")
+			if c.s.onIdle != nil {
+				c.s.onIdle()
+			}
+			return waitIdle
+		case c.role == dbwire.RoleReader:
+			_ = c.s.hook("reader:idle")
+			if c.s.onIdleClose != nil {
+				c.s.onIdleClose()
+			}
 		}
-		return waitIdle
 	}
 	return waitEnded
 }

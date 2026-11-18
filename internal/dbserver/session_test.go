@@ -521,6 +521,70 @@ func TestSnapshotIdle(t *testing.T) {
 	}
 }
 
+// TestReaderIdle: the idle limit ends the connection of a reader that holds no snapshot, and only that: a writer keeps its
+// place, and a request that has begun is not cut by it.
+func TestReaderIdle(t *testing.T) {
+	t.Run("a writer is not ended", func(t *testing.T) {
+		const idle = 40 * time.Millisecond
+		f := newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = idle })
+		released := make(chan struct{}, 8)
+		f.srv.onIdle = func() { released <- struct{}{} }
+		w := f.connect(dbwire.RoleWriter)
+		r := f.connect(dbwire.RoleReader)
+		time.Sleep(5 * idle)
+		r.wantClosed() // the reader had the same time
+		w.mustSnapshot()
+		select {
+		case <-released:
+		case <-time.After(waitLimit):
+			t.Fatal("the snapshot was not released")
+		}
+		time.Sleep(5 * idle)
+		w.mustSnapshot()
+	})
+
+	t.Run("no limit", func(t *testing.T) {
+		f := newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = -1 })
+		c := f.connect(dbwire.RoleReader)
+		time.Sleep(200 * time.Millisecond)
+		if err := c.release(); err != nil {
+			t.Errorf("a Release after a wait with no limit: %v", err)
+		}
+	})
+
+	t.Run("a request that has begun", func(t *testing.T) {
+		const idle = 100 * time.Millisecond
+		f := newFixture(t, func(o *Options) { o.Limits.SnapshotIdle = idle })
+		c := f.connect(dbwire.RoleReader)
+		req := requestBytes(dbwire.KindGet, func(e *dbwire.Enc) { e.GetRequest(2, []byte("k001")) })
+		if _, err := c.conn.Write(req[:4]); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3 * idle)
+		if _, err := c.conn.Write(req[4:]); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.readOne(dbwire.KindGet); got != "refused no snapshot" {
+			t.Errorf("the reply: %s", got)
+		}
+	})
+
+	t.Run("the places of the readers", func(t *testing.T) {
+		const idle = 300 * time.Millisecond
+		f := newFixture(t, func(o *Options) { o.Limits.Readers, o.Limits.SnapshotIdle = 2, idle })
+		a, b := f.connect(dbwire.RoleReader), f.connect(dbwire.RoleReader)
+		wantCode(t, f.dial(dbwire.RoleReader).sayHello(), dbwire.CodeBusy)
+		eventually(t, "the places of the readers to be free", func() bool {
+			f.srv.mu.Lock()
+			defer f.srv.mu.Unlock()
+			return f.srv.readers == 0
+		})
+		a.wantClosed()
+		b.wantClosed()
+		f.connect(dbwire.RoleReader)
+	})
+}
+
 func TestClose(t *testing.T) {
 	t.Run("idle sessions and snapshots", func(t *testing.T) {
 		f := newFixture(t, nil)

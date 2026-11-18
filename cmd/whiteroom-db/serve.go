@@ -92,7 +92,8 @@ func newServeFlags(stderr io.Writer) (*flag.FlagSet, *serveFlags) {
 		"refuse a write that may make a file when the file system of the data directory has `N` free inodes or fewer, unless "+
 			"it does not count them; 0 turns the check off")
 	flags.DurationVar(&f.snapshotIdle, "snapshot-idle", def.SnapshotIdle,
-		"release the snapshot of a connection that sends nothing for `DURATION`; 0 never releases")
+		"release the snapshot of a connection that sends nothing for `DURATION`, and end a reader's connection that holds none; "+
+			"0 does neither")
 	flags.DurationVar(&f.stall, "stall", def.Stall,
 		"cut a connection that does not send or take bytes for `DURATION` in the middle of a request; 0 never cuts")
 	flags.Int64Var(&f.maxStaged, "max-staged", def.Staged,
