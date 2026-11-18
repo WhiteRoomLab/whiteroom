@@ -533,10 +533,13 @@ func (r *pausingReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// stalls counts the goroutines of the clients that watch their connections.
+// stalls counts the goroutines that the Opens of the calling goroutine have made, which are those that watch: by the line
+// of their creator, since a goroutine that has not run yet shows a wrapper, not watchStalls.
 func stalls() int {
 	buf := make([]byte, 1<<20)
-	return strings.Count(string(buf[:runtime.Stack(buf, true)]), "(*Client).watchStalls")
+	stacks := string(buf[:runtime.Stack(buf, true)])
+	self, _, _ := strings.Cut(stacks, " [") // "goroutine N" of the caller, whose stack comes first
+	return strings.Count(stacks, "/internal/dbclient.Open in "+self+"\n")
 }
 
 // TestStallOff: a limit that is negative is no limit: the client waits for the context, and does not watch.
