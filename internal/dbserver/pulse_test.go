@@ -851,6 +851,7 @@ func (p *pulseFixture) abandon(c *client, wc *countConn, kind dbwire.Kind, body 
 	await(p.t, blocked, "the engine to be stuck")
 	_ = c.conn.Close()
 	eventually(p.t, "a pulse to fail", func() bool { return wc.failed.Load() > 0 })
+	eventually(p.t, "the pulse that failed to return", func() bool { return pulsers() == 0 }) // after its abort
 	return release
 }
 

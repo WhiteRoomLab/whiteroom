@@ -847,6 +847,105 @@ func TestStallExempt(t *testing.T) {
 		}
 		ran(t, began, pd, 1)
 	})
+
+	t.Run("the fn of an Events that takes long", func(t *testing.T) {
+		t.Parallel()
+		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
+			p.hello()
+			p.snapshot(5)
+			if p.n == 0 {
+				p.release()
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindEvents)
+			p.raw(p.wire(false, eventFrame(1)))
+			p.raw(p.wire(true, func(e *dbwire.Enc) { // read after fn has returned
+				eventFrame(2)(e)
+				e.EventsEnd()
+			}))
+			p.release()
+			p.hold()
+		})
+		var got []uint64
+		began := time.Now()
+		must(t, c.View(bg, func(tx *dbclient.Tx) error {
+			return tx.Events(bg, func(n uint64, _ []byte) bool {
+				if n == 1 {
+					time.Sleep(stallLong)
+				}
+				got = append(got, n)
+				return true
+			})
+		}))
+		if !slices.Equal(got, []uint64{1, 2}) {
+			t.Errorf("the events are %v, want [1 2]", got)
+		}
+		ran(t, began, pd, 2)
+	})
+
+	t.Run("a Backup that writes its copy slowly", func(t *testing.T) {
+		t.Parallel()
+		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
+			p.hello()
+			if p.n == 0 {
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindBackup)
+			p.raw(p.wire(false, func(e *dbwire.Enc) {
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryPosition, Position: dbwire.BackupPosition{Seq: 3}})
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryDir, Path: "files"})
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryFile, Path: "files/x"})
+				_, _ = e.Chunks().Write([]byte("hel"))
+			}))
+			p.raw(p.wire(true, func(e *dbwire.Enc) { // read after the first Write of the copy
+				chunks := e.Chunks()
+				_, _ = chunks.Write([]byte("lo"))
+				_ = chunks.Close()
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryEnd})
+			}))
+			p.hold()
+		})
+		dst := simfs.New("copy")
+		began := time.Now()
+		b, err := c.Backup(bg, &lateWriteFS{FS: dst})
+		must(t, err)
+		if b.Seq != 3 {
+			t.Errorf("the backup has the sequence number %d, want 3", b.Seq)
+		}
+		f, err := dst.Open("files/x")
+		must(t, err)
+		defer func() { _ = f.Close() }()
+		if data, err := io.ReadAll(f); err != nil || string(data) != "hello" {
+			t.Errorf("the copy has %q (%v)", data, err)
+		}
+		ran(t, began, pd, 2)
+	})
+}
+
+// lateWriteFS is a file system whose files take stallLong for their first Write.
+type lateWriteFS struct{ vfs.FS }
+
+func (f *lateWriteFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
+	x, err := f.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &lateWriteFile{File: x}, nil
+}
+
+type lateWriteFile struct {
+	vfs.File
+	slept bool
+}
+
+func (x *lateWriteFile) Write(p []byte) (int, error) {
+	if !x.slept {
+		x.slept = true
+		time.Sleep(stallLong)
+	}
+	return x.File.Write(p)
 }
 
 // pausingReader gives the blocks one at a time, and waits for pause before each but the first.
