@@ -778,34 +778,242 @@ func TestPulseThenRefusal(t *testing.T) {
 
 // TestNoPulseAfterReply: a pulse is written into the reply that a request is answering, and never after the last frame of
 // it, which would be taken for the start of the reply to the next request: a Get has no pulse, so that none of the Gets
-// that follow Verifies, whose engine moves all the time, may have another frame than its own.
+// that follow Verifies, Events, or Backups that are refused, whose engine moves all the time, may have another frame than
+// its own.
 func TestNoPulseAfterReply(t *testing.T) {
-	p := newPulseFixture(t, time.Millisecond, nil)
-	p.fill()
-	p.ctl.setDelay(200 * time.Microsecond)
-	r := p.connect(dbwire.RoleReader)
-	r.mustSnapshot()
-	for i := range 200 {
-		sent := r.send(dbwire.KindVerify, nil)
-		frames := r.rawReply()
-		if err := <-sent; err != nil {
-			t.Fatal(err)
+	// repeat sends the request n times on a connection with a snapshot, each followed by a Get. It checks that ends
+	// holds for the last frame of the reply of the request, and that the reply to the Get is one frame, which is its own.
+	repeat := func(t *testing.T, p *pulseFixture, n int, kind dbwire.Kind, ends func(fr frame) bool) {
+		t.Helper()
+		p.fill()
+		p.ctl.setDelay(200 * time.Microsecond)
+		r := p.connect(dbwire.RoleReader)
+		r.mustSnapshot()
+		for i := range n {
+			sent := r.send(kind, nil)
+			frames := r.rawReply()
+			if err := <-sent; err != nil {
+				t.Fatal(err)
+			}
+			if last := frames[len(frames)-1]; !ends(last) {
+				t.Fatalf("%v %d: the last frame is %+v", kind, i, last)
+			}
+			sent = r.send(dbwire.KindGet, func(e *dbwire.Enc) { e.GetRequest(2, []byte("k0")) })
+			frames = r.rawReply()
+			if err := <-sent; err != nil {
+				t.Fatal(err)
+			}
+			if len(frames) != 1 || frames[0].kind != dbwire.KindOK || frames[0].flags != 1 || len(frames[0].body) == 0 {
+				t.Fatalf("Get %d after a %v: %d frames, the first %+v", i, kind, len(frames), frames[0])
+			}
 		}
-		if last := frames[len(frames)-1]; last.kind != dbwire.KindOK || last.flags != 1 || len(last.body) != 0 {
-			t.Fatalf("Verify %d: the last frame is %+v", i, last)
-		}
-		sent = r.send(dbwire.KindGet, func(e *dbwire.Enc) { e.GetRequest(2, []byte("k0")) })
-		frames = r.rawReply()
-		if err := <-sent; err != nil {
-			t.Fatal(err)
-		}
-		if len(frames) != 1 || frames[0].kind != dbwire.KindOK || frames[0].flags != 1 || len(frames[0].body) == 0 {
-			t.Fatalf("Get %d after a Verify: %d frames, the first %+v", i, len(frames), frames[0])
+		if p.pulses.Load() == 0 {
+			t.Error("no pulse was written")
 		}
 	}
-	if p.pulses.Load() == 0 {
-		t.Error("no pulse was written")
+
+	t.Run("Verify", func(t *testing.T) {
+		repeat(t, newPulseFixture(t, time.Millisecond, nil), 200, dbwire.KindVerify, func(fr frame) bool {
+			return fr.kind == dbwire.KindOK && fr.flags == 1 && len(fr.body) == 0
+		})
+	})
+
+	t.Run("Events", func(t *testing.T) {
+		repeat(t, newPulseFixture(t, time.Millisecond, nil), 150, dbwire.KindEvents, func(fr frame) bool {
+			return fr.kind == dbwire.KindOK && fr.flags == 1
+		})
+	})
+
+	// A Backup that is refused after its pulses, at its gate: its pulser ends before the Error frame.
+	t.Run("Backup that is refused", func(t *testing.T) {
+		p := newPulseFixture(t, time.Millisecond, func(o *Options) {
+			o.Hook = func(point string) error {
+				if point == "backup:gate" {
+					return errors.New("refused at the gate")
+				}
+				return nil
+			}
+		})
+		repeat(t, p, 150, dbwire.KindBackup, func(fr frame) bool { return fr.kind == dbwire.KindError })
+	})
+}
+
+// abandon sends a request, which is long, on a connection of its own, waits until the engine is stuck in the read that
+// comes after skip others, which the client does not wait for any more, and until a write of the daemon to it has failed:
+// a pulse, as nothing else is written while the reply is open and the engine does not move. It returns what lets the engine
+// go on.
+func (p *pulseFixture) abandon(c *client, wc *countConn, kind dbwire.Kind, body func(e *dbwire.Enc), skip int) (release func()) {
+	p.t.Helper()
+	blocked, release := p.ctl.block("read", skip)
+	if err := <-c.send(kind, body); err != nil {
+		p.t.Fatal(err)
 	}
+	await(p.t, blocked, "the engine to be stuck")
+	_ = c.conn.Close()
+	eventually(p.t, "a pulse to fail", func() bool { return wc.failed.Load() > 0 })
+	return release
+}
+
+// TestPulseWriteFails: when a pulse cannot be written, the connection is broken: the Verify, the Events and the Backup
+// before its position end at the next record or file that the engine reads, and so let go of the engine and the gate,
+// instead of reading what nobody will read the answer of. A Commit is not stopped: its Update runs to its end, and it is made.
+func TestPulseWriteFails(t *testing.T) {
+	// stuck is the reads that return before the engine is stuck in the next one: after it lets go, the request may make one
+	// more read at most, and not the rest.
+	const stuck = 2
+
+	t.Run("Verify", func(t *testing.T) {
+		p := setupPulse(t, nil)
+		p.ctl.setDelay(0)
+		r0 := p.connect(dbwire.RoleReader)
+		before := p.ctl.reads.Load()
+		if err := r0.verify(); err != nil {
+			t.Fatal(err)
+		}
+		full := p.ctl.reads.Load() - before
+		_ = r0.conn.Close()
+		p.waitSessions(0)
+
+		r, wc := p.connectCounted(dbwire.RoleReader)
+		before = p.ctl.reads.Load()
+		release := p.abandon(r, wc, dbwire.KindVerify, nil, stuck)
+		release()
+		p.waitSessions(0)
+		if got := p.ctl.reads.Load() - before; got > stuck+2 {
+			t.Errorf("the Verify made %d reads after its client was gone; all of them are %d", got, full)
+		}
+	})
+
+	t.Run("Events", func(t *testing.T) {
+		p := setupPulse(t, nil)
+		p.ctl.setDelay(0)
+		r0 := p.connect(dbwire.RoleReader)
+		r0.mustSnapshot()
+		before := p.ctl.reads.Load()
+		if _, err := r0.events(); err != nil {
+			t.Fatal(err)
+		}
+		full := p.ctl.reads.Load() - before
+		_ = r0.conn.Close()
+		p.waitSessions(0)
+
+		r, wc := p.connectCounted(dbwire.RoleReader)
+		r.mustSnapshot()
+		before = p.ctl.reads.Load()
+		release := p.abandon(r, wc, dbwire.KindEvents, nil, 1)
+		release()
+		p.waitSessions(0)
+		if got := p.ctl.reads.Load() - before; got > 1+2 { // the Events has fewer reads: it is stuck in the second
+			t.Errorf("the Events made %d reads after its client was gone; all of them are %d", got, full)
+		}
+	})
+
+	// The engine opens its reader without a context: the Backup ends when that has returned, at its position.
+	t.Run("Backup before its position", func(t *testing.T) {
+		var sending atomic.Int64
+		p := setupPulse(t, func(o *Options) {
+			o.Hook = func(point string) error {
+				if point == "backup:sending" {
+					sending.Add(1)
+				}
+				return nil
+			}
+		})
+		p.ctl.setDelay(0)
+		r0 := p.connect(dbwire.RoleReader)
+		if _, err := r0.backup(nil); err != nil {
+			t.Fatal(err)
+		}
+		if sending.Load() != 1 {
+			t.Fatalf("the Backup began to send %d times, want 1", sending.Load())
+		}
+		_ = r0.conn.Close()
+		p.waitSessions(0)
+
+		r, wc := p.connectCounted(dbwire.RoleReader)
+		release := p.abandon(r, wc, dbwire.KindBackup, nil, stuck)
+		release()
+		p.waitSessions(0)
+		if sending.Load() != 1 {
+			t.Error("the Backup went on to send, with its client gone")
+		}
+		// The gate and the engine are let go: a Commit goes through.
+		if _, _, err := p.connect(dbwire.RoleWriter).tryCommit(put(2, "z", "1")); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// The Commit waits for the Verify of another connection, which is stuck: its pulse is written when the Verify has
+	// moved, and fails. The Verify goes on, and the Commit is made after it.
+	t.Run("Commit", func(t *testing.T) {
+		entered := make(chan struct{}, 1)
+		var armed atomic.Bool
+		p := setupPulse(t, func(o *Options) {
+			o.Hook = func(point string) error {
+				if point == "commit:gate" && armed.Load() {
+					entered <- struct{}{}
+				}
+				return nil
+			}
+		})
+		p.ctl.setDelay(0)
+		w, wc := p.connectCounted(dbwire.RoleWriter)
+		r := p.connect(dbwire.RoleReader)
+		seq := w.mustSnapshot()
+		stuck1, go1 := p.ctl.block("read", stuck)
+		verified := make(chan error, 1)
+		go func() { verified <- r.verify() }()
+		await(t, stuck1, "the Verify to be stuck")
+
+		armed.Store(true)
+		if err := <-w.send(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z"))); err != nil {
+			t.Fatal(err)
+		}
+		await(t, entered, "the commit to reach its gate")
+		_ = w.conn.Close()
+		stuck2, go2 := p.ctl.block("read", 1)
+		go1()
+		await(t, stuck2, "the Verify to be stuck again")
+		eventually(t, "a pulse of the Commit to fail", func() bool { return wc.failed.Load() > 0 })
+		go2()
+		if err := <-verified; err != nil {
+			t.Errorf("Verify: %v", err)
+		}
+		p.waitSessions(1) // the session of the Commit has ended: its client is gone, and it was answered
+
+		var again *client
+		eventually(t, "the writer to be let in again", func() bool {
+			c := p.dial(dbwire.RoleWriter)
+			if err := c.sayHello(); err != nil {
+				_ = c.conn.Close()
+				return false
+			}
+			again = c
+			return true
+		})
+		if again.hello.Seq != seq+1 {
+			t.Errorf("the last sequence number is %d, want %d: the Commit was not made", again.hello.Seq, seq+1)
+		}
+	})
+
+	t.Run("the pulser", func(t *testing.T) {
+		f := newFixture(t, func(o *Options) { o.Pulse = time.Millisecond })
+		server, peer := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
+		c.wr.Begin(dbwire.KindOK)
+		var aborted atomic.Int64
+		p := c.pulse(func() { aborted.Add(1) })
+		_ = peer.Close()
+		f.srv.moved.Add(1)
+		eventually(t, "the pulse that fails to abort", func() bool { return aborted.Load() > 0 })
+		f.srv.moved.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		p.end()
+		if n := aborted.Load(); n != 1 {
+			t.Errorf("abort was called %d times, want 1", n)
+		}
+	})
 }
 
 // pulsers counts the goroutines that are writing a pulse: the timer of a request starts one only when it fires, and a
@@ -1011,6 +1219,53 @@ func TestProgressFS(t *testing.T) {
 			t.Fatalf("Lstat() of a file that was removed: %v", err)
 		}
 	})
+
+	// A call that has not returned is not counted: the engine has not moved until it has.
+	t.Run("a call is counted after it has returned", func(t *testing.T) {
+		ctl := &fsControl{}
+		var moved atomic.Uint64
+		root := &progressFS{FS: &ctlFS{FS: simfs.New("data"), c: ctl}, moved: &moved}
+		f, err := root.OpenFile("f", os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.Write([]byte("abcdef")); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name, op string
+			call     func() error
+		}{
+			{"ReadAt", "read", func() error { _, err := f.ReadAt(make([]byte, 2), 1); return err }},
+			{"Read", "read", func() error {
+				if _, err := f.Read(make([]byte, 2)); err != nil && !errors.Is(err, io.EOF) { // the offset is at the end
+					return err
+				}
+				return nil
+			}},
+			{"Write", "write", func() error { _, err := f.Write([]byte("x")); return err }},
+			{"WriteAt", "write", func() error { _, err := f.WriteAt([]byte("x"), 0); return err }},
+			{"Sync", "sync", func() error { return f.Sync() }},
+		} {
+			blocked, release := ctl.block(tc.op, 0)
+			before := moved.Load()
+			done := make(chan error, 1)
+			go func() { done <- tc.call() }()
+			await(t, blocked, tc.name+" to be called")
+			time.Sleep(5 * time.Millisecond)
+			if got := moved.Load() - before; got != 0 {
+				t.Errorf("%s was counted %d times before it returned", tc.name, got)
+			}
+			release()
+			if err := <-done; err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := moved.Load() - before; got != 1 {
+				t.Errorf("%s was counted %d times after it returned, want 1", tc.name, got)
+			}
+		}
+	})
 }
 
 // TestProgressOfServer: the engine runs on a file system that counts, and the originals, in files/, do not.
@@ -1048,7 +1303,7 @@ func TestPulserEnd(t *testing.T) {
 		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
 		c.wr.Begin(dbwire.KindOK)
-		return f, c, peer, c.pulse()
+		return f, c, peer, c.pulse(nil)
 	}
 	// silent fails the test unless nothing is written to the peer in a while.
 	silent := func(t *testing.T, peer net.Conn) {
@@ -1088,6 +1343,19 @@ func TestPulserEnd(t *testing.T) {
 			t.Fatal("end did not return after the pulse was written")
 		}
 		silent(t, peer)
+	})
+
+	t.Run("stops the timer", func(t *testing.T) {
+		f := newFixture(t, func(o *Options) { o.Pulse = time.Hour })
+		server, peer := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
+		c.wr.Begin(dbwire.KindOK)
+		p := c.pulse(nil)
+		p.end()
+		if p.t.Stop() {
+			t.Error("the timer was still pending after end")
+		}
 	})
 
 	t.Run("does not write a pulse that waited for the lock", func(t *testing.T) {

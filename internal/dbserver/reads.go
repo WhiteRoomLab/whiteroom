@@ -96,7 +96,7 @@ func (c *session) eventsRequest() bool {
 	seq := c.snap.seq
 	c.wr.Begin(dbwire.KindOK)
 	e := &dbwire.Enc{W: c.wr}
-	p := c.pulse()
+	p := c.pulse(c.cancel)
 	defer p.end()
 	err := c.s.db.Events(c.ctx, func(ev logdb.Event) bool {
 		if ev.Seq > seq {
@@ -128,7 +128,7 @@ func (c *session) verifyRequest() bool {
 		return false
 	}
 	c.wr.Begin(dbwire.KindOK)
-	p := c.pulse()
+	p := c.pulse(c.cancel)
 	defer p.end()
 	err := c.s.db.Verify(c.ctx)
 	p.end()

@@ -64,10 +64,12 @@ func (p *peer) wire(last bool, build func(e *dbwire.Enc)) []byte {
 	return out
 }
 
-// deafDialer is a Dialer of daemons that answer the Hello and the Snapshot of a connection and then read nothing.
+// deafDialer is a Dialer of daemons that answer the Hello and the Snapshot of a connection and then read nothing. The Hello
+// has the sequence number seq, and the Snapshot 1.
 type deafDialer struct {
 	mu    sync.Mutex
 	dials int
+	seq   uint64
 	wg    sync.WaitGroup
 	quit  chan struct{}
 }
@@ -91,7 +93,7 @@ func (d *deafDialer) Dial(_ context.Context, role dbwire.Role) (net.Conn, error)
 			return wr.End() == nil
 		}
 		if !answer(dbwire.KindHello, func(e *dbwire.Enc) {
-			e.HelloReply(dbwire.HelloReply{Version: dbwire.Version, Role: role, Frame: testFrame, Commit: 1 << 20,
+			e.HelloReply(dbwire.HelloReply{Version: dbwire.Version, Role: role, Seq: d.seq, Frame: testFrame, Commit: 1 << 20,
 				Object: 1 << 20, Staged: 1 << 20, MaxKey: dbwire.MaxKey})
 		}) || !answer(dbwire.KindSnapshot, func(e *dbwire.Enc) { e.SnapshotReply(1) }) {
 			return
@@ -431,12 +433,15 @@ func TestStall(t *testing.T) {
 
 	// A Commit that is cut is found out as one whose connection has ended: the client connects as the writer again, which
 	// the new Hello of the daemon has the last sequence number for. The snapshot of these is at 1.
-	writer := func(t *testing.T, again func(p *peer)) (*dbclient.Client, *peerDialer) {
+	writer := func(t *testing.T, again func(p *peer), reply ...func(p *peer)) (*dbclient.Client, *peerDialer) {
 		c, _, pd := openPeerWith(t, dbwire.RoleWriter, cut, func(p *peer) {
 			if p.n == 0 {
 				p.hello()
 				p.snapshot(1)
 				p.expect(dbwire.KindCommit)
+				for _, f := range reply {
+					f(p)
+				}
 				p.hold()
 				return
 			}
@@ -489,6 +494,33 @@ func TestStall(t *testing.T) {
 			p.hold()
 		})
 		must(t, putOne(ctx, c))
+		if got := pd.dialed(); got != 2 {
+			t.Errorf("the client dialed %d connections, want 2", got)
+		}
+	})
+
+	// A Commit whose daemon pulses and then sends nothing is cut by the limit from the last pulse, and not before, and
+	// found out as one that was not made.
+	t.Run("the reply to a Commit that pulses and then ends", func(t *testing.T) {
+		ctx := soon(t)
+		const pulses, gap = 16, stallCut / 8 // longer than the limit, in all
+		var last atomic.Pointer[time.Time]
+		c, pd := writer(t, func(p *peer) {
+			p.helloAt(1)
+			p.hold()
+		}, func(p *peer) {
+			at := p.pulses(pulses, gap)
+			last.Store(&at)
+		})
+		err := putOne(ctx, c)
+		at := last.Load()
+		if at == nil {
+			t.Fatalf("the client cut the connection before the daemon had sent its pulses: %v", err)
+		}
+		wantStall(t, err, *at, notSent, 1)
+		if !strings.Contains(err.Error(), "the transaction was not committed") || strings.Contains(err.Error(), "not known") {
+			t.Errorf("the error is %q, want one that says that the transaction was not committed", err)
+		}
 		if got := pd.dialed(); got != 2 {
 			t.Errorf("the client dialed %d connections, want 2", got)
 		}
@@ -572,6 +604,27 @@ func TestStall(t *testing.T) {
 		defer dd.mu.Unlock()
 		if dd.dials != 2 {
 			t.Errorf("the client dialed %d connections, want 2: the writer is made again at the end of the Update", dd.dials)
+		}
+	})
+
+	// The Write of the request of a Commit is under the limit too, and a Commit that the daemon has not read is found out as
+	// one that was not made, like one that it has not answered.
+	t.Run("a Commit that the daemon does not read", func(t *testing.T) {
+		noLeaks(t)
+		dd := &deafDialer{quit: make(chan struct{}), seq: 1}
+		c, err := dbclient.Open(bg, dd, dbwire.RoleWriter, cut)
+		must(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		began := time.Now()
+		err = c.Update(soon(t), func(tx *dbclient.Tx) error { return tx.Put(2, k, k) })
+		wantStall(t, err, began, notRead, 1)
+		if !strings.Contains(err.Error(), "the transaction was not committed") || strings.Contains(err.Error(), "not known") {
+			t.Errorf("the error is %q, want one that says that the transaction was not committed", err)
+		}
+		dd.mu.Lock()
+		defer dd.mu.Unlock()
+		if dd.dials != 2 {
+			t.Errorf("the client dialed %d connections, want 2: the one that finds out, and no other for the Commit", dd.dials)
 		}
 	})
 

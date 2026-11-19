@@ -97,9 +97,9 @@ type Options struct {
 	// Stall is how long a Read of a reply may move no byte, and how long a Write of a request (one frame, at most 1 MiB; a
 	// window of reads, at most 32 KiB) may take, before the connection is cut; 0: 30 seconds, negative: no limit. A Write is
 	// cut also when the daemon reads it, but slowly: a frame of 1 MiB that it takes slower than about 30 KB per second is a
-	// stall. The reply to a Verify, a Commit, an Events, and a Backup up to its first frame is under it too: the daemon
-	// sends a pulse while its engine moves, so a long one is cut only when the engine, or the daemon, stops. Not under the
-	// limit is the time between Reads and Writes.
+	// stall. The reply to a Verify, a Commit, an Events, and a Backup is under it too: the daemon sends a pulse while its
+	// engine moves (a Backup, until it knows its position), so a long one is cut only when the engine, or the daemon,
+	// stops. Not under the limit is the time between Reads and Writes.
 	Stall time.Duration
 }
 
@@ -361,31 +361,28 @@ type conn struct {
 	dead  atomic.Bool
 	once  sync.Once
 
-	watch   atomic.Bool   // the Reads and Writes that begin now are under the limit
 	state   atomic.Uint64 // see watchedConn
 	stalled atomic.Int32  // the direction of the Read or Write that watchStalls found with no byte moved, as in state
 }
 
-// The directions of a Read or a Write under the limit, in the low bits of the state of a conn.
+// The directions of a Read or a Write in progress, in the low bits of the state of a conn.
 const (
 	ioNone  = 0
 	ioRead  = 1
 	ioWrite = 2
 )
 
-// watchedConn counts the Reads and Writes of a connection that are under the limit of Options.Stall, so that watchStalls
-// can tell a connection that moves no byte from one that does, with no clock and no deadline of the request. The state of
-// the conn is the number of the Reads and Writes that have begun and ended, in the bits above the two low ones, and the
-// direction of the one that is in progress, in the two low ones: it is never the same twice.
+// watchedConn counts the Reads and Writes of a connection, which are all under the limit of Options.Stall, so that
+// watchStalls can tell a connection that moves no byte from one that does, with no clock and no deadline of the request.
+// The state of the conn is the number of the Reads and Writes that have begun and ended, in the bits above the two low
+// ones, and the direction of the one that is in progress, in the two low ones: it is never the same twice. The time
+// between the Reads and Writes is not under the limit: the direction is ioNone then.
 type watchedConn struct {
 	net.Conn
 	cn *conn
 }
 
 func (w *watchedConn) Read(p []byte) (int, error) {
-	if !w.cn.watch.Load() {
-		return w.Conn.Read(p)
-	}
 	w.cn.state.Add(4 + ioRead)
 	n, err := w.Conn.Read(p)
 	w.cn.state.Add(4 - ioRead)
@@ -393,9 +390,6 @@ func (w *watchedConn) Read(p []byte) (int, error) {
 }
 
 func (w *watchedConn) Write(p []byte) (int, error) {
-	if !w.cn.watch.Load() {
-		return w.Conn.Write(p)
-	}
 	w.cn.state.Add(4 + ioWrite)
 	n, err := w.Conn.Write(p)
 	w.cn.state.Add(4 - ioWrite)
@@ -633,12 +627,10 @@ func (e *localError) Error() string { return e.err.Error() }
 func (e *localError) Unwrap() error { return e.err }
 
 // exchange writes the request and reads the reply. All the Reads and Writes are under the limit of Options.Stall. A request
-// that takes as long as the store is large (Verify, Commit, which may wait for a Verify, Events, and Backup up to its first
-// frame) is not cut while the daemon sends a pulse, which the Reader skips, each time that its engine has moved. The time
-// that read takes outside the Reads is not counted.
+// that takes as long as the store is large (Verify, Commit, which may wait for a Verify, Events, and Backup until it knows
+// its position) is not cut while the daemon sends a pulse, which the Reader skips, each time that its engine has moved. The
+// time that read takes outside the Reads is not counted.
 func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*dbwire.Dec) error) error {
-	cn.watch.Store(true)
-	defer cn.watch.Store(false)
 	cn.wr.Begin(kind)
 	e := &dbwire.Enc{W: cn.wr}
 	if body != nil {

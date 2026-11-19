@@ -150,7 +150,7 @@ func (c *session) commitRequest() bool {
 		return c.fail(code, msg)
 	}
 	c.wr.Begin(dbwire.KindOK)
-	p := c.pulse()
+	p := c.pulse(nil)
 	defer p.end()
 	if err := c.s.bucket.take(c.ctx); err != nil {
 		return false

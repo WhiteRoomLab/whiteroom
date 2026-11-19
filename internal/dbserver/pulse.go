@@ -140,14 +140,17 @@ type pulser struct {
 	c       *session
 	t       *time.Timer
 	last    uint64
-	stopped bool // set by end, or by a write that failed; under c.pulseMu
+	abort   func() // called, once, by a write that failed; nil: the request goes on
+	stopped bool   // set by end, or by a write that failed; under c.pulseMu
 }
 
 // pulse starts the pulser of the reply that is open. end must be called, on every path of the request, before the reply
 // is written to: it is safe to call it again. The timer, and not a goroutine that waits, keeps a request that is answered
-// before the interval from paying for a goroutine and the wakeups of it.
-func (c *session) pulse() *pulser {
-	p := &pulser{c: c, last: c.s.moved.Load()}
+// before the interval from paying for a goroutine and the wakeups of it. A pulse that cannot be written means that the
+// connection is broken: abort, if it is not nil, ends the request that nobody will read the answer of. A Commit does not
+// abort: its Update runs to its end.
+func (c *session) pulse(abort func()) *pulser {
+	p := &pulser{c: c, last: c.s.moved.Load(), abort: abort}
 	c.pulseMu.Lock() // fire reads p.t
 	p.t = time.AfterFunc(c.s.pulse, p.fire)
 	c.pulseMu.Unlock()
@@ -165,6 +168,9 @@ func (p *pulser) fire() {
 		p.last = now
 		if c.wr.Pulse() != nil {
 			p.stopped = true
+			if p.abort != nil {
+				p.abort() // under c.pulseMu: it must not take it
+			}
 			return
 		}
 		_ = c.s.hook("reply:pulse")
