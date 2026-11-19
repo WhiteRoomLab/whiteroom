@@ -35,10 +35,12 @@ type Options struct {
 	Now    func() time.Time
 	Hook   func(point string) error
 	Logf   func(format string, args ...any)
+	// Pulse is the interval of the pulses of the daemon; 0: its default.
+	Pulse time.Duration
 }
 
 func (o Options) server() dbserver.Options {
-	so := dbserver.Options{Now: o.Now, Hook: o.Hook, Logf: o.Logf}
+	so := dbserver.Options{Now: o.Now, Hook: o.Hook, Logf: o.Logf, Pulse: o.Pulse}
 	if o.Log != nil {
 		so.Log = *o.Log
 	} else {

@@ -37,6 +37,8 @@ func (c *session) backupRequest() bool {
 	s := c.s
 	c.wr.Begin(dbwire.KindOK)
 	e := &dbwire.Enc{W: c.wr}
+	pl := c.pulse(c.cancel)
+	defer pl.end()
 
 	s.gate.Lock()
 	var once sync.Once
@@ -53,6 +55,7 @@ func (c *session) backupRequest() bool {
 			return sentence("%s", headBehindText)
 		}
 		release()
+		pl.end()
 		if err := s.hook("backup:sending"); err != nil {
 			return err
 		}
@@ -72,6 +75,7 @@ func (c *session) backupRequest() bool {
 		return e.Err
 	})
 	release()
+	pl.end()
 	if err == nil {
 		e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryEnd})
 		err = e.Err
@@ -81,7 +85,7 @@ func (c *session) backupRequest() bool {
 	case err == nil:
 		return c.wr.End() == nil
 	case c.ctx.Err() != nil:
-		return false // the server is closing, and its connections are closed: end drops the reply, which is open
+		return false // the server is closing, or a pulse could not be written: end drops the reply, which is open
 	case errors.As(err, &r):
 		return c.fail(r.code, r.msg)
 	}

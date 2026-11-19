@@ -177,7 +177,8 @@ func (c *Client) resolve(ctx context.Context, seq uint64, cause error) error {
 	case seq + 1:
 		return nil
 	case seq:
-		if _, ok := errors.AsType[*ioError](cause); ok {
+		_, cut := errors.AsType[*ioError](cause)
+		if _, stalled := errors.AsType[*stallError](cause); cut || stalled {
 			return fmt.Errorf("the transaction was not committed: %w", cause)
 		}
 		return cause

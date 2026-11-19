@@ -116,9 +116,7 @@ func (cn *conn) window(ctx context.Context, reads []windowRead, take func(*windo
 		return cn.failure(ctx, errors.New("the connection has ended"))
 	}
 	stop := context.AfterFunc(ctx, func() { _ = cn.nc.SetDeadline(time.Unix(1, 0)) })
-	cn.watch.Store(true)
 	err := cn.exchangeWindows(reads, take)
-	cn.watch.Store(false)
 	if !stop() {
 		cn.close() // the deadline may be set, or about to be
 	}

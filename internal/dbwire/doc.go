@@ -7,7 +7,8 @@
 // one or more frames of one kind, the last with the end flag, and its body is the payloads of its frames joined. A frame
 // is a header of 8 bytes and its payload: the kind, the flags, two reserved bytes that are zero, and the length of the
 // payload as a uint32 in big-endian. Only the flag 0x01, the end, is defined. A reply is a message of the kind OK, or
-// one Error frame, which also ends an OK message that has begun.
+// one Error frame, which also ends an OK message that has begun. In a reply, an empty OK frame without the end flag is a
+// pulse, which says that a long request goes on; a Reader skips it, and it has no place in a request.
 //
 // The integers of a body have a fixed width and are big-endian. A byte string is its length as a uint32 and its bytes.
 // An Enc writes a body and a Dec reads one; both keep their first error. The write methods of Enc and the read

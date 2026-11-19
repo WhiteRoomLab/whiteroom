@@ -54,7 +54,8 @@ func noLeaks(t testing.TB) {
 			stacks = string(buf[:runtime.Stack(buf, true)])
 			for _, g := range strings.Split(stacks, "\n\n") {
 				for _, marker := range []string{"dbserver.(*session)", "dbserver.(*Server).openSnapshot", "dbserver.(*Server).ServeConn",
-					"dbserver.(*Server).Serve(", "dbserver.(*Server).serveConn", "dbserver.(*Server).startClock", "dbserver.Run("} {
+					"dbserver.(*Server).Serve(", "dbserver.(*Server).serveConn", "dbserver.(*Server).startClock", "dbserver.Run(",
+					"dbserver.(*pulser)"} {
 					if strings.Contains(g, marker) {
 						return true
 					}
@@ -116,6 +117,7 @@ type fixture struct {
 	fs    *simfs.FS
 	dir   string // a data directory on the OS, if fs is nil
 	opts  Options
+	wrap  func(vfs.FS) vfs.FS // wraps the file system that Open gets; nil: it is fs
 	srv   *Server
 	logs  *logLines
 	clock *clock
@@ -138,8 +140,14 @@ func testOptions() Options {
 // newFixture creates and opens the data directory "data" on a simulated file system. mod changes the options first.
 func newFixture(t testing.TB, mod func(*Options)) *fixture {
 	t.Helper()
+	return newFixtureWith(t, nil, mod)
+}
+
+// newFixtureWith is newFixture for a server that opens wrap(fs), if wrap is not nil, which Create does not.
+func newFixtureWith(t testing.TB, wrap func(vfs.FS) vfs.FS, mod func(*Options)) *fixture {
+	t.Helper()
 	noLeaks(t)
-	f := &fixture{t: t, fs: simfs.New("data"), opts: testOptions(), logs: &logLines{},
+	f := &fixture{t: t, fs: simfs.New("data"), wrap: wrap, opts: testOptions(), logs: &logLines{},
 		clock: &clock{t: testBase, step: time.Second}}
 	if mod != nil {
 		mod(&f.opts)
@@ -178,6 +186,8 @@ func (f *fixture) open() {
 	var err error
 	if f.fs == nil {
 		srv, err = OpenDir(f.dir, f.opts)
+	} else if f.wrap != nil {
+		srv, err = Open(f.wrap(f.fs), "data", f.opts)
 	} else {
 		srv, err = Open(f.fs, "data", f.opts)
 	}
@@ -304,12 +314,17 @@ func (f *fixture) dial(role dbwire.Role) *client {
 type countConn struct {
 	net.Conn
 	writes, readDeadlines, writeDeadlines atomic.Int64
+	failed                                atomic.Int64 // the writes that returned an error
 	readDeadline                          atomic.Int64 // the time of the last call of SetReadDeadline, in nanoseconds; 0: none
 }
 
 func (c *countConn) Write(p []byte) (int, error) {
 	c.writes.Add(1)
-	return c.Conn.Write(p)
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.failed.Add(1)
+	}
+	return n, err
 }
 
 func (c *countConn) SetReadDeadline(t time.Time) error {

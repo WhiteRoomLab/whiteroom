@@ -245,6 +245,7 @@ func TestNextSkipsTheRest(t *testing.T) {
 
 func TestReaderRefuses(t *testing.T) {
 	big := strings.Repeat("S", 17)
+	pulse := rawFrame(byte(KindOK), 0, "")
 	for _, c := range []struct {
 		name   string
 		stream []byte
@@ -278,6 +279,7 @@ func TestReaderRefuses(t *testing.T) {
 		{"Error with a text that is shorter than it says", rawFrame(0x81, 1, "\x00\x01\x00\x20"+secret), 16, ErrProtocol, false},
 		{"empty frame without the end flag", rawFrame(4, 0, ""), 16, ErrProtocol, false},
 		{"empty frame without the end flag, later", slices.Concat(rawFrame(4, 0, "a"), rawFrame(4, 0, "")), 16, ErrProtocol, false},
+		{"empty Error frame without the end flag", rawFrame(0x81, 0, ""), 16, ErrProtocol, false},
 
 		{"nothing", nil, 16, nil, false},
 		{"one byte", []byte{4}, 16, io.ErrUnexpectedEOF, false},
@@ -290,6 +292,18 @@ func TestReaderRefuses(t *testing.T) {
 		{"an Error frame that stops after OK", slices.Concat(rawFrame(0x80, 0, "a"), []byte{0x81, 1, 0, 0, 0, 0, 0, 6, 0}), 16, io.ErrUnexpectedEOF, false},
 		{"a message and then nothing", rawFrame(4, 1, "abc"), 16, nil, false},
 		{"a message and then a part of a header", slices.Concat(rawFrame(4, 1, "abc"), []byte{4, 1}), 16, io.ErrUnexpectedEOF, false},
+		{"a pulse, then a reply", slices.Concat(pulse, rawFrame(0x80, 1, "x")), 16, nil, false},
+		{"a pulse in the middle of a reply", slices.Concat(rawFrame(0x80, 0, "a"), pulse, rawFrame(0x80, 1, "b")), 16, nil, false},
+		{"pulses, then an empty reply", slices.Concat(pulse, pulse, rawFrame(0x80, 1, "")), 16, nil, false},
+		{"a pulse before the second reply", slices.Concat(rawFrame(0x80, 1, "a"), pulse, rawFrame(0x80, 1, "b")), 16, nil, false},
+		{"a pulse, then nothing", pulse, 16, io.ErrUnexpectedEOF, false},
+		{"a reply that goes on, a pulse, then nothing", slices.Concat(rawFrame(0x80, 0, "a"), pulse), 16, io.ErrUnexpectedEOF, false},
+		{"a pulse, then a part of a header", slices.Concat(pulse, []byte{0x80, 1, 0}), 16, io.ErrUnexpectedEOF, false},
+		{"a pulse, then another kind", slices.Concat(pulse, rawFrame(4, 1, "x")), 16, ErrProtocol, false},
+		{"a pulse, then an Error without the end flag", slices.Concat(pulse, rawFrame(0x81, 0, "\x00\x01\x00\x00")), 16, ErrProtocol, false},
+		{"a pulse in a request", slices.Concat(rawFrame(4, 0, "a"), pulse, rawFrame(4, 1, "b")), 16, ErrProtocol, false},
+		{"a pulse with a flag 0x02", rawFrame(0x80, 0x02, ""), 16, ErrProtocol, false},
+		{"a pulse with reserved bytes", []byte{0x80, 0, 1, 0, 0, 0, 0, 0}, 16, ErrProtocol, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, _, err := drain(c.stream, c.limit)
@@ -315,6 +329,173 @@ func TestReaderRefuses(t *testing.T) {
 				t.Fatalf("Read after the error = %v, want %v again", err2, err)
 			}
 		})
+	}
+}
+
+// TestReaderSkipsPulses: a pulse, an empty frame of kind OK without the end flag, is nothing in the body of a reply,
+// wherever it is in it, however the stream is read.
+func TestReaderSkipsPulses(t *testing.T) {
+	pulse := rawFrame(byte(KindOK), 0, "")
+	frames := [][]byte{rawFrame(0x80, 0, "abcd"), rawFrame(0x80, 0, "efgh"), rawFrame(0x80, 1, "ij")}
+	next := rawFrame(0x80, 1, "next")
+	for at := range len(frames) {
+		for n := 1; n <= 3; n++ {
+			t.Run(fmt.Sprintf("%d pulses before frame %d", n, at), func(t *testing.T) {
+				var reply []byte
+				for i, f := range frames {
+					if i == at {
+						reply = slices.Concat(reply, bytes.Repeat(pulse, n))
+					}
+					reply = slices.Concat(reply, f)
+				}
+				stream := slices.Concat(reply, next)
+				if _, bodies, err := drain(stream, 16); err != nil || !slices.EqualFunc(bodies, [][]byte{[]byte("abcdefghij"), []byte("next")}, bytes.Equal) {
+					t.Fatalf("bodies %q, %v", bodies, err)
+				}
+				r := NewReader(iotest.OneByteReader(bytes.NewReader(stream)), 16)
+				if err := r.Reply(); err != nil {
+					t.Fatalf("Reply = %v", err)
+				}
+				if got, err := io.ReadAll(iotest.OneByteReader(r)); err != nil || string(got) != "abcdefghij" {
+					t.Fatalf("read %q, %v", got, err)
+				}
+				// Next skips what is left of a reply, pulses and all.
+				r = NewReader(bytes.NewReader(stream), 16)
+				if err := r.Reply(); err != nil {
+					t.Fatal(err)
+				}
+				one := make([]byte, 1)
+				if _, err := io.ReadFull(r, one); err != nil || one[0] != 'a' {
+					t.Fatalf("read %q, %v", one, err)
+				}
+				if k, err := r.Next(); err != nil || k != KindOK {
+					t.Fatalf("Next = %v, %v", k, err)
+				}
+				if got, err := io.ReadAll(r); err != nil || string(got) != "next" {
+					t.Fatalf("the reply after it: %q, %v", got, err)
+				}
+				// Discard.
+				r = NewReader(bytes.NewReader(reply), 16)
+				if err := r.Reply(); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Discard(); err != nil {
+					t.Fatalf("Discard = %v", err)
+				}
+				if _, err := r.Next(); !errors.Is(err, io.EOF) {
+					t.Fatalf("Next after Discard = %v", err)
+				}
+			})
+		}
+	}
+
+	t.Run("pulses and a body that is read by a Dec", func(t *testing.T) {
+		wire := slices.Concat(pulse, pulse, rawFrame(0x80, 0, "\x01\x02\x03"), pulse, rawFrame(0x80, 1, "\x04\x05\x06\x07\x08"))
+		r := NewReader(bytes.NewReader(wire), 16)
+		if err := r.Reply(); err != nil {
+			t.Fatal(err)
+		}
+		d := &Dec{R: r}
+		if v := d.U64(); v != 0x0102030405060708 || d.Err != nil {
+			t.Fatalf("U64 = %#x, %v", v, d.Err)
+		}
+		if err := d.End(); err != nil {
+			t.Fatalf("End = %v", err)
+		}
+	})
+}
+
+// TestReaderPulseThenError: an Error frame after a pulse ends the reply, as it does after a body: Reply has given nil by
+// then, and the body is the error.
+func TestReaderPulseThenError(t *testing.T) {
+	pulse := rawFrame(byte(KindOK), 0, "")
+	for name, wire := range map[string][]byte{
+		"after one pulse":       slices.Concat(pulse, errorFrame(7, "seq")),
+		"after pulses":          slices.Concat(pulse, pulse, pulse, errorFrame(7, "seq")),
+		"after a body and them": slices.Concat(rawFrame(0x80, 0, "ab"), pulse, errorFrame(7, "seq")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream := slices.Concat(wire, rawFrame(0x80, 1, "next"))
+			var re *RemoteError
+			r := NewReader(bytes.NewReader(stream), 16)
+			if err := r.Reply(); err != nil {
+				t.Fatalf("Reply = %v, want nil: the reply began with a pulse or a body", err)
+			}
+			if _, err := io.ReadAll(r); !errors.As(err, &re) || re.Code != CodeSeq || re.Msg != "seq" {
+				t.Fatalf("Read = %v, want the error of the Error frame", err)
+			}
+			if err := r.Discard(); !errors.As(err, &re) {
+				t.Fatalf("Discard = %v", err)
+			}
+			if err := r.Reply(); err != nil {
+				t.Fatalf("the reply after the error: %v", err)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != "next" {
+				t.Fatalf("read %q, %v", got, err)
+			}
+
+			r = NewReader(bytes.NewReader(stream), 16)
+			if err := r.Reply(); err != nil {
+				t.Fatal(err)
+			}
+			d := &Dec{R: r}
+			if d.U64(); !errors.As(d.Err, &re) || re.Code != CodeSeq {
+				t.Fatalf("a value that the Error frame cuts short: %v", d.Err)
+			}
+
+			// Next skips the reply that ends in the Error frame.
+			r = NewReader(bytes.NewReader(stream), 16)
+			if err := r.Reply(); err != nil {
+				t.Fatal(err)
+			}
+			if k, err := r.Next(); err != nil || k != KindOK {
+				t.Fatalf("Next = %v, %v", k, err)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != "next" {
+				t.Fatalf("read %q, %v", got, err)
+			}
+		})
+	}
+}
+
+// TestReaderPulsesOfOtherKinds: only a frame of kind OK is a pulse. An empty frame without the end flag of any other kind,
+// at the start of a message or in it, is refused, so that a peer cannot draw out a request with empty frames.
+func TestReaderPulsesOfOtherKinds(t *testing.T) {
+	var kinds []Kind
+	for k := range Kind(0xFF) {
+		if k.IsRequest() {
+			kinds = append(kinds, k)
+		}
+	}
+	if len(kinds) != 13 {
+		t.Fatalf("%d kinds of requests", len(kinds))
+	}
+	kinds = append(kinds, KindError)
+	for _, k := range kinds {
+		for name, stream := range map[string][]byte{
+			"first":  slices.Concat(rawFrame(byte(k), 0, ""), rawFrame(byte(k), 1, "x")),
+			"middle": slices.Concat(rawFrame(byte(k), 0, "a"), rawFrame(byte(k), 0, ""), rawFrame(byte(k), 1, "x")),
+		} {
+			t.Run(fmt.Sprintf("%v %s", k, name), func(t *testing.T) {
+				_, _, err := drain(stream, 16)
+				want := fmt.Sprintf("an empty %v frame without the end flag", k)
+				if k == KindError {
+					want = "an Error frame without the end flag"
+				}
+				if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %v, want a refusal: %s", err, want)
+				}
+			})
+		}
+	}
+	// The same frames of kind OK are skipped.
+	for name, stream := range map[string][]byte{
+		"first":  slices.Concat(rawFrame(0x80, 0, ""), rawFrame(0x80, 1, "x")),
+		"middle": slices.Concat(rawFrame(0x80, 0, "a"), rawFrame(0x80, 0, ""), rawFrame(0x80, 1, "x")),
+	} {
+		if _, bodies, err := drain(stream, 16); err != nil || len(bodies) != 1 || len(bodies[0]) != cond(name == "first", 1, 2) {
+			t.Errorf("%s: bodies %q, %v", name, bodies, err)
+		}
 	}
 }
 
@@ -559,6 +740,170 @@ func TestWriterOpen(t *testing.T) {
 	if err := w.End(); err != nil || w.Open() {
 		t.Errorf("End = %v, open %v", err, w.Open())
 	}
+}
+
+func TestWriterPulse(t *testing.T) {
+	pulse := []byte{0x80, 0, 0, 0, 0, 0, 0, 0}
+
+	t.Run("an empty frame, one Write call each", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 16)
+		w.Begin(KindOK)
+		for range 2 {
+			if err := w.Pulse(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(log.frames) != 2 || !bytes.Equal(log.frames[0], pulse) || !bytes.Equal(log.frames[1], pulse) {
+			t.Fatalf("the Write calls are %x", log.frames)
+		}
+		if !w.Open() {
+			t.Error("a Pulse has ended the message")
+		}
+		if err := w.End(); err != nil {
+			t.Fatal(err)
+		}
+		if want := slices.Concat(pulse, pulse, []byte{0x80, 1, 0, 0, 0, 0, 0, 0}); !bytes.Equal(log.wire(), want) || len(log.frames) != 3 {
+			t.Fatalf("%x in %d Write calls, want %x", log.wire(), len(log.frames), want)
+		}
+	})
+
+	t.Run("a frame with a body is an ordinary frame", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 16)
+		w.Begin(KindOK)
+		_, _ = w.Write([]byte("ab"))
+		if err := w.Pulse(); err != nil {
+			t.Fatal(err)
+		}
+		if len(log.frames) != 1 || !bytes.Equal(log.frames[0], []byte{0x80, 0, 0, 0, 0, 0, 0, 2, 'a', 'b'}) {
+			t.Fatalf("the Write calls are %x", log.frames)
+		}
+		_, _ = w.Write([]byte("c"))
+		if err := w.End(); err != nil {
+			t.Fatal(err)
+		}
+		if want := []byte{0x80, 1, 0, 0, 0, 0, 0, 1, 'c'}; !bytes.Equal(log.frames[1], want) || len(log.frames) != 2 {
+			t.Fatalf("the Write calls are %x, want the last %x", log.frames, want)
+		}
+		r := NewReader(bytes.NewReader(log.wire()), 16)
+		if err := r.Reply(); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(r); err != nil || string(got) != "abc" {
+			t.Fatalf("read %q, %v", got, err)
+		}
+	})
+
+	t.Run("after a frame that was full", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 4)
+		w.Begin(KindOK)
+		_, _ = w.Write([]byte("abcd")) // written: the frame is full
+		if err := w.Pulse(); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte("ef"))
+		if err := w.End(); err != nil {
+			t.Fatal(err)
+		}
+		if len(log.frames) != 3 || !bytes.Equal(log.frames[1], pulse) {
+			t.Fatalf("the Write calls are %x", log.frames)
+		}
+		if _, bodies, err := drain(log.wire(), 4); err != nil || len(bodies) != 1 || string(bodies[0]) != "abcdef" {
+			t.Fatalf("bodies %q, %v", bodies, err)
+		}
+	})
+
+	t.Run("then Fail", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewWriter(&buf, 16)
+		w.Begin(KindOK)
+		if err := w.Pulse(); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Fail(CodeSeq, "no"); err != nil {
+			t.Fatal(err)
+		}
+		if want := slices.Concat(pulse, hexBytes(t, "81 01 0000 00000006 0007 0002 6e6f")); !bytes.Equal(buf.Bytes(), want) {
+			t.Fatalf("%x, want %x", buf.Bytes(), want)
+		}
+		if w.Open() {
+			t.Error("a message is open after Fail")
+		}
+		w.Begin(KindOK) // the writer is ready for the next reply
+		if err := w.End(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("the messages that are held are written with it", func(t *testing.T) {
+		log := &frameLog{}
+		w := NewWriter(log, 16)
+		w.SetHold(1000)
+		w.Begin(KindOK)
+		_, _ = w.Write([]byte("a"))
+		_ = w.End()
+		w.Begin(KindOK)
+		if len(log.frames) != 0 || w.Held() != HeaderSize+1 {
+			t.Fatalf("%d Write calls, %d bytes held", len(log.frames), w.Held())
+		}
+		if err := w.Pulse(); err != nil {
+			t.Fatal(err)
+		}
+		if want := slices.Concat([]byte{0x80, 1, 0, 0, 0, 0, 0, 1, 'a'}, pulse); len(log.frames) != 1 || !bytes.Equal(log.frames[0], want) || w.Held() != 0 {
+			t.Fatalf("the Write calls are %x, %d bytes held; want one of %x", log.frames, w.Held(), want)
+		}
+		_ = w.End()
+		if len(log.frames) != 1 || w.Held() != HeaderSize {
+			t.Fatalf("%d Write calls, %d bytes held after End", len(log.frames), w.Held())
+		}
+		if err := w.Flush(); err != nil || len(log.frames) != 2 {
+			t.Fatalf("Flush = %v, %d Write calls", err, len(log.frames))
+		}
+	})
+
+	t.Run("outside a message", func(t *testing.T) {
+		w := NewWriter(io.Discard, 16)
+		mustPanic(t, "Pulse outside a message", func() { _ = w.Pulse() })
+		w.Begin(KindOK)
+		_ = w.End()
+		mustPanic(t, "Pulse after End", func() { _ = w.Pulse() })
+		w.Begin(KindOK)
+		_ = w.Fail(CodeFailed, "x")
+		mustPanic(t, "Pulse after Fail", func() { _ = w.Pulse() })
+	})
+
+	t.Run("the first error is kept", func(t *testing.T) {
+		w := NewWriter(&failWriter{n: HeaderSize}, 16)
+		w.Begin(KindOK)
+		if err := w.Pulse(); err != nil {
+			t.Fatalf("the first Pulse = %v", err)
+		}
+		if err := w.Pulse(); !errors.Is(err, errDisk) {
+			t.Fatalf("the second Pulse = %v, want the error of the write", err)
+		}
+		if err := w.Pulse(); !errors.Is(err, errDisk) {
+			t.Fatalf("a Pulse after the error = %v", err)
+		}
+		if _, err := w.Write([]byte("x")); !errors.Is(err, errDisk) {
+			t.Fatalf("Write after the error = %v", err)
+		}
+		if err := w.End(); !errors.Is(err, errDisk) {
+			t.Fatalf("End after the error = %v", err)
+		}
+
+		// An error of an earlier message is the error of a Pulse.
+		w = NewWriter(&failWriter{n: 0}, 16)
+		w.Begin(KindOK)
+		if err := w.End(); !errors.Is(err, errDisk) {
+			t.Fatal(err)
+		}
+		w.Begin(KindOK)
+		if err := w.Pulse(); !errors.Is(err, errDisk) {
+			t.Fatalf("Pulse after an error of the message before = %v", err)
+		}
+	})
 }
 
 func TestWriterError(t *testing.T) {

@@ -5,17 +5,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
 
 const (
@@ -58,10 +64,12 @@ func (p *peer) wire(last bool, build func(e *dbwire.Enc)) []byte {
 	return out
 }
 
-// deafDialer is a Dialer of daemons that answer the Hello and the Snapshot of a connection and then read nothing.
+// deafDialer is a Dialer of daemons that answer the Hello and the Snapshot of a connection and then read nothing. The Hello
+// has the sequence number seq, and the Snapshot 1.
 type deafDialer struct {
 	mu    sync.Mutex
 	dials int
+	seq   uint64
 	wg    sync.WaitGroup
 	quit  chan struct{}
 }
@@ -85,7 +93,7 @@ func (d *deafDialer) Dial(_ context.Context, role dbwire.Role) (net.Conn, error)
 			return wr.End() == nil
 		}
 		if !answer(dbwire.KindHello, func(e *dbwire.Enc) {
-			e.HelloReply(dbwire.HelloReply{Version: dbwire.Version, Role: role, Frame: testFrame, Commit: 1 << 20,
+			e.HelloReply(dbwire.HelloReply{Version: dbwire.Version, Role: role, Seq: d.seq, Frame: testFrame, Commit: 1 << 20,
 				Object: 1 << 20, Staged: 1 << 20, MaxKey: dbwire.MaxKey})
 		}) || !answer(dbwire.KindSnapshot, func(e *dbwire.Enc) { e.SnapshotReply(1) }) {
 			return
@@ -103,13 +111,69 @@ func (d *deafDialer) Close() error {
 	return nil
 }
 
+// eventFrame returns the body of a frame of an Events reply with the event n.
+func eventFrame(n uint64) func(e *dbwire.Enc) {
+	return func(e *dbwire.Enc) { e.Event(dbwire.Event{Number: n, Seq: 5, Data: []byte("x")}) }
+}
+
+// pulseFrame is a pulse: an empty frame of kind OK without the end flag.
+var pulseFrame = []byte{byte(dbwire.KindOK), 0, 0, 0, 0, 0, 0, 0}
+
+// pulse writes a pulse, which the client skips in the reply that it reads.
+func (p *peer) pulse() { p.raw(pulseFrame) }
+
+// pulses writes n pulses, gap apart, and returns the time of the last.
+func (p *peer) pulses(n int, gap time.Duration) time.Time {
+	var last time.Time
+	for i := range n {
+		if i > 0 {
+			time.Sleep(gap)
+		}
+		p.pulse()
+		last = time.Now()
+	}
+	return last
+}
+
+// pulsesFor writes a pulse every gap for d.
+func (p *peer) pulsesFor(d, gap time.Duration) {
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(gap) {
+		p.pulse()
+	}
+}
+
+// helloAt answers the Hello with a store that is at the sequence number seq.
+func (p *peer) helloAt(seq uint64) {
+	p.t.Helper()
+	p.expect(dbwire.KindHello)
+	p.reply(func(e *dbwire.Enc) {
+		e.HelloReply(dbwire.HelloReply{Version: dbwire.Version, Role: p.role, Seq: seq, Frame: p.frame, Commit: 1 << 20,
+			Object: 1 << 20, Staged: 1 << 20, MaxKey: dbwire.MaxKey})
+	})
+}
+
+// soon returns a context that ends after a few seconds, so that a request that the limit does not cut fails the test
+// instead of waiting for the daemon, which holds it.
+func soon(t testing.TB) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // wantStall checks the error of a request that the client has cut after the daemon had not done what did says (notSent or
 // notRead) for the limit stallCut, cuts times in a row from began. The error says that the daemon is unavailable, and the
 // request did not end before the limit, which no context had set.
 func wantStall(t testing.TB, err error, began time.Time, did string, cuts int) {
 	t.Helper()
+	wantCut(t, err, began, "peer: ", did, stallCut, cuts)
+}
+
+// wantCut is wantStall for the limit, and for the error that begins with prefix, which names the daemon.
+func wantCut(t testing.TB, err error, began time.Time, prefix, did string, limit time.Duration, cuts int) {
+	t.Helper()
 	took := time.Since(began)
-	want := "peer: cannot reach the daemon: the daemon has " + did + " for 100ms"
+	want := prefix + "cannot reach the daemon: the daemon has " + did + " for " + limit.String()
 	switch {
 	case err == nil:
 		t.Fatal("the request did not fail")
@@ -120,8 +184,8 @@ func wantStall(t testing.TB, err error, began time.Time, did string, cuts int) {
 	case !strings.Contains(err.Error(), want):
 		t.Errorf("the error is %q, want one with %q", err, want)
 	}
-	if limit := time.Duration(cuts) * stallCut; took < limit {
-		t.Errorf("the request ended after %v, before the limit of %v", took, limit)
+	if least := time.Duration(cuts) * limit; took < least {
+		t.Errorf("the request ended after %v, before the limit of %v", took, least)
 	}
 }
 
@@ -281,6 +345,251 @@ func TestStall(t *testing.T) {
 		wantConnections(t, pd, rec, 2, 1) // the one of the pool is still open
 	})
 
+	// The replies that take as long as the store is large are under the limit too: a daemon that sends no pulse is cut.
+	t.Run("the reply to a Verify", func(t *testing.T) {
+		ctx := soon(t)
+		c, rec, pd := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+			p.hello()
+			p.expect(dbwire.KindVerify)
+			p.hold()
+		})
+		began := time.Now()
+		err := c.Verify(ctx)
+		wantStall(t, err, began, notSent, 1)
+		wantConnections(t, pd, rec, 1, 0)
+	})
+
+	events := func(ctx context.Context, c *dbclient.Client, got *[]uint64) error {
+		return c.View(ctx, func(tx *dbclient.Tx) error {
+			return tx.Events(ctx, func(n uint64, _ []byte) bool {
+				*got = append(*got, n)
+				return true
+			})
+		})
+	}
+	t.Run("the reply to an Events", func(t *testing.T) {
+		ctx := soon(t)
+		c, rec, pd := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+			p.hello()
+			p.snapshot(5)
+			if p.n == 0 {
+				p.release()
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindEvents)
+			p.hold()
+		})
+		var got []uint64
+		began := time.Now()
+		err := events(ctx, c, &got)
+		wantStall(t, err, began, notSent, 1)
+		if len(got) != 0 {
+			t.Errorf("the events are %v, want none", got)
+		}
+		wantConnections(t, pd, rec, 2, 1)
+	})
+
+	t.Run("an Events after one of its frames", func(t *testing.T) {
+		ctx := soon(t)
+		c, rec, pd := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+			p.hello()
+			p.snapshot(5)
+			if p.n == 0 {
+				p.release()
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindEvents)
+			p.raw(p.wire(false, eventFrame(1)))
+			p.hold()
+		})
+		var got []uint64
+		began := time.Now()
+		err := events(ctx, c, &got)
+		wantStall(t, err, began, notSent, 1)
+		if len(got) != 1 || got[0] != 1 {
+			t.Errorf("the events are %v, want [1]", got)
+		}
+		wantConnections(t, pd, rec, 2, 1)
+	})
+
+	t.Run("a Backup before its first frame", func(t *testing.T) {
+		ctx := soon(t)
+		c, rec, pd := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+			p.hello()
+			if p.n == 0 {
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindBackup)
+			p.hold()
+		})
+		began := time.Now()
+		_, err := c.Backup(ctx, simfs.New("copy"))
+		wantStall(t, err, began, notSent, 1)
+		wantConnections(t, pd, rec, 2, 1)
+	})
+
+	// A Commit that is cut is found out as one whose connection has ended: the client connects as the writer again, which
+	// the new Hello of the daemon has the last sequence number for. The snapshot of these is at 1.
+	writer := func(t *testing.T, again func(p *peer), reply ...func(p *peer)) (*dbclient.Client, *peerDialer) {
+		c, _, pd := openPeerWith(t, dbwire.RoleWriter, cut, func(p *peer) {
+			if p.n == 0 {
+				p.hello()
+				p.snapshot(1)
+				p.expect(dbwire.KindCommit)
+				for _, f := range reply {
+					f(p)
+				}
+				p.hold()
+				return
+			}
+			again(p)
+		})
+		return c, pd
+	}
+	putOne := func(ctx context.Context, c *dbclient.Client) error {
+		return c.Update(ctx, func(tx *dbclient.Tx) error { return tx.Put(2, k, k) })
+	}
+
+	t.Run("the reply to a Commit, and a daemon that does not say whether it was made", func(t *testing.T) {
+		ctx := soon(t)
+		c, pd := writer(t, func(p *peer) {
+			p.expect(dbwire.KindHello)
+			p.hold()
+		})
+		began := time.Now()
+		err := putOne(ctx, c)
+		wantStall(t, err, began, notSent, 2) // the cut of the Commit, and that of the Hello after it
+		if !strings.Contains(err.Error(), "it is not known whether the commit was made") {
+			t.Errorf("the error is %q, want one that says that it is not known whether the commit was made", err)
+		}
+		if got := pd.dialed(); got != 2 {
+			t.Errorf("the client dialed %d connections, want 2: the one that finds out, and no other for the Commit", got)
+		}
+	})
+
+	t.Run("the reply to a Commit, which was not made", func(t *testing.T) {
+		ctx := soon(t)
+		c, pd := writer(t, func(p *peer) {
+			p.helloAt(1)
+			p.hold()
+		})
+		began := time.Now()
+		err := putOne(ctx, c)
+		wantStall(t, err, began, notSent, 1)
+		if !strings.Contains(err.Error(), "the transaction was not committed") || strings.Contains(err.Error(), "not known") {
+			t.Errorf("the error is %q, want one that says that the transaction was not committed", err)
+		}
+		if got := pd.dialed(); got != 2 {
+			t.Errorf("the client dialed %d connections, want 2", got)
+		}
+	})
+
+	t.Run("the reply to a Commit, which was made", func(t *testing.T) {
+		ctx := soon(t)
+		c, pd := writer(t, func(p *peer) {
+			p.helloAt(2)
+			p.hold()
+		})
+		must(t, putOne(ctx, c))
+		if got := pd.dialed(); got != 2 {
+			t.Errorf("the client dialed %d connections, want 2", got)
+		}
+	})
+
+	// A Commit whose daemon pulses and then sends nothing is cut by the limit from the last pulse, and not before, and
+	// found out as one that was not made.
+	t.Run("the reply to a Commit that pulses and then ends", func(t *testing.T) {
+		ctx := soon(t)
+		const pulses, gap = 16, stallCut / 8 // longer than the limit, in all
+		var last atomic.Pointer[time.Time]
+		c, pd := writer(t, func(p *peer) {
+			p.helloAt(1)
+			p.hold()
+		}, func(p *peer) {
+			at := p.pulses(pulses, gap)
+			last.Store(&at)
+		})
+		err := putOne(ctx, c)
+		at := last.Load()
+		if at == nil {
+			t.Fatalf("the client cut the connection before the daemon had sent its pulses: %v", err)
+		}
+		wantStall(t, err, *at, notSent, 1)
+		if !strings.Contains(err.Error(), "the transaction was not committed") || strings.Contains(err.Error(), "not known") {
+			t.Errorf("the error is %q, want one that says that the transaction was not committed", err)
+		}
+		if got := pd.dialed(); got != 2 {
+			t.Errorf("the client dialed %d connections, want 2", got)
+		}
+	})
+
+	// A daemon that sends pulses and then no more is cut by the limit from the last of them, and not before.
+	t.Run("pulses that end", func(t *testing.T) {
+		const pulses, gap = 16, stallCut / 8 // longer than the limit, in all
+		backup := func(ctx context.Context, c *dbclient.Client) error {
+			_, err := c.Backup(ctx, simfs.New("copy"))
+			return err
+		}
+		for _, c := range []struct {
+			name   string
+			conn   int                     // the connection that makes the request
+			view   bool                    // the connection before it is the snapshot of a View
+			script func(p *peer) time.Time // after the Hello: the time of the last pulse
+			ask    func(ctx context.Context, c *dbclient.Client) error
+		}{
+			{"Verify", 0, false, func(p *peer) time.Time {
+				p.expect(dbwire.KindVerify)
+				return p.pulses(pulses, gap)
+			}, func(ctx context.Context, c *dbclient.Client) error { return c.Verify(ctx) }},
+			{"Events", 1, true, func(p *peer) time.Time {
+				p.snapshot(5)
+				p.expect(dbwire.KindEvents)
+				p.raw(p.wire(false, eventFrame(1)))
+				return p.pulses(pulses, gap)
+			}, func(ctx context.Context, c *dbclient.Client) error {
+				var got []uint64
+				return events(ctx, c, &got)
+			}},
+			{"Backup", 1, false, func(p *peer) time.Time {
+				p.expect(dbwire.KindBackup)
+				return p.pulses(pulses, gap)
+			}, backup},
+			{"Backup after its position", 1, false, func(p *peer) time.Time {
+				p.expect(dbwire.KindBackup)
+				p.raw(p.wire(false, func(e *dbwire.Enc) {
+					e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryPosition, Position: dbwire.BackupPosition{Seq: 3}})
+				}))
+				return p.pulses(pulses, gap)
+			}, backup},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				ctx := soon(t)
+				var last atomic.Pointer[time.Time]
+				cl, _, _ := openPeerWith(t, dbwire.RoleReader, cut, func(p *peer) {
+					p.hello()
+					switch {
+					case p.n == c.conn:
+						at := c.script(p)
+						last.Store(&at)
+					case c.view:
+						p.snapshot(5)
+						p.release()
+					}
+					p.hold()
+				})
+				err := c.ask(ctx, cl)
+				at := last.Load()
+				if at == nil {
+					t.Fatalf("the client cut the connection before the daemon had sent its pulses: %v", err)
+				}
+				wantStall(t, err, *at, notSent, 1)
+			})
+		}
+	})
+
 	t.Run("a PutObject that the daemon does not read", func(t *testing.T) {
 		noLeaks(t)
 		dd := &deafDialer{quit: make(chan struct{})}
@@ -295,6 +604,27 @@ func TestStall(t *testing.T) {
 		defer dd.mu.Unlock()
 		if dd.dials != 2 {
 			t.Errorf("the client dialed %d connections, want 2: the writer is made again at the end of the Update", dd.dials)
+		}
+	})
+
+	// The Write of the request of a Commit is under the limit too, and a Commit that the daemon has not read is found out as
+	// one that was not made, like one that it has not answered.
+	t.Run("a Commit that the daemon does not read", func(t *testing.T) {
+		noLeaks(t)
+		dd := &deafDialer{quit: make(chan struct{}), seq: 1}
+		c, err := dbclient.Open(bg, dd, dbwire.RoleWriter, cut)
+		must(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		began := time.Now()
+		err = c.Update(soon(t), func(tx *dbclient.Tx) error { return tx.Put(2, k, k) })
+		wantStall(t, err, began, notRead, 1)
+		if !strings.Contains(err.Error(), "the transaction was not committed") || strings.Contains(err.Error(), "not known") {
+			t.Errorf("the error is %q, want one that says that the transaction was not committed", err)
+		}
+		dd.mu.Lock()
+		defer dd.mu.Unlock()
+		if dd.dials != 2 {
+			t.Errorf("the client dialed %d connections, want 2: the one that finds out, and no other for the Commit", dd.dials)
 		}
 	})
 
@@ -318,30 +648,31 @@ func TestStall(t *testing.T) {
 	})
 }
 
-// TestStallExempt: what is not under the limit is not cut, whatever the time: the wait for the reply to a Verify, a Commit,
-// an Events, and for the first frame of a Backup; the time that the caller takes between the Reads of an original and
-// between the blocks of an original that it puts; and a reply that comes in small pieces, each within the limit.
-func TestStallExempt(t *testing.T) {
+// ran checks that a test took as long as the daemon kept back, and that the client made the connections that it was to
+// make, and no other.
+func ran(t *testing.T, began time.Time, pd *peerDialer, dialed int) {
+	t.Helper()
+	if took := time.Since(began); took < 3*stallKeep {
+		t.Errorf("the test took %v, less than the daemon was to keep back", took)
+	}
+	if got := pd.dialed(); got != dialed {
+		t.Errorf("the client dialed %d connections, want %d", got, dialed)
+	}
+}
+
+// TestStallPulses: a request that takes longer than the limit, as the store is large, is not cut while the daemon sends a
+// pulse often enough: a Verify, a Commit, an Events, and a Backup up to its first frame.
+func TestStallPulses(t *testing.T) {
 	keep := dbclient.Options{DialWait: -1, Stall: stallKeep}
 	k := []byte("k")
-	// ran checks that the test took as long as the daemon kept back, and that the client made the connections that it was
-	// to make, and no other.
-	ran := func(t *testing.T, began time.Time, pd *peerDialer, dialed int) {
-		t.Helper()
-		if took := time.Since(began); took < 3*stallKeep {
-			t.Errorf("the test took %v, less than the daemon was to keep back", took)
-		}
-		if got := pd.dialed(); got != dialed {
-			t.Errorf("the client dialed %d connections, want %d", got, dialed)
-		}
-	}
+	gap := stallKeep / 8
 
 	t.Run("the reply to a Verify", func(t *testing.T) {
 		t.Parallel()
 		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
 			p.hello()
 			p.expect(dbwire.KindVerify)
-			time.Sleep(stallLong)
+			p.pulsesFor(stallLong, gap)
 			p.reply(nil)
 			p.hold()
 		})
@@ -356,7 +687,7 @@ func TestStallExempt(t *testing.T) {
 			p.hello()
 			p.snapshot(1)
 			p.expect(dbwire.KindCommit)
-			time.Sleep(stallLong)
+			p.pulsesFor(stallLong, gap)
 			p.reply(func(e *dbwire.Enc) { e.CommitReply(2, time.Unix(1_700_000_000, 0)) })
 			p.hold()
 		})
@@ -367,9 +698,6 @@ func TestStallExempt(t *testing.T) {
 
 	t.Run("the frames of an Events", func(t *testing.T) {
 		t.Parallel()
-		event := func(n uint64) func(e *dbwire.Enc) {
-			return func(e *dbwire.Enc) { e.Event(dbwire.Event{Number: n, Seq: 5, Data: []byte("x")}) }
-		}
 		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
 			p.hello()
 			p.snapshot(5)
@@ -379,10 +707,10 @@ func TestStallExempt(t *testing.T) {
 				return
 			}
 			p.expect(dbwire.KindEvents)
-			p.raw(p.wire(false, event(1)))
-			time.Sleep(stallLong)
+			p.raw(p.wire(false, eventFrame(1)))
+			p.pulsesFor(stallLong, gap)
 			p.raw(p.wire(true, func(e *dbwire.Enc) {
-				event(2)(e)
+				eventFrame(2)(e)
 				e.EventsEnd()
 			}))
 			p.release()
@@ -411,7 +739,7 @@ func TestStallExempt(t *testing.T) {
 				return
 			}
 			p.expect(dbwire.KindBackup)
-			time.Sleep(stallLong)
+			p.pulsesFor(stallLong, gap)
 			p.raw(p.wire(true, func(e *dbwire.Enc) {
 				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryPosition, Position: dbwire.BackupPosition{Seq: 3}})
 				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryEnd})
@@ -426,6 +754,13 @@ func TestStallExempt(t *testing.T) {
 		}
 		ran(t, began, pd, 2)
 	})
+}
+
+// TestStallExempt: the time that is not a Read or a Write is not under the limit, whatever it is: the time that the caller
+// takes between the Reads of an original and between the blocks of an original that it puts; and a reply that comes in
+// small pieces, each within the limit.
+func TestStallExempt(t *testing.T) {
+	keep := dbclient.Options{DialWait: -1, Stall: stallKeep}
 
 	t.Run("an original that the caller reads late", func(t *testing.T) {
 		t.Parallel()
@@ -512,6 +847,105 @@ func TestStallExempt(t *testing.T) {
 		}
 		ran(t, began, pd, 1)
 	})
+
+	t.Run("the fn of an Events that takes long", func(t *testing.T) {
+		t.Parallel()
+		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
+			p.hello()
+			p.snapshot(5)
+			if p.n == 0 {
+				p.release()
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindEvents)
+			p.raw(p.wire(false, eventFrame(1)))
+			p.raw(p.wire(true, func(e *dbwire.Enc) { // read after fn has returned
+				eventFrame(2)(e)
+				e.EventsEnd()
+			}))
+			p.release()
+			p.hold()
+		})
+		var got []uint64
+		began := time.Now()
+		must(t, c.View(bg, func(tx *dbclient.Tx) error {
+			return tx.Events(bg, func(n uint64, _ []byte) bool {
+				if n == 1 {
+					time.Sleep(stallLong)
+				}
+				got = append(got, n)
+				return true
+			})
+		}))
+		if !slices.Equal(got, []uint64{1, 2}) {
+			t.Errorf("the events are %v, want [1 2]", got)
+		}
+		ran(t, began, pd, 2)
+	})
+
+	t.Run("a Backup that writes its copy slowly", func(t *testing.T) {
+		t.Parallel()
+		c, _, pd := openPeerWith(t, dbwire.RoleReader, keep, func(p *peer) {
+			p.hello()
+			if p.n == 0 {
+				p.hold()
+				return
+			}
+			p.expect(dbwire.KindBackup)
+			p.raw(p.wire(false, func(e *dbwire.Enc) {
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryPosition, Position: dbwire.BackupPosition{Seq: 3}})
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryDir, Path: "files"})
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryFile, Path: "files/x"})
+				_, _ = e.Chunks().Write([]byte("hel"))
+			}))
+			p.raw(p.wire(true, func(e *dbwire.Enc) { // read after the first Write of the copy
+				chunks := e.Chunks()
+				_, _ = chunks.Write([]byte("lo"))
+				_ = chunks.Close()
+				e.BackupEntry(dbwire.BackupEntry{Kind: dbwire.EntryEnd})
+			}))
+			p.hold()
+		})
+		dst := simfs.New("copy")
+		began := time.Now()
+		b, err := c.Backup(bg, &lateWriteFS{FS: dst})
+		must(t, err)
+		if b.Seq != 3 {
+			t.Errorf("the backup has the sequence number %d, want 3", b.Seq)
+		}
+		f, err := dst.Open("files/x")
+		must(t, err)
+		defer func() { _ = f.Close() }()
+		if data, err := io.ReadAll(f); err != nil || string(data) != "hello" {
+			t.Errorf("the copy has %q (%v)", data, err)
+		}
+		ran(t, began, pd, 2)
+	})
+}
+
+// lateWriteFS is a file system whose files take stallLong for their first Write.
+type lateWriteFS struct{ vfs.FS }
+
+func (f *lateWriteFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
+	x, err := f.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &lateWriteFile{File: x}, nil
+}
+
+type lateWriteFile struct {
+	vfs.File
+	slept bool
+}
+
+func (x *lateWriteFile) Write(p []byte) (int, error) {
+	if !x.slept {
+		x.slept = true
+		time.Sleep(stallLong)
+	}
+	return x.File.Write(p)
 }
 
 // pausingReader gives the blocks one at a time, and waits for pause before each but the first.
@@ -531,6 +965,272 @@ func (r *pausingReader) Read(p []byte) (int, error) {
 	n := copy(p, r.blocks[r.next])
 	r.next++
 	return n, nil
+}
+
+const (
+	// pulseEvery is the interval of the pulses of the daemons of the tests that run the real one.
+	pulseEvery = 25 * time.Millisecond
+	// slowRead is how long a read of the files of the engine takes when a test slows them down: far less than stallKeep,
+	// which the replies of the Verify and the Events that read a hundred times last longer than.
+	slowRead = 15 * time.Millisecond
+)
+
+// readControl slows the reads of the files of a daemon down, or stops them: each read waits for delay, and, while stuck is
+// set, until free is called.
+type readControl struct {
+	delay   atomic.Int64 // a time.Duration
+	stuck   atomic.Bool
+	reads   atomic.Int64
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *readControl) wait() {
+	c.reads.Add(1)
+	if c.stuck.Load() {
+		<-c.release
+		return
+	}
+	if d := time.Duration(c.delay.Load()); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// free lets the reads that wait go, and the gates of a slowStore, and stops the waits of those that come.
+func (c *readControl) free() { c.once.Do(func() { close(c.release) }) }
+
+// slowFS is a file system whose files wait before each read, as its control says.
+type slowFS struct {
+	vfs.FS
+	c *readControl
+}
+
+func (f *slowFS) wrap(x vfs.File, err error) (vfs.File, error) {
+	if err != nil {
+		return nil, err
+	}
+	return &slowFile{File: x, c: f.c}, nil
+}
+
+func (f *slowFS) Open(name string) (vfs.File, error) { return f.wrap(f.FS.Open(name)) }
+
+func (f *slowFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
+	return f.wrap(f.FS.OpenFile(name, flag, perm))
+}
+
+func (f *slowFS) Sub(name string) (vfs.FS, error) {
+	sub, err := f.FS.Sub(name)
+	if err != nil {
+		return nil, err
+	}
+	return &slowFS{FS: sub, c: f.c}, nil
+}
+
+type slowFile struct {
+	vfs.File
+	c *readControl
+}
+
+func (x *slowFile) Read(p []byte) (int, error) {
+	x.c.wait()
+	return x.File.Read(p)
+}
+
+func (x *slowFile) ReadAt(p []byte, off int64) (int, error) {
+	x.c.wait()
+	return x.File.ReadAt(p, off)
+}
+
+// slowStore is the real daemon, which pulses every pulseEvery, on a store of some hundred commits in small segments, so
+// that a Verify and an Events read a hundred times, whose pace ctl sets. A client of the writer and one of the reader have
+// the limit that the test gives. The gates make a Commit or a Backup wait, once they are set, until ctl.free: a test frees
+// them in the end, as the cleanup does.
+type slowStore struct {
+	*fixture
+	ctl        readControl
+	gateCommit atomic.Bool
+	gateBackup atomic.Bool
+	pulses     atomic.Int64 // the pulses that the daemon has written
+	w, r       *dbclient.Client
+	wrec, rrec *recorder
+	objects    [][32]byte // the objects that are in files
+}
+
+func newSlowStore(t *testing.T, o dbclient.Options) *slowStore {
+	t.Helper()
+	s := &slowStore{ctl: readControl{release: make(chan struct{})}}
+	s.fixture = newFixture(t, func(opts *dbtest.Options) {
+		opts.FS = &slowFS{FS: opts.FS, c: &s.ctl}
+		opts.Pulse = pulseEvery
+		log := *opts.Log
+		log.SegmentBytes, log.CheckpointBytes = 256, -1
+		opts.Log = &log
+		opts.Hook = func(point string) error {
+			switch {
+			case point == "reply:pulse":
+				s.pulses.Add(1)
+			case point == "commit:gate" && s.gateCommit.Load(), point == "backup:gate" && s.gateBackup.Load():
+				<-s.ctl.release
+			}
+			return nil
+		}
+	})
+	t.Cleanup(s.ctl.free) // after the clients are closed, and before the daemon is
+	s.w, s.wrec = s.writer(o)
+	for i := range 200 {
+		commit(t, s.w, func(tx *dbclient.Tx) { put(t, tx, 2, fmt.Sprintf("k%03d", i), "v") })
+	}
+	for i := range 30 {
+		data := []byte(fmt.Sprintf("an object in a file, which is longer than 64 bytes: number %03d, and some more", i))
+		sum := sha256.Sum256(data)
+		must(t, s.w.Update(bg, func(tx *dbclient.Tx) error {
+			must(t, tx.PutObject(sum, data))
+			return tx.AppendEvent([]byte(`{"object":true}`))
+		}))
+		s.objects = append(s.objects, sum)
+	}
+	s.r, s.rrec = s.open(dbwire.RoleReader, o)
+	return s
+}
+
+// events reads the events in a View, and returns their numbers.
+func (s *slowStore) events(ctx context.Context) ([]uint64, error) {
+	var got []uint64
+	err := s.r.View(ctx, func(tx *dbclient.Tx) error {
+		return tx.Events(ctx, func(n uint64, _ []byte) bool {
+			got = append(got, n)
+			return true
+		})
+	})
+	return got, err
+}
+
+// TestStallDaemon: the limit and the pulses of the real daemon. A Verify and an Events that last longer than the limit are
+// not cut while the engine reads, however slowly, and a Commit that waits for a Verify is not either; when the reads stop,
+// or the daemon waits for what does not come, each of them is cut at the limit, with the error of a daemon that cannot be
+// reached.
+func TestStallDaemon(t *testing.T) {
+	keep := dbclient.Options{Stall: stallKeep}
+	// ranLong checks that a request that the test slowed down took longer than three limits, and that the daemon pulsed.
+	ranLong := func(t *testing.T, s *slowStore, began time.Time, pulses int64) {
+		t.Helper()
+		if took := time.Since(began); took < 3*stallKeep {
+			t.Errorf("the request took %v, less than three limits of %v: the reads were not slow enough", took, stallKeep)
+		}
+		if got := s.pulses.Load() - pulses; got < 3 {
+			t.Errorf("the daemon wrote %d pulses", got)
+		}
+	}
+
+	t.Run("a slow Verify", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.ctl.delay.Store(int64(slowRead))
+		pulses := s.pulses.Load()
+		began := time.Now()
+		must(t, s.r.Verify(bg))
+		ranLong(t, s, began, pulses)
+		wantRequests(t, s.rrec, dbwire.KindHello, dbwire.KindVerify)
+	})
+
+	t.Run("a slow Events", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		want, err := s.events(bg)
+		must(t, err)
+		s.ctl.delay.Store(int64(slowRead))
+		pulses := s.pulses.Load()
+		began := time.Now()
+		got, err := s.events(bg)
+		must(t, err)
+		ranLong(t, s, began, pulses)
+		if !slices.Equal(got, want) || len(got) < 200 {
+			t.Errorf("the events are %d, want the %d that it gives when the reads are fast", len(got), len(want))
+		}
+	})
+
+	t.Run("a Commit that waits for a Verify", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.ctl.delay.Store(int64(slowRead))
+		verified := make(chan error, 1)
+		reads := s.ctl.reads.Load()
+		go func() { verified <- s.r.Verify(bg) }()
+		eventually(t, "the Verify to read", func() bool { return s.ctl.reads.Load() > reads })
+		began := time.Now()
+		must(t, s.w.Update(bg, func(tx *dbclient.Tx) error {
+			put(t, tx, 2, "x", "y")
+			return tx.AppendEvent([]byte(`{"x":true}`))
+		}))
+		if took := time.Since(began); took < 2*stallKeep {
+			t.Errorf("the Commit took %v, less than two limits of %v: it did not wait for the Verify", took, stallKeep)
+		}
+		must(t, <-verified)
+		wantRows(t, rows(t, s.w, 2, "x"), "x=y")
+		if got := s.wrec.dialed(dbwire.RoleWriter); got != 1 {
+			t.Errorf("the writer connected %d times, want 1", got)
+		}
+	})
+
+	// What is cut: the reads stop, or the daemon waits at a gate for what does not come.
+	t.Run("a Verify whose reads stop", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.ctl.stuck.Store(true)
+		began := time.Now()
+		err := s.r.Verify(soon(t))
+		wantCut(t, err, began, "", notSent, stallKeep, 1)
+		if s.ctl.reads.Load() == 0 {
+			t.Error("the Verify made no read")
+		}
+	})
+
+	t.Run("an Events whose reads stop", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		ctx := soon(t)
+		var began time.Time
+		err := s.r.View(ctx, func(tx *dbclient.Tx) error {
+			tx.Seq() // the snapshot, before the reads stop
+			s.ctl.stuck.Store(true)
+			began = time.Now()
+			return tx.Events(ctx, func(uint64, []byte) bool { return true })
+		})
+		wantCut(t, err, began, "", notSent, stallKeep, 1)
+		if got := s.rrec.count(dbwire.KindEvents); got != 1 {
+			t.Errorf("the client sent %d Events requests, want 1", got)
+		}
+		if s.ctl.reads.Load() == 0 {
+			t.Error("the Events made no read")
+		}
+	})
+
+	t.Run("a Commit that waits at its gate", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.gateCommit.Store(true)
+		began := time.Now()
+		err := s.w.Update(soon(t), func(tx *dbclient.Tx) error {
+			put(t, tx, 2, "x", "y")
+			return tx.AppendEvent([]byte(`{"x":true}`))
+		})
+		wantCut(t, err, began, "", notSent, stallKeep, 1)
+		if !strings.Contains(err.Error(), "it is not known whether the commit was made") {
+			t.Errorf("the error is %q, want one that says that it is not known whether the commit was made", err)
+		}
+	})
+
+	t.Run("a Backup that waits at its gate", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.gateBackup.Store(true)
+		began := time.Now()
+		_, err := s.r.Backup(soon(t), simfs.New("copy"))
+		wantCut(t, err, began, "", notSent, stallKeep, 1)
+		if got := s.rrec.count(dbwire.KindBackup); got != 1 {
+			t.Errorf("the client sent %d Backup requests, want 1", got)
+		}
+	})
 }
 
 // stalls counts the goroutines that the Opens of the calling goroutine have made, which are those that watch: by the line

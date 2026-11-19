@@ -6,7 +6,7 @@ import (
 )
 
 // Version is the version of the protocol. A Hello of another version is refused.
-const Version uint32 = 2
+const Version uint32 = 3
 
 // Magic starts the body of a Hello request.
 var Magic = [4]byte{'W', 'R', 'D', 'B'}

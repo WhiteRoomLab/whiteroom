@@ -96,13 +96,19 @@ func (c *session) eventsRequest() bool {
 	seq := c.snap.seq
 	c.wr.Begin(dbwire.KindOK)
 	e := &dbwire.Enc{W: c.wr}
+	p := c.pulse(c.cancel)
+	defer p.end()
 	err := c.s.db.Events(c.ctx, func(ev logdb.Event) bool {
 		if ev.Seq > seq {
 			return false
 		}
+		p.lock()
 		e.Event(dbwire.Event{Number: ev.Number, Seq: ev.Seq, Data: ev.Data})
-		return e.Err == nil
+		ok := e.Err == nil
+		p.unlock()
+		return ok
 	})
+	p.end()
 	if err == nil {
 		e.EventsEnd() // may write the frame that fills the limit, and fail
 	}
@@ -121,12 +127,16 @@ func (c *session) verifyRequest() bool {
 		c.bad(err)
 		return false
 	}
+	c.wr.Begin(dbwire.KindOK)
+	p := c.pulse(c.cancel)
+	defer p.end()
 	err := c.s.db.Verify(c.ctx)
+	p.end()
 	switch {
 	case c.ctx.Err() != nil:
 		return false
 	case err != nil:
 		return c.fail(dbwire.CodeFailed, safeText(err))
 	}
-	return c.ok(nil)
+	return c.wr.End() == nil
 }

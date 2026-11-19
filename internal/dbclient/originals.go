@@ -214,8 +214,7 @@ func (o *Original) Read(p []byte) (int, error) {
 		o.fail(err)
 		return 0, o.err
 	}
-	o.cn.watch.Store(true) // only the Reads here are under the limit: the caller may take as long as it likes between them
-	defer o.cn.watch.Store(false)
+	// Only the Reads of body are under the limit: the time that the caller takes between two Reads is not counted.
 	n, err := o.body.Read(p)
 	o.read += int64(n)
 	if err == nil {
@@ -260,9 +259,7 @@ func (o *Original) Close() error {
 	}
 	var err error
 	if !o.done && o.err == nil && o.read == o.size {
-		o.cn.watch.Store(true)
 		err = o.finish()
-		o.cn.watch.Store(false)
 		if err != nil {
 			o.fail(err)
 			err = o.err

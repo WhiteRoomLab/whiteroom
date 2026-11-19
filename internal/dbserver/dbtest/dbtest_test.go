@@ -154,6 +154,24 @@ func TestAcquireErrors(t *testing.T) {
 	}
 }
 
+// TestPulse: the interval of the pulses is the daemon's, which a negative one makes Open refuse.
+func TestPulse(t *testing.T) {
+	dir := newDir(t)
+	o := options()
+	o.Pulse = -time.Second
+	if _, err := Acquire(dir, o); err == nil || !strings.Contains(err.Error(), "the pulse interval is negative (-1s)") {
+		t.Errorf("Acquire with a negative pulse interval: %v", err)
+	}
+	o.Pulse = time.Second
+	h, err := Acquire(dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDialer(t *testing.T) {
 	dir := newDir(t)
 	h := acquire(t, dir)
