@@ -153,6 +153,19 @@ func (w *Writer) End() error {
 	return w.flush(true)
 }
 
+// Pulse writes the frame that is being filled at once, without the end flag, together with the messages that are held:
+// an empty frame in a message of kind OK is a pulse, which a long request writes before its result, and a Reader skips
+// it. The message stays open. It panics if no message is open.
+func (w *Writer) Pulse() error {
+	if !w.open {
+		panic("dbwire: Pulse outside a message")
+	}
+	if w.err != nil {
+		return w.err
+	}
+	return w.flush(false)
+}
+
 // Fail drops what is buffered of the open message, if there is one, and writes one Error frame: it ends a reply that
 // has begun, and is a reply of its own when no message is open. Frames that are written stay, and so do the messages
 // that are held. The text is cut to MaxErrorText bytes.
@@ -212,7 +225,8 @@ func cutText(s string, n int) string {
 }
 
 // Reader reads messages from a stream of frames. It checks every header, and keeps its first error: after it, the
-// stream is not read any more. It buffers what it reads, so the stream is for it alone.
+// stream is not read any more. It buffers what it reads, so the stream is for it alone. In a message of kind OK, it skips
+// the pulses, which are the empty frames without the end flag that a daemon writes while a long request goes on.
 type Reader struct {
 	br     *bufio.Reader
 	limit  int
@@ -266,7 +280,7 @@ func (r *Reader) readHeader(first bool) (kind Kind, last bool, n int, err error)
 		err = protocolf("an Error frame of %d bytes", length)
 	case kind != KindError && int64(length) > int64(r.limit):
 		err = limitf("a frame of %d bytes, over the limit of %d", length, r.limit)
-	case length == 0 && !last:
+	case length == 0 && !last && kind != KindOK: // an empty OK frame without the end flag is a pulse
 		err = protocolf("an empty %v frame without the end flag", kind)
 	}
 	if err != nil {

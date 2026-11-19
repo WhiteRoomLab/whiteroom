@@ -116,15 +116,15 @@ func TestOpen(t *testing.T) {
 		}{
 			{"refused", func(rd *dbwire.Reader, wr *dbwire.Writer) {
 				readHello(t, rd)
-				_ = wr.Fail(dbwire.CodeVersion, "protocol version 2, but the daemon speaks version 3")
-			}, []string{"version 2", "version 3"}},
+				_ = wr.Fail(dbwire.CodeVersion, fmt.Sprintf("protocol version %d, but the daemon speaks version %d", dbwire.Version, dbwire.Version+1))
+			}, []string{fmt.Sprintf("version %d", dbwire.Version), fmt.Sprintf("version %d", dbwire.Version+1)}},
 			{"answered", func(rd *dbwire.Reader, wr *dbwire.Writer) {
 				readHello(t, rd)
 				wr.Begin(dbwire.KindOK)
 				e := &dbwire.Enc{W: wr}
-				e.HelloReply(dbwire.HelloReply{Version: 3, Role: dbwire.RoleWriter, Frame: 4096, MaxKey: 4096})
+				e.HelloReply(dbwire.HelloReply{Version: dbwire.Version + 1, Role: dbwire.RoleWriter, Frame: 4096, MaxKey: 4096})
 				_ = wr.End()
-			}, []string{"version 3", "program 2"}},
+			}, []string{fmt.Sprintf("version %d", dbwire.Version+1), fmt.Sprintf("program %d", dbwire.Version)}},
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				noLeaks(t)

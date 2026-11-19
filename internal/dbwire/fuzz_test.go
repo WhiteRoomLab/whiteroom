@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"testing"
 	"unicode/utf8"
 )
@@ -113,6 +114,7 @@ func fuzzWriter(t *testing.T, sel int, in []byte) {
 
 func FuzzReader(f *testing.F) {
 	replies := replyCodecs()
+	pulse := rawFrame(byte(KindOK), 0, "")
 	seeds := []struct {
 		codec string
 		write func(e *Enc)
@@ -175,9 +177,18 @@ func FuzzReader(f *testing.F) {
 		}
 		wire := message(f, 16, cond(c.reply, KindOK, c.kind), body)
 		f.Add(append([]byte{byte(sel << 1)}, wire...)) // the message
+		if c.reply {
+			f.Add(append([]byte{byte(sel << 1)}, slices.Concat(pulse, wire)...)) // with a pulse before it
+			if len(wire) > HeaderSize+16 {
+				f.Add(append([]byte{byte(sel << 1)}, slices.Concat(wire[:HeaderSize+16], pulse, wire[HeaderSize+16:])...)) // and in it
+			}
+		}
 	}
 	f.Add([]byte{0})
 	f.Add(append([]byte{0}, errorFrame(3, "denied")...))
+	f.Add(append([]byte{0}, pulse...))
+	f.Add(append([]byte{0}, slices.Concat(pulse, pulse, errorFrame(3, "denied"))...))
+	f.Add(append([]byte{0}, rawFrame(byte(KindGet), 0, "")...))
 	f.Add(append([]byte{0}, rawFrame(byte(KindOK), 0, "ab")...))
 	f.Add(append([]byte{0}, math.MaxUint8))
 

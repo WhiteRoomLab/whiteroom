@@ -140,6 +140,7 @@ func FuzzSession(f *testing.F) {
 	})))
 	f.Add(byte(0), stream(request(dbwire.KindHello, func(e *dbwire.Enc) { e.HelloRequest() })))
 	f.Add(byte(0), []byte{0x42, 1, 0, 0, 0, 0, 0, 0})
+	f.Add(byte(0), slices.Concat(rawFrame(byte(dbwire.KindOK), 0, nil), rawFrame(byte(dbwire.KindGet), 0, nil)))
 	f.Add(byte(1), []byte{byte(dbwire.KindCommit), 0, 0, 0, 0, 0, 0, 1, 0, byte(dbwire.KindCommit), 1, 0, 0, 0, 0, 0, 0})
 
 	f.Fuzz(func(t *testing.T, role byte, data []byte) {

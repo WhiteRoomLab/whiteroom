@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func hexBytes(t testing.TB, s string) []byte {
 	return b
 }
 
-// TestGolden pins the bytes of protocol version 2: every request and every reply, as the whole message with its frame, from
+// TestGolden pins the bytes of protocol version 3: every request and every reply, as the whole message with its frame, from
 // fixed inputs, written here as hexadecimal text and not made by the code that is tested, and read back from those bytes.
 // A daemon and a client of another build speak these bytes, so they do not change once this version is released: a change
 // that makes this test fail is a change of the protocol, which is a new Version.
@@ -49,7 +50,7 @@ func TestGolden(t *testing.T) {
 		wire  string // the header of the message, a bar, and its body
 	}{
 		{"Hello request", "Hello request", func(e *Enc) { e.HelloRequest() }, Version,
-			"01 01 0000 00000008 | 57524442 00000002"},
+			"01 01 0000 00000008 | 57524442 00000003"},
 		{"Hello reply of the writer", "Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 				Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000,
@@ -57,14 +58,14 @@ func TestGolden(t *testing.T) {
 		}, HelloReply{Version: Version, Role: RoleWriter, BootID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 			Seq: 0x1122334455667788, Stopped: true, Frame: 0x10000, Commit: 0x100000, Object: 0x200000, Staged: 0x300000, MaxKey: 0x1000,
 			DataDir: DirID{Dev: 0x0103, Ino: 0x0a0b0c0d0e0f1011}},
-			"80 01 0000 0000004e | 00000002 02 0102030405060708090a0b0c0d0e0f10 1122334455667788 01 00010000 " +
+			"80 01 0000 0000004e | 00000003 02 0102030405060708090a0b0c0d0e0f10 1122334455667788 01 00010000 " +
 				"0000000000100000 0000000000200000 0000000000300000 00001000 0000000000000103 0a0b0c0d0e0f1011"},
 		{"Hello reply of a reader", "Hello reply", func(e *Enc) {
 			e.HelloReply(HelloReply{Version: Version, Role: RoleReader, BootID: [16]byte{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
 				Frame: 0x1000, Commit: 1, Object: 2, Staged: 3, MaxKey: 0x1000})
 		}, HelloReply{Version: Version, Role: RoleReader, BootID: [16]byte{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
 			Frame: 0x1000, Commit: 1, Object: 2, Staged: 3, MaxKey: 0x1000},
-			"80 01 0000 0000004e | 00000002 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000 00 00001000 " +
+			"80 01 0000 0000004e | 00000003 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000 00 00001000 " +
 				"0000000000000001 0000000000000002 0000000000000003 00001000 0000000000000000 0000000000000000"},
 		{"Snapshot request", "Snapshot request", func(*Enc) {}, nil, "02 01 0000 00000000 |"},
 		{"Snapshot reply", "Snapshot reply", func(e *Enc) { e.SnapshotReply(0x0102030405060708) }, uint64(0x0102030405060708),
@@ -175,6 +176,84 @@ func TestGolden(t *testing.T) {
 			}
 			if !reflect.DeepEqual(v, c.want) {
 				t.Errorf("read %#v, want %#v", v, c.want)
+			}
+		})
+	}
+}
+
+// TestGoldenPulse pins the pulses: the empty frames of kind OK without the end flag that a daemon writes in a reply that
+// is not ready, before the frame with the end flag or the Error frame that ends it.
+func TestGoldenPulse(t *testing.T) {
+	mark := time.Unix(0x0102030405, 0x0a0b0c0d).UTC()
+	for _, c := range []struct {
+		name  string
+		write func(t *testing.T, w *Writer)
+		wire  string
+		read  func(t *testing.T, r *Reader)
+	}{
+		{"two pulses and an empty reply", func(t *testing.T, w *Writer) {
+			w.Begin(KindOK)
+			for range 2 {
+				if err := w.Pulse(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := w.End(); err != nil {
+				t.Fatal(err)
+			}
+		}, "80 00 0000 00000000 | 80 00 0000 00000000 | 80 01 0000 00000000", func(t *testing.T, r *Reader) {
+			if err := ReadEmpty(&Dec{R: r}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a pulse and a Commit reply", func(t *testing.T, w *Writer) {
+			w.Begin(KindOK)
+			if err := w.Pulse(); err != nil {
+				t.Fatal(err)
+			}
+			e := &Enc{W: w}
+			e.CommitReply(8, mark)
+			if e.Err != nil {
+				t.Fatal(e.Err)
+			}
+			if err := w.End(); err != nil {
+				t.Fatal(err)
+			}
+		}, "80 00 0000 00000000 | 80 01 0000 00000014 | 0000000000000008 0000000102030405 0a0b0c0d", func(t *testing.T, r *Reader) {
+			seq, got, err := ReadCommitReply(&Dec{R: r})
+			if err != nil || seq != 8 || !got.Equal(mark) {
+				t.Fatalf("ReadCommitReply = %d, %v, %v", seq, got, err)
+			}
+		}},
+		{"a pulse and an Error frame", func(t *testing.T, w *Writer) {
+			w.Begin(KindOK)
+			if err := w.Pulse(); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Fail(CodeSeq, "no"); err != nil {
+				t.Fatal(err)
+			}
+		}, "80 00 0000 00000000 | 81 01 0000 00000006 | 0007 0002 6e6f", func(t *testing.T, r *Reader) {
+			var re *RemoteError
+			if err := ReadEmpty(&Dec{R: r}); !errors.As(err, &re) || re.Code != CodeSeq || re.Msg != "no" {
+				t.Fatalf("ReadEmpty = %v, want the Error frame", err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wire := hexBytes(t, c.wire)
+			var buf bytes.Buffer
+			c.write(t, NewWriter(&buf, 1<<20))
+			if !bytes.Equal(buf.Bytes(), wire) {
+				t.Errorf("the reply is\n %x\nwant\n %x", buf.Bytes(), wire)
+			}
+			r := NewReader(bytes.NewReader(wire), 1<<20)
+			if err := r.Reply(); err != nil {
+				t.Fatalf("Reply = %v", err)
+			}
+			c.read(t, r)
+			if _, err := r.Next(); !errors.Is(err, io.EOF) {
+				t.Errorf("Next after the reply = %v, want io.EOF", err)
 			}
 		})
 	}

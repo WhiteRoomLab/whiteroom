@@ -3,6 +3,7 @@ package dbserver
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -54,14 +55,14 @@ func TestHello(t *testing.T) {
 		c := f.dial(dbwire.RoleReader)
 		done := c.writeRaw(hello(1, dbwire.Magic[:]))
 		re := wantCode(t, c.readReply(), dbwire.CodeVersion)
-		if want := "protocol version 1, but the daemon speaks version 2"; re.Msg != want {
+		if want := fmt.Sprintf("protocol version 1, but the daemon speaks version %d", dbwire.Version); re.Msg != want {
 			t.Errorf("got %q, want %q", re.Msg, want)
 		}
 		<-done
 		c.wantClosed()
 		// A Hello of another version may have another body: the daemon does not read past the version.
 		c = f.dial(dbwire.RoleReader)
-		long := binary.BigEndian.AppendUint32(slices.Clone(dbwire.Magic[:]), 3)
+		long := binary.BigEndian.AppendUint32(slices.Clone(dbwire.Magic[:]), dbwire.Version+1)
 		done = c.writeRaw(rawFrame(byte(dbwire.KindHello), 1, append(long, "more of a newer hello"...)))
 		wantCode(t, c.readReply(), dbwire.CodeVersion)
 		<-done
@@ -315,6 +316,12 @@ func TestProtocolErrors(t *testing.T) {
 		{"a Get as a continuation of another kind", func() []byte {
 			return slices.Concat(rawFrame(byte(dbwire.KindGet), 0, getBody()[:4]), rawFrame(byte(dbwire.KindScan), 1, getBody()[4:]))
 		}, dbwire.CodeProtocol},
+		// A pulse is for replies alone: a request is not drawn out with empty frames.
+		{"an empty request frame without the end flag", func() []byte { return rawFrame(byte(dbwire.KindGet), 0, nil) }, dbwire.CodeProtocol},
+		{"an empty request frame without the end flag, later", func() []byte {
+			return slices.Concat(rawFrame(byte(dbwire.KindGet), 0, getBody()[:4]), rawFrame(byte(dbwire.KindGet), 0, nil))
+		}, dbwire.CodeProtocol},
+		{"a pulse where a request is due", func() []byte { return rawFrame(byte(dbwire.KindOK), 0, nil) }, dbwire.CodeProtocol},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := f.connect(dbwire.RoleReader)
