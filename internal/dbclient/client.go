@@ -97,8 +97,9 @@ type Options struct {
 	// Stall is how long a Read of a reply may move no byte, and how long a Write of a request (one frame, at most 1 MiB; a
 	// window of reads, at most 32 KiB) may take, before the connection is cut; 0: 30 seconds, negative: no limit. A Write is
 	// cut also when the daemon reads it, but slowly: a frame of 1 MiB that it takes slower than about 30 KB per second is a
-	// stall. Not under the limit are the wait for the reply to a Verify and a Commit, the whole reply of an Events, a Backup
-	// up to its first frame, and the time between Reads and Writes.
+	// stall. The reply to a Verify, a Commit, an Events, and a Backup up to its first frame is under it too: the daemon
+	// sends a pulse while its engine moves, so a long one is cut only when the engine, or the daemon, stops. Not under the
+	// limit is the time between Reads and Writes.
 	Stall time.Duration
 }
 
@@ -631,9 +632,10 @@ type localError struct{ err error }
 func (e *localError) Error() string { return e.err.Error() }
 func (e *localError) Unwrap() error { return e.err }
 
-// exchange writes the request and reads the reply. The Reads and Writes are under the limit of Options.Stall, except the
-// wait for the reply to a request that takes as long as the store is large (Verify and Commit, which waits for a Verify),
-// the first frame of a Backup, and the whole reply of Events, whose frames come as the log is read.
+// exchange writes the request and reads the reply. All the Reads and Writes are under the limit of Options.Stall. A request
+// that takes as long as the store is large (Verify, Commit, which may wait for a Verify, Events, and Backup up to its first
+// frame) is not cut while the daemon sends a pulse, which the Reader skips, each time that its engine has moved. The time
+// that read takes outside the Reads is not counted.
 func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*dbwire.Dec) error) error {
 	cn.watch.Store(true)
 	defer cn.watch.Store(false)
@@ -648,14 +650,8 @@ func (cn *conn) exchange(kind dbwire.Kind, body func(*dbwire.Enc), read func(*db
 	if err := cn.wr.End(); err != nil {
 		return cn.refusedBefore(err)
 	}
-	if kind == dbwire.KindVerify || kind == dbwire.KindCommit || kind == dbwire.KindEvents || kind == dbwire.KindBackup {
-		cn.watch.Store(false)
-	}
 	if err := cn.rd.Reply(); err != nil {
 		return err
-	}
-	if kind != dbwire.KindEvents {
-		cn.watch.Store(true)
 	}
 	if read == nil {
 		return nil
