@@ -46,14 +46,17 @@ type Options struct {
 	FreeSpace func() (Space, error)
 	// DataDir is the identity of the data directory, which the reply to a Hello tells; zero: unknown.
 	DataDir dbwire.DirID
+	// Pulse is how often a long request (Verify, Commit, Events, and a Backup until it knows its position) looks whether the
+	// engine has moved, and writes a pulse into its reply if it has; 0: 5 seconds.
+	Pulse time.Duration
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
 	// gate go), "original:synced" (after the sync of the temporary file of a PutOriginal), "original:renamed" (after
 	// the sync of the directory of the original), "clock:tick" (by the goroutine of the clock of the deadlines, before each
 	// reading of the time), "reply:held" (when a request that has a reply in the buffer is still counted, before the
-	// next one begins), "snapshot:idle" (after a snapshot is released for being idle) and "reader:idle" (before a reader's
-	// connection that holds no snapshot is ended for being idle). Its error fails the operation; that of the last four is
-	// not used.
+	// next one begins), "snapshot:idle" (after a snapshot is released for being idle), "reader:idle" (before a reader's
+	// connection that holds no snapshot is ended for being idle) and "reply:pulse" (after a pulse is written). Its error
+	// fails the operation; that of the last five is not used.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
@@ -69,6 +72,10 @@ type Server struct {
 	now    func() time.Time
 	bootID [16]byte
 	bucket *bucket
+
+	// moved is the number of calls of the files of the engine that have returned, and pulse is the interval of the pulses.
+	moved *atomic.Uint64
+	pulse time.Duration
 
 	// gate is held by a Commit while its Update runs, so that a Backup can keep commits out while its reader opens.
 	gate    sync.Mutex
@@ -157,21 +164,29 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err := checkLimits(o.Limits); err != nil {
 		return nil, err
 	}
+	if o.Pulse < 0 {
+		return nil, fmt.Errorf("the pulse interval is negative (%v)", o.Pulse)
+	}
 	for _, dir := range []string{"logdb", "files"} {
 		if err := checkDir(root, name, dir); err != nil {
 			return nil, err
 		}
 	}
-	logFS, err := root.Sub("logdb")
+	sub, err := root.Sub("logdb")
 	if err != nil {
 		return nil, err
 	}
+	moved := new(atomic.Uint64)
+	logFS := vfs.FS(&progressFS{FS: sub, moved: moved})
 	files, err := root.Sub("files")
 	if err != nil {
 		_ = logFS.Close()
 		return nil, err
 	}
 	o.Limits = o.Limits.WithDefaults()
+	if o.Pulse == 0 {
+		o.Pulse = defaultPulse
+	}
 	o.Log.Accept = acceptSchema(fspath.Join(name, "logdb"))
 	db, err := logdb.Open(logFS, o.Log)
 	if err != nil {
@@ -179,7 +194,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		_ = files.Close()
 		return nil, err
 	}
-	s := &Server{name: name, db: db, logFS: logFS, files: files, limits: o.Limits, o: o, now: o.Now,
+	s := &Server{name: name, db: db, logFS: logFS, files: files, moved: moved, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
 		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
 		drained: make(chan struct{}), started: time.Now()}
 	if s.now == nil {

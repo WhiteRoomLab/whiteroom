@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
@@ -152,6 +153,8 @@ type session struct {
 	// carried: the request that has ended is still counted, because its reply is held and the next request is already in
 	// the read buffer; the next one takes over the count.
 	carried bool
+	// pulseMu is held by the pulser while it writes a pulse, and by the callbacks of an Events that write its events.
+	pulseMu sync.Mutex
 }
 
 func (s *Server) newSession(conn net.Conn, role dbwire.Role) *session {
@@ -404,6 +407,11 @@ func (c *session) register() (dbwire.Code, string) {
 
 func (c *session) ok(f func(e *dbwire.Enc)) bool {
 	c.wr.Begin(dbwire.KindOK)
+	return c.finish(f)
+}
+
+// finish writes the body of the reply that is open with f, and ends it.
+func (c *session) finish(f func(e *dbwire.Enc)) bool {
 	e := &dbwire.Enc{W: c.wr}
 	if f != nil {
 		f(e)

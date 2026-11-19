@@ -149,10 +149,13 @@ func (c *session) commitRequest() bool {
 	if code, msg := c.space(used+c.staged.total, true); code != 0 {
 		return c.fail(code, msg)
 	}
+	c.wr.Begin(dbwire.KindOK)
+	p := c.pulse()
+	defer p.end()
 	if err := c.s.bucket.take(c.ctx); err != nil {
 		return false
 	}
-	return c.update(expected, ops)
+	return c.update(expected, ops, p)
 }
 
 func checkOps(ops []dbwire.Op, hasStaged bool) *refusal {
@@ -190,7 +193,9 @@ func checkOps(ops []dbwire.Op, hasStaged bool) *refusal {
 	return nil
 }
 
-func (c *session) update(expected uint64, ops []dbwire.Op) bool {
+// update runs the Update of a Commit, and answers into the reply that is open; p is the pulser of that reply, which it ends
+// before it writes.
+func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 	s := c.s
 	var mark time.Time
 	err := func() error {
@@ -209,10 +214,11 @@ func (c *session) update(expected uint64, ops []dbwire.Op) bool {
 			})
 		})
 	}()
+	p.end()
 	var r *refusal
 	switch {
 	case err == nil:
-		return c.ok(func(e *dbwire.Enc) { e.CommitReply(expected+1, mark) })
+		return c.finish(func(e *dbwire.Enc) { e.CommitReply(expected+1, mark) })
 	case errors.As(err, &r):
 		return c.fail(r.code, r.msg)
 	case errors.Is(err, logdb.ErrFailed):
