@@ -1,6 +1,7 @@
 package dbserver
 
 import (
+	"context"
 	"io/fs"
 	"sync/atomic"
 	"time"
@@ -134,23 +135,52 @@ func (f *progressFile) ReadDir(n int) ([]fs.DirEntry, error) {
 }
 
 // pulser writes a pulse into the reply of a long request, which is open, each time the interval of the server has passed
-// and the engine has moved since the last time. A timer writes it, so the session must not touch the reply from the Begin
-// before pulse until end has returned, except in the callbacks that hold lock.
+// and the count that it watches has moved since the last time: that of the server while the request waits for another one
+// and for a Commit, and the request's own once its own call of the engine has begun (useOwn). A timer writes it, so the
+// session must not touch the reply from the Begin before pulse until end has returned, except in the callbacks that hold
+// lock.
 type pulser struct {
 	c       *session
 	t       *time.Timer
+	src     *atomic.Uint64 // the count that fire compares; under c.pulseMu
+	own     atomic.Uint64  // the steps of the engine calls of this request alone
 	last    uint64
 	abort   func() // called, once, by a write that failed; nil: the request goes on
 	stopped bool   // set by end, or by a write that failed; under c.pulseMu
 }
 
-// pulse starts the pulser of the reply that is open. end must be called, on every path of the request, before the reply
-// is written to: it is safe to call it again. The timer, and not a goroutine that waits, keeps a request that is answered
-// before the interval from paying for a goroutine and the wakeups of it. A pulse that cannot be written means that the
-// connection is broken: abort, if it is not nil, ends the request that nobody will read the answer of. A Commit does not
-// abort: its Update runs to its end.
+// progressCtx is the context that a Verify or an Events gives the engine. The engine calls Err before each record of the
+// log that it reads and each object that it checks, so each call is a step of the request. Done is not counted: the
+// engine selects on it while it waits, and a wait is no step.
+type progressCtx struct {
+	context.Context
+	n *atomic.Uint64
+}
+
+func (x progressCtx) Err() error {
+	x.n.Add(1)
+	return x.Context.Err()
+}
+
+// ctx returns the context for the engine calls of the request, which count into its own count.
+func (p *pulser) ctx() context.Context { return progressCtx{p.c.ctx, &p.own} }
+
+// useOwn makes the pulser compare the count of the engine calls of its own request from now on, and not that of the server.
+func (p *pulser) useOwn() {
+	p.c.pulseMu.Lock()
+	defer p.c.pulseMu.Unlock()
+	p.src = &p.own
+	p.last = p.own.Load()
+}
+
+// pulse starts the pulser of the reply that is open, which compares the count of the server until useOwn. end must be
+// called, on every path of the request, before the reply is written to: it is safe to call it again. The timer, and not a
+// goroutine that waits, keeps a request that is answered before the interval from paying for a goroutine and the wakeups of
+// it. A pulse that cannot be written means that the connection is broken: abort, if it is not nil, ends the request that
+// nobody will read the answer of. A Commit does not abort: its Update runs to its end.
 func (c *session) pulse(abort func()) *pulser {
-	p := &pulser{c: c, last: c.s.moved.Load(), abort: abort}
+	p := &pulser{c: c, src: c.s.moved, abort: abort}
+	p.last = p.src.Load()
 	c.pulseMu.Lock() // fire reads p.t
 	p.t = time.AfterFunc(c.s.pulse, p.fire)
 	c.pulseMu.Unlock()
@@ -164,7 +194,7 @@ func (p *pulser) fire() {
 	if p.stopped {
 		return
 	}
-	if now := c.s.moved.Load(); now != p.last {
+	if now := p.src.Load(); now != p.last {
 		p.last = now
 		if c.wr.Pulse() != nil {
 			p.stopped = true

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -230,16 +231,25 @@ func (fr frame) code() dbwire.Code {
 	return dbwire.Code(binary.BigEndian.Uint16(fr.body))
 }
 
+// readFrame reads one frame of a reply from conn.
+func readFrame(conn io.Reader) (frame, error) {
+	var h [dbwire.HeaderSize]byte
+	if _, err := io.ReadFull(conn, h[:]); err != nil {
+		return frame{}, err
+	}
+	fr := frame{kind: dbwire.Kind(h[0]), flags: h[1], body: make([]byte, binary.BigEndian.Uint32(h[4:]))}
+	if _, err := io.ReadFull(conn, fr.body); err != nil {
+		return frame{}, err
+	}
+	return fr, nil
+}
+
 // readFrames reads the frames of one reply from conn, to its last frame.
 func readFrames(conn io.Reader) ([]frame, error) {
 	var frames []frame
 	for {
-		var h [dbwire.HeaderSize]byte
-		if _, err := io.ReadFull(conn, h[:]); err != nil {
-			return frames, fmt.Errorf("after %d frames: %w", len(frames), err)
-		}
-		fr := frame{kind: dbwire.Kind(h[0]), flags: h[1], body: make([]byte, binary.BigEndian.Uint32(h[4:]))}
-		if _, err := io.ReadFull(conn, fr.body); err != nil {
+		fr, err := readFrame(conn)
+		if err != nil {
 			return frames, fmt.Errorf("after %d frames: %w", len(frames), err)
 		}
 		frames = append(frames, fr)
@@ -306,6 +316,80 @@ func (c *client) replyAsync(kind dbwire.Kind, body func(e *dbwire.Enc)) <-chan r
 		done <- replyOf{frames, err}
 	}()
 	return done
+}
+
+// counted is the reply to a request that another goroutine reads, whose pulses can be counted while the reply is open.
+type counted struct {
+	pulses atomic.Int64
+	done   chan replyOf
+}
+
+func (c *client) replyCounted(kind dbwire.Kind, body func(e *dbwire.Enc)) *counted {
+	r := &counted{done: make(chan replyOf, 1)}
+	sent := c.send(kind, body)
+	go func() {
+		var frames []frame
+		var err error
+		for {
+			var fr frame
+			if fr, err = readFrame(c.conn); err != nil {
+				break
+			}
+			if fr.pulse() {
+				r.pulses.Add(1)
+			}
+			frames = append(frames, fr)
+			if fr.last() {
+				break
+			}
+		}
+		if serr := <-sent; err == nil {
+			err = serr
+		}
+		r.done <- replyOf{frames, err}
+	}()
+	return r
+}
+
+// settled waits until n has not changed for a while, and returns it.
+func (p *pulseFixture) settled(what string, n *atomic.Int64) int64 {
+	p.t.Helper()
+	last, since := n.Load(), time.Now()
+	eventually(p.t, what, func() bool {
+		if now := n.Load(); now != last {
+			last, since = now, time.Now()
+		}
+		return time.Since(since) > 5*p.pulse
+	})
+	return last
+}
+
+// mover makes the files of the engine move, from the connection m, which holds a snapshot, by reading an object again and
+// again until stop is called: it is the daemon at work for others, that a request of its own does not wait for.
+func (p *pulseFixture) mover(m *client) (stop func()) {
+	hash := hashOf(strings.Repeat("a", 600))
+	quit, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-quit:
+				return
+			default:
+			}
+			if found, _, err := m.object(hash); err != nil || !found {
+				p.t.Errorf("reading an object: found %v, %v", found, err)
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(quit)
+			<-done
+		})
+	}
 }
 
 // setup makes a pulse fixture whose store is filled, and whose reads are slow.
@@ -1372,4 +1456,261 @@ func TestPulserEnd(t *testing.T) {
 		silent(t, peer)
 		p.end()
 	})
+}
+
+// TestPulseOwnProgress: a Verify, an Events and a Backup before its position, whose own call of the engine does not
+// return, write no pulse while another connection makes the engine of the daemon move; the reply of each ends when they
+// are let go.
+func TestPulseOwnProgress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		skip    int
+		prepare func(p *pulseFixture) (send func() (wait func() error))
+	}{
+		{"Verify", 4, func(p *pulseFixture) func() func() error {
+			r := p.connect(dbwire.RoleReader)
+			return func() func() error {
+				done := make(chan error, 1)
+				go func() { done <- r.verify() }()
+				return func() error { return <-done }
+			}
+		}},
+		{"Events", 2, func(p *pulseFixture) func() func() error {
+			r := p.connect(dbwire.RoleReader)
+			r.mustSnapshot()
+			return func() func() error {
+				done := make(chan error, 1)
+				go func() {
+					_, err := r.events()
+					done <- err
+				}()
+				return func() error { return <-done }
+			}
+		}},
+		{"Backup before its position", 2, func(p *pulseFixture) func() func() error {
+			r := p.connect(dbwire.RoleReader)
+			return func() func() error {
+				done := make(chan error, 1)
+				go func() {
+					_, err := r.backup(nil)
+					done <- err
+				}()
+				return func() error { return <-done }
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := setupPulse(t, nil)
+			send := tc.prepare(p)
+			m := p.connect(dbwire.RoleReader)
+			m.mustSnapshot()
+			p.quiet()
+			blocked, release := p.ctl.block("read", tc.skip)
+			wait := send()
+			await(t, blocked, "the engine to block")
+			p.ctl.setDelay(0)
+			stop := p.mover(m)
+			defer stop()
+			moved := p.srv.moved.Load()
+			p.checkStuck(t, blocked)
+			if got := p.srv.moved.Load() - moved; got < 20 {
+				t.Errorf("the engine of the daemon moved %d times while the request was stuck, want at least 20", got)
+			}
+			if p.pulses.Load() == 0 {
+				t.Error("no pulse was written before the engine was stuck")
+			}
+			stop()
+			release()
+			if err := wait(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// TestPulseWhileWaiting: a Verify stuck in the engine holds the turn of the Verifies and the engine, and the requests behind
+// it, which have no call of the engine of their own to wait for, write pulses while the daemon moves: a Verify that waits for
+// the turn, a Commit that waits for the engine inside the gate, and a Backup that waits for the gate. The Verify writes none.
+func TestPulseWhileWaiting(t *testing.T) {
+	var armed atomic.Bool
+	entered := make(chan struct{}, 1)
+	p := setupPulse(t, func(o *Options) {
+		o.Limits.Readers = 8
+		o.Hook = func(point string) error {
+			if point == "commit:gate" && armed.Load() {
+				entered <- struct{}{}
+			}
+			return nil
+		}
+	})
+	w, ra, rb, rd, m := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader),
+		p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
+	seq := w.mustSnapshot()
+	m.mustSnapshot()
+	p.quiet()
+	blocked, release := p.ctl.block("read", 4)
+
+	a := ra.replyCounted(dbwire.KindVerify, nil)
+	await(t, blocked, "the Verify to block")
+	p.ctl.setDelay(0)
+	stuck := p.settled("the pulses of the Verify to stop", &a.pulses)
+	b := rb.replyCounted(dbwire.KindVerify, nil)
+	armed.Store(true)
+	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+	await(t, entered, "the commit to reach its gate")
+	d := rd.replyCounted(dbwire.KindBackup, nil) // after the Commit has the gate: it waits for the Commit, and not the other way
+
+	b0, c0, d0 := b.pulses.Load(), c.pulses.Load(), d.pulses.Load()
+	stop := p.mover(m)
+	defer stop()
+	eventually(t, "the requests that wait to pulse", func() bool {
+		return b.pulses.Load() >= b0+3 && c.pulses.Load() >= c0+3 && d.pulses.Load() >= d0+3
+	})
+	if got := a.pulses.Load(); got != stuck {
+		t.Errorf("the Verify that is stuck wrote %d pulses while the daemon moved", got-stuck)
+	}
+	stop()
+	release()
+
+	for _, tc := range []struct {
+		name string
+		r    *counted
+	}{{"Verify", a}, {"Verify that waited", b}, {"Commit", c}, {"Backup", d}} {
+		res := <-tc.r.done
+		if res.err != nil {
+			t.Errorf("%s: %v", tc.name, res.err)
+			continue
+		}
+		if last := res.frames[len(res.frames)-1]; last.kind != dbwire.KindOK {
+			t.Errorf("%s: the last frame is a %v", tc.name, last.kind)
+		}
+	}
+	if _, _, err := w.tryCommit(put(2, "y", "1")); err != nil {
+		t.Errorf("a Commit after them: %v", err)
+	}
+}
+
+// TestVerifyTurn: a Verify that waits for the turn of the Verifies ends with its session when its pulse cannot be written,
+// and leaves the turn to the others.
+func TestVerifyTurn(t *testing.T) {
+	p := setupPulse(t, nil)
+	ra, m := p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
+	rb, wc := p.connectCounted(dbwire.RoleReader)
+	m.mustSnapshot()
+	p.quiet()
+	blocked, release := p.ctl.block("read", 4)
+	a := ra.replyCounted(dbwire.KindVerify, nil)
+	await(t, blocked, "the Verify to block")
+	p.ctl.setDelay(0)
+	b := rb.replyCounted(dbwire.KindVerify, nil)
+	stop := p.mover(m)
+	defer stop()
+	eventually(t, "the Verify that waits to pulse", func() bool { return b.pulses.Load() > 0 })
+	_ = rb.conn.Close()
+	eventually(t, "a pulse to fail", func() bool { return wc.failed.Load() > 0 })
+	eventually(t, "the pulse that failed to return", func() bool { return pulsers() == 0 })
+	p.waitSessions(2) // the Verify that is stuck, and the one that moves the daemon
+	stop()
+	release()
+	if res := <-a.done; res.err != nil {
+		t.Error(res.err)
+	}
+	if err := p.connect(dbwire.RoleReader).verify(); err != nil {
+		t.Errorf("a Verify after them: %v", err)
+	}
+}
+
+// TestPulserOwn: a pulser compares the count of the server until useOwn, and its own count after it, from where that is.
+func TestPulserOwn(t *testing.T) {
+	f := newFixture(t, func(o *Options) { o.Pulse = time.Millisecond })
+	server, peer := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+	c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
+	c.wr.Begin(dbwire.KindOK)
+	// pulse reads the pulse that the peer is sent, or fails the test if none comes.
+	pulse := func(t *testing.T) {
+		t.Helper()
+		_ = peer.SetReadDeadline(time.Now().Add(waitLimit))
+		var got [dbwire.HeaderSize]byte
+		if _, err := io.ReadFull(peer, got[:]); err != nil {
+			t.Fatalf("waiting for a pulse: %v", err)
+		}
+		if want := [dbwire.HeaderSize]byte{byte(dbwire.KindOK)}; got != want {
+			t.Fatalf("the pulse is %x, want %x", got, want)
+		}
+	}
+	silent := func(t *testing.T) {
+		t.Helper()
+		_ = peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+		if n, err := peer.Read(make([]byte, dbwire.HeaderSize)); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("the peer read %d bytes (%v) while the count that the pulser compares did not move", n, err)
+		}
+	}
+
+	f.srv.moved.Add(5)
+	p := c.pulse(nil)
+	f.srv.moved.Add(1)
+	pulse(t)
+	p.useOwn()
+	f.srv.moved.Add(1)
+	silent(t)
+	p.own.Add(1)
+	pulse(t)
+	f.srv.moved.Add(1)
+	silent(t)
+	p.end()
+}
+
+// TestProgressCtx: the engine calls Err of the context of a Verify before each record of the log and each object, and
+// of an Events before each record, so that the steps of the request are at least as many; a wait for Done is no step.
+func TestProgressCtx(t *testing.T) {
+	p := setupPulse(t, nil)
+	p.ctl.setDelay(0)
+	var records, objects uint64
+	if err := p.db().View(context.Background(), func(tx *logdb.Tx) error {
+		records = tx.Seq()
+		tx.Objects(func([32]byte, int64) bool { objects++; return true })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if records < 2 || objects < 2 {
+		t.Fatalf("the store has %d records and %d objects", records, objects)
+	}
+
+	// If the engine calls Err less often, or makes a context of its own, the pulses of the requests are fewer.
+	var n atomic.Uint64
+	ctx := progressCtx{context.Background(), &n}
+	if err := p.db().Verify(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Load(); got < records+objects {
+		t.Errorf("Verify called Err %d times, want at least %d (%d records and %d objects)", got, records+objects, records, objects)
+	}
+	n.Store(0)
+	if err := p.db().Events(ctx, func(logdb.Event) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if got := n.Load(); got < records {
+		t.Errorf("Events called Err %d times, want at least %d (the records)", got, records)
+	}
+
+	n.Store(0)
+	parent, cancel := context.WithCancel(context.Background())
+	pc := progressCtx{parent, &n}
+	_ = pc.Done()
+	_, _ = pc.Deadline()
+	_ = pc.Value(nil)
+	if got := n.Load(); got != 0 {
+		t.Errorf("Done, Deadline and Value were counted %d times", got)
+	}
+	cancel()
+	select {
+	case <-pc.Done():
+	default:
+		t.Error("Done is not closed after the context ended")
+	}
+	if err := pc.Err(); !errors.Is(err, context.Canceled) || n.Load() != 1 {
+		t.Errorf("Err() = %v, counted %d times, want context.Canceled, once", err, n.Load())
+	}
 }

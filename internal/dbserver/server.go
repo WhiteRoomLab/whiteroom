@@ -46,8 +46,9 @@ type Options struct {
 	FreeSpace func() (Space, error)
 	// DataDir is the identity of the data directory, which the reply to a Hello tells; zero: unknown.
 	DataDir dbwire.DirID
-	// Pulse is how often a long request (Verify, Commit, Events, and a Backup until it knows its position) looks whether the
-	// engine has moved, and writes a pulse into its reply if it has; 0: 5 seconds.
+	// Pulse is how often a long request (Verify, Commit, Events, and a Backup until it knows its position) looks whether it
+	// has moved, and writes a pulse into its reply if it has: Verify, Events and a Backup look at their own engine calls
+	// once these have begun, and the rest at the engine as a whole; 0: 5 seconds.
 	Pulse time.Duration
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
@@ -73,9 +74,13 @@ type Server struct {
 	bootID [16]byte
 	bucket *bucket
 
-	// moved is the number of calls of the files of the engine that have returned, and pulse is the interval of the pulses.
+	// moved is the number of calls of the files of the engine that have returned, whichever request made them: a Commit
+	// and a request that waits for another one watch it, and the rest count their own. pulse is the interval of the pulses.
 	moved *atomic.Uint64
 	pulse time.Duration
+	// verifyTurn is held by the Verify that runs. The engine runs them one at a time, and calls no Err while one waits for
+	// its turn, so the daemon holds the queue, where a Verify that waits can pulse for the engine as a whole.
+	verifyTurn chan struct{}
 
 	// gate is held by a Commit while its Update runs, so that a Backup can keep commits out while its reader opens.
 	gate    sync.Mutex
@@ -196,7 +201,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	}
 	s := &Server{name: name, db: db, logFS: logFS, files: files, moved: moved, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
 		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
-		drained: make(chan struct{}), started: time.Now()}
+		drained: make(chan struct{}), started: time.Now(), verifyTurn: make(chan struct{}, 1)}
 	if s.now == nil {
 		s.now = time.Now
 	}
