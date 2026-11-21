@@ -136,9 +136,9 @@ func (f *progressFile) ReadDir(n int) ([]fs.DirEntry, error) {
 
 // pulser writes a pulse into the reply of a long request, which is open, each time the interval of the server has passed
 // and the count that it watches has moved since the last time: that of the server while the request waits for its turn or
-// the gate, and for a Commit, and the request's own once its own call of the engine has begun (useOwn). A timer writes it,
-// so the session must not touch the reply from the Begin before pulse until end has returned, except in the callbacks that
-// hold lock.
+// the gate, and for the whole of a Commit, and the request's own once its own call of the engine has begun (useOwn). A timer
+// writes it, so the session must not touch the reply from the Begin before pulse until end has returned, except in the
+// callbacks that hold lock.
 type pulser struct {
 	c       *session
 	t       *time.Timer

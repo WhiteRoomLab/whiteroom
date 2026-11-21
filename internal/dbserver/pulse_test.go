@@ -1726,7 +1726,9 @@ func TestCommitTurn(t *testing.T) {
 	p.waitSessions(1) // the Verify that is stuck
 	release()
 	<-closed
-	<-c.done
+	if res := <-c.done; res.err == nil && res.frames[len(res.frames)-1].kind == dbwire.KindOK {
+		t.Error("the Commit that the Close ended answered OK")
+	}
 	<-v.done
 }
 
