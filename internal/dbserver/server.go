@@ -78,9 +78,10 @@ type Server struct {
 	// and a request that waits for another one watch it, and the rest count their own. pulse is the interval of the pulses.
 	moved *atomic.Uint64
 	pulse time.Duration
-	// verifyTurn is held by the Verify that runs. The engine runs them one at a time, and calls no Err while one waits for
-	// its turn, so the daemon holds the queue, where a Verify that waits can pulse for the engine as a whole.
-	verifyTurn chan struct{}
+	// turn is held by a Verify while its call of the engine runs and by a Commit while its Update runs, which the engine
+	// runs one at a time. The engine calls no Err while one waits for the other, so the daemon holds the queue, where the
+	// one that waits pulses for the engine as a whole, and the Verify that has the turn waits for no Update.
+	turn chan struct{}
 
 	// gate is held by a Commit while its Update runs, so that a Backup can keep commits out while its reader opens.
 	gate    sync.Mutex
@@ -201,7 +202,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	}
 	s := &Server{name: name, db: db, logFS: logFS, files: files, moved: moved, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
 		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
-		drained: make(chan struct{}), started: time.Now(), verifyTurn: make(chan struct{}, 1)}
+		drained: make(chan struct{}), started: time.Now(), turn: make(chan struct{}, 1)}
 	if s.now == nil {
 		s.now = time.Now
 	}

@@ -204,6 +204,12 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 		if err := s.hook("commit:gate"); err != nil {
 			return err
 		}
+		select {
+		case s.turn <- struct{}{}:
+		case <-c.ctx.Done():
+			return c.ctx.Err()
+		}
+		defer func() { <-s.turn }()
 		return s.db.Update(c.ctx, func(tx *logdb.Tx) error {
 			if have := tx.Seq(); have != expected {
 				return &refusal{dbwire.CodeSeq, fmt.Sprintf("the last sequence number is %d, not the expected %d", have, expected)}

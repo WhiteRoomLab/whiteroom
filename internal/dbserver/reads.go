@@ -132,13 +132,13 @@ func (c *session) verifyRequest() bool {
 	p := c.pulse(c.cancel)
 	defer p.end()
 	select {
-	case c.s.verifyTurn <- struct{}{}:
+	case c.s.turn <- struct{}{}:
 	case <-c.ctx.Done():
 		return false
 	}
 	p.useOwn()
 	err := c.s.db.Verify(p.ctx())
-	<-c.s.verifyTurn
+	<-c.s.turn
 	p.end()
 	switch {
 	case c.ctx.Err() != nil:

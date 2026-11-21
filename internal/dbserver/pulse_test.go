@@ -1528,9 +1528,9 @@ func TestPulseOwnProgress(t *testing.T) {
 	}
 }
 
-// TestPulseWhileWaiting: a Verify stuck in the engine holds the turn of the Verifies and the engine, and the requests behind
-// it, which have no call of the engine of their own to wait for, write pulses while the daemon moves: a Verify that waits for
-// the turn, a Commit that waits for the engine inside the gate, and a Backup that waits for the gate. The Verify writes none.
+// TestPulseWhileWaiting: a Verify stuck in the engine holds the turn of the daemon, and the requests behind it, which have no
+// call of the engine of their own to wait for, write pulses while the daemon moves: a Verify and a Commit (inside the gate)
+// that wait for the turn, and a Backup that waits for the gate. The Verify that is stuck writes none.
 func TestPulseWhileWaiting(t *testing.T) {
 	var armed atomic.Bool
 	entered := make(chan struct{}, 1)
@@ -1590,8 +1590,84 @@ func TestPulseWhileWaiting(t *testing.T) {
 	}
 }
 
-// TestVerifyTurn: a Verify that waits for the turn of the Verifies ends with its session when its pulse cannot be written,
-// and leaves the turn to the others.
+// stepPulses lets the blocked call of op go and blocks the next one, n times, and each time waits until r writes a pulse.
+// While the engine is blocked nothing else moves it, so the pulse is for the call that went. It returns the release of the
+// call that is blocked at the end.
+func (p *pulseFixture) stepPulses(t *testing.T, op string, release func(), r *counted, n int) func() {
+	t.Helper()
+	for i := range n {
+		base := p.settled("the pulses to stop", &r.pulses)
+		blocked, next := p.ctl.block(op, 0)
+		release()
+		await(t, blocked, fmt.Sprintf("the call %d of the engine after the first to block", i+1))
+		eventually(t, fmt.Sprintf("a pulse for the call %d of the engine", i+1), func() bool { return r.pulses.Load() > base })
+		release = next
+	}
+	return release
+}
+
+// checkEnded checks that each reply ended with an OK.
+func checkEnded(t *testing.T, replies map[string]*counted) {
+	t.Helper()
+	for name, r := range replies {
+		res := <-r.done
+		if res.err != nil {
+			t.Errorf("%s: %v", name, res.err)
+			continue
+		}
+		if last := res.frames[len(res.frames)-1]; last.kind != dbwire.KindOK {
+			t.Errorf("%s: the last frame is a %v", name, last.kind)
+		}
+	}
+}
+
+// TestPulseBehindUpdate: a Verify that comes while the Update of a Commit runs waits for the turn, which the Update holds,
+// and writes a pulse for each call of the files of the engine that the Update makes, until it ends: the engine would make
+// the Verify wait for the Update with no call of its own to count.
+func TestPulseBehindUpdate(t *testing.T) {
+	p := setupPulse(t, nil)
+	p.ctl.setDelay(0)
+	w, r := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader)
+	seq := w.mustSnapshot()
+	for i := range 4 {
+		if _, err := w.putObject(strings.Repeat(fmt.Sprint(i), 600)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.quiet()
+	blocked, release := p.ctl.block("write", 0)
+	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+	await(t, blocked, "the Update to block in a write")
+	v := r.replyCounted(dbwire.KindVerify, nil)
+	eventually(t, "the Verify to wait", func() bool { return blockedIn("dbserver.(*session).verifyRequest", "[select") })
+	p.stepPulses(t, "write", release, v, 3)()
+	checkEnded(t, map[string]*counted{"Commit": c, "Verify": v})
+	if err := r.verify(); err != nil {
+		t.Errorf("a Verify after them: %v", err)
+	}
+}
+
+// TestPulseBehindBackupReader: a Commit that waits at the gate while the reader of a Backup opens writes a pulse for each
+// call of the files of the engine that the reader makes: the reader counts for the server too, and not only for its request.
+func TestPulseBehindBackupReader(t *testing.T) {
+	p := setupPulse(t, nil)
+	p.ctl.setDelay(0)
+	w, b := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader)
+	seq := w.mustSnapshot()
+	p.quiet()
+	blocked, release := p.ctl.block("read", 0)
+	bk := b.replyCounted(dbwire.KindBackup, nil)
+	await(t, blocked, "the reader of the Backup to block")
+	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+	eventually(t, "the Commit to wait for the gate", func() bool {
+		return blockedIn("dbserver.(*session).update", "Mutex).lockSlow")
+	})
+	p.stepPulses(t, "read", release, c, 3)()
+	checkEnded(t, map[string]*counted{"Backup": bk, "Commit": c})
+}
+
+// TestVerifyTurn: a Verify that waits for the turn ends with its session when its pulse cannot be written, and leaves the
+// turn to the others.
 func TestVerifyTurn(t *testing.T) {
 	p := setupPulse(t, nil)
 	ra, m := p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
@@ -1618,6 +1694,40 @@ func TestVerifyTurn(t *testing.T) {
 	if err := p.connect(dbwire.RoleReader).verify(); err != nil {
 		t.Errorf("a Verify after them: %v", err)
 	}
+}
+
+// TestCommitTurn: a Commit that waits for the turn ends with the Close of the server while the Verify that has the turn is
+// stuck, and does not wait for the turn first.
+func TestCommitTurn(t *testing.T) {
+	var armed atomic.Bool
+	entered := make(chan struct{}, 1)
+	p := setupPulse(t, func(o *Options) {
+		o.Hook = func(point string) error {
+			if point == "commit:gate" && armed.Load() {
+				entered <- struct{}{}
+			}
+			return nil
+		}
+	})
+	w, r := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader)
+	seq := w.mustSnapshot()
+	p.quiet()
+	blocked, release := p.ctl.block("read", 4)
+	v := r.replyCounted(dbwire.KindVerify, nil)
+	await(t, blocked, "the Verify to block")
+	armed.Store(true)
+	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+	await(t, entered, "the Commit to reach its gate")
+	closed := make(chan struct{})
+	go func() {
+		_ = p.srv.Close()
+		close(closed)
+	}()
+	p.waitSessions(1) // the Verify that is stuck
+	release()
+	<-closed
+	<-c.done
+	<-v.done
 }
 
 // TestPulserOwn: a pulser compares the count of the server until useOwn, and its own count after it, from where that is.
@@ -1651,6 +1761,7 @@ func TestPulserOwn(t *testing.T) {
 	p := c.pulse(nil)
 	f.srv.moved.Add(1)
 	pulse(t)
+	p.own.Add(3)
 	p.useOwn()
 	f.srv.moved.Add(1)
 	silent(t)
@@ -1676,6 +1787,10 @@ func TestProgressCtx(t *testing.T) {
 	}
 	if records < 2 || objects < 2 {
 		t.Fatalf("the store has %d records and %d objects", records, objects)
+	}
+	// An engine that checks the context once per segment would pass the counts below with one record in each.
+	if segments := p.db().Stats().Segments; 2*uint64(segments) > records {
+		t.Fatalf("the store has %d records in %d segments, want at least two in each", records, segments)
 	}
 
 	// If the engine calls Err less often, or makes a context of its own, the pulses of the requests are fewer.
