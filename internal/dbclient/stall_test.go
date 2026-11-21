@@ -976,11 +976,13 @@ const (
 )
 
 // readControl slows the reads of the files of a daemon down, or stops them: each read waits for delay, and, while stuck is
-// set, until free is called.
+// set, until free is called. park stops one read, and no other.
 type readControl struct {
 	delay   atomic.Int64 // a time.Duration
 	stuck   atomic.Bool
 	reads   atomic.Int64
+	armed   atomic.Bool   // set by park, which sets parked first
+	parked  chan struct{} // closed by the read that park stopped
 	release chan struct{}
 	once    sync.Once
 }
@@ -991,9 +993,20 @@ func (c *readControl) wait() {
 		<-c.release
 		return
 	}
+	if c.armed.CompareAndSwap(true, false) {
+		close(c.parked)
+		<-c.release
+		return
+	}
 	if d := time.Duration(c.delay.Load()); d > 0 {
 		time.Sleep(d)
 	}
+}
+
+// park makes the first read that comes after it wait for free, and closes parked when it does. The reads after it do not.
+func (c *readControl) park(parked chan struct{}) {
+	c.parked = parked
+	c.armed.Store(true)
 }
 
 // free lets the reads that wait go, and the gates of a slowStore, and stops the waits of those that come.
@@ -1051,6 +1064,7 @@ type slowStore struct {
 	gateCommit atomic.Bool
 	gateBackup atomic.Bool
 	pulses     atomic.Int64 // the pulses that the daemon has written
+	gated      atomic.Int64 // the Commits that have come into the gate
 	w, r       *dbclient.Client
 	wrec, rrec *recorder
 	objects    [][32]byte // the objects that are in files
@@ -1066,6 +1080,9 @@ func newSlowStore(t *testing.T, o dbclient.Options) *slowStore {
 		log.SegmentBytes, log.CheckpointBytes = 256, -1
 		opts.Log = &log
 		opts.Hook = func(point string) error {
+			if point == "commit:gate" {
+				s.gated.Add(1)
+			}
 			switch {
 			case point == "reply:pulse":
 				s.pulses.Add(1)
@@ -1105,10 +1122,98 @@ func (s *slowStore) events(ctx context.Context) ([]uint64, error) {
 	return got, err
 }
 
+// mover reads the objects that are in files, in a View of a reader connection of its own, until finish: each read makes
+// calls of the files of the engine return, which move the count of the daemon as a whole.
+type mover struct {
+	c     *dbclient.Client
+	t     *testing.T
+	files [][32]byte
+	reads atomic.Int64
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+// newMover opens the connection of a mover, which reads nothing until start.
+func (s *slowStore) newMover(t *testing.T) *mover {
+	c, _ := s.open(dbwire.RoleReader, dbclient.Options{Stall: waitLimit})
+	return &mover{c: c, t: t, files: s.objects, stop: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (m *mover) start() {
+	go func() {
+		defer close(m.done)
+		err := m.c.View(bg, func(tx *dbclient.Tx) error {
+			for i := 0; ; i++ {
+				select {
+				case <-m.stop:
+					return nil
+				default:
+				}
+				switch _, found, err := tx.Object(m.files[i%len(m.files)]); {
+				case err != nil:
+					return err
+				case !found:
+					return errors.New("an object is not found")
+				}
+				m.reads.Add(1)
+				time.Sleep(time.Millisecond)
+			}
+		})
+		if err != nil {
+			m.t.Errorf("the mover: %v", err)
+		}
+	}()
+}
+
+// finish stops the mover, and returns how many objects it has read.
+func (m *mover) finish() int64 {
+	close(m.stop)
+	<-m.done
+	return m.reads.Load()
+}
+
+// cutWhileOthersRead checks that a request whose own read of the files of the engine stops is cut at the limit, though
+// another connection goes on reading them, which keeps the count of the daemon as a whole moving. request calls park where
+// the read is to stop, and returns when the request began; the first read after park, which is the request's since nothing
+// else reads until the mover begins, waits for free. kind is the request that the client must have sent once.
+func (s *slowStore) cutWhileOthersRead(t *testing.T, kind dbwire.Kind, request func(ctx context.Context, park func()) (time.Time, error)) {
+	t.Helper()
+	m := s.newMover(t)
+	type outcome struct {
+		began time.Time
+		err   error
+	}
+	parked := make(chan struct{})
+	done := make(chan outcome, 1)
+	ctx := soon(t)
+	go func() {
+		began, err := request(ctx, func() { s.ctl.park(parked) })
+		done <- outcome{began, err}
+	}()
+	select {
+	case <-parked:
+	case o := <-done:
+		t.Fatalf("the request ended before a read of it stopped: %v", o.err)
+	}
+	reads := s.ctl.reads.Load()
+	m.start()
+	o := <-done
+	moved := m.finish()
+	s.ctl.free()
+	wantCut(t, o.err, o.began, "", notSent, stallKeep, 1)
+	if got := s.ctl.reads.Load() - reads; got < 3 || moved < 3 {
+		t.Errorf("the other connection made %d reads of the files, %d of them objects, while the request was cut, want at least 3", got, moved)
+	}
+	if got := s.rrec.count(kind); got != 1 {
+		t.Errorf("the client sent %d requests of kind %v, want 1", got, kind)
+	}
+}
+
 // TestStallDaemon: the limit and the pulses of the real daemon. A Verify and an Events that last longer than the limit are
-// not cut while the engine reads, however slowly, and a Commit that waits for a Verify is not either; when the reads stop,
-// or the daemon waits for what does not come, each of them is cut at the limit, with the error of a daemon that cannot be
-// reached.
+// not cut while the engine reads, however slowly, and a Commit that waits for a Verify is not either; nor is a Verify, or a
+// Backup behind a Commit, that waits for a Verify that is slow. When the reads stop, or the daemon waits for what does not
+// come, each of them is cut at the limit, with the error of a daemon that cannot be reached: also when the read that
+// stops is its own, and the reads of the other connections go on.
 func TestStallDaemon(t *testing.T) {
 	keep := dbclient.Options{Stall: stallKeep}
 	// ranLong checks that a request that the test slowed down took longer than three limits, and that the daemon pulsed.
@@ -1172,6 +1277,60 @@ func TestStallDaemon(t *testing.T) {
 		}
 	})
 
+	// A request that waits for another one has no read of its own to count, so the engine as a whole is what it watches.
+	// slowVerify starts a Verify that reads slowly, and returns when it has begun; the reads are fast again when it ends.
+	slowVerify := func(t *testing.T, s *slowStore) <-chan error {
+		slow, _ := s.open(dbwire.RoleReader, dbclient.Options{Stall: -1})
+		s.ctl.delay.Store(int64(slowRead))
+		verified := make(chan error, 1)
+		reads := s.ctl.reads.Load()
+		go func() {
+			err := slow.Verify(bg)
+			s.ctl.delay.Store(0)
+			verified <- err
+		}()
+		eventually(t, "the slow Verify to read", func() bool { return s.ctl.reads.Load() > reads })
+		return verified
+	}
+
+	t.Run("a Verify that waits for a slow Verify", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		verified := slowVerify(t, s)
+		began := time.Now()
+		must(t, s.r.Verify(bg))
+		if took := time.Since(began); took < 2*stallKeep {
+			t.Errorf("the Verify took %v, less than two limits of %v: it did not wait for the other", took, stallKeep)
+		}
+		must(t, <-verified)
+	})
+
+	t.Run("a Backup that waits for a Commit that waits for a slow Verify", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		verified := slowVerify(t, s)
+		committed := make(chan error, 1)
+		gated := s.gated.Load()
+		go func() {
+			committed <- s.w.Update(bg, func(tx *dbclient.Tx) error {
+				if err := tx.Put(2, []byte("x"), []byte("y")); err != nil {
+					return err
+				}
+				return tx.AppendEvent([]byte(`{"x":true}`))
+			})
+		}()
+		eventually(t, "the Commit to come into the gate", func() bool { return s.gated.Load() > gated })
+		began := time.Now()
+		_, err := s.r.Backup(bg, simfs.New("copy"))
+		must(t, err)
+		if took := time.Since(began); took < 2*stallKeep {
+			t.Errorf("the Backup took %v, less than two limits of %v: it did not wait for the Commit", took, stallKeep)
+		}
+		must(t, <-committed)
+		must(t, <-verified)
+		wantRows(t, rows(t, s.w, 2, "x"), "x=y")
+	})
+
 	// What is cut: the reads stop, or the daemon waits at a gate for what does not come.
 	t.Run("a Verify whose reads stop", func(t *testing.T) {
 		t.Parallel()
@@ -1230,6 +1389,42 @@ func TestStallDaemon(t *testing.T) {
 		if got := s.rrec.count(dbwire.KindBackup); got != 1 {
 			t.Errorf("the client sent %d Backup requests, want 1", got)
 		}
+	})
+
+	// What is cut although the others read: a request whose own read stops.
+	t.Run("a Verify whose read stops while another connection reads", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.cutWhileOthersRead(t, dbwire.KindVerify, func(ctx context.Context, park func()) (time.Time, error) {
+			park()
+			began := time.Now()
+			return began, s.r.Verify(ctx)
+		})
+	})
+
+	t.Run("an Events whose read stops while another connection reads", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.cutWhileOthersRead(t, dbwire.KindEvents, func(ctx context.Context, park func()) (began time.Time, err error) {
+			err = s.r.View(ctx, func(tx *dbclient.Tx) error {
+				tx.Seq() // the snapshot, before the read stops
+				park()
+				began = time.Now()
+				return tx.Events(ctx, func(uint64, []byte) bool { return true })
+			})
+			return began, err
+		})
+	})
+
+	t.Run("a Backup whose reader stops before its position while another connection reads", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		s.cutWhileOthersRead(t, dbwire.KindBackup, func(ctx context.Context, park func()) (time.Time, error) {
+			park()
+			began := time.Now()
+			_, err := s.r.Backup(ctx, simfs.New("copy"))
+			return began, err
+		})
 	})
 }
 
