@@ -41,9 +41,12 @@ func (c *session) backupRequest() bool {
 	defer pl.end()
 
 	s.gate.Lock()
+	pl.useOwn()
 	var once sync.Once
 	release := func() { once.Do(s.gate.Unlock) }
-	_, err := logdb.Backup(c.ctx, s.logFS, &backupDst{c: c, e: e}, func(p logdb.Position) error {
+	// s.logFS counts for the server too, so that a Commit that waits at the gate sees this reader move.
+	src := &progressFS{FS: s.logFS, moved: &pl.own}
+	_, err := logdb.Backup(c.ctx, src, &backupDst{c: c, e: e}, func(p logdb.Position) error {
 		if err := s.hook("backup:gate"); err != nil {
 			return err
 		}

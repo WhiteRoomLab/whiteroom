@@ -98,7 +98,8 @@ func (c *session) eventsRequest() bool {
 	e := &dbwire.Enc{W: c.wr}
 	p := c.pulse(c.cancel)
 	defer p.end()
-	err := c.s.db.Events(c.ctx, func(ev logdb.Event) bool {
+	p.useOwn()
+	err := c.s.db.Events(p.ctx(), func(ev logdb.Event) bool {
 		if ev.Seq > seq {
 			return false
 		}
@@ -130,7 +131,14 @@ func (c *session) verifyRequest() bool {
 	c.wr.Begin(dbwire.KindOK)
 	p := c.pulse(c.cancel)
 	defer p.end()
-	err := c.s.db.Verify(c.ctx)
+	select {
+	case c.s.turn <- struct{}{}:
+	case <-c.ctx.Done():
+		return false
+	}
+	p.useOwn()
+	err := c.s.db.Verify(p.ctx())
+	<-c.s.turn
 	p.end()
 	switch {
 	case c.ctx.Err() != nil:
