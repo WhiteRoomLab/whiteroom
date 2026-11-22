@@ -37,14 +37,18 @@ func (c *session) backupRequest() bool {
 	s := c.s
 	c.wr.Begin(dbwire.KindOK)
 	e := &dbwire.Enc{W: c.wr}
-	pl := c.pulse(c.cancel)
+	pl := c.pulse(c.cancel, &s.gateBy)
 	defer pl.end()
 
 	s.gate.Lock()
-	pl.useOwn()
+	pl.hold(&s.gateBy)
 	var once sync.Once
-	release := func() { once.Do(s.gate.Unlock) }
-	// s.logFS counts for the server too, so that a Commit that waits at the gate sees this reader move.
+	release := func() {
+		once.Do(func() {
+			s.gateBy.Store(nil)
+			s.gate.Unlock()
+		})
+	}
 	src := &progressFS{FS: s.logFS, moved: &pl.own}
 	_, err := logdb.Backup(c.ctx, src, &backupDst{c: c, e: e}, func(p logdb.Position) error {
 		if err := s.hook("backup:gate"); err != nil {

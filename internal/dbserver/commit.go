@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
@@ -150,7 +151,8 @@ func (c *session) commitRequest() bool {
 		return c.fail(code, msg)
 	}
 	c.wr.Begin(dbwire.KindOK)
-	p := c.pulse(nil)
+	// The wait of the bucket counts for nothing: the writer sends one Commit at a time, so it is at most a second.
+	p := c.pulse(nil, nil)
 	defer p.end()
 	if err := c.s.bucket.take(c.ctx); err != nil {
 		return false
@@ -199,8 +201,14 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 	s := c.s
 	var mark time.Time
 	err := func() error {
+		p.wait.Store(&s.gateBy)
 		s.gate.Lock()
-		defer s.gate.Unlock()
+		p.wait.Store(&s.turnBy) // before the others see it hold the gate
+		s.gateBy.Store(p)
+		defer func() {
+			s.gateBy.Store(nil)
+			s.gate.Unlock()
+		}()
 		if err := s.hook("commit:gate"); err != nil {
 			return err
 		}
@@ -209,12 +217,18 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 		case <-c.ctx.Done():
 			return c.ctx.Err()
 		}
-		defer func() { <-s.turn }()
+		s.writeTo.Store(&p.own)
+		p.hold(&s.turnBy)
+		defer func() {
+			s.turnBy.Store(nil)
+			s.writeTo.Store(nil)
+			<-s.turn
+		}()
 		return s.db.Update(c.ctx, func(tx *logdb.Tx) error {
 			if have := tx.Seq(); have != expected {
 				return &refusal{dbwire.CodeSeq, fmt.Sprintf("the last sequence number is %d, not the expected %d", have, expected)}
 			}
-			return c.apply(tx, ops, func() []byte {
+			return c.apply(tx, ops, &p.own, func() []byte {
 				mark = s.now().UTC()
 				return dbwire.AppendMark(nil, mark)
 			})
@@ -238,7 +252,9 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 	return c.fail(dbwire.CodeFailed, safeText(err))
 }
 
-func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, markFn func() []byte) error {
+// apply puts the staged objects and the ops into tx, and adds 1 to steps for each of them: the work of f is in memory, and
+// the engine calls no Err in it.
+func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, steps *atomic.Uint64, markFn func() []byte) error {
 	var before uint64 // the schema version that the store has, 0 if it has none
 	if v, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema)); ok {
 		before, _ = schemaVersion(v)
@@ -247,9 +263,11 @@ func (c *session) apply(tx *logdb.Tx, ops []dbwire.Op, markFn func() []byte) err
 		if _, err := tx.PutObject(c.staged.data[hash]); err != nil {
 			return err
 		}
+		steps.Add(1)
 	}
 	heads := false
 	for i, o := range ops {
+		steps.Add(1)
 		var err error
 		switch o.Kind {
 		case dbwire.OpPut:
