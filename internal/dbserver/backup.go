@@ -45,7 +45,7 @@ func (c *session) backupRequest() bool {
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
-			s.gateBy.Store(nil)
+			s.gateBy.Store(nil) // before the Unlock: the next holder stores itself once it has the gate
 			s.gate.Unlock()
 		})
 	}

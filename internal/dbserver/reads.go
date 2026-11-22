@@ -138,7 +138,7 @@ func (c *session) verifyRequest() bool {
 	}
 	p.hold(&s.turnBy)
 	err := s.db.Verify(p.ctx())
-	s.turnBy.Store(nil)
+	s.turnBy.Store(nil) // before the turn goes: the next holder stores itself once it has it
 	<-s.turn
 	p.end()
 	switch {

@@ -206,7 +206,7 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 		p.wait.Store(&s.turnBy) // before the others see it hold the gate
 		s.gateBy.Store(p)
 		defer func() {
-			s.gateBy.Store(nil)
+			s.gateBy.Store(nil) // before the Unlock: the next holder stores itself once it has the gate
 			s.gate.Unlock()
 		}()
 		if err := s.hook("commit:gate"); err != nil {
@@ -220,7 +220,7 @@ func (c *session) update(expected uint64, ops []dbwire.Op, p *pulser) bool {
 		s.writeTo.Store(&p.own)
 		p.hold(&s.turnBy)
 		defer func() {
-			s.turnBy.Store(nil)
+			s.turnBy.Store(nil) // before the turn goes: the next holder stores itself once it has it
 			s.writeTo.Store(nil)
 			<-s.turn
 		}()
