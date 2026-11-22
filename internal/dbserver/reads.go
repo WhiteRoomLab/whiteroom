@@ -96,9 +96,8 @@ func (c *session) eventsRequest() bool {
 	seq := c.snap.seq
 	c.wr.Begin(dbwire.KindOK)
 	e := &dbwire.Enc{W: c.wr}
-	p := c.pulse(c.cancel)
+	p := c.pulse(c.cancel, nil)
 	defer p.end()
-	p.useOwn()
 	err := c.s.db.Events(p.ctx(), func(ev logdb.Event) bool {
 		if ev.Seq > seq {
 			return false
@@ -129,16 +128,18 @@ func (c *session) verifyRequest() bool {
 		return false
 	}
 	c.wr.Begin(dbwire.KindOK)
-	p := c.pulse(c.cancel)
+	s := c.s
+	p := c.pulse(c.cancel, &s.turnBy)
 	defer p.end()
 	select {
-	case c.s.turn <- struct{}{}:
+	case s.turn <- struct{}{}:
 	case <-c.ctx.Done():
 		return false
 	}
-	p.useOwn()
-	err := c.s.db.Verify(p.ctx())
-	<-c.s.turn
+	p.hold(&s.turnBy)
+	err := s.db.Verify(p.ctx())
+	s.turnBy.Store(nil) // before the turn goes: the next holder stores itself once it has it
+	<-s.turn
 	p.end()
 	switch {
 	case c.ctx.Err() != nil:

@@ -23,7 +23,7 @@ import (
 )
 
 // fsControl makes the calls of the files of a ctlFS wait: each read for delay, and the call of op that comes after skip
-// others, until the call that blocked it is let go.
+// others, until the call that blocked it is let go. It counts the calls of any op, and the reads, as they begin.
 type fsControl struct {
 	mu       sync.Mutex
 	delay    time.Duration
@@ -33,6 +33,7 @@ type fsControl struct {
 	release  chan struct{}
 	releases []func()
 	reads    atomic.Int64
+	calls    atomic.Int64
 }
 
 func (c *fsControl) setDelay(d time.Duration) {
@@ -64,6 +65,7 @@ func (c *fsControl) releaseAll() {
 }
 
 func (c *fsControl) before(op string) {
+	c.calls.Add(1)
 	if op == "read" {
 		c.reads.Add(1)
 	}
@@ -199,16 +201,10 @@ func (p *pulseFixture) fill() {
 	p.waitSessions(0)
 }
 
-// quiet waits until the engine has made no call that has returned for a while.
+// quiet waits until the files of the engine have had no read, write or sync for a while.
 func (p *pulseFixture) quiet() {
 	p.t.Helper()
-	last, since := p.srv.moved.Load(), time.Now()
-	eventually(p.t, "the engine to be quiet", func() bool {
-		if now := p.srv.moved.Load(); now != last {
-			last, since = now, time.Now()
-		}
-		return time.Since(since) > 5*p.pulse
-	})
+	p.settled("the engine to be quiet", &p.ctl.calls)
 }
 
 // A frame is a frame of a reply as it is on the wire.
@@ -389,6 +385,22 @@ func (p *pulseFixture) mover(m *client) (stop func()) {
 			close(quit)
 			<-done
 		})
+	}
+}
+
+// checkSilent makes the daemon move for 20 intervals, by reading from the connection m, which holds a snapshot, and checks
+// that the requests that wait on others write no pulse meanwhile; it first waits until the pulses have stopped.
+func (p *pulseFixture) checkSilent(t *testing.T, m *client) {
+	t.Helper()
+	p.settled("the pulses to stop", &p.pulses)
+	reads, pulses := p.ctl.reads.Load(), p.pulses.Load()
+	stop := p.mover(m)
+	defer stop()
+	eventually(t, "the daemon to move", func() bool { return p.ctl.reads.Load() >= reads+20 })
+	time.Sleep(20 * p.pulse)
+	stop()
+	if got := p.pulses.Load() - pulses; got != 0 {
+		t.Errorf("%d pulses were written while the daemon moved and the requests that wait did not", got)
 	}
 }
 
@@ -1028,8 +1040,8 @@ func TestPulseWriteFails(t *testing.T) {
 		}
 	})
 
-	// The Commit waits for the Verify of another connection, which is stuck: its pulse is written when the Verify has
-	// moved, and fails. The Verify goes on, and the Commit is made after it.
+	// The Commit waits for the Verify of another connection, which is stuck: its pulse, which is written when it begins to
+	// watch the Verify and each time the Verify moves, fails. The Verify goes on, and the Commit is made after it.
 	t.Run("Commit", func(t *testing.T) {
 		entered := make(chan struct{}, 1)
 		var armed atomic.Bool
@@ -1088,11 +1100,11 @@ func TestPulseWriteFails(t *testing.T) {
 		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
 		c.wr.Begin(dbwire.KindOK)
 		var aborted atomic.Int64
-		p := c.pulse(func() { aborted.Add(1) })
+		p := c.pulse(func() { aborted.Add(1) }, nil)
 		_ = peer.Close()
-		f.srv.moved.Add(1)
+		p.own.Add(1)
 		eventually(t, "the pulse that fails to abort", func() bool { return aborted.Load() > 0 })
-		f.srv.moved.Add(1)
+		p.own.Add(1)
 		time.Sleep(20 * time.Millisecond)
 		p.end()
 		if n := aborted.Load(); n != 1 {
@@ -1353,42 +1365,316 @@ func TestProgressFS(t *testing.T) {
 	})
 }
 
-// TestProgressOfServer: the engine runs on a file system that counts, and the originals, in files/, do not.
-func TestProgressOfServer(t *testing.T) {
-	f := newFixture(t, nil)
-	w := f.connect(dbwire.RoleWriter)
-	before := f.srv.moved.Load()
-	w.mustCommit(put(2, "k", "v"))
-	if f.srv.moved.Load() == before {
-		t.Error("a commit made no call of the files of the engine that was counted")
-	}
-	last, since := f.srv.moved.Load(), time.Now()
-	eventually(t, "the engine to be quiet", func() bool {
-		if now := f.srv.moved.Load(); now != last {
-			last, since = now, time.Now()
+// TestWriteFS: the write calls of the file system and of the files that it opens are counted once each, when they have
+// returned, whether they have failed or not, into the count that to points at, and the others are not: not the reads, and not
+// the calls that only the checkpoint of the engine makes, which are told by their names.
+func TestWriteFS(t *testing.T) {
+	var to atomic.Pointer[atomic.Uint64]
+	var moved atomic.Uint64
+	to.Store(&moved)
+	root := &writeFS{FS: simfs.New("data"), to: &to}
+	count := func(name string, want uint64, call func()) {
+		t.Helper()
+		before := moved.Load()
+		call()
+		if got := moved.Load() - before; got != want {
+			t.Errorf("%s was counted %d times, want %d", name, got, want)
 		}
-		return time.Since(since) > 50*time.Millisecond
+	}
+	ok := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sub vfs.FS
+	count("Mkdir", 1, func() { ok(root.Mkdir("d", 0o700)) })
+	count("Mkdir that fails", 1, func() {
+		if err := root.Mkdir("d", 0o700); err == nil {
+			t.Fatal("Mkdir() of a directory that exists succeeded")
+		}
 	})
-	if _, err := w.putOriginal([]byte("an original")); err != nil {
-		t.Fatal(err)
+	count("Sub", 0, func() {
+		var err error
+		sub, err = root.Sub("d")
+		ok(err)
+	})
+	count("Name", 0, func() { _ = sub.Name() })
+
+	var file vfs.File
+	count("OpenFile of the Sub", 1, func() {
+		var err error
+		file, err = sub.OpenFile("f", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		ok(err)
+	})
+	count("OpenFile that fails", 1, func() {
+		if f, err := root.OpenFile("d/f", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil || f != nil {
+			t.Fatalf("OpenFile() of a file that exists = %v, %v", f, err)
+		}
+	})
+	count("Open that fails", 0, func() {
+		if f, err := root.Open("d/missing"); err == nil || f != nil {
+			t.Fatalf("Open() of a file that is missing = %v, %v", f, err)
+		}
+	})
+	buf := make([]byte, 8)
+	calls := func(file vfs.File) []struct {
+		name string
+		want uint64
+		call func() error
+	} {
+		return []struct {
+			name string
+			want uint64
+			call func() error
+		}{
+			{"Write", 1, func() error { _, err := file.Write([]byte("0123456789")); return err }},
+			{"WriteAt", 1, func() error { _, err := file.WriteAt([]byte("ab"), 2); return err }},
+			{"Sync", 1, func() error { return file.Sync() }},
+			{"Seek", 0, func() error { _, err := file.Seek(0, io.SeekStart); return err }},
+			{"Read", 0, func() error { _, err := file.Read(buf); return err }},
+			{"ReadAt", 0, func() error { _, err := file.ReadAt(buf, 1); return err }},
+			{"Stat", 0, func() error { _, err := file.Stat(); return err }},
+			{"Truncate", 1, func() error { return file.Truncate(4) }},
+		}
 	}
-	if now := f.srv.moved.Load(); now != last {
-		t.Errorf("an original moved the count by %d", now-last)
+	for _, tc := range calls(file) {
+		count("File."+tc.name, tc.want, func() { ok(tc.call()) })
 	}
-	if f.srv.logFS.(*progressFS).moved != f.srv.moved {
-		t.Error("the file system of the engine does not count into the count of the server")
+	count("File.Close", 0, func() { ok(file.Close()) })
+	count("File.Write that fails", 1, func() {
+		if _, err := file.Write([]byte("x")); err == nil {
+			t.Fatal("Write() of a file that is closed succeeded")
+		}
+	})
+	var dir vfs.File
+	count("Open of a directory", 0, func() {
+		var err error
+		dir, err = root.Open("d")
+		ok(err)
+	})
+	count("File.ReadDir", 0, func() {
+		_, err := dir.ReadDir(-1)
+		ok(err)
+	})
+	_ = dir.Close()
+
+	count("Lstat", 0, func() { _, err := root.Lstat("d/f"); ok(err) })
+	count("ReadDir", 0, func() { _, err := root.ReadDir("d"); ok(err) })
+	count("Lock", 0, func() {
+		unlock, err := root.Lock("d/f", vfs.Shared)
+		ok(err)
+		ok(unlock())
+	})
+	count("SyncDir", 1, func() { ok(root.SyncDir("d")) })
+	count("Rename", 1, func() { ok(root.Rename("d/f", "d/g")) })
+	count("Remove", 1, func() { ok(root.Remove("d/g")) })
+	count("Remove that fails", 1, func() {
+		if err := root.Remove("d/g"); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("Remove() of a file that was removed: %v", err)
+		}
+	})
+
+	// The checkpoint of the engine: its temporary file, the rename of it, and the sync of the directory of the store.
+	t.Run("the calls of the checkpoint", func(t *testing.T) {
+		var tmp vfs.File
+		count("OpenFile of the temporary file", 0, func() {
+			var err error
+			tmp, err = root.OpenFile(".tmp-checkpoint-x", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			ok(err)
+		})
+		for _, tc := range calls(tmp) {
+			if tc.name == "Write" || tc.name == "WriteAt" || tc.name == "Sync" || tc.name == "Truncate" {
+				count("File."+tc.name+" of it", 0, func() { ok(tc.call()) })
+			}
+		}
+		_ = tmp.Close()
+		count("Rename of it to the checkpoint", 0, func() { ok(root.Rename(".tmp-checkpoint-x", "checkpoint")) })
+		count("SyncDir of the store", 0, func() { ok(root.SyncDir(".")) })
+		count("OpenFile of another temporary file", 0, func() {
+			f, err := root.OpenFile(".tmp-checkpoint-y", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			ok(err)
+			_ = f.Close()
+		})
+		count("Remove of it", 0, func() { ok(root.Remove(".tmp-checkpoint-y")) })
+
+		// Only those names: the temporary files of the objects are in directories, and the log and the head are the
+		// Update's.
+		var obj vfs.File
+		count("OpenFile of a temporary file of an object", 1, func() {
+			var err error
+			obj, err = root.OpenFile("d/.tmp-1", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			ok(err)
+		})
+		count("Write of it", 1, func() { _, err := obj.Write([]byte("x")); ok(err) })
+		_ = obj.Close()
+		count("Rename of it", 1, func() { ok(root.Rename("d/.tmp-1", "d/obj")) })
+		count("SyncDir of its directory", 1, func() { ok(root.SyncDir("d")) })
+		var head vfs.File
+		count("OpenFile of the head", 1, func() {
+			var err error
+			head, err = root.OpenFile("head", os.O_RDWR|os.O_CREATE, 0o600)
+			ok(err)
+		})
+		count("WriteAt of it", 1, func() { _, err := head.WriteAt([]byte("x"), 0); ok(err) })
+		_ = head.Close()
+	})
+
+	t.Run("no count", func(t *testing.T) {
+		to.Store(nil)
+		defer to.Store(&moved)
+		count("Mkdir", 0, func() { ok(root.Mkdir("e", 0o700)) })
+		count("OpenFile", 0, func() {
+			f, err := root.OpenFile("e/f", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+			ok(err)
+			count("Write", 0, func() { _, err := f.Write([]byte("x")); ok(err) })
+			count("Sync", 0, func() { ok(f.Sync()) })
+			_ = f.Close()
+		})
+	})
+
+	// A call that has not returned is not counted: the Commit has made no progress until it has.
+	t.Run("a call is counted after it has returned", func(t *testing.T) {
+		ctl := &fsControl{}
+		var moved atomic.Uint64
+		var to atomic.Pointer[atomic.Uint64]
+		to.Store(&moved)
+		root := &writeFS{FS: &ctlFS{FS: simfs.New("data"), c: ctl}, to: &to}
+		f, err := root.OpenFile("f", os.O_RDWR|os.O_CREATE, 0o600)
+		ok(err)
+		defer func() { _ = f.Close() }()
+		for _, tc := range []struct {
+			name, op string
+			want     uint64
+			call     func() error
+		}{
+			{"Write", "write", 1, func() error { _, err := f.Write([]byte("x")); return err }},
+			{"WriteAt", "write", 1, func() error { _, err := f.WriteAt([]byte("x"), 0); return err }},
+			{"Sync", "sync", 1, func() error { return f.Sync() }},
+			{"ReadAt", "read", 0, func() error { _, err := f.ReadAt(make([]byte, 1), 0); return err }},
+		} {
+			blocked, release := ctl.block(tc.op, 0)
+			before := moved.Load()
+			done := make(chan error, 1)
+			go func() { done <- tc.call() }()
+			await(t, blocked, tc.name+" to be called")
+			if got := moved.Load() - before; got != 0 {
+				t.Errorf("%s was counted %d times before it returned", tc.name, got)
+			}
+			release()
+			if err := <-done; err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := moved.Load() - before; got != tc.want {
+				t.Errorf("%s was counted %d times after it returned, want %d", tc.name, got, tc.want)
+			}
+		}
+	})
+}
+
+// TestWritesOfServer: the engine runs on a file system that adds its writes to the count of the Commit whose Update has the
+// turn: an Update moves it, and a checkpoint of the engine, the reads of the engine (an object, the events, a Verify, a
+// Backup) and the originals, in files/, do not.
+func TestWritesOfServer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(testing.TB, func(*Options)) *fixture
+	}{{"simfs", newFixture}, {"dir", newDirFixture}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.open(t, nil)
+			w, r, b := f.connect(dbwire.RoleWriter), f.connect(dbwire.RoleReader), f.connect(dbwire.RoleReader)
+			seq := w.mustSnapshot()
+			hash, err := w.putObject(strings.Repeat("o", 600))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := w.commit(seq, put(2, "a", "v"), event("e")); err != nil {
+				t.Fatal(err)
+			}
+			r.mustSnapshot()
+
+			var n atomic.Uint64
+			f.srv.writeTo.Store(&n)
+			defer f.srv.writeTo.Store(nil)
+			if fsys, ok := f.srv.logFS.(*writeFS); !ok || fsys.to != f.srv.writeTo {
+				t.Fatalf("the file system of the engine is %T: it does not count into writeTo", f.srv.logFS)
+			}
+			moves := func(call func()) uint64 {
+				t.Helper()
+				before := n.Load()
+				call()
+				return n.Load() - before
+			}
+			update := func(key string) {
+				t.Helper()
+				if err := f.db().Update(context.Background(), func(tx *logdb.Tx) error {
+					if err := tx.Put(2, []byte(key), []byte("v")); err != nil {
+						return err
+					}
+					return tx.AppendEvent([]byte("e"))
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			notMoved := func(what string, call func()) {
+				t.Helper()
+				if got := moves(call); got != 0 {
+					t.Errorf("%s moved the count by %d", what, got)
+				}
+			}
+
+			if got := moves(func() { update("b") }); got < 3 {
+				t.Errorf("an Update moved the count by %d, want at least 3: the record, its sync and the head", got)
+			}
+			notMoved("a Checkpoint", func() {
+				if err := f.db().Checkpoint(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.srv.logFS.Lstat("checkpoint"); err != nil {
+					t.Fatalf("the checkpoint was not written: %v", err)
+				}
+			})
+			notMoved("an Object", func() {
+				if found, _, err := r.object(hash); err != nil || !found {
+					t.Errorf("Object: found %v, %v", found, err)
+				}
+			})
+			notMoved("Events", func() {
+				if _, err := r.events(); err != nil {
+					t.Error(err)
+				}
+			})
+			notMoved("a Verify", func() {
+				if err := b.verify(); err != nil {
+					t.Error(err)
+				}
+			})
+			notMoved("a Backup", func() {
+				if _, err := b.backup(nil); err != nil {
+					t.Error(err)
+				}
+			})
+			notMoved("a PutOriginal", func() {
+				if _, err := w.putOriginal([]byte("an original")); err != nil {
+					t.Error(err)
+				}
+			})
+
+			f.srv.writeTo.Store(nil)
+			notMoved("an Update when no Commit has the turn", func() { update("c") })
+		})
 	}
 }
 
 // TestPulserEnd: end waits for a pulse that is being written, and a pulse that waited for the lock is not written after it.
 func TestPulserEnd(t *testing.T) {
-	setup := func(t *testing.T) (*fixture, *session, net.Conn, *pulser) {
+	setup := func(t *testing.T) (*session, net.Conn, *pulser) {
 		f := newFixture(t, func(o *Options) { o.Pulse = time.Millisecond })
 		server, peer := net.Pipe()
 		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
 		c.wr.Begin(dbwire.KindOK)
-		return f, c, peer, c.pulse(nil)
+		return c, peer, c.pulse(nil, nil)
 	}
 	// silent fails the test unless nothing is written to the peer in a while.
 	silent := func(t *testing.T, peer net.Conn) {
@@ -1400,8 +1686,8 @@ func TestPulserEnd(t *testing.T) {
 	}
 
 	t.Run("waits for a pulse that it is writing", func(t *testing.T) {
-		f, _, peer, p := setup(t)
-		f.srv.moved.Add(1)
+		_, peer, p := setup(t)
+		p.own.Add(1)
 		eventually(t, "a pulse to wait for the peer", func() bool {
 			return blockedIn("dbserver.(*pulser).fire", "net.(*pipe).Write")
 		})
@@ -1436,7 +1722,7 @@ func TestPulserEnd(t *testing.T) {
 		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
 		c.wr.Begin(dbwire.KindOK)
-		p := c.pulse(nil)
+		p := c.pulse(nil, nil)
 		p.end()
 		if p.t.Stop() {
 			t.Error("the timer was still pending after end")
@@ -1444,9 +1730,9 @@ func TestPulserEnd(t *testing.T) {
 	})
 
 	t.Run("does not write a pulse that waited for the lock", func(t *testing.T) {
-		f, c, peer, p := setup(t)
+		c, peer, p := setup(t)
 		c.pulseMu.Lock()
-		f.srv.moved.Add(1)
+		p.own.Add(1)
 		eventually(t, "the timer to wait for the lock", func() bool {
 			return blockedIn("dbserver.(*pulser).fire", "Mutex).lockSlow")
 		})
@@ -1511,10 +1797,10 @@ func TestPulseOwnProgress(t *testing.T) {
 			p.ctl.setDelay(0)
 			stop := p.mover(m)
 			defer stop()
-			moved := p.srv.moved.Load()
+			reads := p.ctl.reads.Load()
 			p.checkStuck(t, blocked)
-			if got := p.srv.moved.Load() - moved; got < 20 {
-				t.Errorf("the engine of the daemon moved %d times while the request was stuck, want at least 20", got)
+			if got := p.ctl.reads.Load() - reads; got < 20 {
+				t.Errorf("the engine of the daemon read %d times while the request was stuck, want at least 20", got)
 			}
 			if p.pulses.Load() == 0 {
 				t.Error("no pulse was written before the engine was stuck")
@@ -1528,9 +1814,32 @@ func TestPulseOwnProgress(t *testing.T) {
 	}
 }
 
+// waiting reports whether a request of each kind is waiting: a Verify for the turn, a Commit for the turn inside the gate, a
+// Backup for the gate.
+func waiting(kinds ...string) func() bool {
+	return func() bool {
+		for _, kind := range kinds {
+			ok := false
+			switch kind {
+			case "Verify":
+				ok = blockedIn("dbserver.(*session).verifyRequest", "[select")
+			case "Commit":
+				ok = blockedIn("dbserver.(*session).update", "[select")
+			case "Backup":
+				ok = blockedIn("dbserver.(*session).backupRequest", "Mutex).lockSlow")
+			}
+			if !ok {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 // TestPulseWhileWaiting: a Verify stuck in the engine holds the turn of the daemon, and the requests behind it, which have no
-// call of the engine of their own to wait for, write pulses while the daemon moves: a Verify and a Commit (inside the gate)
-// that wait for the turn, and a Backup that waits for the gate. The Verify that is stuck writes none.
+// call of the engine of their own to wait for, watch it: a Verify and a Commit (inside the gate) that wait for the turn, and
+// a Backup that waits for the gate. They write no pulse while other connections make the daemon move, and each writes one
+// each time the Verify that is stuck moves. The Verify that is stuck writes none while it does not move.
 func TestPulseWhileWaiting(t *testing.T) {
 	var armed atomic.Bool
 	entered := make(chan struct{}, 1)
@@ -1553,54 +1862,45 @@ func TestPulseWhileWaiting(t *testing.T) {
 	a := ra.replyCounted(dbwire.KindVerify, nil)
 	await(t, blocked, "the Verify to block")
 	p.ctl.setDelay(0)
-	stuck := p.settled("the pulses of the Verify to stop", &a.pulses)
 	b := rb.replyCounted(dbwire.KindVerify, nil)
 	armed.Store(true)
 	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
 	await(t, entered, "the commit to reach its gate")
 	d := rd.replyCounted(dbwire.KindBackup, nil) // after the Commit has the gate: it waits for the Commit, and not the other way
+	eventually(t, "the requests to wait", waiting("Verify", "Commit", "Backup"))
 
-	b0, c0, d0 := b.pulses.Load(), c.pulses.Load(), d.pulses.Load()
-	stop := p.mover(m)
-	defer stop()
-	eventually(t, "the requests that wait to pulse", func() bool {
-		return b.pulses.Load() >= b0+3 && c.pulses.Load() >= c0+3 && d.pulses.Load() >= d0+3
-	})
-	if got := a.pulses.Load(); got != stuck {
-		t.Errorf("the Verify that is stuck wrote %d pulses while the daemon moved", got-stuck)
+	p.checkSilent(t, m)
+	stuck := p.settled("the pulses of the Verify to stop", &a.pulses)
+	p.stepPulses(t, "read", release, 3, b, c, d)()
+	if got := a.pulses.Load(); got <= stuck {
+		t.Error("the Verify did not write a pulse when it moved")
 	}
-	stop()
-	release()
 
-	for _, tc := range []struct {
-		name string
-		r    *counted
-	}{{"Verify", a}, {"Verify that waited", b}, {"Commit", c}, {"Backup", d}} {
-		res := <-tc.r.done
-		if res.err != nil {
-			t.Errorf("%s: %v", tc.name, res.err)
-			continue
-		}
-		if last := res.frames[len(res.frames)-1]; last.kind != dbwire.KindOK {
-			t.Errorf("%s: the last frame is a %v", tc.name, last.kind)
-		}
-	}
+	checkEnded(t, map[string]*counted{"Verify": a, "Verify that waited": b, "Commit": c, "Backup": d})
 	if _, _, err := w.tryCommit(put(2, "y", "1")); err != nil {
 		t.Errorf("a Commit after them: %v", err)
 	}
+	checkNoHolders(t, p.srv)
 }
 
-// stepPulses lets the blocked call of op go and blocks the next one, n times, and each time waits until r writes a pulse.
-// While the engine is blocked nothing else moves it, so the pulse is for the call that went. It returns the release of the
-// call that is blocked at the end.
-func (p *pulseFixture) stepPulses(t *testing.T, op string, release func(), r *counted, n int) func() {
+// stepPulses lets the blocked call of op go and blocks the next one, n times, and each time waits until each of rs writes a
+// pulse. While the engine is blocked nothing else moves it, so the pulse is for the call that went. It returns the release
+// of the call that is blocked at the end.
+func (p *pulseFixture) stepPulses(t *testing.T, op string, release func(), n int, rs ...*counted) func() {
 	t.Helper()
 	for i := range n {
-		base := p.settled("the pulses to stop", &r.pulses)
+		bases := make([]int64, len(rs))
+		for j, r := range rs {
+			bases[j] = p.settled("the pulses to stop", &r.pulses)
+		}
 		blocked, next := p.ctl.block(op, 0)
 		release()
 		await(t, blocked, fmt.Sprintf("the call %d of the engine after the first to block", i+1))
-		eventually(t, fmt.Sprintf("a pulse for the call %d of the engine", i+1), func() bool { return r.pulses.Load() > base })
+		for j, r := range rs {
+			eventually(t, fmt.Sprintf("a pulse of the request %d for the call %d of the engine", j, i+1), func() bool {
+				return r.pulses.Load() > bases[j]
+			})
+		}
 		release = next
 	}
 	return release
@@ -1621,13 +1921,29 @@ func checkEnded(t *testing.T, replies map[string]*counted) {
 	}
 }
 
+// checkNoHolders checks that, once the requests have been answered, none is left as the holder of the gate or the turn, and
+// no Commit is left as the one whose Update writes.
+func checkNoHolders(t *testing.T, s *Server) {
+	t.Helper()
+	if s.gateBy.Load() != nil {
+		t.Error("a request is left as the holder of the gate")
+	}
+	if s.turnBy.Load() != nil {
+		t.Error("a request is left as the holder of the turn")
+	}
+	if s.writeTo.Load() != nil {
+		t.Error("a Commit is left as the one whose Update writes")
+	}
+}
+
 // TestPulseBehindUpdate: a Verify that comes while the Update of a Commit runs waits for the turn, which the Update holds,
-// and writes a pulse for each call of the files of the engine that the Update makes, until it ends: the engine would make
-// the Verify wait for the Update with no call of its own to count.
+// and a Backup waits for the gate, which the Commit holds. The Commit and the two write a pulse for each write of the files
+// of the engine that the Update makes, until it ends: the engine would make the Verify wait for the Update with no call of
+// its own to count.
 func TestPulseBehindUpdate(t *testing.T) {
 	p := setupPulse(t, nil)
 	p.ctl.setDelay(0)
-	w, r := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader)
+	w, r, b := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
 	seq := w.mustSnapshot()
 	for i := range 4 {
 		if _, err := w.putObject(strings.Repeat(fmt.Sprint(i), 600)); err != nil {
@@ -1638,17 +1954,73 @@ func TestPulseBehindUpdate(t *testing.T) {
 	blocked, release := p.ctl.block("write", 0)
 	c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
 	await(t, blocked, "the Update to block in a write")
+	if p.srv.writeTo.Load() == nil {
+		t.Error("no Commit is the one whose Update writes")
+	}
 	v := r.replyCounted(dbwire.KindVerify, nil)
-	eventually(t, "the Verify to wait", func() bool { return blockedIn("dbserver.(*session).verifyRequest", "[select") })
-	p.stepPulses(t, "write", release, v, 3)()
-	checkEnded(t, map[string]*counted{"Commit": c, "Verify": v})
+	bk := b.replyCounted(dbwire.KindBackup, nil)
+	eventually(t, "the Verify and the Backup to wait", waiting("Verify", "Backup"))
+	p.stepPulses(t, "write", release, 3, c, v, bk)()
+	checkEnded(t, map[string]*counted{"Commit": c, "Verify": v, "Backup": bk})
 	if err := r.verify(); err != nil {
 		t.Errorf("a Verify after them: %v", err)
 	}
+	checkNoHolders(t, p.srv)
+}
+
+// TestPulseBehindStuckUpdate: a Commit whose Update is stuck in a sync, or in a write, writes no pulse while other
+// connections make the daemon move, and neither does the Verify that waits for its turn or the Backup that waits for its
+// gate: they watch the Commit, and it makes no progress of its own. A Commit that waits at the gate for the reader of a
+// Backup, which is stuck, does not either.
+func TestPulseBehindStuckUpdate(t *testing.T) {
+	for _, op := range []string{"sync", "write"} {
+		t.Run(op, func(t *testing.T) {
+			p := setupPulse(t, nil)
+			p.ctl.setDelay(0)
+			w, r, b, m := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader),
+				p.connect(dbwire.RoleReader)
+			seq := w.mustSnapshot()
+			m.mustSnapshot()
+			p.quiet()
+			blocked, release := p.ctl.block(op, 0)
+			c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+			await(t, blocked, "the Update to block")
+			v := r.replyCounted(dbwire.KindVerify, nil)
+			bk := b.replyCounted(dbwire.KindBackup, nil)
+			eventually(t, "the Verify and the Backup to wait", waiting("Verify", "Backup"))
+			p.checkSilent(t, m)
+			release()
+			checkEnded(t, map[string]*counted{"Commit": c, "Verify": v, "Backup": bk})
+			if got := w.mustSnapshot(); got != seq+1 {
+				t.Errorf("the last sequence number is %d, want %d: the Commit was not made", got, seq+1)
+			}
+			checkNoHolders(t, p.srv)
+		})
+	}
+
+	t.Run("behind a Backup's reader", func(t *testing.T) {
+		p := setupPulse(t, nil)
+		p.ctl.setDelay(0)
+		w, b, m := p.connect(dbwire.RoleWriter), p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
+		seq := w.mustSnapshot()
+		m.mustSnapshot()
+		p.quiet()
+		blocked, release := p.ctl.block("read", 0)
+		bk := b.replyCounted(dbwire.KindBackup, nil)
+		await(t, blocked, "the reader of the Backup to block")
+		c := w.replyCounted(dbwire.KindCommit, commitBody(seq, put(2, "z", "1"), event("z")))
+		eventually(t, "the Commit to wait for the gate", func() bool {
+			return blockedIn("dbserver.(*session).update", "Mutex).lockSlow")
+		})
+		p.checkSilent(t, m)
+		release()
+		checkEnded(t, map[string]*counted{"Backup": bk, "Commit": c})
+		checkNoHolders(t, p.srv)
+	})
 }
 
 // TestPulseBehindBackupReader: a Commit that waits at the gate while the reader of a Backup opens writes a pulse for each
-// call of the files of the engine that the reader makes: the reader counts for the server too, and not only for its request.
+// call of the files of the engine that the reader makes: it watches the Backup that holds the gate.
 func TestPulseBehindBackupReader(t *testing.T) {
 	p := setupPulse(t, nil)
 	p.ctl.setDelay(0)
@@ -1662,12 +2034,14 @@ func TestPulseBehindBackupReader(t *testing.T) {
 	eventually(t, "the Commit to wait for the gate", func() bool {
 		return blockedIn("dbserver.(*session).update", "Mutex).lockSlow")
 	})
-	p.stepPulses(t, "read", release, c, 3)()
+	p.stepPulses(t, "read", release, 3, c)()
 	checkEnded(t, map[string]*counted{"Backup": bk, "Commit": c})
+	checkNoHolders(t, p.srv)
 }
 
-// TestVerifyTurn: a Verify that waits for the turn ends with its session when its pulse cannot be written, and leaves the
-// turn to the others.
+// TestVerifyTurn: a Verify that waits for the turn does not see that its connection is closed while the Verify that has the
+// turn makes no progress, whatever else the daemon does; when that Verify moves, its pulse cannot be written, and the Verify
+// that waits ends with its session and leaves the turn to the others.
 func TestVerifyTurn(t *testing.T) {
 	p := setupPulse(t, nil)
 	ra, m := p.connect(dbwire.RoleReader), p.connect(dbwire.RoleReader)
@@ -1679,21 +2053,29 @@ func TestVerifyTurn(t *testing.T) {
 	await(t, blocked, "the Verify to block")
 	p.ctl.setDelay(0)
 	b := rb.replyCounted(dbwire.KindVerify, nil)
-	stop := p.mover(m)
-	defer stop()
-	eventually(t, "the Verify that waits to pulse", func() bool { return b.pulses.Load() > 0 })
+	eventually(t, "the Verify to wait", waiting("Verify"))
 	_ = rb.conn.Close()
+	p.checkSilent(t, m)
+	if got := wc.failed.Load(); got != 0 {
+		t.Errorf("%d pulses of the Verify that waits failed while the Verify that has the turn did not move", got)
+	}
+	p.waitSessions(3) // the two that read, and the one whose client is gone
+
+	next, goOn := p.ctl.block("read", 0)
+	release()
+	await(t, next, "the Verify to block again")
 	eventually(t, "a pulse to fail", func() bool { return wc.failed.Load() > 0 })
 	eventually(t, "the pulse that failed to return", func() bool { return pulsers() == 0 })
-	p.waitSessions(2) // the Verify that is stuck, and the one that moves the daemon
-	stop()
-	release()
+	p.waitSessions(2) // the Verify that is stuck, and the one that moved the daemon
+	goOn()
 	if res := <-a.done; res.err != nil {
 		t.Error(res.err)
 	}
+	<-b.done
 	if err := p.connect(dbwire.RoleReader).verify(); err != nil {
 		t.Errorf("a Verify after them: %v", err)
 	}
+	checkNoHolders(t, p.srv)
 }
 
 // TestCommitTurn: a Commit that waits for the turn ends with the Close of the server while the Verify that has the turn is
@@ -1732,46 +2114,144 @@ func TestCommitTurn(t *testing.T) {
 	<-v.done
 }
 
-// TestPulserOwn: a pulser compares the count of the server until useOwn, and its own count after it, from where that is.
-func TestPulserOwn(t *testing.T) {
+// TestPulserChain: a pulser writes a pulse when what it watches has moved since the last look: its own count if it waits for
+// no one, and, if it waits for the holder of a slot, the count of that request, or of the one that it waits for in turn, to the
+// end of the chain. It writes one when the holder changes, and none while the slot has no holder, which is between two
+// requests.
+func TestPulserChain(t *testing.T) {
 	f := newFixture(t, func(o *Options) { o.Pulse = time.Millisecond })
-	server, peer := net.Pipe()
-	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
-	c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
-	c.wr.Begin(dbwire.KindOK)
-	// pulse reads the pulse that the peer is sent, or fails the test if none comes.
-	pulse := func(t *testing.T) {
+	// start makes a pulser that waits for the holder of wait on a pipe. pulse reads the pulse that the peer is sent, or fails
+	// the test if none comes, and silent fails it if one does.
+	start := func(t *testing.T, wait *atomic.Pointer[pulser]) (p *pulser, pulse, silent func()) {
 		t.Helper()
-		_ = peer.SetReadDeadline(time.Now().Add(waitLimit))
-		var got [dbwire.HeaderSize]byte
-		if _, err := io.ReadFull(peer, got[:]); err != nil {
-			t.Fatalf("waiting for a pulse: %v", err)
+		server, peer := net.Pipe()
+		c := &session{s: f.srv, wr: dbwire.NewWriter(server, 4096)}
+		c.wr.Begin(dbwire.KindOK)
+		p = c.pulse(nil, wait)
+		t.Cleanup(func() { _ = server.Close(); _ = peer.Close(); p.end() })
+		pulse = func() {
+			t.Helper()
+			_ = peer.SetReadDeadline(time.Now().Add(waitLimit))
+			var got [dbwire.HeaderSize]byte
+			if _, err := io.ReadFull(peer, got[:]); err != nil {
+				t.Fatalf("waiting for a pulse: %v", err)
+			}
+			if want := [dbwire.HeaderSize]byte{byte(dbwire.KindOK)}; got != want {
+				t.Fatalf("the pulse is %x, want %x", got, want)
+			}
 		}
-		if want := [dbwire.HeaderSize]byte{byte(dbwire.KindOK)}; got != want {
-			t.Fatalf("the pulse is %x, want %x", got, want)
+		silent = func() {
+			t.Helper()
+			_ = peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+			if n, err := peer.Read(make([]byte, dbwire.HeaderSize)); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("the peer read %d bytes (%v) while what the pulser watches did not move", n, err)
+			}
 		}
-	}
-	silent := func(t *testing.T) {
-		t.Helper()
-		_ = peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
-		if n, err := peer.Read(make([]byte, dbwire.HeaderSize)); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("the peer read %d bytes (%v) while the count that the pulser compares did not move", n, err)
-		}
+		return p, pulse, silent
 	}
 
-	f.srv.moved.Add(5)
-	p := c.pulse(nil)
-	f.srv.moved.Add(1)
-	pulse(t)
-	p.own.Add(3)
-	p.useOwn()
-	f.srv.moved.Add(1)
-	silent(t)
-	p.own.Add(1)
-	pulse(t)
-	f.srv.moved.Add(1)
-	silent(t)
-	p.end()
+	t.Run("no one to wait for", func(t *testing.T) {
+		p, pulse, silent := start(t, nil)
+		silent()
+		p.own.Add(1)
+		pulse()
+		silent()
+		p.own.Add(1)
+		pulse()
+	})
+
+	t.Run("a holder", func(t *testing.T) {
+		var slot atomic.Pointer[pulser]
+		h := new(pulser)
+		slot.Store(h)
+		p, pulse, silent := start(t, &slot)
+		silent()
+		p.own.Add(1)
+		silent() // its own count is not what it watches
+		h.own.Add(1)
+		pulse()
+		silent()
+		h.own.Add(1)
+		pulse()
+	})
+
+	t.Run("the holder changes", func(t *testing.T) {
+		var slot atomic.Pointer[pulser]
+		h1, h2 := new(pulser), new(pulser)
+		slot.Store(h1)
+		_, pulse, silent := start(t, &slot)
+		silent()
+		slot.Store(h2)
+		pulse() // another request, with the same count
+		silent()
+		h1.own.Add(1)
+		silent() // it does not hold the slot any more
+	})
+
+	t.Run("no holder", func(t *testing.T) {
+		var slot atomic.Pointer[pulser]
+		p, pulse, silent := start(t, &slot)
+		p.own.Add(1)
+		silent() // between two requests, neither its own count nor any other is compared
+		h := new(pulser)
+		h.own.Add(1)
+		slot.Store(h)
+		pulse()
+		silent()
+		slot.Store(nil)
+		h.own.Add(1)
+		silent()
+		p.own.Add(1)
+		silent()
+	})
+
+	t.Run("the end of a chain", func(t *testing.T) {
+		var slot1, slot2 atomic.Pointer[pulser]
+		h1, h2 := new(pulser), new(pulser)
+		h1.wait.Store(&slot2)
+		slot1.Store(h1)
+		slot2.Store(h2)
+		p, pulse, silent := start(t, &slot1)
+		silent()
+		h1.own.Add(1)
+		silent() // a request in the middle of the chain is not what it watches
+		p.own.Add(1)
+		silent()
+		h2.own.Add(1)
+		pulse()
+		silent()
+		slot2.Store(nil)
+		h2.own.Add(1)
+		silent() // the holder is between two requests
+		h1.own.Add(1)
+		silent()
+		h3 := new(pulser)
+		slot2.Store(h3)
+		pulse()
+		silent()
+		h3.own.Add(1)
+		pulse()
+	})
+}
+
+// TestApplySteps: a Commit adds 1 to its count for each staged object that it puts and each op that it applies: the work of
+// the function of an Update is in memory, and the engine calls no Err in it.
+func TestApplySteps(t *testing.T) {
+	f := newFixture(t, nil)
+	f.connect(dbwire.RoleWriter).mustCommit(put(2, "a", "v"))
+	c := &session{s: f.srv}
+	c.staged.add(hashOf("one"), []byte("one"))
+	c.staged.add(hashOf("two"), []byte("two"))
+	ops := []dbwire.Op{put(2, "b", "v"), put(2, "c", "v"), event("e")}
+	var steps atomic.Uint64
+	if err := f.db().Update(context.Background(), func(tx *logdb.Tx) error {
+		return c.apply(tx, ops, &steps, func() []byte { return dbwire.AppendMark(nil, testBase) })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := steps.Load(), uint64(len(c.staged.order)+len(ops)); got != want {
+		t.Errorf("apply counted %d steps, want %d: the objects and the ops", got, want)
+	}
 }
 
 // TestProgressCtx: the engine calls Err of the context of a Verify before each record of the log and each object, and

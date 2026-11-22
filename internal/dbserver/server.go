@@ -47,8 +47,9 @@ type Options struct {
 	// DataDir is the identity of the data directory, which the reply to a Hello tells; zero: unknown.
 	DataDir dbwire.DirID
 	// Pulse is how often a long request (Verify, Commit, Events, and a Backup until it knows its position) looks whether it
-	// has moved, and writes a pulse into its reply if it has: Verify, Events and a Backup look at their own engine calls
-	// once these have begun, and the rest at the engine as a whole; 0: 5 seconds.
+	// has moved, and writes a pulse into its reply if it has: Verify and Events look at their own calls of the engine, a
+	// Backup at those of its own reader, and a Commit at the operations that it applies and the writes of its own Update; one
+	// that waits for the gate or the turn looks at the request that holds it; 0: 5 seconds.
 	Pulse time.Duration
 	// Hook is called at points of the server, for the tests: "commit:gate" (inside the commit gate, before the Update),
 	// "backup:gate" (while a Backup holds the gate, before it knows its position), "backup:sending" (after it has let the
@@ -74,16 +75,20 @@ type Server struct {
 	bootID [16]byte
 	bucket *bucket
 
-	// moved is the number of calls of the files of the engine that have returned, whichever request made them: a Commit
-	// and a request that waits for another one watch it, and the rest count their own. pulse is the interval of the pulses.
-	moved *atomic.Uint64
-	pulse time.Duration
+	// writeTo is the count of the Commit whose Update holds the turn, which the writes of the engine add to; nil: none.
+	// gateBy and turnBy are the requests that hold the gate and the turn, which those that wait for them watch. pulse is the
+	// interval of the pulses.
+	writeTo *atomic.Pointer[atomic.Uint64]
+	gateBy  atomic.Pointer[pulser]
+	turnBy  atomic.Pointer[pulser]
+	pulse   time.Duration
 	// turn is held by a Verify while its call of the engine runs and by a Commit while its Update runs, which the engine
 	// runs one at a time. The engine calls no Err while one waits for the other, so the daemon holds the queue, where the
-	// one that waits pulses for the engine as a whole, and the Verify that has the turn waits for no Update.
+	// one that waits watches the one that has the turn, and the Verify that has the turn waits for no Update.
 	turn chan struct{}
 
-	// gate is held by a Commit while its Update runs, so that a Backup can keep commits out while its reader opens.
+	// gate is held by a Commit while its Update runs, and while it waits for the turn inside the gate, so that a Backup can
+	// keep commits out while its reader opens.
 	gate    sync.Mutex
 	stopped atomic.Bool
 	maxOps  int // the most ops of a Commit
@@ -182,8 +187,8 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	moved := new(atomic.Uint64)
-	logFS := vfs.FS(&progressFS{FS: sub, moved: moved})
+	writeTo := new(atomic.Pointer[atomic.Uint64])
+	logFS := vfs.FS(&writeFS{FS: sub, to: writeTo})
 	files, err := root.Sub("files")
 	if err != nil {
 		_ = logFS.Close()
@@ -200,7 +205,7 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		_ = files.Close()
 		return nil, err
 	}
-	s := &Server{name: name, db: db, logFS: logFS, files: files, moved: moved, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
+	s := &Server{name: name, db: db, logFS: logFS, files: files, writeTo: writeTo, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
 		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
 		drained: make(chan struct{}), started: time.Now(), turn: make(chan struct{}, 1)}
 	if s.now == nil {
