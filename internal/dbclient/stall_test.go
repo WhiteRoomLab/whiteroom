@@ -976,15 +976,17 @@ const (
 )
 
 // readControl slows the reads of the files of a daemon down, or stops them: each read waits for delay, and, while stuck is
-// set, until free is called. park stops one read, and no other.
+// set, until free is called. park stops one read, and no other; parkSync stops one sync, and no other.
 type readControl struct {
-	delay   atomic.Int64 // a time.Duration
-	stuck   atomic.Bool
-	reads   atomic.Int64
-	armed   atomic.Bool   // set by park, which sets parked first
-	parked  chan struct{} // closed by the read that park stopped
-	release chan struct{}
-	once    sync.Once
+	delay      atomic.Int64 // a time.Duration
+	stuck      atomic.Bool
+	reads      atomic.Int64
+	armed      atomic.Bool   // set by park, which sets parked first
+	parked     chan struct{} // closed by the read that park stopped
+	syncArmed  atomic.Bool   // set by parkSync, which sets syncParked first
+	syncParked chan struct{} // closed by the sync that parkSync stopped
+	release    chan struct{}
+	once       sync.Once
 }
 
 func (c *readControl) wait() {
@@ -1003,10 +1005,23 @@ func (c *readControl) wait() {
 	}
 }
 
+func (c *readControl) waitSync() {
+	if c.syncArmed.CompareAndSwap(true, false) {
+		close(c.syncParked)
+		<-c.release
+	}
+}
+
 // park makes the first read that comes after it wait for free, and closes parked when it does. The reads after it do not.
 func (c *readControl) park(parked chan struct{}) {
 	c.parked = parked
 	c.armed.Store(true)
+}
+
+// parkSync is park for the first Sync of a file that comes after it: a daemon without a checkpoint syncs only in an Update.
+func (c *readControl) parkSync(parked chan struct{}) {
+	c.syncParked = parked
+	c.syncArmed.Store(true)
 }
 
 // free lets the reads that wait go, and the gates of a slowStore, and stops the waits of those that come.
@@ -1052,6 +1067,11 @@ func (x *slowFile) Read(p []byte) (int, error) {
 func (x *slowFile) ReadAt(p []byte, off int64) (int, error) {
 	x.c.wait()
 	return x.File.ReadAt(p, off)
+}
+
+func (x *slowFile) Sync() error {
+	x.c.waitSync()
+	return x.File.Sync()
 }
 
 // slowStore is the real daemon, which pulses every pulseEvery, on a store of some hundred commits in small segments, so
@@ -1122,8 +1142,8 @@ func (s *slowStore) events(ctx context.Context) ([]uint64, error) {
 	return got, err
 }
 
-// mover reads the objects that are in files, in a View of a reader connection of its own, until finish: each read makes
-// calls of the files of the engine return, which move the count of the daemon as a whole.
+// mover reads the objects that are in files, in a View of a reader connection of its own, until finish: the engine is busy,
+// though no request that waits, or whose own read or write has stopped, moves.
 type mover struct {
 	c     *dbclient.Client
 	t     *testing.T
@@ -1172,10 +1192,59 @@ func (m *mover) finish() int64 {
 	return m.reads.Load()
 }
 
+// daemonWaits reports whether a goroutine has all of the names in its stack: the daemon runs in this process. The daemons
+// of the tests that run in parallel are in the same states, so it says that a request is waiting only for one that the
+// test knows by its own signal to have reached the daemon.
+func daemonWaits(names ...string) bool {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	return slices.ContainsFunc(strings.Split(string(buf), "\n\n"), func(g string) bool {
+		return !slices.ContainsFunc(names, func(name string) bool { return !strings.Contains(g, name) })
+	})
+}
+
+// requestEnd is how a request that a test makes in the background ended.
+type requestEnd struct {
+	name  string
+	began time.Time
+	err   error
+}
+
+// cutWhileMoverReads runs the mover m, whose connection is open, until the n requests that send their ends to out have been
+// cut, and then frees what the test stopped, as the cleanup would. The requests have all been sent and wait: none may end
+// before the mover has read, which would show nothing about the reads of the others. It returns the ends by name.
+func (s *slowStore) cutWhileMoverReads(t *testing.T, m *mover, out chan requestEnd, n int) map[string]requestEnd {
+	t.Helper()
+	reads := s.ctl.reads.Load()
+	m.start()
+	eventually(t, "the other connection to read", func() bool { return m.reads.Load() >= 3 })
+	if got := len(out); got != 0 {
+		t.Errorf("%d requests ended before the other connection had read three objects", got)
+	}
+	ends := make(map[string]requestEnd, n)
+	for range n {
+		e := <-out
+		ends[e.name] = e
+	}
+	moved := m.finish()
+	s.ctl.free()
+	if got := s.ctl.reads.Load() - reads; got < 3 || moved < 3 {
+		t.Errorf("the other connection made %d reads of the files, %d of them objects, while the requests were cut, want at least 3", got, moved)
+	}
+	return ends
+}
+
 // cutWhileOthersRead checks that a request whose own read of the files of the engine stops is cut at the limit, though
-// another connection goes on reading them, which keeps the count of the daemon as a whole moving. request calls park where
-// the read is to stop, and returns when the request began; the first read after park, which is the request's since nothing
-// else reads until the mover begins, waits for free. kind is the request that the client must have sent once.
+// another connection goes on reading them. request calls park where the read is to stop, and returns when the request
+// began; the first read after park, which is the request's since nothing else reads until the mover begins, waits for
+// free. kind is the request that the client must have sent once.
 func (s *slowStore) cutWhileOthersRead(t *testing.T, kind dbwire.Kind, request func(ctx context.Context, park func()) (time.Time, error)) {
 	t.Helper()
 	m := s.newMover(t)
@@ -1213,7 +1282,8 @@ func (s *slowStore) cutWhileOthersRead(t *testing.T, kind dbwire.Kind, request f
 // not cut while the engine reads, however slowly, and a Commit that waits for a Verify is not either; nor is a Verify, or a
 // Backup behind a Commit, that waits for a Verify that is slow. When the reads stop, or the daemon waits for what does not
 // come, each of them is cut at the limit, with the error of a daemon that cannot be reached: also when the read that
-// stops is its own, and the reads of the other connections go on.
+// stops is its own, or that of the Verify that it waits for, or the sync of the Commit that it waits for, and the reads of
+// the other connections go on.
 func TestStallDaemon(t *testing.T) {
 	keep := dbclient.Options{Stall: stallKeep}
 	// ranLong checks that a request that the test slowed down took longer than three limits, and that the daemon pulsed.
@@ -1277,7 +1347,7 @@ func TestStallDaemon(t *testing.T) {
 		}
 	})
 
-	// A request that waits for another one has no read of its own to count, so the engine as a whole is what it watches.
+	// A request that waits for another one has no read of its own to count, so it watches the one that it waits for.
 	// slowVerify starts a Verify that reads slowly, and returns when it has begun; the reads are fast again when it ends.
 	slowVerify := func(t *testing.T, s *slowStore) <-chan error {
 		slow, _ := s.open(dbwire.RoleReader, dbclient.Options{Stall: -1})
@@ -1425,6 +1495,113 @@ func TestStallDaemon(t *testing.T) {
 			_, err := s.r.Backup(ctx, simfs.New("copy"))
 			return began, err
 		})
+	})
+
+	// What is cut although the others read: a request that waits for one whose read, or whose sync, has stopped. The reads
+	// of the other connection are not those of the one that it waits for.
+	putX := func(ctx context.Context, w *dbclient.Client) error {
+		return w.Update(ctx, func(tx *dbclient.Tx) error {
+			if err := tx.Put(2, []byte("x"), []byte("y")); err != nil {
+				return err
+			}
+			return tx.AppendEvent([]byte(`{"x":true}`))
+		})
+	}
+	wantNotKnown := func(t *testing.T, err error) {
+		t.Helper()
+		if !strings.Contains(err.Error(), "it is not known whether the commit was made") {
+			t.Errorf("the error is %q, want one that says that it is not known whether the commit was made", err)
+		}
+	}
+
+	t.Run("a Verify, a Commit and a Backup that wait behind a Verify whose read stops, while another connection reads", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		m := s.newMover(t)
+		holder, _ := s.open(dbwire.RoleReader, dbclient.Options{Stall: -1})
+		verifier, vrec := s.open(dbwire.RoleReader, keep)
+		backer, brec := s.open(dbwire.RoleReader, keep)
+		ctx := soon(t)
+		out := make(chan requestEnd, 3)
+		held := make(chan error, 1)
+		parked := make(chan struct{})
+		s.ctl.park(parked)
+		go func() { held <- holder.Verify(bg) }()
+		select {
+		case <-parked:
+		case err := <-held:
+			t.Fatalf("the Verify ended before a read of it stopped: %v", err)
+		}
+		go func() {
+			began := time.Now()
+			out <- requestEnd{"Verify", began, verifier.Verify(ctx)}
+		}()
+		eventually(t, "the Verify to wait for the turn", func() bool {
+			return vrec.count(dbwire.KindVerify) == 1 && daemonWaits("dbserver.(*session).verifyRequest", "[select")
+		})
+		gated := s.gated.Load()
+		go func() {
+			began := time.Now()
+			out <- requestEnd{"Commit", began, putX(ctx, s.w)}
+		}()
+		eventually(t, "the Commit to wait for the turn at its gate", func() bool {
+			return s.gated.Load() > gated && daemonWaits("dbserver.(*session).update", "[select")
+		})
+		go func() {
+			began := time.Now()
+			_, err := backer.Backup(ctx, simfs.New("copy"))
+			out <- requestEnd{"Backup", began, err}
+		}()
+		eventually(t, "the Backup to wait at the gate", func() bool {
+			return brec.count(dbwire.KindBackup) == 1 && daemonWaits("dbserver.(*session).backupRequest", "Mutex).lockSlow")
+		})
+		ends := s.cutWhileMoverReads(t, m, out, 3)
+		for _, name := range []string{"Verify", "Commit", "Backup"} {
+			wantCut(t, ends[name].err, ends[name].began, "", notSent, stallKeep, 1)
+		}
+		wantNotKnown(t, ends["Commit"].err)
+		if got := vrec.count(dbwire.KindVerify); got != 1 {
+			t.Errorf("the client sent %d Verify requests, want 1", got)
+		}
+		if got := brec.count(dbwire.KindBackup); got != 1 {
+			t.Errorf("the client sent %d Backup requests, want 1", got)
+		}
+		must(t, <-held)
+	})
+
+	t.Run("a Commit whose sync stops, and a Verify that waits for it, while another connection reads", func(t *testing.T) {
+		t.Parallel()
+		s := newSlowStore(t, keep)
+		m := s.newMover(t)
+		verifier, vrec := s.open(dbwire.RoleReader, keep)
+		ctx := soon(t)
+		out := make(chan requestEnd, 2)
+		parked := make(chan struct{})
+		s.ctl.parkSync(parked)
+		go func() {
+			began := time.Now()
+			out <- requestEnd{"Commit", began, putX(ctx, s.w)}
+		}()
+		select {
+		case <-parked:
+		case e := <-out:
+			t.Fatalf("the Commit ended before a sync of it stopped: %v", e.err)
+		}
+		go func() {
+			began := time.Now()
+			out <- requestEnd{"Verify", began, verifier.Verify(ctx)}
+		}()
+		eventually(t, "the Verify to wait for the turn", func() bool {
+			return vrec.count(dbwire.KindVerify) == 1 && daemonWaits("dbserver.(*session).verifyRequest", "[select")
+		})
+		ends := s.cutWhileMoverReads(t, m, out, 2)
+		for _, name := range []string{"Commit", "Verify"} {
+			wantCut(t, ends[name].err, ends[name].began, "", notSent, stallKeep, 1)
+		}
+		wantNotKnown(t, ends["Commit"].err)
+		if got := vrec.count(dbwire.KindVerify); got != 1 {
+			t.Errorf("the client sent %d Verify requests, want 1", got)
+		}
 	})
 }
 
