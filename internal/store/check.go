@@ -17,7 +17,8 @@ import (
 const (
 	AreaEngine   = "engine"   // the files of the engine: its log, and its objects
 	AreaIndex    = "index"    // the rows of summaries and references, and the last number, against the documents
-	AreaOriginal = "original" // the originals that the current media documents refer to
+	AreaHistory  = "history"  // the rows of documents against the last versions, the objects of the versions and the revisions
+	AreaOriginal = "original" // the originals that the media documents refer to, in every version
 )
 
 // Problem is one thing that Check finds wrong in a store. Target names the row or the original, "" if the problem is
@@ -43,15 +44,23 @@ var errStop = errors.New("stop")
 
 // Check looks for what is wrong in the store, without writing a file or a record, and calls found with each problem
 // that it finds, until found returns false, which stops it: Check returns nil then, and looks at nothing more. found
-// must not be nil. It looks at three areas in this order (Problem.Area): the engine, with its own check (the log, and
-// the data of every object against its hash); the index, which must have the rows that the current documents and the
-// revisions give, and no other, and a last number that is not below the largest number of the entries (the tables of
-// the operations, the accounts and the sessions are records, which no document gives, and Check does not look at
-// them); and the originals that the current media documents refer to, which are read to their ends, once for each hash,
-// against it. An area that cannot go on, as when the engine cannot read an object, gives one problem, and Check goes
-// on to the next area. A store of the table schema 1 has no index: that is the one problem of its index. Check works in
-// a store that is opened by its writer, and in one that is opened to read only, which may be written at the same time:
-// a store that is right gives no problem to either.
+// must not be nil. It looks at four areas in this order (Problem.Area):
+//   - the engine, with its own check (the log, and the data of every object against its hash);
+//   - the index, which must have the rows that the current documents and the revisions give, and no other, and a last
+//     number that is not below the largest number of the entries;
+//   - the history: each row of documents is the last version of the history of its document, a document that is not
+//     deleted has one and a deleted one has none; the object of each version that is not a deletion, and of each
+//     revision, is there, and has the data of its hash (the objects that the index reads too are read once more, so that
+//     each row that has a problem is named); and entryRevisions and revisions name each other. It names tables, kinds,
+//     IDs, numbers and hashes, never the data of a row;
+//   - the originals that the media documents refer to, which are read to their ends, once for each hash, against it: those
+//     of the current documents, and those that only an earlier version of a medium refers to.
+//
+// It does not look at the tables of the operations, the accounts and the sessions, which are records that no document
+// gives, and not at an original that no document refers to. An area that cannot go on, as when the engine cannot read an
+// object, gives one problem, and Check goes on to the next area. A store of the table schema 1 has no index: that is the
+// one problem of its index. Check works in a store that is opened by its writer, and in one that is opened to read only,
+// which may be written at the same time: a store that is right gives no problem to either.
 //
 // The error of Check is that of ctx, context.Canceled or context.DeadlineExceeded, or one that wraps ErrUnavailable:
 // the daemon cannot be reached, so the check cannot be made, and nothing is known to be wrong. What else goes wrong is a
@@ -66,11 +75,15 @@ func (s *Store) Check(ctx context.Context, found func(Problem) bool) error {
 			return nil
 		}
 	}
-	media, err := c.checkIndex(s)
+	media, mediaErr, err := c.checkIndex(s)
 	if err != nil || c.stopped {
 		return err
 	}
-	return c.checkOriginals(s, media)
+	earlier, err := c.checkHistory(s)
+	if err != nil || c.stopped {
+		return err
+	}
+	return c.checkOriginals(s, media, mediaErr, earlier)
 }
 
 // checker is a Check: the problems go to found, and stopped is set when it has returned false.
@@ -107,11 +120,9 @@ type mediaOf map[string][]string
 // checkIndex checks the index, and finds the originals of the current media documents, in one View. It returns an
 // error only if ctx has ended or the daemon cannot be reached. If the View itself fails otherwise, as a reader does when
 // it cannot read the commits that have become durable, that is one problem of the index, and the originals are not
-// known: the next area gives one problem too.
-func (c *checker) checkIndex(s *Store) (mediaOf, error) {
-	var media mediaOf
-	var mediaErr error
-	err := s.View(c.ctx, func(t *Tx) error {
+// known: mediaErr says why, and checkOriginals gives one problem.
+func (c *checker) checkIndex(s *Store) (media mediaOf, mediaErr, err error) {
+	err = s.View(c.ctx, func(t *Tx) error {
 		// First, for the originals to be found when the index cannot be computed.
 		if media, mediaErr = mediaHashes(t); unchecked(mediaErr) {
 			return mediaErr
@@ -127,17 +138,14 @@ func (c *checker) checkIndex(s *Store) (mediaOf, error) {
 	})
 	switch {
 	case c.stopped:
-		return nil, nil
+		return nil, nil, nil
 	case unchecked(err):
-		return nil, err
+		return nil, nil, err
 	case err != nil:
 		media, mediaErr = nil, err
 		c.report(Problem{Area: AreaIndex, Detail: err.Error()})
 	}
-	if mediaErr != nil && !c.stopped {
-		c.report(Problem{Area: AreaOriginal, Detail: "the media documents cannot be read: " + mediaErr.Error()})
-	}
-	return media, nil
+	return media, mediaErr, nil
 }
 
 // mediaHashes returns the media documents of t by the hashes of the originals that they refer to. A document that does
@@ -271,9 +279,21 @@ func docLabel(kind content.RefKind, id string) string {
 	return string(kind) + " " + id
 }
 
-// checkOriginals reads each original of media, in the order of their hashes, to its end.
-func (c *checker) checkOriginals(s *Store, media mediaOf) error {
-	for _, hash := range slices.Sorted(maps.Keys(media)) {
+// checkOriginals reads each original that media, the current media documents, and earlier, their other versions, refer to,
+// in the order of the hashes, to its end. mediaErr is why media is not known, if it is not.
+func (c *checker) checkOriginals(s *Store, media mediaOf, mediaErr error, earlier earlierOf) error {
+	if mediaErr != nil && !c.report(Problem{Area: AreaOriginal,
+		Detail: "the media documents cannot be read: " + mediaErr.Error()}) {
+		return nil
+	}
+	hashes := slices.Collect(maps.Keys(media))
+	for hash := range earlier {
+		if _, ok := media[hash]; !ok {
+			hashes = append(hashes, hash)
+		}
+	}
+	slices.Sort(hashes)
+	for _, hash := range hashes {
 		if err := c.ctx.Err(); err != nil {
 			return err
 		}
@@ -282,11 +302,33 @@ func (c *checker) checkOriginals(s *Store, media mediaOf) error {
 			return err
 		}
 		if err != nil && !c.report(Problem{Area: AreaOriginal, Target: hash,
-			Detail: fmt.Sprintf("%s (of the media %s)", err, strings.Join(media[hash], ", "))}) {
+			Detail: fmt.Sprintf("%s (%s)", err, referrers(media[hash], earlier[hash]))}) {
 			return nil
 		}
 	}
 	return nil
+}
+
+// referrers says which media documents, and which of their other versions, refer to an original.
+func referrers(media []string, earlier []mediaVersion) string {
+	var b strings.Builder
+	if len(media) > 0 {
+		b.WriteString("of the media " + strings.Join(media, ", "))
+	}
+	if len(earlier) > 0 {
+		if len(media) > 0 {
+			b.WriteString(", and of earlier versions: ")
+		} else {
+			b.WriteString("only of earlier versions: ")
+		}
+		for i, v := range earlier {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "media %s version %d", v.id, v.seq)
+		}
+	}
+	return b.String()
 }
 
 // verifyOriginal reads the original with hash to its end, which checks its data against the hash, and checks ctx before

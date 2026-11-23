@@ -74,6 +74,50 @@ func fillChecked(t *testing.T, s *Store) {
 	fillIndexStore(t, s)
 }
 
+const (
+	term3     = "trm_01JE0000000000000000000003"
+	term4     = "trm_01JE0000000000000000000004"
+	revision6 = "rev_01JE0000000000000000000006"
+	revision7 = "rev_01JE0000000000000000000007"
+	revision8 = "rev_01JE0000000000000000000008"
+)
+
+// fillHistory adds to the store of fillChecked what its history lacks: a medium whose original was replaced (its first
+// version refers to another original, which files/ still has), a term that was deleted and saved again, a term with
+// three versions that give the same summary, and an entry with a published revision and two later ones.
+func fillHistory(t *testing.T, s *Store) {
+	t.Helper()
+	putOriginal(t, s, []byte("old original"))
+	putOriginal(t, s, []byte("new original"))
+	same := docJSON(content.RefTerm, term4)
+	update(t, s, updates(
+		putDoc(content.RefMedia, medium3, mediaJSON(medium3, []byte("old original"))),
+		putDoc(content.RefTerm, term3, docJSON(content.RefTerm, term3)),
+		putDoc(content.RefTerm, term4, same),
+	))
+	update(t, s, updates(
+		putDoc(content.RefMedia, medium3, mediaJSON(medium3, []byte("new original"))),
+		putDoc(content.RefTerm, term4, append(bytes.Clone(same), ' ')),
+		func(tx *Tx) error {
+			_, err := tx.Delete(content.RefTerm, term3, userID)
+			return err
+		},
+	))
+	update(t, s, updates(
+		putDoc(content.RefTerm, term3, jsonf(`{"schemaVersion": 1, "id": %q, "slug": "again"}`, term3)),
+		putDoc(content.RefTerm, term4, append(bytes.Clone(same), ' ', ' ')),
+		putDoc(content.RefEntry, page3, publishedEntry(page3, 50, revision6)),
+		func(tx *Tx) error {
+			for i, id := range []string{revision6, revision7, revision8} {
+				if _, err := tx.AddRevision(page3, id, revJSON(fmt.Sprintf("revision %d", i)), userID); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	))
+}
+
 // rebuild runs RebuildIndex in an Update of s, and returns whether it has written.
 func rebuild(t *testing.T, s *Store) (changed bool) {
 	t.Helper()
@@ -108,8 +152,8 @@ func TestProblemString(t *testing.T) {
 			t.Errorf("%+v.String() = %q, want %q", tt.p, got, tt.want)
 		}
 	}
-	if AreaEngine != "engine" || AreaIndex != "index" || AreaOriginal != "original" {
-		t.Errorf("the areas are %q, %q and %q", AreaEngine, AreaIndex, AreaOriginal)
+	if AreaEngine != "engine" || AreaIndex != "index" || AreaHistory != "history" || AreaOriginal != "original" {
+		t.Errorf("the areas are %q, %q, %q and %q", AreaEngine, AreaIndex, AreaHistory, AreaOriginal)
 	}
 }
 
@@ -127,6 +171,13 @@ func TestCheckRight(t *testing.T) {
 			wantProblems(t, "a filled store", findProblems(t, s))
 		})
 	})
+	t.Run("versions and revisions", func(t *testing.T) {
+		eachStore(t, func(t *testing.T, s *Store) {
+			fillChecked(t, s)
+			fillHistory(t, s)
+			wantProblems(t, "a store with versions, deletions, revisions and a replaced original", findProblems(t, s))
+		})
+	})
 	t.Run("reader", func(t *testing.T) {
 		forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
 			s, dir := newStore(t, tb)
@@ -140,6 +191,9 @@ func TestCheckRight(t *testing.T) {
 			fillChecked(t, s)
 			wantProblems(t, "the filled store of the writer", findProblems(t, s))
 			wantProblems(t, "the filled store of the reader", findProblems(t, r))
+			fillHistory(t, s)
+			wantProblems(t, "the store of the writer with a history", findProblems(t, s))
+			wantProblems(t, "the store of the reader with a history", findProblems(t, r))
 		})
 	})
 }
@@ -436,15 +490,13 @@ func TestCheckOriginals(t *testing.T) {
 		wantProblems(t, "two missing originals", findProblems(t, f.s), want...)
 	})
 
-	t.Run("originals that no current media document refers to", func(t *testing.T) {
+	t.Run("an original that no media document refers to", func(t *testing.T) {
 		f := newOriginalsFixture(t)
-		// "stray" is in no media document, and "old" only in an earlier version of medium3.
-		for _, name := range []string{"stray", "old"} {
-			if err := os.Remove(f.path(name)); err != nil {
-				t.Fatal(err)
-			}
+		// "stray" is in no media document; "old" is in an earlier version of medium3, which TestCheckOlderOriginals checks.
+		if err := os.Remove(f.path("stray")); err != nil {
+			t.Fatal(err)
 		}
-		wantProblems(t, "originals that nothing refers to", findProblems(t, f.s))
+		wantProblems(t, "an original that nothing refers to", findProblems(t, f.s))
 	})
 
 	t.Run("a media document that does not decode", func(t *testing.T) {
@@ -490,10 +542,12 @@ func TestCheckEngine(t *testing.T) {
 			fillChecked(t, s)
 			corruptObjects(t, s)
 			got := findProblems(t, s)
-			// The documents have other data than their hashes, which stops the index and the media documents as well.
-			if len(got) != 3 || !slices.Equal(areas(got), []string{AreaEngine, AreaIndex, AreaOriginal}) {
-				t.Fatalf("Check() of a store with changed objects found%s\nwant a problem of each area, in this order",
-					problemLines(got))
+			// The documents have other data than their hashes, which stops the index and the media documents as well. The
+			// history has a problem for each of the 12 versions that are not a deletion, and the 3 revisions.
+			want := slices.Concat([]string{AreaEngine, AreaIndex}, slices.Repeat([]string{AreaHistory}, 15), []string{AreaOriginal})
+			if !slices.Equal(areas(got), want) {
+				t.Fatalf("Check() of a store with changed objects found%s\nwant a problem of the engine and the index, "+
+					"15 of the history and one of the originals, in this order", problemLines(got))
 			}
 			if got[0].Target != "" || got[0].Detail == "" {
 				t.Errorf("the problem of the engine = %+v, want one without a target, with a detail", got[0])
@@ -501,8 +555,14 @@ func TestCheckEngine(t *testing.T) {
 			if want := "the rows that the documents give cannot be computed: object sha256:"; !strings.HasPrefix(got[1].Detail, want) {
 				t.Errorf("the problem of the index = %+v, want the detail to start with %q", got[1], want)
 			}
-			if want := "the media documents cannot be read: object sha256:"; !strings.HasPrefix(got[2].Detail, want) {
-				t.Errorf("the problem of the originals = %+v, want the detail to start with %q", got[2], want)
+			for _, p := range got[2:17] {
+				if !strings.HasPrefix(p.Target, "history ") && !strings.HasPrefix(p.Target, "revisions ") ||
+					!strings.HasPrefix(p.Detail, "object sha256:") || !strings.Contains(p.Detail, ": the data has the hash sha256:") {
+					t.Errorf("the problem of the history = %+v, want the version or the revision, and the data of another hash", p)
+				}
+			}
+			if want := "the media documents cannot be read: object sha256:"; !strings.HasPrefix(got[17].Detail, want) {
+				t.Errorf("the problem of the originals = %+v, want the detail to start with %q", got[17], want)
 			}
 		})
 	})
@@ -517,16 +577,18 @@ func TestCheckStages(t *testing.T) {
 		if err := os.Remove(originalPath(dir, hash)); err != nil {
 			t.Fatal(err)
 		}
-		damage(t, s, dropSummary(content.RefTerm, termID))
+		damage(t, s, changes(dropSummary(content.RefTerm, termID),
+			rawPut(tableEntryRevisions, entryKey(missingEntry, 77), []byte(revisionX))))
 		index := Problem{AreaIndex, "summaries term " + termID, "the row is missing"}
+		history := Problem{AreaHistory, "entryRevisions " + missingEntry + " revision 77", "the revision " + revisionX + " is missing"}
 		original := Problem{AreaOriginal, hash, originalName(hash) + ": not found (of the media " + mediaID + ")"}
-		wantProblems(t, "an index and an original", findProblems(t, s), index, original)
+		wantProblems(t, "an index, a history and an original", findProblems(t, s), index, history, original)
 
 		flipByte(t, logFS(t, s), firstSegment, 0)
 		got := findProblems(t, s)
-		if len(got) != 3 || got[0].Area != AreaEngine || got[1] != index || got[2] != original {
+		if len(got) != 4 || got[0].Area != AreaEngine || got[1] != index || got[2] != history || got[3] != original {
 			t.Errorf("Check() found%s\nwant a problem of the engine, then%s", problemLines(got),
-				problemLines([]Problem{index, original}))
+				problemLines([]Problem{index, history, original}))
 		}
 	})
 }
@@ -564,6 +626,39 @@ func TestCheckStop(t *testing.T) {
 			for n := 1; n <= 4; n++ {
 				if calls := stopAt(t, s, n); calls != n {
 					t.Errorf("found is called %d times by a Check that stops at the problem %d", calls, n)
+				}
+			}
+		})
+	})
+	t.Run("the history", func(t *testing.T) {
+		forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
+			s, _ := newStore(t, tb)
+			fillChecked(t, s)
+			// A problem of each part of the history: two rows of entryRevisions, the revision that nothing lists, and a version
+			// whose object is missing, in this order.
+			unread, _ := addUnreadVersion(content.RefTerm, term2, docJSON(content.RefTerm, term2))
+			data := revJSON("unlisted")
+			d, err := digest(hashOf(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			damage(t, s, changes(
+				rawPut(tableEntryRevisions, entryKey(missingEntry, 77), []byte(revisionX)),
+				rawPut(tableEntryRevisions, entryKey(missingEntry, 78), []byte(revisionID)),
+				func(b backendTx) error {
+					if err := b.addObject(hashOf(data), data); err != nil {
+						return err
+					}
+					return b.(*logTx).tx.Put(tableRevisions, []byte(revisionX+"z"),
+						appendRevision(99, missingEntry, d, testTime.UTC().Format(savedAtLayout), userID))
+				},
+				unread))
+			if total := len(findProblems(t, s)); total != 4 {
+				t.Fatalf("Check() found %d problems, want 4", total)
+			}
+			for n := 1; n <= 4; n++ {
+				if calls := stopAt(t, s, n); calls != n {
+					t.Errorf("found is called %d times by a Check that stops at the problem %d of the history", calls, n)
 				}
 			}
 		})
@@ -676,6 +771,27 @@ func TestCheckContext(t *testing.T) {
 			})
 			if !errors.Is(err, context.Canceled) || calls != 1 {
 				t.Errorf("Check() that cancels its context at the first problem = %v, found called %d times; want "+
+					"context.Canceled and 1", err, calls)
+			}
+		})
+	})
+
+	t.Run("in the history", func(t *testing.T) {
+		eachStore(t, func(t *testing.T, s *Store) {
+			fillChecked(t, s)
+			fillHistory(t, s)
+			vs := versionsOf(t, s, content.RefTerm, term4)
+			damage(t, s, func(b backendTx) error { return b.setCurrent(content.RefTerm, term4, vs[0].Seq) })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			calls := 0
+			err := s.Check(ctx, func(Problem) bool {
+				calls++
+				cancel()
+				return true
+			})
+			if !errors.Is(err, context.Canceled) || calls != 1 {
+				t.Errorf("Check() that cancels its context at the first problem of the history = %v, found called %d times; want "+
 					"context.Canceled and 1", err, calls)
 			}
 		})

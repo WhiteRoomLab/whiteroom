@@ -325,6 +325,64 @@ func (t *modelTx) revisions(entry string) ([]Revision, error) {
 	return revs, nil
 }
 
+func (t *modelTx) allVersions(fn func(Version, error) bool) error {
+	seqs := make([]int64, len(t.st.versions))
+	for i := range seqs {
+		seqs[i] = int64(i) + 1
+	}
+	key := func(seq int64) []byte {
+		mv := t.st.versions[seq-1]
+		return historyKey(mv.key.kind, mv.key.id, seq)
+	}
+	slices.SortFunc(seqs, func(a, b int64) int { return bytes.Compare(key(a), key(b)) })
+	for _, seq := range seqs {
+		v, err := t.version(seq)
+		if !fn(v, err) {
+			break
+		}
+	}
+	return nil
+}
+
+func (t *modelTx) allCurrent(fn func(Version, error) bool) error {
+	keys := slices.SortedFunc(maps.Keys(t.st.current), func(a, b modelKey) int {
+		return bytes.Compare(docKey(a.kind, a.id), docKey(b.kind, b.id))
+	})
+	for _, key := range keys {
+		v, err := t.version(t.st.current[key])
+		if !fn(v, err) {
+			break
+		}
+	}
+	return nil
+}
+
+func (t *modelTx) allRevisions(fn func(Revision, error) bool) error {
+	for _, id := range slices.Sorted(maps.Keys(t.st.revByID)) {
+		r, err := t.revisionInfo(t.st.revByID[id])
+		if !fn(r, err) {
+			break
+		}
+	}
+	return nil
+}
+
+func (t *modelTx) allEntryRevisions(fn func(entry string, seq int64, id string, err error) bool) error {
+	seqs := make([]int64, len(t.st.revisions))
+	for i := range seqs {
+		seqs[i] = int64(i) + 1
+	}
+	key := func(seq int64) []byte { return entryKey(t.st.revisions[seq-1].entry, seq) }
+	slices.SortFunc(seqs, func(a, b int64) int { return bytes.Compare(key(a), key(b)) })
+	for _, seq := range seqs {
+		mr := t.st.revisions[seq-1]
+		if !fn(mr.entry, seq, mr.id, nil) {
+			break
+		}
+	}
+	return nil
+}
+
 func (t *modelTx) addEvent(data []byte) error {
 	t.st.events = append(t.st.events, bytes.Clone(data))
 	return nil
@@ -424,6 +482,8 @@ func (t *modelTx) setLastNumber(n int64) error {
 func (t *modelTx) preloadEntries([]entryRevisions) error { return nil }
 
 func (t *modelTx) preloadIndex([]indexRow) error { return nil }
+
+func (t *modelTx) preloadObjects([]string) error { return nil }
 
 func (t *modelTx) readAhead(_, _ []DocumentID, _ []string) error { return nil }
 

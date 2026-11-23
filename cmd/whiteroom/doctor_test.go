@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -25,6 +26,13 @@ import (
 
 // noteLine starts the line that whiteroom doctor writes on stderr when it has not checked the published documents.
 const noteLine = "whiteroom doctor: note: "
+
+// The IDs of the revisions and the user of the tests that make a history in the sample site.
+const (
+	doctorUser      = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+	doctorRevision  = "rev_01JE0000000000000000000091"
+	doctorRevision2 = "rev_01JE0000000000000000000092"
+)
 
 // doctorOn runs whiteroom doctor on the daemon db, with the arguments args and the text stdin as the standard input, and
 // checks that the data directory is as it was: no file is made, removed or changed in it, with the hash of each. A directory
@@ -290,6 +298,97 @@ func TestDoctorProblems(t *testing.T) {
 		problems := checkProblems(t, "an original that has other bytes", s.db, code, stdout, stderr, false, "original")
 		if len(problems) == 1 && !strings.Contains(problems[0], hash) {
 			t.Errorf("the problem %q does not name the original %s", problems[0], hash)
+		}
+	})
+
+	t.Run("an original that only an earlier version of a medium refers to", func(t *testing.T) {
+		s := initSample(t)
+		w, err := storetest.Open(s.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The first medium gets another original, so that its original is the one of its first version alone.
+		var id string
+		var data []byte
+		if err := w.View(t.Context(), func(tx *store.Tx) error {
+			docs, err := tx.Documents(content.RefMedia)
+			if err != nil {
+				return err
+			}
+			if len(docs) == 0 {
+				return fmt.Errorf("the sample site has no medium")
+			}
+			id, data = docs[0].ID, docs[0].Data
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var m struct {
+			Hash string `json:"hash"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil || m.Hash == "" {
+			t.Fatalf("the medium %s: %v, with the hash %q", id, err, m.Hash)
+		}
+		old := m.Hash
+		replaced, err := w.PutOriginal(t.Context(), strings.NewReader("a new original of the first medium"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Update(t.Context(), func(tx *store.Tx) error {
+			if _, err := tx.Put(content.RefMedia, id, bytes.Replace(data, []byte(old), []byte(replaced.Hash), 1), doctorUser); err != nil {
+				return err
+			}
+			return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		digits := strings.TrimPrefix(old, "sha256:")
+		if err := os.Remove(filepath.Join(s.data, "files", digits[:2], digits)); err != nil {
+			t.Fatal(err)
+		}
+		code, stdout, stderr := doctorOn(t, s.database(), "")
+		problems := checkProblems(t, "an original of an earlier version", s.db, code, stdout, stderr, true, "original")
+		if len(problems) == 1 && (!strings.Contains(problems[0], old) || !strings.Contains(problems[0], "only of earlier versions: media "+id+" version ")) {
+			t.Errorf("the problem %q does not name the original %s as one that only a version of the medium %s refers to", problems[0], old, id)
+		}
+	})
+
+	t.Run("an object of an earlier revision that is gone", func(t *testing.T) {
+		s := initSample(t)
+		entry := entryIDs(t, s.data)[0]
+		// A revision of 80 KiB, which the engine keeps in a file of its own, and then a later one.
+		first := []byte(`{"schemaVersion": 1, "title": "` + strings.Repeat("x", 80<<10) + `"}`)
+		w, err := storetest.Open(s.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Update(t.Context(), func(tx *store.Tx) error {
+			if _, err := tx.AddRevision(entry, doctorRevision, first, doctorUser); err != nil {
+				return err
+			}
+			if _, err := tx.AddRevision(entry, doctorRevision2, []byte(`{"schemaVersion": 1, "title": "later"}`), doctorUser); err != nil {
+				return err
+			}
+			return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		digits := fmt.Sprintf("%x", sha256.Sum256(first))
+		if err := os.Remove(filepath.Join(s.data, "logdb", "objects", digits[:2], digits)); err != nil {
+			t.Fatal(err)
+		}
+		code, stdout, stderr := doctorOn(t, s.database(), "")
+		problems := checkProblems(t, "an object that is gone", s.db, code, stdout, stderr, true, "engine", "history")
+		if len(problems) == 2 && !strings.HasPrefix(problems[1], "history: revisions "+doctorRevision+": ") {
+			t.Errorf("the problem %q does not name the revision %s", problems[1], doctorRevision)
 		}
 	})
 

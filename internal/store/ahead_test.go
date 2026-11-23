@@ -256,6 +256,35 @@ func TestCheckRoundTrips(t *testing.T) {
 	}
 }
 
+// TestCheckHistoryRoundTrips checks that Check of a store with 300 entries, each with two revisions, and 300 terms of three
+// versions each reads the objects of the 600 earlier versions and of the 300 revisions that are not the last ones in a few
+// windows, not one round trip each, and that the whole check makes few round trips.
+func TestCheckHistoryRoundTrips(t *testing.T) {
+	s, w := countedStore(t)
+	putAheadSite(t, s, 300)
+	for k := range 3 {
+		for from := 0; from < 300; from += 100 {
+			update(t, s, func(tx *Tx) error {
+				for i := from; i < from+100; i++ {
+					// The same summary in each version, and the third has the object of the first.
+					data := append(docJSON(content.RefTerm, aheadTerm(i)), bytes.Repeat([]byte{' '}, k%2)...)
+					if _, err := tx.Put(content.RefTerm, aheadTerm(i), data, userID); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}
+	}
+	var problems []Problem
+	n := counted(w, func() { problems = findProblems(t, s) })
+	t.Logf("Check of 300 entries and 300 terms of three versions: %d Write calls", n)
+	wantProblems(t, "300 entries and 300 terms of three versions", problems)
+	if n > 90 {
+		t.Errorf("Check() of 900 versions and 600 revisions made %d round trips, want at most 90", n)
+	}
+}
+
 // aheadNames are the documents and the revisions that the tests read, with the names that nothing has.
 type aheadNames struct {
 	docs []DocumentID
@@ -724,7 +753,8 @@ func TestCheckChunks(t *testing.T) {
 	wantProblems(t, "an entry whose rows cannot be computed", findProblems(t, s),
 		problemOf(indexSummaries, summary(3), missing), problemOf(indexReferences, published, missing),
 		problemOf(indexSummaries, summary(255), missing), problemOf(indexSummaries, summary(256), missing),
-		problemOf(indexSummaries, summary(260), differs), Problem{Area: AreaIndex, Detail: cannot})
+		problemOf(indexSummaries, summary(260), differs), Problem{Area: AreaIndex, Detail: cannot},
+		Problem{AreaHistory, "entryRevisions " + aheadEntry(270) + " revision 999", "the revision " + broken + " is missing"})
 }
 
 // TestCheckChangedObjectInAChunk checks that Check of a store in which a document has other data than its hash compares

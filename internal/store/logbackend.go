@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -435,6 +436,16 @@ func (t *logTx) preloadIndex(rows []indexRow) error {
 	return nil
 }
 
+func (t *logTx) preloadObjects(hashes []string) error {
+	sums := make([][sha256.Size]byte, 0, len(hashes))
+	for _, h := range hashes {
+		if d, err := digest(h); err == nil {
+			sums = append(sums, d)
+		}
+	}
+	return t.prefetchObjects(sums)
+}
+
 func (t *logTx) forget() {
 	t.tx.DropPrefetched()
 }
@@ -605,6 +616,56 @@ func (t *logTx) revisions(entry string) ([]Revision, error) {
 		return nil, serr
 	}
 	return revs, nil
+}
+
+func (t *logTx) allVersions(fn func(Version, error) bool) error {
+	return t.tx.Scan(tableHistory, nil, func(key, value []byte) bool {
+		kind, id, seq, ok := splitHistoryKey(key)
+		if !ok {
+			return fn(Version{}, invalidRowKey(tableHistory, key))
+		}
+		v, err := decodeVersion(tableHistory, key, value, kind, id)
+		if err != nil {
+			// Not err itself: the text of a time that does not parse has the row's value.
+			return fn(Version{Seq: seq, Kind: kind, ID: id}, invalidValue(tableHistory, key))
+		}
+		return fn(v, nil)
+	})
+}
+
+func (t *logTx) allCurrent(fn func(Version, error) bool) error {
+	return t.tx.Scan(tableDocuments, nil, func(key, value []byte) bool {
+		name, idName, ok := bytes.Cut(key, []byte{0})
+		if !ok || len(name) == 0 {
+			return fn(Version{}, invalidRowKey(tableDocuments, key))
+		}
+		kind, id := content.RefKind(name), string(idName)
+		v, err := decodeVersion(tableDocuments, key, value, kind, id)
+		if err != nil {
+			return fn(Version{Kind: kind, ID: id}, invalidValue(tableDocuments, key))
+		}
+		return fn(v, nil)
+	})
+}
+
+func (t *logTx) allRevisions(fn func(Revision, error) bool) error {
+	return t.tx.Scan(tableRevisions, nil, func(key, value []byte) bool {
+		id := string(key)
+		r, err := decodeRevision(id, value)
+		if err != nil {
+			return fn(Revision{ID: id}, invalidValue(tableRevisions, key))
+		}
+		return fn(r, nil)
+	})
+}
+
+func (t *logTx) allEntryRevisions(fn func(entry string, seq int64, id string, err error) bool) error {
+	return t.tx.Scan(tableEntryRevisions, nil, func(key, value []byte) bool {
+		if len(key) < 9 || key[len(key)-9] != 0 || binary.BigEndian.Uint64(key[len(key)-8:]) > math.MaxInt64 {
+			return fn("", 0, "", invalidRowKey(tableEntryRevisions, key))
+		}
+		return fn(string(key[:len(key)-9]), int64(binary.BigEndian.Uint64(key[len(key)-8:])), string(value), nil)
+	})
 }
 
 func (t *logTx) addEvent(data []byte) error {
@@ -881,6 +942,24 @@ func decodeRevision(id string, v []byte) (Revision, error) {
 		return Revision{}, revisionErr(id, err)
 	}
 	return Revision{Seq: seq, ID: id, Entry: string(entry), Hash: hashText(sum), SavedAt: at, SavedBy: string(by)}, nil
+}
+
+// splitHistoryKey splits key, a key of history, into the kind, the ID and the seq of the version.
+func splitHistoryKey(key []byte) (kind content.RefKind, id string, seq int64, ok bool) {
+	name, rest, found := bytes.Cut(key, []byte{0})
+	if !found || len(name) == 0 || len(rest) < 9 || rest[len(rest)-9] != 0 {
+		return "", "", 0, false
+	}
+	n := binary.BigEndian.Uint64(rest[len(rest)-8:])
+	if n > math.MaxInt64 {
+		return "", "", 0, false
+	}
+	return content.RefKind(name), string(rest[:len(rest)-9]), int64(n), true
+}
+
+// invalidRowKey is the error of key in table, which the backend cannot read.
+func invalidRowKey(table uint32, key []byte) error {
+	return fmt.Errorf("%s %q: invalid key", tableNames[table], key)
 }
 
 // invalidValue is the error of the value of key in table, which the backend cannot read.

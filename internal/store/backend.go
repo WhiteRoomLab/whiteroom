@@ -53,6 +53,15 @@ type backendTx interface {
 	revision(id string) (Revision, bool, error) // with Data
 	revisions(entry string) ([]Revision, error) // in the order of saving, without Data
 
+	// The whole tables history, documents (a deletion decodes), revisions (without Data) and entryRevisions, in the order of
+	// their keys, for Check: fn gets each row decoded, until it returns false. A row whose value does not decode is given
+	// with an error and what its key says (Kind and ID, and Seq in history; the ID of a revision); a key that does not
+	// decode, with a zero value and an error that names the table and the key.
+	allVersions(fn func(v Version, err error) bool) error
+	allCurrent(fn func(v Version, err error) bool) error
+	allRevisions(fn func(r Revision, err error) bool) error
+	allEntryRevisions(fn func(entry string, seq int64, id string, err error) bool) error
+
 	// The audit events, which are the records of the audit log (audit.go). addEvent adds one in the Update. events calls
 	// fn with the number and the data of each audit event of the commits that the transaction sees, in order, until fn
 	// returns false. auditHead returns the head of the chain of log, which a record sets with setAuditHead, and false if
@@ -81,10 +90,12 @@ type backendTx interface {
 
 	// The reads ahead, which change no result and no error, and which a backend may leave empty: what they could not read,
 	// the read that needs it reads and reports. preloadEntries reads what revision and revisions will be asked of the
-	// entries, preloadIndex what indexGet will be asked of the rows, and readAhead what current, document, revision and the
-	// summaries of indexGet will be asked of the documents sums, docs and the revisions revs; forget drops what they keep.
+	// entries, preloadIndex what indexGet will be asked of the rows, preloadObjects what object will be asked of the
+	// hashes, and readAhead what current, document, revision and the summaries of indexGet will be asked of the documents
+	// sums, docs and the revisions revs; forget drops what they keep.
 	preloadEntries(entries []entryRevisions) error
 	preloadIndex(rows []indexRow) error
+	preloadObjects(hashes []string) error
 	readAhead(sums, docs []DocumentID, revs []string) error
 	forget()
 }
