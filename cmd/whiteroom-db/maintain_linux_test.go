@@ -437,7 +437,7 @@ func TestCompactDeletesLogin(t *testing.T) {
 	})
 }
 
-// TestMaintainRefused checks that compact and gc refuse a data directory that serve refuses, with the same words, and leave
+// TestMaintainRefused checks that compact, gc and accept-break refuse a data directory that serve refuses, with the same words, and leave
 // it as it was.
 func TestMaintainRefused(t *testing.T) {
 	d := newDirs(t)
@@ -461,7 +461,8 @@ func TestMaintainRefused(t *testing.T) {
 	before := files(t, d.data)
 	reason := fmt.Sprintf("%s: the store schema is of version %d, newer than this program knows (%d)\n",
 		filepath.Join(d.data, "logdb"), dbwire.TableVersion+1, dbwire.TableVersion)
-	for _, args := range [][]string{{"compact", "-data", d.data}, {"gc", "-data", d.data}, append([]string{"serve"}, d.args()...)} {
+	for _, args := range [][]string{{"compact", "-data", d.data}, {"gc", "-data", d.data}, maintenanceArgs("accept-break", d.data),
+		append([]string{"serve"}, d.args()...)} {
 		code, stdout, stderr := runCmd(t, args...)
 		if want := "whiteroom-db " + args[0] + ": " + reason; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s of a newer schema = %d, with stdout %q and stderr %q, want 1, nothing and %q", args[0], code,
@@ -478,33 +479,33 @@ func TestMaintainRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(d.root, "missing")
-	for _, command := range []string{"compact", "gc"} {
-		code, stdout, stderr := runCmd(t, command, "-data", empty)
+	for _, command := range []string{"compact", "gc", "accept-break"} {
+		code, stdout, stderr := runCmd(t, maintenanceArgs(command, empty)...)
 		if want := "whiteroom-db " + command + ": " + filepath.Join(empty, "logdb") + ": missing directory\n"; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s of an empty directory = %d, with stdout %q and stderr %q, want 1, nothing and %q", command, code,
 				stdout, stderr, want)
 		}
-		code, stdout, stderr = runCmd(t, command, "-data", missing)
+		code, stdout, stderr = runCmd(t, maintenanceArgs(command, missing)...)
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "whiteroom-db "+command+": ") || !strings.Contains(stderr, missing) {
 			t.Errorf("whiteroom-db %s of a missing directory = %d, with stdout %q and stderr %q, want 1 and the error", command, code,
 				stdout, stderr)
 		}
 	}
 	if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
-		t.Errorf("compact and gc made %v (%v) in an empty directory", entries, err)
+		t.Errorf("compact, gc and accept-break made %v (%v) in an empty directory", entries, err)
 	}
 	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
-		t.Errorf("compact or gc made a missing directory: %v", err)
+		t.Errorf("compact, gc or accept-break made a missing directory: %v", err)
 	}
 
 	// A signal while they wait for a daemon ends them, as an interruption and not as a directory in use.
 	d = newDirs(t)
 	s = d.startServe(t, d.args()...)
-	for _, command := range []string{"compact", "gc"} {
+	for _, command := range []string{"compact", "gc", "accept-break"} {
 		ctx, cancel := context.WithCancel(t.Context())
 		time.AfterFunc(300*time.Millisecond, cancel)
 		start := time.Now()
-		code, stdout, stderr := runCmdIn(ctx, t, command, "-data", d.data)
+		code, stdout, stderr := runCmdIn(ctx, t, maintenanceArgs(command, d.data)...)
 		cancel()
 		if want := "whiteroom-db " + command + ": interrupted\n"; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s interrupted = %d, with stdout %q and stderr %q, want 1, nothing and %q", command, code, stdout,

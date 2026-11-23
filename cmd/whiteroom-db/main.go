@@ -32,9 +32,14 @@ const usage = `Usage:
   whiteroom-db check [flags]
         look for what is wrong in the data directory, such as a copy of a backup,
         and change nothing; the daemon must be stopped
+  whiteroom-db accept-break [flags]
+        accept the break at record -record N of the audit log -log LOG (login or
+        activity) that "whiteroom doctor" reports, and change no record; the daemon
+        must be stopped
 
 Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h",
-"whiteroom-db gc -h" or "whiteroom-db check -h" for the flags.
+"whiteroom-db gc -h", "whiteroom-db check -h" or "whiteroom-db accept-break -h" for
+the flags.
 `
 
 func main() {
@@ -87,6 +92,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runGC(ctx, args[1:], e)
 	case "check":
 		return runCheck(ctx, args[1:], e)
+	case "accept-break":
+		return runAcceptBreak(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
 		printf(e.stdout, "%s", usage)
 		return 0

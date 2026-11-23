@@ -2163,6 +2163,168 @@ func TestAuditCompactLoginInterrupted(t *testing.T) {
 	checkNoProblem(t, s)
 }
 
+// acceptBreakOf runs AcceptBreak at chainTime in a maintenance of the data directory dir, which no process has open.
+func acceptBreakOf(t *testing.T, dir string, log audit.Log, n uint64) error {
+	t.Helper()
+	return dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
+		func(m *logdb.Maintenance) error {
+			return dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+		})
+}
+
+// closeAcceptReopen closes s, accepts the break at record n of log in its data directory dir, and opens the store again.
+func closeAcceptReopen(t *testing.T, s *Store, dir string, log audit.Log, n uint64) *Store {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptBreakOf(t, dir, log, n); err != nil {
+		t.Fatalf("AcceptBreak(%s, %d) = %v", log, n, err)
+	}
+	return reopenLog(t, dir, logdb.Options{})
+}
+
+// TestAuditAcceptBreak checks the store after the acceptance of a break, which whiteroom-db accept-break does: a record of
+// each log is rewritten through the engine, so that the next one does not follow it, and VerifyAudit fails there. After the
+// acceptance of the break at that record VerifyAudit passes and tells the break; a later rewrite of another record is still
+// found; a rewrite of the accepted record itself undoes the acceptance, until it is accepted again; and the log goes on.
+func TestAuditAcceptBreak(t *testing.T) {
+	type replacement struct {
+		position uint64 // the position of the record, as rewriteRecords has it
+		old, new string // the text of the record that is replaced
+	}
+	for _, tt := range []struct {
+		name   string
+		log    audit.Log
+		n      uint64      // the number of the record that is the break
+		first  replacement // the record before it, which is rewritten: the record n does not follow it
+		broken string      // the failure of VerifyAudit that comes of it
+		// The record n itself, which is rewritten to undo the acceptance, with the failure that comes of it at the record after
+		// it, and another record that is rewritten after the acceptance, with the failure that comes of that.
+		accepted, other   replacement
+		nextErr, otherErr string
+		more              audit.Record // a record that the store adds
+	}{
+		{"login", audit.LoginLog, 2, replacement{3, `"login":"0"`, `"login":"X"`},
+			`audit log "login": record 2 (event 6): prev is not the hash of record 1`,
+			replacement{6, `"login":"2"`, `"login":"Z"`}, replacement{7, `"event":"3"`, `"event":"Q"`},
+			`audit log "login": record 3 (event 9): prev is not the hash of record 2`,
+			`audit log "activity": record 6 (event 8): prev is not the hash of record 5`, loginRecord(audit.LoginFailure, "more")},
+		{"activity", audit.ActivityLog, 4, replacement{4, `"event":"1"`, `"event":"X"`},
+			`audit log "activity": record 4 (event 5): prev is not the hash of record 3`,
+			replacement{5, `"event":"2"`, `"event":"Y"`}, replacement{6, `"login":"2"`, `"login":"Z"`},
+			`audit log "activity": record 5 (event 7): prev is not the hash of record 4`,
+			`audit log "login": record 3 (event 9): prev is not the hash of record 2`, eventRecord("more")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rewrite := func(t *testing.T, s *Store, dir string, events []logdb.Event, r replacement) *Store {
+				t.Helper()
+				data := replaced(t, events[r.position-1].Data, r.old, r.new)
+				return closeAndRewrite(t, s, dir, rewriteRecords(map[uint64][]byte{r.position: data}, nil, nil))
+			}
+			// start returns a store whose break at the record n is accepted.
+			start := func(t *testing.T) (s *Store, dir string, events []logdb.Event, heads []audit.Head) {
+				t.Helper()
+				s, dir, heads = auditFixture(t)
+				events = rawEvents(t, s)
+				s = rewrite(t, s, dir, events, tt.first)
+				checkVerify(t, s, dir, events, nil, tt.broken)
+				checkVerify(t, s, dir, events, heads, tt.broken)
+				return closeAcceptReopen(t, s, dir, tt.log, tt.n), dir, events, heads
+			}
+			note := breakNote(string(tt.log), tt.n)
+
+			t.Run("accepted", func(t *testing.T) {
+				s, dir, events, heads := start(t)
+				checkVerify(t, s, dir, events, nil, "", note)
+				checkVerify(t, s, dir, events, heads, "", note)
+				checkNoProblem(t, s)
+				// The log goes on from its head: the new record has the hash of the last one.
+				update(t, s, func(tx *Tx) error { return tx.Record(tt.more) })
+				checkVerify(t, s, dir, events, nil, "", note)
+			})
+			t.Run("another record is rewritten", func(t *testing.T) {
+				s, dir, events, _ := start(t)
+				s = rewrite(t, s, dir, events, tt.other)
+				checkVerify(t, s, dir, events, nil, tt.otherErr, note)
+			})
+			t.Run("the accepted record is rewritten", func(t *testing.T) {
+				s, dir, events, _ := start(t)
+				s = rewrite(t, s, dir, events, tt.accepted)
+				// Its hash is no longer that of the acceptance: the break is reported again, and told no more.
+				checkVerify(t, s, dir, events, nil, tt.broken)
+				// The operator accepts it as it is now, and the record after it, which has the hash of the one that was there,
+				// does not follow it.
+				s = closeAcceptReopen(t, s, dir, tt.log, tt.n)
+				checkVerify(t, s, dir, events, nil, tt.nextErr, note)
+				s = closeAcceptReopen(t, s, dir, tt.log, tt.n+1)
+				checkVerify(t, s, dir, events, nil, "", note, breakNote(string(tt.log), tt.n+1))
+			})
+		})
+	}
+}
+
+// TestAuditAcceptBreakThenCompact checks the store after a deletion of the old login records that goes across an accepted
+// break: VerifyAudit passes and tells the start of the chain and not the break, which is gone with its record, and the row
+// and the event of the acceptance stay, which VerifyAudit ignores.
+func TestAuditAcceptBreakThenCompact(t *testing.T) {
+	months := []int{40, 39, 38, 37, 36, 35, 5, 0}
+	login := []bool{true, true, true, true, true, true, true, true}
+	s, dir, _ := agedStore(t, months, login)
+	// The record 2 of the login history is another one, and the record 3 is the break.
+	var data []byte
+	var number uint64
+	for _, e := range rawEvents(t, s) {
+		if r, err := audit.Decode(e.Data); err == nil && r.Log == audit.LoginLog && r.N == 2 {
+			data, number = changedRecord(t, e.Data, func(r *audit.Record) { r.Login = "forged" }), e.Number
+		}
+	}
+	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{number: data}, nil, nil))
+	checkVerify(t, s, dir, nil, nil, fmt.Sprintf(`audit log "login": record 3 (event %d): prev is not the hash of record 2`,
+		eventOf(t, s, audit.LoginLog, 3)))
+	s = closeAcceptReopen(t, s, dir, audit.LoginLog, 3)
+	checkVerify(t, s, dir, nil, nil, "", breakNote("login", 3))
+	loginBefore := recordsOf(t, s, audit.LoginLog)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 6 || d.Stopped != "" {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 6, across the break", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(7))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[6:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	accepted, rows := 0, 0
+	for _, e := range allEvents(t, s) {
+		if a, ok := dbwire.ParseAccepted(e.Data); ok && a.Log == dbwire.LogLogin && a.N == 3 {
+			accepted++
+		}
+	}
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		tx.Scan(tableChains, nil, func(_, _ []byte) bool { rows++; return true })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 1 || rows != 2 {
+		t.Errorf("the store has %d events of the acceptance and %d rows of the table chains, want 1 and 2 (the start and the break)",
+			accepted, rows)
+	}
+	checkNoProblem(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The record is gone: its break cannot be accepted again.
+	want := "record 3 of the audit log login is not in the store: the records before record 7 were deleted"
+	if err := acceptBreakOf(t, dir, audit.LoginLog, 3); err == nil || err.Error() != want {
+		t.Errorf("AcceptBreak() of the record that was deleted = %v, want %q", err, want)
+	}
+}
+
 // TestAuditCompactLoginOlderSchema checks that a compact of a store of the table schema 7 drops no login record, and that
 // once its writer has opened it, which upgrades it to the schema 8, the next compact drops them and VerifyAudit passes.
 func TestAuditCompactLoginOlderSchema(t *testing.T) {

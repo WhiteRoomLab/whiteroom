@@ -122,34 +122,56 @@ type loginPass struct {
 }
 
 func (p *loginPass) readChains(tx *logdb.Tx) error {
-	// A row that is invalid or newer is refused by Maintain, and a store with no commit has none.
-	if v, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema)); ok {
-		if version, valid := schemaVersion(v); valid && version < dbwire.TableVersion {
-			p.schema = version
-		}
-	}
-	if v, ok := tx.Get(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin)); ok {
+	p.schema = olderSchema(tx)
+	rows := readChainRows(tx, dbwire.LogLogin)
+	p.start, p.breaks, p.stop = rows.start, rows.breaks, rows.bad
+	return nil
+}
+
+// chainRows is what the table chains has of one log: its chain start, and the hash that each accepted break is for, by the
+// number of its record.
+type chainRows struct {
+	start  *dbwire.ChainStart
+	breaks map[uint64][sha256.Size]byte
+	bad    string // why a row cannot be read, "" if every row can
+}
+
+// readChainRows reads the rows of the table chains of the log named log. A row that cannot be read stops the read.
+func readChainRows(tx *logdb.Tx, log string) chainRows {
+	var rows chainRows
+	if v, ok := tx.Get(dbwire.TableChains, dbwire.ChainStartKey(log)); ok {
 		start, valid := dbwire.ParseChainStart(v)
 		if !valid {
-			p.stop = "the table chains: the chain start cannot be read"
-			return nil
+			rows.bad = "the table chains: the chain start cannot be read"
+			return rows
 		}
-		p.start = &start
+		rows.start = &start
 	}
-	tx.Scan(dbwire.TableChains, dbwire.ChainBreakPrefix(dbwire.LogLogin), func(k, v []byte) bool {
+	tx.Scan(dbwire.TableChains, dbwire.ChainBreakPrefix(log), func(k, v []byte) bool {
 		name, n, keyOK := dbwire.ParseChainBreakKey(k)
 		b, valueOK := dbwire.ParseChainBreak(v)
-		if !keyOK || !valueOK || name != dbwire.LogLogin || n == 0 {
-			p.stop = "the table chains: a row of an accepted break cannot be read"
+		if !keyOK || !valueOK || name != log || n == 0 {
+			rows.bad = "the table chains: a row of an accepted break cannot be read"
 			return false
 		}
-		if p.breaks == nil {
-			p.breaks = map[uint64][sha256.Size]byte{}
+		if rows.breaks == nil {
+			rows.breaks = map[uint64][sha256.Size]byte{}
 		}
-		p.breaks[n] = b.Hash
+		rows.breaks[n] = b.Hash
 		return true
 	})
-	return nil
+	return rows
+}
+
+// olderSchema returns the table schema of the store if it is older than dbwire.TableVersion, else 0. A row that is invalid
+// or newer is refused by Maintain, and a store with no commit has none.
+func olderSchema(tx *logdb.Tx) uint64 {
+	if v, ok := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema)); ok {
+		if version, valid := schemaVersion(v); valid && version < dbwire.TableVersion {
+			return version
+		}
+	}
+	return 0
 }
 
 func (p *loginPass) event(e logdb.Event) bool {
@@ -236,23 +258,40 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum})
 }
 
-// follow returns why the record n with prev does not follow the walked records: the first record is the chain start
-// (or 1), and each of the others follows its predecessor in number and in hash.
+// follow returns why the record n with prev does not follow the walked records, "" if it does.
 func (p *loginPass) follow(n uint64, prev string) string {
-	if len(p.recs) == 0 {
+	var last chainLast
+	if len(p.recs) > 0 {
+		r := p.recs[len(p.recs)-1]
+		last = chainLast{n: r.n, sum: r.sum, ok: true}
+	}
+	return followText(p.start, last, n, prev)
+}
+
+// chainLast is the last record that a walk of the records of a log has accepted: its number and the SHA-256 of its stored
+// bytes. The zero value is no record.
+type chainLast struct {
+	n   uint64
+	sum [sha256.Size]byte
+	ok  bool
+}
+
+// followText returns why the record n with prev does not follow the walk that is at last, "" if it does: the first record is
+// the chain start (or 1), and each of the others follows its predecessor in number and in hash.
+func followText(start *dbwire.ChainStart, last chainLast, n uint64, prev string) string {
+	if !last.ok {
 		switch {
-		case p.start == nil && n != 1:
+		case start == nil && n != 1:
 			return "the first record of a log is number 1"
-		case p.start == nil && prev != "":
+		case start == nil && prev != "":
 			return "the first record has the hash of one before it"
-		case p.start != nil && n > p.start.First:
-			return fmt.Sprintf("the chain starts at record %d, which is not there", p.start.First)
-		case p.start != nil && prev != hashText(p.start.Prev):
-			return fmt.Sprintf("prev is not the hash that the chain start has of record %d", p.start.First-1)
+		case start != nil && n > start.First:
+			return fmt.Sprintf("the chain starts at record %d, which is not there", start.First)
+		case start != nil && prev != hashText(start.Prev):
+			return fmt.Sprintf("prev is not the hash that the chain start has of record %d", start.First-1)
 		}
 		return ""
 	}
-	last := p.recs[len(p.recs)-1]
 	switch {
 	case n != last.n+1:
 		return fmt.Sprintf("the number does not follow that of record %d", last.n)

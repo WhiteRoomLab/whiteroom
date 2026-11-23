@@ -14,7 +14,7 @@ import (
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 )
 
-// TestRestartRefused checks that serve, compact and gc refuse a data directory whose mark of a failed sync (concept
+// TestRestartRefused checks that serve, compact, gc and accept-break refuse a data directory whose mark of a failed sync (concept
 // section 3.5) has the boot ID of this machine, with the sentence of the mark and without a change, and that they remove the
 // mark of an earlier boot and say so.
 func TestRestartRefused(t *testing.T) {
@@ -59,7 +59,8 @@ func TestRestartRefused(t *testing.T) {
 
 	writeMark(machine)
 	before := files(t, d.data)
-	for _, args := range [][]string{append([]string{"serve"}, d2.args()...), {"compact", "-data", d.data}, {"gc", "-data", d.data}} {
+	for _, args := range [][]string{append([]string{"serve"}, d2.args()...), {"compact", "-data", d.data}, {"gc", "-data", d.data},
+		maintenanceArgs("accept-break", d.data)} {
 		code, stdout, stderr := runCmd(t, args...)
 		if want := "whiteroom-db " + args[0] + ": " + refusal; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s on a mark of this boot = %d, with stdout %q and stderr %q, want 1, nothing and %q", args[0],
@@ -110,7 +111,7 @@ func TestRestartRefused(t *testing.T) {
 	}
 }
 
-// TestRootNotWritableRefused checks that serve, compact and gc refuse a data directory whose root the user cannot write in,
+// TestRootNotWritableRefused checks that serve, compact, gc and accept-break refuse a data directory whose root the user cannot write in,
 // although logdb/ and files/ are writable (concept section 3.5): the mark of a failed sync could not be left there. They
 // say so on the standard error, change nothing, and make no socket, and the directory serves once it is given back.
 func TestRootNotWritableRefused(t *testing.T) {
@@ -137,7 +138,8 @@ func TestRootNotWritableRefused(t *testing.T) {
 	before := files(t, d.data)
 	refusal := d.data + ": whiteroom-db cannot write in the data directory (permission denied); it must be able to leave the " +
 		"mark of a failed sync there: give the directory to the user of the daemon\n"
-	for _, args := range [][]string{append([]string{"serve"}, d2.args()...), {"compact", "-data", d.data}, {"gc", "-data", d.data}} {
+	for _, args := range [][]string{append([]string{"serve"}, d2.args()...), {"compact", "-data", d.data}, {"gc", "-data", d.data},
+		maintenanceArgs("accept-break", d.data)} {
 		code, stdout, stderr := runCmd(t, args...)
 		if want := "whiteroom-db " + args[0] + ": " + refusal; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s on a directory that it cannot write in = %d, with stdout %q and stderr %q, want 1, nothing "+

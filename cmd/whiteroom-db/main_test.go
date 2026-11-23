@@ -115,6 +115,7 @@ func TestUsage(t *testing.T) {
 		{"compact", compactUsage, []string{"-config FILE", "-data DIR"}},
 		{"gc", gcUsage, []string{"-config FILE", "-data DIR"}},
 		{"check", checkUsage, []string{"-config FILE", "-data DIR"}},
+		{"accept-break", acceptUsage, []string{"-config FILE", "-data DIR", "-log LOG", "-record N"}},
 	} {
 		code, stdout, stderr := runCmd(t, c.name, "-h")
 		if code != 0 || stdout != "" || !strings.HasPrefix(stderr, c.usage) {
@@ -143,7 +144,7 @@ func TestUsage(t *testing.T) {
 			t.Errorf("the usage of whiteroom-db serve does not say %q", text)
 		}
 	}
-	for _, name := range []string{"compact", "gc", "check"} {
+	for _, name := range []string{"compact", "gc", "check", "accept-break"} {
 		if !strings.Contains(help[name], "No daemon may have the data directory open") {
 			t.Errorf("the usage of whiteroom-db %s does not say that the daemon must be stopped:\n%s", name, help[name])
 		}
@@ -161,8 +162,25 @@ func TestUsage(t *testing.T) {
 	if strings.Contains(compactWords, "Nothing is dropped") || !strings.Contains(strings.Join(strings.Fields(usage), " "), "delete the login records older than one year") {
 		t.Errorf("the usages of whiteroom-db compact do not say what it deletes:\n%s\n%s", usage, help["compact"])
 	}
-	// After a failed sync, the three refuse the data directory until the machine has restarted, and then remove the mark.
-	for _, name := range []string{"serve", "compact", "gc"} {
+	// accept-break changes no record, says which traces it leaves and what it refuses, and leaves what damage to the engine
+	// leaves to the repair of the engine.
+	acceptWords := strings.Join(strings.Fields(help["accept-break"]), " ")
+	for _, text := range []string{"changes no record and drops none", "leaves three traces", "a row of the table chains",
+		"an event of the daemon in the log", "checks the log again from record N", "tells the break in a note, not as a problem",
+		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
+		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
+		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
+		"wait for the repair of the engine", "accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
+		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
+		if !strings.Contains(acceptWords, text) {
+			t.Errorf("the usage of whiteroom-db accept-break does not say %q:\n%s", text, help["accept-break"])
+		}
+	}
+	if !strings.Contains(strings.Join(strings.Fields(usage), " "), "accept the break at record -record N of the audit log -log LOG") {
+		t.Errorf("the list of the commands does not say what accept-break does:\n%s", usage)
+	}
+	// After a failed sync, the four refuse the data directory until the machine has restarted, and then remove the mark.
+	for _, name := range []string{"serve", "compact", "gc", "accept-break"} {
 		words := strings.Join(strings.Fields(help[name]), " ")
 		for _, text := range []string{"After a sync has failed", "<DATA>/stopped", "until the machine has restarted"} {
 			if !strings.Contains(words, text) {
@@ -240,6 +258,29 @@ func TestUsage(t *testing.T) {
 		{[]string{"check", "-data", "d", "x"}, 2, "", usageErr("check", "unexpected argument \"x\": the command takes flags only")},
 		{[]string{"check", "-config", missing}, 2, "", "whiteroom-db check: " + openErr.Error() + "\n"},
 		{[]string{"check", "-config", broken}, 2, "", brokenLine},
+		{[]string{"accept-break"}, 2, "", usageErr("accept-break", "no data directory: give -data DIR, or data in the config file")},
+		{[]string{"accept-break", "-x"}, 2, "", "flag provided but not defined: -x\n" + help["accept-break"]},
+		{[]string{"accept-break", "-data", "d"}, 2, "", usageErr("accept-break", "no audit log: give -log login or -log activity")},
+		{[]string{"accept-break", "-data", "d", "-record", "3"}, 2, "",
+			usageErr("accept-break", "no audit log: give -log login or -log activity")},
+		{[]string{"accept-break", "-data", "d", "-log", "x", "-record", "3"}, 2, "",
+			usageErr("accept-break", `the audit log "x" is neither login nor activity`)},
+		{[]string{"accept-break", "-data", "d", "-log", "", "-record", "3"}, 2, "",
+			usageErr("accept-break", `the audit log "" is neither login nor activity`)},
+		{[]string{"accept-break", "-data", "d", "-log", "Login", "-record", "3"}, 2, "",
+			usageErr("accept-break", `the audit log "Login" is neither login nor activity`)},
+		{[]string{"accept-break", "-data", "d", "-log", "login"}, 2, "",
+			usageErr("accept-break", "no record: give -record N, the number that whiteroom doctor reports")},
+		{[]string{"accept-break", "-data", "d", "-log", "login", "-record", "0"}, 2, "",
+			usageErr("accept-break", "the records are numbered from 1, not 0")},
+		{[]string{"accept-break", "-data", "d", "-log", "login", "-record", "-1"}, 2, "",
+			"invalid value \"-1\" for flag -record: parse error\n" + help["accept-break"]},
+		{[]string{"accept-break", "-data", "d", "-log", "login", "-record", "x"}, 2, "",
+			"invalid value \"x\" for flag -record: parse error\n" + help["accept-break"]},
+		{[]string{"accept-break", "-data", "d", "-log", "login", "-record", "3", "x"}, 2, "",
+			usageErr("accept-break", "unexpected argument \"x\": the command takes flags only")},
+		{[]string{"accept-break", "-config", missing}, 2, "", "whiteroom-db accept-break: " + openErr.Error() + "\n"},
+		{[]string{"accept-break", "-config", broken}, 2, "", brokenLine},
 	} {
 		code, stdout, stderr := runCmd(t, tt.args...)
 		if code != tt.code || stdout != tt.stdout || stderr != tt.stderr {

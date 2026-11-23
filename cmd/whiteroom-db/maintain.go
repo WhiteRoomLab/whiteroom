@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"time"
 
@@ -107,25 +108,35 @@ func maintainOptions(e env, command string) dbserver.Options {
 	return o
 }
 
-// setup parses the arguments of init, compact and gc, reads the config file, and finds the data directory. If the command
-// is to end, it returns false and the exit code.
+// setup parses the arguments of init, compact, gc and check, reads the config file, and finds the data directory. If the
+// command is to end, it returns false and the exit code.
 func setup(name, usage string, args []string, e env) (data string, code int, ok bool) {
-	flags := newFlagSet(name, usage, e.stderr)
+	_, data, code, ok = setupFlags(name, usage, args, e, nil)
+	return data, code, ok
+}
+
+// setupFlags is setup for a command that has flags of its own, which add defines before the arguments are parsed. It
+// returns the flags too, for the usage errors of the command.
+func setupFlags(name, usage string, args []string, e env, add func(*flag.FlagSet)) (flags *flag.FlagSet, data string, code int, ok bool) {
+	flags = newFlagSet(name, usage, e.stderr)
 	var config, flagData string
 	flags.StringVar(&config, "config", "", "read the settings from the YAML file `FILE`; the flags override them")
 	flags.StringVar(&flagData, "data", "", "use the data directory `DIR` (required unless the config file has data)")
+	if add != nil {
+		add(flags)
+	}
 	if code, ok := parse(flags, args); !ok {
-		return "", code, false
+		return flags, "", code, false
 	}
 	cfg, ok := loadConfig(e.stderr, flags.Name(), config)
 	if !ok {
-		return "", 2, false
+		return flags, "", 2, false
 	}
 	data, _ = setting(flags, "data", flagData, cfg, "data", cfg.Data)
 	if data == "" {
-		return "", usageError(flags, "no data directory: give -data DIR, or data in the config file"), false
+		return flags, "", usageError(flags, "no data directory: give -data DIR, or data in the config file"), false
 	}
-	return data, 0, true
+	return flags, data, 0, true
 }
 
 // failed prints the error err of command, "interrupted" for that of the context when it is done, and with the way out if
