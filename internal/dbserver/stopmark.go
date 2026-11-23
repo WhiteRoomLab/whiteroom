@@ -25,8 +25,8 @@ const (
 	maxCause = 1024
 )
 
-// ErrNotRestarted is wrapped by the error of Open for a data directory whose mark of a failed sync has the boot ID of the
-// machine that is running now.
+// ErrNotRestarted is wrapped by the error of Open and of Maintain for a data directory whose mark of a failed sync has the
+// boot ID of the machine that is running now.
 var ErrNotRestarted = errors.New("the machine has not restarted since a sync failed")
 
 type notRestartedError struct{ text string }
@@ -210,6 +210,19 @@ func writeMark(root vfs.FS, boot string, at time.Time, cause error) error {
 		err = io.ErrShortWrite
 	}
 	return errors.Join(err, f.Sync(), f.Close(), root.SyncDir("."))
+}
+
+// checkWritable refuses the data directory on the OS at osDir if this process cannot write in it, without making a file: the
+// mark of a failed sync could not be left there. name is the directory in errors; an empty osDir is not checked.
+func checkWritable(name, osDir string) error {
+	if osDir == "" {
+		return nil
+	}
+	if err := writable(osDir); err != nil {
+		return fmt.Errorf("%s: whiteroom-db cannot write in the data directory (%s); it must be able to leave the mark of a "+
+			"failed sync there: give the directory to the user of the daemon", name, innerText(err))
+	}
+	return nil
 }
 
 // leaveText is the sentence for a mark that could not be written.

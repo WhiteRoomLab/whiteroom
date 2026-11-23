@@ -24,15 +24,17 @@ const lockWait = 2 * time.Second
 // that limit, and has to use the context of its caller for the maintenance that it asks for.
 //
 // It keeps the rule of Open for the mark of a failed sync (stopmark.go): it refuses a directory whose mark is of the boot
-// of the machine (ErrNotRestarted) before the engine changes a file, and removes the mark of an earlier boot. If the
-// maintenance fails with an error that wraps logdb.ErrFailed, it leaves the mark: one that f returns, before the engine lets
-// go of its locks, so that no daemon opens the directory between the failure and the mark.
+// of the machine (ErrNotRestarted), and one that this process cannot write in, before the engine changes a file, and
+// removes the mark of an earlier boot. If the maintenance fails with an error that wraps logdb.ErrFailed, it leaves the
+// mark: one that f returns, before the engine lets go of its locks, so that no daemon opens the directory between the
+// failure and the mark.
 func Maintain(ctx context.Context, dir string, o Options, f func(*logdb.Maintenance) error) error {
-	root, _, err := dataRoot(dir)
+	root, opened, err := dataRoot(dir)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	o.osDir = opened
 	return maintain(ctx, root, dir, o, f)
 }
 
@@ -48,6 +50,9 @@ func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*l
 		}
 	}
 	if _, err := checkMark(root, dir, boot); err != nil {
+		return err
+	}
+	if err := checkWritable(dir, o.osDir); err != nil {
 		return err
 	}
 	if o.Hook != nil {

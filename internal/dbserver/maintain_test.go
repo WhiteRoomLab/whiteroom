@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -385,58 +386,66 @@ func TestMaintainMark(t *testing.T) {
 	})
 
 	// A mark that appears after the first look, while the engine opens: nothing is written, not the checkpoint of the state
-	// that the engine has read from a log that the page cache may have had.
-	t.Run("a mark after the first look", func(t *testing.T) {
-		f := newFixture(t, nil)
-		f.connect(dbwire.RoleWriter).mustCommit(schemaOp(), put(2, "a", "1"))
-		// A copy before the server closes: it has the commit in the log, and no checkpoint of it.
-		world := f.fs.Crash(keepAll(f.fs))
-		snapshot := func() map[string]string {
-			files := filesOf(world, "logdb")
-			delete(files, "logdb/head")
-			return files
-		}
-		before := snapshot()
-		var written string
-		o := f.opts
-		o.Hook = func(point string) error {
-			if point == "maintain:checked" {
-				written = valid
-				putMark(t, world, written)
+	// that the engine has read from a log that the page cache may have had. The mark may be one that the stopping daemon has
+	// made and not yet written: it is empty, and refuses as well.
+	for _, tc := range []struct {
+		name, mark, want string
+		notRestarted     bool
+	}{
+		{"a mark after the first look", valid, "data: a sync failed at " + at + " (" + cause + ")" + refusedTail, true},
+		{"an empty mark after the first look", "", unreadable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, nil)
+			f.connect(dbwire.RoleWriter).mustCommit(schemaOp(), put(2, "a", "1"))
+			// A copy before the server closes: it has the commit in the log, and no checkpoint of it.
+			world := f.fs.Crash(keepAll(f.fs))
+			snapshot := func() map[string]string {
+				files := filesOf(world, "logdb")
+				delete(files, "logdb/head")
+				return files
 			}
-			return nil
-		}
-		called := false
-		err := maintain(t.Context(), world, "data", o, func(*logdb.Maintenance) error {
-			called = true
-			return nil
+			before := snapshot()
+			var written string
+			o := f.opts
+			o.Hook = func(point string) error {
+				if point == "maintain:checked" {
+					written = tc.mark
+					putMark(t, world, written)
+				}
+				return nil
+			}
+			called := false
+			err := maintain(t.Context(), world, "data", o, func(*logdb.Maintenance) error {
+				called = true
+				return nil
+			})
+			if err == nil || err.Error() != tc.want || errors.Is(err, ErrNotRestarted) != tc.notRestarted {
+				t.Fatalf("maintain = %v, want %q, wrapping ErrNotRestarted: %v", err, tc.want, tc.notRestarted)
+			}
+			if called {
+				t.Error("maintain called f")
+			}
+			if after := snapshot(); !maps.Equal(before, after) {
+				t.Errorf("the refused maintain changed logdb/: before %v, after %v", slicesOf(before), slicesOf(after))
+			}
+			for p := range filesOf(world, "logdb") {
+				if strings.HasPrefix(path.Base(p), ".tmp-") {
+					t.Errorf("the refused maintain left %s", p)
+				}
+			}
+			if got, _ := worldFile(world, "stopped"); got != written {
+				t.Errorf("the mark is %q, want it as it was written", got)
+			}
+			// The engine has let go of its locks.
+			if srv, err := Open(world, "data", f.opts); err == nil {
+				_ = srv.Close()
+				t.Error("Open in the same boot succeeded after the refusal")
+			} else if err.Error() != tc.want || errors.Is(err, ErrNotRestarted) != tc.notRestarted {
+				t.Errorf("Open in the same boot = %v, want %q, wrapping ErrNotRestarted: %v", err, tc.want, tc.notRestarted)
+			}
 		})
-		want := "data: a sync failed at " + at + " (" + cause + ")" + refusedTail
-		if !errors.Is(err, ErrNotRestarted) || err.Error() != want {
-			t.Fatalf("maintain = %v, want %q, wrapping ErrNotRestarted", err, want)
-		}
-		if called {
-			t.Error("maintain called f")
-		}
-		if after := snapshot(); !maps.Equal(before, after) {
-			t.Errorf("the refused maintain changed logdb/: before %v, after %v", slicesOf(before), slicesOf(after))
-		}
-		for p := range filesOf(world, "logdb") {
-			if strings.HasPrefix(path.Base(p), ".tmp-") {
-				t.Errorf("the refused maintain left %s", p)
-			}
-		}
-		if got, _ := worldFile(world, "stopped"); got != written {
-			t.Errorf("the mark is %q, want it as it was written", got)
-		}
-		// The engine has let go of its locks.
-		if srv, err := Open(world, "data", f.opts); err == nil {
-			_ = srv.Close()
-			t.Error("Open in the same boot succeeded after the refusal")
-		} else if !errors.Is(err, ErrNotRestarted) {
-			t.Errorf("Open in the same boot = %v, want ErrNotRestarted", err)
-		}
-	})
+	}
 
 	failures := []struct {
 		name   string
@@ -502,6 +511,13 @@ func TestMaintainMark(t *testing.T) {
 			if tc.arrange != nil {
 				tc.arrange(t, f)
 			}
+			var creates atomic.Int32
+			f.fs.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+				if op.Kind == simfs.OpCreate && op.Path == "stopped" {
+					creates.Add(1)
+				}
+				return false
+			}, Err: syscall.EIO})
 			var markedCalls int
 			var openInside error
 			o := f.opts
@@ -521,6 +537,9 @@ func TestMaintainMark(t *testing.T) {
 			err := maintain(t.Context(), f.fs, "data", o, func(m *logdb.Maintenance) error { return tc.run(t, f, m) })
 			if !errors.Is(err, logdb.ErrFailed) {
 				t.Fatalf("maintain = %v, want an error that wraps logdb.ErrFailed", err)
+			}
+			if n := creates.Load(); n != 1 {
+				t.Errorf("the mark was made %d times, want once", n)
 			}
 			if tc.inside {
 				if markedCalls != 1 {

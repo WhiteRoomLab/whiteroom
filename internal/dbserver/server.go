@@ -67,6 +67,10 @@ type Options struct {
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
+
+	// osDir is the data directory on the OS, which OpenDir and Maintain set: Open refuses it if this process cannot write in
+	// it. Empty: another file system, which has no such check.
+	osDir string
 }
 
 type Server struct {
@@ -177,11 +181,12 @@ func Create(root vfs.FS, name string, o Options) error {
 }
 
 // Open opens the data directory in root as the writer of its engine. It refuses a data directory that has the mark of a
-// sync that failed in the boot of the machine that runs now (ErrNotRestarted), before the engine changes a file, and removes
-// the mark of an earlier boot once the engine has opened. It refuses a store that has commits and no schema row, an
-// invalid row, and a schema newer than dbwire.TableVersion, before the engine changes a file. It removes the temporary
-// files that a daemon that was killed left in files/; if it cannot, it fails, and the store is as it was. name is the
-// directory in errors. root stays the caller's: Close does not close it.
+// sync that failed in the boot of the machine that runs now (ErrNotRestarted), and one on the OS that this process cannot
+// write in (OpenDir), before the engine changes a file, and removes the mark of an earlier boot once the engine has
+// opened. It refuses a store that has commits and no schema row, an invalid row, and a schema newer than
+// dbwire.TableVersion, before the engine changes a file. It removes the temporary files that a daemon that was killed left
+// in files/; if it cannot, it fails, and the store is as it was. name is the directory in errors. root stays the
+// caller's: Close does not close it.
 func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err := checkLimits(o.Limits); err != nil {
 		return nil, err
@@ -199,6 +204,9 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 		}
 	}
 	if _, err := checkMark(root, name, boot); err != nil {
+		return nil, err
+	}
+	if err := checkWritable(name, o.osDir); err != nil {
 		return nil, err
 	}
 	if o.Hook != nil {

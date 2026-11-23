@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -361,6 +362,35 @@ func TestMarkRead(t *testing.T) {
 		}
 	})
 
+	// The mark of an earlier boot is removed once the engine has opened: it stays if the engine does not.
+	t.Run("an earlier boot and an engine that does not open", func(t *testing.T) {
+		f := newFixture(t, nil)
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		earlier := valid(testBoot)
+		putMark(t, f.fs, earlier)
+		f.fs.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpOpen && op.Path == "logdb/head" },
+			Err: syscall.EIO, Times: 1})
+		o := f.opts
+		o.Boot = machineWith(anotherBoot)
+		if _, err := openClosing(t, f, o); err == nil {
+			t.Fatal("Open succeeded although the engine could not open")
+		}
+		if got, _ := worldFile(f.fs, "stopped"); got != earlier {
+			t.Errorf("the mark of an earlier boot is %q after an Open that failed, want it kept", got)
+		}
+		if lines := f.logs.all(); len(lines) != 0 {
+			t.Errorf("log lines %q, want none", lines)
+		}
+		if _, err := openClosing(t, f, o); err != nil {
+			t.Fatalf("Open once the engine opens = %v", err)
+		}
+		if _, ok := worldFile(f.fs, "stopped"); ok {
+			t.Error("the mark of an earlier boot is still there after the Open that succeeded")
+		}
+	})
+
 	t.Run("a symbolic link", func(t *testing.T) {
 		f := newDirFixture(t, nil)
 		if err := f.srv.Close(); err != nil {
@@ -473,11 +503,14 @@ func TestMarkWriteFails(t *testing.T) {
 		match   func(simfs.Op) bool
 		drop    bool
 		refused string // what an Open of the same world in the same boot says; "": it opens
+		// dirSyncs is how many times the stop syncs the data directory: it does so after a failed write or sync of the file,
+		// because the name may still reach the disk.
+		dirSyncs int32
 	}{
-		{"its create", onMark(simfs.OpCreate), false, ""},
-		{"its write", onMark(simfs.OpWrite), false, unreadable},
-		{"its sync", onMark(simfs.OpSync), true, "mark"},
-		{"the sync of the directory", func(op simfs.Op) bool { return op.Kind == simfs.OpSyncDir && op.Path == "." }, true, "mark"},
+		{"its create", onMark(simfs.OpCreate), false, "", 0},
+		{"its write", onMark(simfs.OpWrite), false, unreadable, 1},
+		{"its sync", onMark(simfs.OpSync), true, "mark", 1},
+		{"the sync of the directory", func(op simfs.Op) bool { return op.Kind == simfs.OpSyncDir && op.Path == "." }, true, "mark", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, nil)
@@ -486,9 +519,19 @@ func TestMarkWriteFails(t *testing.T) {
 			seq := w.mustSnapshot()
 			f.fs.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, "logdb/log/") },
 				Err: syscall.EIO, Drop: true, Times: 1})
+			var dirSyncs atomic.Int32
+			f.fs.Inject(simfs.Fault{Match: func(op simfs.Op) bool {
+				if op.Kind == simfs.OpSyncDir && op.Path == "." {
+					dirSyncs.Add(1)
+				}
+				return false
+			}, Err: syscall.EIO})
 			f.fs.Inject(simfs.Fault{Match: tc.match, Err: syscall.EIO, Drop: tc.drop, Times: 1})
 			_, _, err := w.commit(seq, put(2, "b", "2"+secret), event("e"+secret))
 			wantCode(t, err, dbwire.CodeStopped)
+			if n := dirSyncs.Load(); n != tc.dirSyncs {
+				t.Errorf("the stop synced the data directory %d times, want %d", n, tc.dirSyncs)
+			}
 
 			seq = w.mustSnapshot()
 			_, _, err = w.commit(seq, put(2, "c", "3"), event("e"))
@@ -606,12 +649,86 @@ func TestStopMarkOnce(t *testing.T) {
 			t.Errorf("the mark is %q, want the cause %q", mark, "the engine failed")
 		}
 	})
+
+	// A cause as long as a path of the longest kind: the cut keeps the mark small enough to be read.
+	t.Run("a long cause", func(t *testing.T) {
+		f := newFixture(t, nil)
+		long := "x/" + strings.Repeat("d", 4000) + "/logdb/log/y.log"
+		f.srv.stop(fmt.Errorf("%w: %w", logdb.ErrFailed, &fs.PathError{Op: "sync", Path: long, Err: syscall.EIO}))
+		mark, _ := worldFile(f.fs, "stopped")
+		if cause := markLine(mark, "cause"); len(mark) > maxMark || len(cause) == 0 || len(cause) > maxCause ||
+			!strings.HasSuffix(mark, "\n") {
+			t.Errorf("the mark has %d bytes and a cause of %d, want at most %d and at most %d", len(mark), len(cause), maxMark,
+				maxCause)
+		}
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := openClosing(t, f, f.opts); !errors.Is(err, ErrNotRestarted) {
+			t.Fatalf("Open in the same boot = %v, want ErrNotRestarted", err)
+		}
+		o := f.opts
+		o.Boot = machineWith(anotherBoot)
+		srv, err := Open(f.fs, "data", o)
+		if err != nil {
+			t.Fatalf("Open in another boot = %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Close() })
+		if _, ok := worldFile(f.fs, "stopped"); ok {
+			t.Error("the mark is still there after the restart")
+		}
+	})
+}
+
+// TestStopAfterEarlierMark checks that a stop leaves its mark although the mark of an earlier boot, which the start could not
+// remove, is still there: the mark is made again, with the boot of this machine, and keeps the next daemon out.
+func TestStopAfterEarlierMark(t *testing.T) {
+	f := newFixture(t, nil)
+	f.connect(dbwire.RoleWriter).mustCommit(schemaOp(), put(2, "a", "1"))
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	earlier := markWith(anotherBoot, "time: 2026-11-15T09:29:00Z\n", "cause: old\n")
+	putMark(t, f.fs, earlier)
+	f.fs.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpRemove && op.Path == "stopped" },
+		Err: syscall.EACCES, Times: 1})
+	f.open()
+	if lines := f.logs.all(); len(lines) != 1 || lines[0] != "cannot remove the mark data/stopped: permission denied" {
+		t.Errorf("log lines %q, want the one of the removal that failed", lines)
+	}
+	if got, _ := worldFile(f.fs, "stopped"); got != earlier {
+		t.Fatalf("the mark of the earlier boot is %q after the start, want it kept", got)
+	}
+	f.srv.stop(fmt.Errorf("%w: %w", logdb.ErrFailed, &fs.PathError{Op: "sync", Path: "data/logdb/log/x.log", Err: syscall.EIO}))
+	if mark, _ := worldFile(f.fs, "stopped"); markLine(mark, "boot") != testBoot || strings.Contains(mark, "old") {
+		t.Errorf("the mark is %q after the stop, want one of the boot %s that replaces the earlier one", mark, testBoot)
+	}
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openClosing(t, f, f.opts); !errors.Is(err, ErrNotRestarted) {
+		t.Fatalf("Open in the same boot after the stop = %v, want ErrNotRestarted", err)
+	}
 }
 
 // TestMarkAfterCheck checks the second look at the mark, after the engine has opened and has the lock: a daemon that
 // stopped while this one waited for the lock has left its mark since the first look. Open refuses, and the engine writes
-// nothing when it closes, not the checkpoint of the state that it has read from a log that the page cache may have had.
+// nothing when it closes, not the checkpoint of the state that it has read from a log that the page cache may have had. The
+// mark may be one that the stopping daemon has made and not yet written: it is empty, and refuses as well.
 func TestMarkAfterCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name, mark   string
+		notRestarted bool
+	}{
+		{"a mark of this boot", markWith(testBoot, "time: 2026-11-15T09:29:00Z\n",
+			"cause: sync data/logdb/log/x.log: input/output error\n"), true},
+		{"a mark that is empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testMarkAfterCheck(t, tc.mark, tc.notRestarted) })
+	}
+}
+
+func testMarkAfterCheck(t *testing.T, mark string, notRestarted bool) {
 	f := newFixture(t, nil)
 	w := f.connect(dbwire.RoleWriter)
 	w.mustCommit(schemaOp(), put(2, "a", "1"))
@@ -635,7 +752,7 @@ func TestMarkAfterCheck(t *testing.T) {
 	o := f.opts
 	o.Hook = func(point string) error {
 		if point == "open:checked" {
-			written = markWith(testBoot, "time: 2026-11-15T09:29:00Z\n", "cause: sync data/logdb/log/x.log: input/output error\n")
+			written = mark
 			putMark(t, world, written)
 		}
 		return nil
@@ -644,8 +761,8 @@ func TestMarkAfterCheck(t *testing.T) {
 	if err == nil {
 		_ = srv.Close()
 	}
-	if !errors.Is(err, ErrNotRestarted) {
-		t.Fatalf("Open = %v, want ErrNotRestarted", err)
+	if err == nil || errors.Is(err, ErrNotRestarted) != notRestarted || (!notRestarted && err.Error() != unreadable) {
+		t.Fatalf("Open = %v, want a refusal that wraps ErrNotRestarted: %v", err, notRestarted)
 	}
 	if after := snapshot(); !maps.Equal(before, after) {
 		t.Errorf("the refused Open changed logdb/: before %v, after %v", slicesOf(before), slicesOf(after))

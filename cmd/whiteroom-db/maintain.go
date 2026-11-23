@@ -37,7 +37,8 @@ command), the command refuses the directory until the machine has restarted, and
 says so on the standard error: what the sync was to write may be in the page
 cache only. The refusal changes nothing. After the restart the command removes
 the mark <DATA>/stopped, which the failure left, and says so on the standard
-error.
+error. It also refuses a data directory that it cannot write in, where it could
+not leave the mark.
 
 With -config, the item data of the YAML file gives what -data leaves out; the file
 may hold other items, which are checked and not used. Without it, no config file
@@ -61,7 +62,8 @@ command), the command refuses the directory until the machine has restarted, and
 says so on the standard error: what the sync was to write may be in the page
 cache only. The refusal changes nothing. After the restart the command removes
 the mark <DATA>/stopped, which the failure left, and says so on the standard
-error.
+error. It also refuses a data directory that it cannot write in, where it could
+not leave the mark.
 
 With -config, the item data of the YAML file gives what -data leaves out; the file
 may hold other items, which are checked and not used. Without it, no config file
