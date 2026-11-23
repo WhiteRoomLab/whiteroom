@@ -86,7 +86,7 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 	newLog := func(t *testing.T) (*simfs.FS, *Store) {
 		t.Helper()
 		fsys := simfs.New("data")
-		s, err := create("data", options{log: &logdb.Options{}, fs: fsys})
+		s, err := create("data", options{log: &logdb.Options{}, fs: fsys, boot: stopBoot})
 		if err != nil {
 			t.Fatalf("create() = %v", err)
 		}
@@ -233,7 +233,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		return true
 	}
 	fsys.Inject(flt)
-	r := writer(fsys, o)
+	r := writerIn(fsys, o, stopBoot) // a restart and the crashes that are opened are in the real boot
 	defer func() { r.close() }()
 	checked := 0
 	// crashes checks that every crash that fsys can have now (those of fewModels, unless all) opens to one of want.

@@ -814,7 +814,9 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 			}
 
 			restarted := f.fs.Crash(keepAll(f.fs))
-			srv, err := Open(restarted, "data", f.opts)
+			after := f.opts
+			after.Boot = machineWith(anotherBoot)
+			srv, err := Open(restarted, "data", after)
 			if err != nil {
 				t.Fatalf("Open() after a restart = %v", err)
 			}

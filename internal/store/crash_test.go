@@ -657,7 +657,14 @@ func newMatrixBase(t *testing.T, o logdb.Options) *simfs.FS {
 // writer returns a run of steps of the log backend with o in the data directory fsys. A store that cannot reach its
 // daemon gives up after a short wait, which the daemons of the matrices end in.
 func writer(fsys vfs.FS, o logdb.Options) *mrun {
-	return &mrun{open: func() (*Store, error) { return open("data", options{log: &o, fs: fsys, wait: writerWait}) }}
+	return writerIn(fsys, o, nil)
+}
+
+// writerIn is writer for a daemon that sees the boot ID that boot gives (nil: the real one).
+func writerIn(fsys vfs.FS, o logdb.Options, boot func() (string, error)) *mrun {
+	return &mrun{open: func() (*Store, error) {
+		return open("data", options{log: &o, fs: fsys, wait: writerWait, boot: boot})
+	}}
 }
 
 func openReader(fsys vfs.FS, o logdb.Options) (*Store, error) {

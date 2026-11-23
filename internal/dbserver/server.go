@@ -42,6 +42,9 @@ type Options struct {
 	Limits dbwire.Limits
 	// Now is the clock of the marks; nil: time.Now.
 	Now func() time.Time
+	// Boot returns the boot ID of the machine, which changes at each start of it; nil: the content of
+	// /proc/sys/kernel/random/boot_id.
+	Boot func() (string, error)
 	// FreeSpace returns the free space of the file system of the data directory; nil: no check.
 	FreeSpace func() (Space, error)
 	// DataDir is the identity of the data directory, which the reply to a Hello tells; zero: unknown.
@@ -57,8 +60,9 @@ type Options struct {
 	// the sync of the directory of the original), "clock:tick" (by the goroutine of the clock of the deadlines, before each
 	// reading of the time), "reply:held" (when a request that has a reply in the buffer is still counted, before the
 	// next one begins), "snapshot:idle" (after a snapshot is released for being idle), "reader:idle" (before a reader's
-	// connection that holds no snapshot is ended for being idle) and "reply:pulse" (after a pulse is written). Its error
-	// fails the operation; that of the last five is not used.
+	// connection that holds no snapshot is ended for being idle), "reply:pulse" (after a pulse is written) and "open:checked"
+	// (in Open, after the check of the mark of a failed sync and before the engine opens). Its error fails the operation;
+	// that of the last six is not used.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)
@@ -72,8 +76,12 @@ type Server struct {
 	limits dbwire.Limits
 	o      Options
 	now    func() time.Time
-	bootID [16]byte
+	bootID [16]byte // of this daemon, which Hello tells; not the boot ID of the machine (boot)
 	bucket *bucket
+
+	root     vfs.FS // the data directory, whose mark of a failed sync stop writes
+	boot     string // the boot ID of the machine
+	stopOnce sync.Once
 
 	// writeTo is the count of the Commit whose Update holds the turn, which the writes of the engine add to; nil: none.
 	// gateBy and turnBy are the requests that hold the gate and the turn, which those that wait for them watch. pulse is the
@@ -167,10 +175,12 @@ func Create(root vfs.FS, name string, o Options) error {
 	return errors.Join(db.Close(), logFS.Close())
 }
 
-// Open opens the data directory in root as the writer of its engine. It refuses a store that has commits and no schema
-// row, an invalid row, and a schema newer than dbwire.TableVersion, before the engine changes a file. It removes the
-// temporary files that a daemon that was killed left in files/; if it cannot, it fails, and the store is as it was.
-// name is the directory in errors. root stays the caller's: Close does not close it.
+// Open opens the data directory in root as the writer of its engine. It refuses a data directory that has the mark of a
+// sync that failed in the boot of the machine that runs now (ErrNotRestarted), before the engine changes a file, and removes
+// the mark of an earlier boot once the engine has opened. It refuses a store that has commits and no schema row, an
+// invalid row, and a schema newer than dbwire.TableVersion, before the engine changes a file. It removes the temporary
+// files that a daemon that was killed left in files/; if it cannot, it fails, and the store is as it was. name is the
+// directory in errors. root stays the caller's: Close does not close it.
 func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err := checkLimits(o.Limits); err != nil {
 		return nil, err
@@ -178,39 +188,75 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if o.Pulse < 0 {
 		return nil, fmt.Errorf("the pulse interval is negative (%v)", o.Pulse)
 	}
+	boot, err := bootOf(o)
+	if err != nil {
+		return nil, err
+	}
 	for _, dir := range []string{"logdb", "files"} {
 		if err := checkDir(root, name, dir); err != nil {
 			return nil, err
 		}
 	}
+	if _, err := checkMark(root, name, boot); err != nil {
+		return nil, err
+	}
+	if o.Hook != nil {
+		_ = o.Hook("open:checked")
+	}
 	sub, err := root.Sub("logdb")
 	if err != nil {
 		return nil, err
 	}
+	frozen := new(atomic.Bool)
 	writeTo := new(atomic.Pointer[atomic.Uint64])
-	logFS := vfs.FS(&writeFS{FS: sub, to: writeTo})
+	logFS := vfs.FS(&writeFS{FS: sub, to: writeTo, frozen: frozen})
 	files, err := root.Sub("files")
 	if err != nil {
 		_ = logFS.Close()
+		return nil, err
+	}
+	own, err := root.Sub(".")
+	if err != nil {
+		_ = logFS.Close()
+		_ = files.Close()
 		return nil, err
 	}
 	o.Limits = o.Limits.WithDefaults()
 	if o.Pulse == 0 {
 		o.Pulse = defaultPulse
 	}
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
 	o.Log.Accept = acceptSchema(fspath.Join(name, "logdb"))
 	db, err := logdb.Open(logFS, o.Log)
 	if err != nil {
 		_ = logFS.Close()
 		_ = files.Close()
+		_ = own.Close()
+		if errors.Is(err, logdb.ErrFailed) {
+			if werr := writeMark(root, boot, now(), err); werr != nil {
+				err = fmt.Errorf("%w; %s", err, leaveText(name, werr))
+			}
+		}
 		return nil, err
 	}
-	s := &Server{name: name, db: db, logFS: logFS, files: files, writeTo: writeTo, pulse: o.Pulse, limits: o.Limits, o: o, now: o.Now,
-		bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{}, maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep,
-		drained: make(chan struct{}), started: time.Now(), turn: make(chan struct{}, 1)}
-	if s.now == nil {
-		s.now = time.Now
+	// A daemon that stopped while the engine waited for the lock has left its mark since the check: the engine must not
+	// write what the page cache has and the disk may not (a checkpoint of the state that it has read).
+	earlier, err := checkMark(root, name, boot)
+	if err != nil {
+		frozen.Store(true)
+		_ = db.Close()
+		_ = logFS.Close()
+		_ = files.Close()
+		_ = own.Close()
+		return nil, err
 	}
+	s := &Server{name: name, db: db, logFS: logFS, files: files, root: own, boot: boot, writeTo: writeTo, pulse: o.Pulse,
+		limits: o.Limits, o: o, now: now, bucket: newBucket(o.Limits.CommitsPerSecond), sessions: map[*session]struct{}{},
+		maxOps: maxCommitOps, maxStagedCount: maxStagedObjects, spaceStep: originalSpaceStep, drained: make(chan struct{}),
+		started: time.Now(), turn: make(chan struct{}, 1)}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.startClock()
 	if _, err := rand.Read(s.bootID[:]); err != nil {
@@ -221,6 +267,9 @@ func Open(root vfs.FS, name string, o Options) (*Server, error) {
 	if err := s.removeTemps(); err != nil {
 		_ = s.Close()
 		return nil, err
+	}
+	if earlier != nil {
+		removeMark(s.root, name, earlier, s.logf)
 	}
 	return s, nil
 }
@@ -352,7 +401,7 @@ func (s *Server) Close() error {
 		s.cancel()
 		s.closeConns()
 		s.wg.Wait()
-		s.closeErr = errors.Join(s.db.Close(), s.logFS.Close(), s.files.Close())
+		s.closeErr = errors.Join(s.db.Close(), s.logFS.Close(), s.files.Close(), s.root.Close())
 	})
 	return s.closeErr
 }
@@ -427,11 +476,17 @@ func (s *Server) hook(point string) error {
 
 const stoppedText = "the store has stopped after a sync failed; restart the machine before starting the daemon again"
 
+// stop refuses the writes from now on, and has left the mark of the stop (stopmark.go) when it returns, so that the request
+// whose sync failed is answered after it. A mark that cannot be written is logged: the daemon goes on.
 func (s *Server) stop(err error) {
-	if s.stopped.CompareAndSwap(false, true) {
+	s.stopOnce.Do(func() {
+		s.stopped.Store(true)
 		s.logf("the store has stopped after a sync failed (%s); writes are refused until the daemon is started again "+
 			"after a restart of the machine", safeText(err))
-	}
+		if werr := writeMark(s.root, s.boot, s.now(), err); werr != nil {
+			s.logf("%s", leaveText(s.name, werr))
+		}
+	})
 }
 
 func (s *Server) lastSeq() (seq uint64, err error) {

@@ -154,6 +154,25 @@ func TestAcquireErrors(t *testing.T) {
 	}
 }
 
+// TestBoot: the boot ID that Options.Boot gives reaches the daemon, whose Open fails with the error that it returns.
+func TestBoot(t *testing.T) {
+	dir := newDir(t)
+	failure := errors.New("no boot ID in this test")
+	o := options()
+	o.Boot = func() (string, error) { return "", failure }
+	if _, err := Acquire(dir, o); !errors.Is(err, failure) {
+		t.Errorf("Acquire = %v, want an error that wraps %v", err, failure)
+	}
+	o.Boot = func() (string, error) { return "00000000-0000-4000-8000-000000000001", nil }
+	h, err := Acquire(dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPulse: the interval of the pulses is the daemon's, which a negative one makes Open refuse.
 func TestPulse(t *testing.T) {
 	dir := newDir(t)

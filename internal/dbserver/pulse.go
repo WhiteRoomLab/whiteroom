@@ -2,7 +2,9 @@ package dbserver
 
 import (
 	"context"
+	"errors"
 	"io/fs"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -138,11 +140,17 @@ func (f *progressFile) ReadDir(n int) ([]fs.DirEntry, error) {
 // writeFS is the FS that the engine runs on. After each write call of the engine has returned (OpenFile, Mkdir, Remove,
 // Rename and SyncDir, and Write, WriteAt, Sync and Truncate of a file that it has opened with OpenFile), whether it failed
 // or not, it adds 1 to the count that to points at, if any: that of the Commit whose Update holds the turn. The calls of
-// the checkpoint, which the engine writes in the background, are not counted, by their names.
+// the checkpoint, which the engine writes in the background, are not counted, by their names. Once frozen is set, every
+// write call fails, without a call of the FS, and so does every OpenFile that may write or make a file: reads go on.
 type writeFS struct {
 	vfs.FS
-	to *atomic.Pointer[atomic.Uint64]
+	to     *atomic.Pointer[atomic.Uint64]
+	frozen *atomic.Bool // nil: never set
 }
+
+var errFrozen = errors.New("the daemon has refused the data directory after it opened: nothing more is written")
+
+func (w *writeFS) isFrozen() bool { return w.frozen != nil && w.frozen.Load() }
 
 // checkpointName reports whether name is one that only the checkpoint of the engine writes: its temporary file, the
 // file, and the directory of the store, which it syncs.
@@ -163,30 +171,46 @@ func (w *writeFS) stepFor(name string) {
 }
 
 func (w *writeFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
+	// Before the checkpoint names: the file of a checkpoint is not wrapped, so its writes would not be refused.
+	if w.isFrozen() && flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC) != 0 {
+		return nil, errFrozen
+	}
 	f, err := w.FS.OpenFile(name, flag, perm)
 	w.stepFor(name)
 	if err != nil || checkpointName(name) {
 		return f, err
 	}
-	return &writeFile{File: f, to: w.to}, nil
+	return &writeFile{File: f, to: w.to, frozen: w.frozen}, nil
 }
 
 func (w *writeFS) Mkdir(name string, perm fs.FileMode) error {
+	if w.isFrozen() {
+		return errFrozen
+	}
 	defer w.stepFor(name)
 	return w.FS.Mkdir(name, perm)
 }
 
 func (w *writeFS) Remove(name string) error {
+	if w.isFrozen() {
+		return errFrozen
+	}
 	defer w.stepFor(name)
 	return w.FS.Remove(name)
 }
 
 func (w *writeFS) Rename(oldname, newname string) error {
+	if w.isFrozen() {
+		return errFrozen
+	}
 	defer w.stepFor(oldname)
 	return w.FS.Rename(oldname, newname)
 }
 
 func (w *writeFS) SyncDir(name string) error {
+	if w.isFrozen() {
+		return errFrozen
+	}
 	defer w.stepFor(name)
 	return w.FS.SyncDir(name)
 }
@@ -196,30 +220,45 @@ func (w *writeFS) Sub(name string) (vfs.FS, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &writeFS{FS: sub, to: w.to}, nil
+	return &writeFS{FS: sub, to: w.to, frozen: w.frozen}, nil
 }
 
 type writeFile struct {
 	vfs.File
-	to *atomic.Pointer[atomic.Uint64]
+	to     *atomic.Pointer[atomic.Uint64]
+	frozen *atomic.Bool
 }
 
+func (f *writeFile) isFrozen() bool { return f.frozen != nil && f.frozen.Load() }
+
 func (f *writeFile) Write(b []byte) (int, error) {
+	if f.isFrozen() {
+		return 0, errFrozen
+	}
 	defer step(f.to)
 	return f.File.Write(b)
 }
 
 func (f *writeFile) WriteAt(b []byte, off int64) (int, error) {
+	if f.isFrozen() {
+		return 0, errFrozen
+	}
 	defer step(f.to)
 	return f.File.WriteAt(b, off)
 }
 
 func (f *writeFile) Sync() error {
+	if f.isFrozen() {
+		return errFrozen
+	}
 	defer step(f.to)
 	return f.File.Sync()
 }
 
 func (f *writeFile) Truncate(size int64) error {
+	if f.isFrozen() {
+		return errFrozen
+	}
 	defer step(f.to)
 	return f.File.Truncate(size)
 }
