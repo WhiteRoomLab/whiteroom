@@ -225,7 +225,8 @@ func headLines(text string) []string {
 // whiteroom-db makes the data directory and serves it; whiteroom init imports the sample site and makes the administrator,
 // with the password on a pipe; whiteroom serve admin connects to the daemon and listens on a Unix socket; a login, a page that
 // the API saves and publishes, and the build that follows; whiteroom build into another output directory; whiteroom backup;
-// a second daemon on the copy, which whiteroom doctor checks with the heads that backup printed; whiteroom doctor with the
+// whiteroom-db check on the copy, before any daemon opens it; a second daemon on the copy, which whiteroom doctor checks with
+// the heads that backup printed; whiteroom doctor with the
 // heads that the first daemon has written to its standard error; and the daemon and the two servers, each with a standard
 // error that is a pipe that no one reads (#130). The server has no file of the data directory open and writes no head.
 // Every process ends with 0 after SIGTERM.
@@ -327,6 +328,10 @@ func TestProcesses(t *testing.T) {
 	printed, _ := command("whiteroom", whiteroom, nil, "backup", "-config", cfg, copyDir)
 	if heads := printedHeads(t, "whiteroom backup", run, copyDir, printed); len(heads) != 2 {
 		t.Errorf("whiteroom backup printed the heads %v, want those of the 2 logs", heads)
+	}
+	stdout, stderr = command("whiteroom-db", whiteroomDB, nil, "check", "-data", copyDir)
+	if want := "no problems found in " + copyDir + "\n"; stdout != want || stderr != "" {
+		t.Errorf("whiteroom-db check on the copy printed %q, and on stderr %q, want %q", stdout, stderr, want)
 	}
 	second := startProc(t, "whiteroom-db", whiteroomDB, procTmp, nil, "serve", "-config", cfg, "-data", copyDir, "-db", run2)
 	if line := second.firstLine(t); !strings.HasPrefix(line, "serving the data directory "+copyDir+" on the sockets in "+run2+" (") {

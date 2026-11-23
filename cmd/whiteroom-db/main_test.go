@@ -114,6 +114,7 @@ func TestUsage(t *testing.T) {
 		{"init", initUsage, []string{"-config FILE", "-data DIR"}},
 		{"compact", compactUsage, []string{"-config FILE", "-data DIR"}},
 		{"gc", gcUsage, []string{"-config FILE", "-data DIR"}},
+		{"check", checkUsage, []string{"-config FILE", "-data DIR"}},
 	} {
 		code, stdout, stderr := runCmd(t, c.name, "-h")
 		if code != 0 || stdout != "" || !strings.HasPrefix(stderr, c.usage) {
@@ -142,7 +143,7 @@ func TestUsage(t *testing.T) {
 			t.Errorf("the usage of whiteroom-db serve does not say %q", text)
 		}
 	}
-	for _, name := range []string{"compact", "gc"} {
+	for _, name := range []string{"compact", "gc", "check"} {
 		if !strings.Contains(help[name], "No daemon may have the data directory open") {
 			t.Errorf("the usage of whiteroom-db %s does not say that the daemon must be stopped:\n%s", name, help[name])
 		}
@@ -158,6 +159,18 @@ func TestUsage(t *testing.T) {
 		if !strings.Contains(words, "removes the mark") {
 			t.Errorf("the usage of whiteroom-db %s does not say that it removes the mark:\n%s", name, help[name])
 		}
+	}
+	// check refuses it too, and writes nothing: it leaves a mark of an earlier boot, and does not need to write in the directory.
+	checkWords := strings.Join(strings.Fields(help["check"]), " ")
+	for _, text := range []string{"After a sync has failed", "<DATA>/stopped", "until the machine has restarted",
+		"is left where it is", "checks a data directory that it cannot write in", "change nothing", "writes nothing",
+		"stopped after 1000 of them", "engine or original"} {
+		if !strings.Contains(checkWords, text) {
+			t.Errorf("the usage of whiteroom-db check does not say %q:\n%s", text, help["check"])
+		}
+	}
+	if strings.Contains(checkWords, "removes the mark") {
+		t.Errorf("the usage of whiteroom-db check says that it removes the mark:\n%s", help["check"])
 	}
 
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
@@ -208,6 +221,12 @@ func TestUsage(t *testing.T) {
 		{[]string{"gc", "-data", "d", "x"}, 2, "", usageErr("gc", "unexpected argument \"x\": the command takes flags only")},
 		{[]string{"gc", "-config", missing}, 2, "", "whiteroom-db gc: " + openErr.Error() + "\n"},
 		{[]string{"gc", "-config", broken}, 2, "", brokenLine},
+		{[]string{"check"}, 2, "", usageErr("check", "no data directory: give -data DIR, or data in the config file")},
+		{[]string{"check", "-x"}, 2, "", "flag provided but not defined: -x\n" + help["check"]},
+		{[]string{"check", "-data", ""}, 2, "", usageErr("check", "no data directory: give -data DIR, or data in the config file")},
+		{[]string{"check", "-data", "d", "x"}, 2, "", usageErr("check", "unexpected argument \"x\": the command takes flags only")},
+		{[]string{"check", "-config", missing}, 2, "", "whiteroom-db check: " + openErr.Error() + "\n"},
+		{[]string{"check", "-config", broken}, 2, "", brokenLine},
 	} {
 		code, stdout, stderr := runCmd(t, tt.args...)
 		if code != tt.code || stdout != tt.stdout || stderr != tt.stderr {

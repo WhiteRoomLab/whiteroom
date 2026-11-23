@@ -28,9 +28,12 @@ const usage = `Usage:
   whiteroom-db gc [flags]
         remove the files of the data directory that its state does not need; the
         daemon must be stopped
+  whiteroom-db check [flags]
+        look for what is wrong in the data directory, such as a copy of a backup,
+        and change nothing; the daemon must be stopped
 
-Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h" or
-"whiteroom-db gc -h" for the flags.
+Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h",
+"whiteroom-db gc -h" or "whiteroom-db check -h" for the flags.
 `
 
 func main() {
@@ -81,6 +84,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runCompact(ctx, args[1:], e)
 	case "gc":
 		return runGC(ctx, args[1:], e)
+	case "check":
+		return runCheck(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
 		printf(e.stdout, "%s", usage)
 		return 0
