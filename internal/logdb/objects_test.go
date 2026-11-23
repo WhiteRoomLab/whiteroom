@@ -1081,13 +1081,13 @@ func TestVerify(t *testing.T) {
 		}, simPath(fname) + ": must be a regular file"},
 		{"a value in memory", func(_ *simfs.FS, db *DB) {
 			changeState(db, func(st *state) { st.tables[1] = st.tables[1].Put(nil, "k1", []byte("x")) })
-		}, differs + `table 1, key "k1": "v1" in the log, "x" in memory`},
+		}, differs + "table 1, keys: 1 with another value, 0 missing in memory, 0 missing in the log"},
 		{"a key missing in memory", func(_ *simfs.FS, db *DB) {
 			changeState(db, func(st *state) { delete(st.tables, 2) })
-		}, differs + `table 2, key "k2": "v2" in the log, missing in memory`},
+		}, differs + "table 2, keys: 0 with another value, 1 missing in memory, 0 missing in the log"},
 		{"a key missing in the log", func(_ *simfs.FS, db *DB) {
 			changeState(db, func(st *state) { st.tables[3] = pmap[[]byte]{}.Put(nil, strings.Repeat("k", 50), nil) })
-		}, differs + `table 3, key "` + strings.Repeat("k", 40) + `...": missing in the log, "" in memory`},
+		}, differs + "table 3, keys: 0 with another value, 0 missing in memory, 1 missing in the log"},
 		{"an object in memory", func(_ *simfs.FS, db *DB) {
 			changeState(db, func(st *state) {
 				loc, _ := st.objects.Get(string(ih[:]))
