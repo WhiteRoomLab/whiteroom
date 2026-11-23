@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
@@ -31,6 +32,14 @@ No daemon may have the data directory open: stop "whiteroom-db serve" on it firs
 If one has, the command waits for about two seconds, and then fails without
 changing anything.
 
+After a sync has failed on the data directory (in the daemon, or in this
+command), the command refuses the directory until the machine has restarted, and
+says so on the standard error: what the sync was to write may be in the page
+cache only. The refusal changes nothing. After the restart the command removes
+the mark <DATA>/stopped, which the failure left, and says so on the standard
+error. It also refuses a data directory that it cannot write in, where it could
+not leave the mark.
+
 With -config, the item data of the YAML file gives what -data leaves out; the file
 may hold other items, which are checked and not used. Without it, no config file
 is read.
@@ -48,6 +57,14 @@ No daemon may have the data directory open: stop "whiteroom-db serve" on it firs
 If one has, the command waits for about two seconds, and then fails without
 changing anything.
 
+After a sync has failed on the data directory (in the daemon, or in this
+command), the command refuses the directory until the machine has restarted, and
+says so on the standard error: what the sync was to write may be in the page
+cache only. The refusal changes nothing. After the restart the command removes
+the mark <DATA>/stopped, which the failure left, and says so on the standard
+error. It also refuses a data directory that it cannot write in, where it could
+not leave the mark.
+
 With -config, the item data of the YAML file gives what -data leaves out; the file
 may hold other items, which are checked and not used. Without it, no config file
 is read.
@@ -58,6 +75,13 @@ Flags:
 // storeOptions are the options of the engine of a store, which serve uses too.
 func storeOptions() dbserver.Options {
 	return dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+}
+
+// maintainOptions are storeOptions with the lines that the maintenance logs, on stderr after the name of command.
+func maintainOptions(e env, command string) dbserver.Options {
+	o := storeOptions()
+	o.Logf = func(format string, args ...any) { printf(e.stderr, "%s: %s\n", command, fmt.Sprintf(format, args...)) }
+	return o
 }
 
 // setup parses the arguments of init, compact and gc, reads the config file, and finds the data directory. If the command
@@ -114,7 +138,7 @@ func runCompact(ctx context.Context, args []string, e env) int {
 	if !ok {
 		return code
 	}
-	err := dbserver.Maintain(ctx, data, storeOptions(), func(m *logdb.Maintenance) error {
+	err := dbserver.Maintain(ctx, data, maintainOptions(e, "whiteroom-db compact"), func(m *logdb.Maintenance) error {
 		return m.Compact(ctx, logdb.Rewrite{})
 	})
 	if err != nil {
@@ -131,7 +155,7 @@ func runGC(ctx context.Context, args []string, e env) int {
 		return code
 	}
 	var res logdb.GCResult
-	err := dbserver.Maintain(ctx, data, storeOptions(), func(m *logdb.Maintenance) (err error) {
+	err := dbserver.Maintain(ctx, data, maintainOptions(e, "whiteroom-db gc"), func(m *logdb.Maintenance) (err error) {
 		res, err = m.CollectGarbage(ctx)
 		return err
 	})

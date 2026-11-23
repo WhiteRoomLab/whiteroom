@@ -35,13 +35,15 @@ func CreateDir(dir string, o Options) error {
 
 // OpenDir opens the data directory dir as the writer of its engine (Open), by the path that the kernel resolves. Unless
 // o.FreeSpace is given, the free space is that of the file system of dir (not checked on a system other than Linux), and
-// unless o.DataDir is, the identity of dir is its own (unknown on a system other than Linux).
+// unless o.DataDir is, the identity of dir is its own (unknown on a system other than Linux). It refuses a dir that this
+// process cannot write in (not checked on a system other than Linux), since it could not leave the mark of a failed sync.
 func OpenDir(dir string, o Options) (*Server, error) {
 	root, resolved, err := dataRoot(dir)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	o.osDir = resolved
 	if o.FreeSpace == nil && spaceChecked {
 		o.FreeSpace = func() (Space, error) { return freeSpace(resolved) }
 	}

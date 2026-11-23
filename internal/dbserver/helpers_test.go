@@ -128,10 +128,25 @@ type fixture struct {
 
 var testBase = time.Date(2026, 11, 15, 9, 30, 0, 123456789, time.UTC)
 
-// testOptions are the options of the fixtures: small frames, and no limit by time or rate unless a test sets one.
+// testBoot is the boot ID of the machine that the fixtures run in, and anotherBoot a later one.
+const (
+	testBoot    = "00000000-0000-4000-8000-000000000001"
+	anotherBoot = "00000000-0000-4000-8000-000000000002"
+	thirdBoot   = "00000000-0000-4000-8000-000000000003"
+)
+
+// machineWith returns the Boot of Options that gives id.
+func machineWith(id string) func() (string, error) {
+	return func() (string, error) { return id, nil }
+}
+
+// testOptions are the options of the fixtures: small frames, and no limit by time or rate unless a test sets one. Every
+// fixture runs in the boot testBoot, so that a restart of the machine, which a test makes with a crash of the world, has
+// another boot ID.
 func testOptions() Options {
 	return Options{
-		Log: logdb.Options{Placement: logdb.Hybrid, Threshold: 256, WriterWait: 20 * time.Millisecond},
+		Boot: machineWith(testBoot),
+		Log:  logdb.Options{Placement: logdb.Hybrid, Threshold: 256, WriterWait: 20 * time.Millisecond},
 		Limits: dbwire.Limits{Frame: 4096, SnapshotIdle: -1, Stall: waitLimit, CommitsPerSecond: -1, MinFree: -1,
 			MinFreeInodes: -1, Readers: 4},
 	}

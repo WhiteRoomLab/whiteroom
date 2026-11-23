@@ -39,6 +39,8 @@ type options struct {
 	now    func() time.Time
 	limits *dbwire.Limits
 	wait   time.Duration // how long the store tries to connect as the writer while another is connected; 0: 2 seconds
+	// boot is the boot ID of the machine that the daemon sees; nil: the real one.
+	boot func() (string, error)
 }
 
 func (o options) clock() func() time.Time {
@@ -47,6 +49,12 @@ func (o options) clock() func() time.Time {
 	}
 	return time.Now
 }
+
+// stopBootID is the boot ID of the machine in the worlds where a test makes the daemon stop, which then cannot open them
+// again in the same boot; a restart of the machine, which a crash models, opens in the real boot, which differs.
+const stopBootID = "00000000-0000-4000-8000-000000000068"
+
+func stopBoot() (string, error) { return stopBootID, nil }
 
 // daemonState is what the harness keeps of the daemon of a data directory.
 type daemonState struct {
@@ -158,7 +166,7 @@ func (o options) daemonOptions(st *daemonState) dbtest.Options {
 	if st != nil {
 		l.Hook = func(point string) error { return st.call("logdb:" + point) }
 	}
-	do := dbtest.Options{FS: o.fs, Log: &l, Limits: o.limits, Now: o.now}
+	do := dbtest.Options{FS: o.fs, Log: &l, Limits: o.limits, Now: o.now, Boot: o.boot}
 	if st != nil {
 		// The points of the originals; "commit:gate" and those of Backup are the daemon's and not the store's.
 		do.Hook = func(point string) error {

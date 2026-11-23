@@ -33,14 +33,16 @@ type Options struct {
 	// Limits are the limits of the daemon; nil: no limit of commits per second and no check of the free space.
 	Limits *dbwire.Limits
 	Now    func() time.Time
-	Hook   func(point string) error
-	Logf   func(format string, args ...any)
+	// Boot returns the boot ID of the machine that the daemon sees; nil: the real one.
+	Boot func() (string, error)
+	Hook func(point string) error
+	Logf func(format string, args ...any)
 	// Pulse is the interval of the pulses of the daemon; 0: its default.
 	Pulse time.Duration
 }
 
 func (o Options) server() dbserver.Options {
-	so := dbserver.Options{Now: o.Now, Hook: o.Hook, Logf: o.Logf, Pulse: o.Pulse}
+	so := dbserver.Options{Now: o.Now, Boot: o.Boot, Hook: o.Hook, Logf: o.Logf, Pulse: o.Pulse}
 	if o.Log != nil {
 		so.Log = *o.Log
 	} else {

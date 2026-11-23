@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
 )
@@ -71,14 +72,54 @@ func tempNames(fsys *simfs.FS) []string {
 	return names
 }
 
+// sameBootRefused checks that the daemon of fsys, which has stopped and whose stores are all closed, refuses to open it
+// again in the boot of the stop (stopBoot), with an error that wraps dbserver.ErrNotRestarted, after no counted
+// operation, and that the mark is still there. The stores must be closed: dbtest joins a daemon that is still running for
+// the same world, which would not open the directory again.
+func sameBootRefused(fsys *simfs.FS, o *logdb.Options) error {
+	before := fsys.Counted()
+	s, err := open("data", options{log: o, fs: fsys, wait: writerWait, boot: stopBoot})
+	switch {
+	case err == nil:
+		_ = s.Close()
+		return errors.New("open() in the boot of the stop succeeded")
+	case !errors.Is(err, dbserver.ErrNotRestarted):
+		return fmt.Errorf("open() in the boot of the stop returned %w, want an error that wraps dbserver.ErrNotRestarted", err)
+	}
+	if n := fsys.Counted() - before; n != 0 {
+		return fmt.Errorf("open() in the boot of the stop returned %w after %d operations, want none", err, n)
+	}
+	if _, err := fsys.Lstat(stoppedMark); err != nil {
+		return fmt.Errorf("the mark is not there after the refused open(): %w", err)
+	}
+	return nil
+}
+
+// stoppedMark is the name of the mark that the daemon leaves in the data directory after a sync failed.
+const stoppedMark = "stopped"
+
+// noStopMark checks that fsys has no mark of a stop.
+func noStopMark(fsys *simfs.FS) error {
+	switch _, err := fsys.Lstat(stoppedMark); {
+	case err == nil:
+		return fmt.Errorf("the data directory has the mark %s", stoppedMark)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("Lstat(%q): %w", stoppedMark, err)
+	}
+	return nil
+}
+
 // TestOriginalAfterFailedSync checks the rule after a failed sync of PutOriginal (F2 in concept section 3.5): the sync
 // may drop the names that it would have made durable, which the page cache still has, and which later syncs do not
 // write. Without a stop, a PutOriginal in the same boot found the directory whose name a failed sync of files/ had
 // dropped, synced files/ again, which succeeded without the name, and returned nil for an original that every crash then
-// lost. The daemon stops: every PutOriginal and every Update of it fails with the stop and writes nothing, until a new
-// daemon opens the directory after a restart of the machine, which a crash models; then PutOriginal saves the original,
-// which a crash does not lose. A PutOriginal and an Update of one store do not run at the same time: they take turns on
-// the connection of the writer (dbserver.TestOriginalAfterFailedSync has a request that began before the stop).
+// lost. The daemon stops: every PutOriginal and every Update of it fails with the stop and writes nothing, and it leaves
+// the mark of the stop in the data directory, so that no daemon opens the directory again in the same boot: once its
+// store is closed, the open fails with an error that wraps dbserver.ErrNotRestarted, after no operation. A new daemon
+// opens the directory after a restart of the machine, which a crash models in another boot, and removes the mark; then
+// PutOriginal saves the original, which a crash does not lose. A PutOriginal and an Update of one store do not run at the
+// same time: they take turns on the connection of the writer (dbserver.TestOriginalAfterFailedSync has a request that
+// began before the stop).
 func TestOriginalAfterFailedSync(t *testing.T) {
 	data, other := []byte("GIF89a"), []byte("GIF87a")
 	isTemp := func(op simfs.Op) bool { return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, "files/.tmp-") }
@@ -86,26 +127,33 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 	newLog := func(t *testing.T) (*simfs.FS, *Store) {
 		t.Helper()
 		fsys := simfs.New("data")
-		s, err := create("data", options{log: &logdb.Options{}, fs: fsys})
+		s, err := create("data", options{log: &logdb.Options{}, fs: fsys, boot: stopBoot})
 		if err != nil {
 			t.Fatalf("create() = %v", err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
 		return fsys, s
 	}
-	// restart restarts the machine with s open in fsys: a new daemon, and a store of it that has no original but that
-	// PutOriginal saves, whose name a crash that loses what is not durable keeps.
+	// restart closes s, which is open in fsys, and checks that the daemon refuses to open fsys in the boot of the stop; then
+	// it restarts the machine: a new daemon, and a store of it that has no original but that PutOriginal saves, whose
+	// name a crash that loses what is not durable keeps.
 	restart := func(t *testing.T, fsys *simfs.FS, s *Store) {
 		t.Helper()
-		restarted := fsys.Crash(keepAll(fsys))
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close() of the stopped store = %v", err)
 		}
+		if err := sameBootRefused(fsys, &logdb.Options{}); err != nil {
+			t.Fatal(err)
+		}
+		restarted := fsys.Crash(keepAll(fsys))
 		r, err := open("data", options{log: &logdb.Options{}, fs: restarted})
 		if err != nil {
 			t.Fatalf("open() after a restart = %v", err)
 		}
 		t.Cleanup(func() { _ = r.Close() })
+		if err := noStopMark(restarted); err != nil {
+			t.Fatalf("after the restart: %v", err)
+		}
 		putOriginal(t, r, data)
 		if err := r.Close(); err != nil {
 			t.Fatal(err)
@@ -171,7 +219,11 @@ func TestOriginalAfterFailedSync(t *testing.T) {
 // Every crash that simfs can make in the end (crashModels with 4 subsets; long: 64), and before each restart, after
 // the step of the fault and after each later step (the same, but with -race only the one that loses everything that
 // is not durable), opens to what the model has after the steps that have succeeded, with the failed step whole or not
-// at all while its outcome is not known. A case is TestStoreFaultMatrix/<backend>/op=<n>-<kind>/<fault>.
+// at all while its outcome is not known. After a stop, the daemon has left the mark of the stop in the data directory, so
+// that a store cannot be opened again in the same boot: once every store of the stopped daemon is closed, the open
+// fails with an error that wraps dbserver.ErrNotRestarted, after no operation. The restart is in another boot (so are the
+// crashes that are opened), which opens and removes the mark; a fault that does not stop the daemon leaves no mark. A
+// case is TestStoreFaultMatrix/<backend>/op=<n>-<kind>/<fault>.
 func TestStoreFaultMatrix(t *testing.T) {
 	t.Parallel() // with the other matrices, after the tests that do not run in parallel
 	refs, err := theRefs()
@@ -233,7 +285,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		return true
 	}
 	fsys.Inject(flt)
-	r := writer(fsys, o)
+	r := writerIn(fsys, o, stopBoot) // a restart and the crashes that are opened are in the real boot
 	defer func() { r.close() }()
 	checked := 0
 	// crashes checks that every crash that fsys can have now (those of fewModels, unless all) opens to one of want.
@@ -258,7 +310,23 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 			}
 		}
 	}
-	// restart closes the store, restarts the machine, and opens the store again.
+	// refused closes the store, if it is open, and checks that the daemon refuses to open fsys again in the boot of the stop.
+	refused := func(when string) {
+		t.Helper()
+		r.close()
+		if err := sameBootRefused(fsys, &o); err != nil {
+			fail("%s: %v", when, err)
+		}
+	}
+	// noMark checks that the daemon has left no mark of a stop.
+	noMark := func(when string) {
+		t.Helper()
+		if err := noStopMark(fsys); err != nil {
+			fail("%s: %v", when, err)
+		}
+	}
+	restarted := false
+	// restart closes the store, restarts the machine, and opens the store again, which has removed the mark of the stop.
 	restart := func(when string) {
 		t.Helper()
 		r.close()
@@ -267,6 +335,8 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		if err := r.do(ctx, &mstep{name: "open", kind: mOpen}); err != nil {
 			fail("open() after the restart %s: %v", when, err)
 		}
+		restarted = true
+		noMark("after the restart " + when)
 	}
 	// noTemps checks that what has failed with err has left no temporary file.
 	noTemps := func(err error) {
@@ -295,6 +365,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 			fail("open() returned %v; ErrFailed is the error of a failed sync, and only of that", err)
 		}
 		crashes("after the failed open", false, stateAt(refs, at, at))
+		refused("after the failed open")
 		restart("after the failed open")
 	case mOriginal:
 		if err == nil {
@@ -314,6 +385,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 					fsys.Counted()-before)
 			}
 			crashes("after the failed PutOriginal", false, stateAt(refs, at, at))
+			refused("after the failed PutOriginal")
 			restart("after the failed PutOriginal")
 		}
 		if err2 := r.do(ctx, step); err2 != nil {
@@ -353,6 +425,7 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		}
 		// Its outcome is not known: it may be durable, or not, which Views did not see.
 		crashes("after the stop", false, stateAt(refs, at, at), stateAt(refs, at+1, at))
+		refused("after the stop")
 		restart("after the stop")
 		w, _, verr := checkState(t, r.s, stateAt(refs, at, at), stateAt(refs, at+1, at))
 		if verr != nil {
@@ -368,6 +441,9 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 			noTemps(err) // the checkpoint or head has failed; the store is closed
 		}
 	}
+	if !restarted {
+		noMark("after the step " + step.name)
+	}
 	crashes("after the step "+step.name, false, stateAt(refs, at+1, at+1))
 	for i := at + 1; i < len(sc.steps); i++ {
 		st := &sc.steps[i]
@@ -377,5 +453,6 @@ func runStoreFault(t *testing.T, c *matrixClean, base *simfs.FS, o logdb.Options
 		crashes("after the step "+st.name, false, stateAt(refs, i+1, i+1))
 	}
 	crashes("in the end", true, stateAt(refs, len(sc.steps), len(sc.steps)))
+	noMark("in the end")
 	return checked
 }
