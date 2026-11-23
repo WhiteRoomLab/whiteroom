@@ -147,6 +147,18 @@ func TestUsage(t *testing.T) {
 			t.Errorf("the usage of whiteroom-db %s does not say that the daemon must be stopped:\n%s", name, help[name])
 		}
 	}
+	// After a failed sync, the three refuse the data directory until the machine has restarted, and then remove the mark.
+	for _, name := range []string{"serve", "compact", "gc"} {
+		words := strings.Join(strings.Fields(help[name]), " ")
+		for _, text := range []string{"After a sync has failed", "<DATA>/stopped", "until the machine has restarted"} {
+			if !strings.Contains(words, text) {
+				t.Errorf("the usage of whiteroom-db %s does not say %q:\n%s", name, text, help[name])
+			}
+		}
+		if !strings.Contains(words, "removes the mark") {
+			t.Errorf("the usage of whiteroom-db %s does not say that it removes the mark:\n%s", name, help[name])
+		}
+	}
 
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	_, openErr := os.Open(missing)
@@ -237,6 +249,20 @@ func TestInit(t *testing.T) {
 	}
 	if got := files(t, notEmpty); len(got) != 2 {
 		t.Errorf("init of a directory that is not empty made %v", got)
+	}
+
+	// The mark of a failed sync is a file: a directory that holds only it is not empty, and is left as it is.
+	marked := filepath.Join(root, "marked")
+	writeFile(t, marked, "stopped", "boot: x\n")
+	beforeMarked := files(t, marked)
+	code, stdout, stderr = runCmd(t, "init", "-data", marked)
+	want = "whiteroom-db init: " + marked + ": not empty; a new data directory needs a missing or empty directory\n"
+	if code != 1 || stdout != "" || stderr != want {
+		t.Errorf("init of a directory that holds only a mark = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout,
+			stderr, want)
+	}
+	if got := files(t, marked); !maps.Equal(got, beforeMarked) {
+		t.Errorf("init changed the directory that holds only a mark:\n%v\nwas\n%v", got, beforeMarked)
 	}
 
 	// An empty directory is used as it is.

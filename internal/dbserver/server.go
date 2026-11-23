@@ -60,9 +60,10 @@ type Options struct {
 	// the sync of the directory of the original), "clock:tick" (by the goroutine of the clock of the deadlines, before each
 	// reading of the time), "reply:held" (when a request that has a reply in the buffer is still counted, before the
 	// next one begins), "snapshot:idle" (after a snapshot is released for being idle), "reader:idle" (before a reader's
-	// connection that holds no snapshot is ended for being idle), "reply:pulse" (after a pulse is written) and "open:checked"
-	// (in Open, after the check of the mark of a failed sync and before the engine opens). Its error fails the operation;
-	// that of the last six is not used.
+	// connection that holds no snapshot is ended for being idle), "reply:pulse" (after a pulse is written), "open:checked"
+	// (in Open, after the check of the mark of a failed sync and before the engine opens), "maintain:checked" (the same in
+	// Maintain) and "maintain:marked" (in Maintain, after the mark of a maintenance that failed is written, while the engine
+	// still has its locks). Its error fails the operation; that of the last eight is not used.
 	Hook func(point string) error
 	// Logf receives the lines that the daemon logs; nil drops them.
 	Logf func(format string, args ...any)

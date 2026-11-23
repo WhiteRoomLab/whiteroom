@@ -45,6 +45,12 @@ there too, with the date and time, and tell no key or value of a row. A head tha
 cannot be written is tried again the next minute, and the daemon serves on, also
 when the standard error is a pipe whose reader has ended.
 
+After a sync has failed, the daemon stops writing, serves the reads on, and
+leaves the mark <DATA>/stopped in the data directory: what the sync was to write
+may be in the page cache only. Then serve refuses the data directory (the exit
+code 1, and no socket is made) until the machine has restarted, and removes the
+mark after that, and logs it. compact and gc do the same.
+
 The sizes of a frame, of a Commit and of an object are tied to the engine and to
 the limits of the documents, and have no flag. The other limits are the flags
 below. The daemon tells its clients these sizes, the limit of -max-staged and the
