@@ -330,6 +330,15 @@ func TestCommitRules(t *testing.T) {
 		{name: "a row of heads with an empty line", code: dbwire.CodeRule, ops: []dbwire.Op{put(11, "activity", ""), event("e")}, text: "not a valid row of table 11"},
 		{name: "a row of heads with a line of 256 bytes", code: dbwire.CodeRule, ops: []dbwire.Op{put(11, "activity", strings.Repeat("l", 256)), event("e")}, text: "not a valid row of table 11"},
 		{name: "a delete in heads", code: dbwire.CodeRule, ops: []dbwire.Op{del(11, "activity"), event("e")}, text: "is not deleted"},
+		{name: "a put in chains", code: dbwire.CodeRule, ops: []dbwire.Op{put(12, "login", "x"), event("e")}, text: "op 0: table 12 is written only by the maintenance of the daemon"},
+		{name: "a put in chains of the key of a break", code: dbwire.CodeRule, ops: []dbwire.Op{put(12, "login\x00\x00\x00\x00\x00\x00\x00\x00\x05", "x"), event("e")}, text: "table 12 is written only by"},
+		{name: "a delete in chains", code: dbwire.CodeRule, ops: []dbwire.Op{del(12, "login"), event("e")}, text: "table 12 is written only by"},
+		{name: "a delete in chains of a key that is not there", code: dbwire.CodeRule, ops: []dbwire.Op{del(12, "zzz"), event("e")}, text: "table 12 is written only by"},
+		{name: "a put in chains and no event", code: dbwire.CodeRule, ops: []dbwire.Op{put(12, "login", "x")}, text: "table 12 is written only by"},
+		{name: "a put in chains after other ops", code: dbwire.CodeRule, ops: []dbwire.Op{put(2, "x", "y"), put(11, "activity", good), put(12, "activity", "x"), event("e")}, text: "op 2: table 12 is written only by"},
+		{name: "a put in chains of a valid start", code: dbwire.CodeRule, ops: []dbwire.Op{put(12, "login", string(dbwire.AppendChainStart(nil, dbwire.ChainStart{First: 2}))), event("e")}, text: "table 12 is written only by"},
+		{name: "an event that is a deletion", code: dbwire.CodeRule, ops: []dbwire.Op{event(string(dbwire.AppendDeleted(nil, dbwire.Deleted{Log: dbwire.LogLogin, First: 2})))}, text: "daemon's"},
+		{name: "an event that is an acceptance", code: dbwire.CodeRule, ops: []dbwire.Op{event(string(dbwire.AppendAccepted(nil, dbwire.Accepted{Log: dbwire.LogLogin, N: 2})))}, text: "daemon's"},
 		{name: "no op and nothing staged", code: dbwire.CodeRule, unstaged: true, text: "no op and no staged object"},
 		{name: "table 0", code: dbwire.CodeLimit, ops: []dbwire.Op{put(0, "k", "v"), event("e")}, text: "invalid table 0"},
 		{name: "a delete in table 0", code: dbwire.CodeLimit, ops: []dbwire.Op{del(0, "k"), event("e")}, text: "invalid table 0"},
@@ -375,6 +384,7 @@ func TestCommitRules(t *testing.T) {
 			{put(4, "r-new", "x"), put(5, "e-new", "x"), event("e")},
 			{put(11, "activity", good), put(11, "login.log_2", good), event("e")},
 			{put(11, strings.Repeat("k", 64), strings.Repeat("l", 255)), event("e")},
+			{put(10, "k", "v"), put(13, "k", "v"), event("e")},
 			{del(2, "k"), event("e")},
 			{put(2, "k", "again"), put(2, "k", "twice"), event("e")},
 			{event("e")},
@@ -935,8 +945,8 @@ func TestCommitSchemaRule(t *testing.T) {
 	refuse("the delete of a row that is not there", "the commit would leave the store without its schema version",
 		del(dbwire.TableMeta, dbwire.MetaSchema))
 	refuse("a version over the one that the daemon knows",
-		"the commit would set the schema version 8, newer than this daemon knows (7)", row(version(8)))
-	refuse("a version far over", "the commit would set the schema version 1000000, newer than this daemon knows (7)",
+		"the commit would set the schema version 9, newer than this daemon knows (8)", row(version(9)))
+	refuse("a version far over", "the commit would set the schema version 1000000, newer than this daemon knows (8)",
 		row(version(1_000_000)))
 	refuse("0", "the commit would leave an invalid schema version", row(version(0)))
 	refuse("bytes that are not a uvarint", "the commit would leave an invalid schema version", row([]byte{0x80}))
@@ -944,14 +954,14 @@ func TestCommitSchemaRule(t *testing.T) {
 	refuse("a uvarint and a byte", "the commit would leave an invalid schema version", row(append(version(7), 0)))
 	refuse("a uvarint that is too long", "the commit would leave an invalid schema version",
 		row([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01}))
-	refuse("the text of a version", "the commit would set the schema version 55, newer than this daemon knows (7)",
+	refuse("the text of a version", "the commit would set the schema version 55, newer than this daemon knows (8)",
 		row([]byte("7"))) // the byte 0x37 is the uvarint 55
 	refuse("the last of two puts", "the commit would leave an invalid schema version", row(version(7)), row(version(0)))
 	if f.dump().Seq != 0 {
 		t.Fatal("a refusal has committed")
 	}
 
-	// A version from 1 to 7 is a first commit that works; the store is then of that version.
+	// A version from 1 to 8 is a first commit that works; the store is then of that version.
 	accept("version 6", row(version(6)))
 	refuse("a delete of the row", "the commit would leave the store without its schema version",
 		del(dbwire.TableMeta, dbwire.MetaSchema))
@@ -959,15 +969,15 @@ func TestCommitSchemaRule(t *testing.T) {
 	refuse("a lower version in two puts", "the commit would lower the schema version from 6 to 1", row(version(7)),
 		row(version(1)))
 	refuse("a version over the one that the daemon knows",
-		"the commit would set the schema version 8, newer than this daemon knows (7)", row(version(8)))
+		"the commit would set the schema version 9, newer than this daemon knows (8)", row(version(9)))
 	refuse("an invalid row", "the commit would leave an invalid schema version", row([]byte{0xff}))
 	accept("the same version", row(version(6)))
 	accept("a commit that does not touch the row", put(2, "a", "1"))
-	accept("the version that the daemon knows", row(version(7)))
-	refuse("a lower version", "the commit would lower the schema version from 7 to 6", row(version(6)))
+	accept("the version that the daemon knows", row(version(8)))
+	refuse("a lower version", "the commit would lower the schema version from 8 to 6", row(version(6)))
 	accept("a commit that does not touch the row", put(2, "b", "2"))
 	// A delete and a put of the row in one commit leaves it.
-	accept("a delete and a put", del(dbwire.TableMeta, dbwire.MetaSchema), row(version(7)))
+	accept("a delete and a put", del(dbwire.TableMeta, dbwire.MetaSchema), row(version(8)))
 	if f.dump().Seq != 6 {
 		t.Errorf("the store has the sequence number %d, want 6", f.dump().Seq)
 	}

@@ -663,7 +663,7 @@ func TestLogTables(t *testing.T) {
 	termSummary := `{"term":{"schemaVersion":1,"id":"` + termID + `","parent":"` + parent + `"},` +
 		`"refs":{"document":["` + parent + `"]}}`
 	want := map[uint32][][2]string{
-		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x07"},
+		tableMeta: {{"activityLog", activityHead()}, {"numbers", "\x03"}, {"revisions", "\x01"}, {"schema", "\x08"},
 			{"versions", "\x02"}},
 		tableDocuments: {
 			{"entry\x00" + entryID, entryVersion},
@@ -692,7 +692,7 @@ func TestLogTables(t *testing.T) {
 	}
 	check := func(when string) {
 		t.Helper()
-		for table := range uint32(12) {
+		for table := range uint32(13) {
 			if got := rawTable(t, s, table); !slices.Equal(got, want[table]) {
 				t.Errorf("table %d %s = %q, want %q", table, when, got, want[table])
 			}
@@ -1052,20 +1052,20 @@ func TestTablesAreThoseOfDbwire(t *testing.T) {
 // TestLogSchemaVersion checks that open and openLogReader refuse a store without the schema of the log backend, or of
 // another one, and change nothing: the daemon refuses to open the engine of such a store, and a store that connects to a
 // daemon that is running, whose schema row changes behind its back, refuses it too, with the name of the daemon. The
-// schema is 7, whose rows of meta and heads TestLogTables checks, and whose upgrade of the older ones TestIndexUpgrade
+// schema is 8, whose rows of meta and heads TestLogTables checks, and whose upgrade of the older ones TestIndexUpgrade
 // checks.
 func TestLogSchemaVersion(t *testing.T) {
-	if logSchemaVersion != 7 {
-		t.Fatalf("logSchemaVersion = %d, want 7: change the tests of the schema with it", logSchemaVersion)
+	if logSchemaVersion != 8 {
+		t.Fatalf("logSchemaVersion = %d, want 8: change the tests of the schema with it", logSchemaVersion)
 	}
 	for _, tt := range []struct {
 		name  string
 		value []byte // of "schema" in meta; nil: none
 		want  string // after "<dir>/logdb: "
 	}{
-		{"newer", []byte{8}, "the store schema is of version 8, newer than this program knows (7)"},
+		{"newer", []byte{9}, "the store schema is of version 9, newer than this program knows (8)"},
 		{"much newer", binary.AppendUvarint(nil, 300),
-			"the store schema is of version 300, newer than this program knows (7)"},
+			"the store schema is of version 300, newer than this program knows (8)"},
 		{"missing", nil, "not a store of whiteroom (no schema version)"},
 		{"zero", []byte{0}, `meta "schema": invalid value`},
 		{"empty", []byte{}, `meta "schema": invalid value`},
@@ -1149,6 +1149,87 @@ func TestLogSchemaVersion(t *testing.T) {
 			checkDocument(t, reopenLog(t, dir, logdb.Options{}), Document{v, data}, []Version{v})
 		})
 	}
+}
+
+// TestUpgradeFromSchema7 checks that a store of the table schema 7, which has no table chains and none of the events of
+// a deletion, is read by a program of the schema 8 as it is: a reader of it, which no writer has opened, finds no problem
+// in it, and VerifyAudit finds none either, with the heads of the store and without; and that its writer makes it the
+// schema 8 in one commit, with the record store.upgrade (from 7 to 8) and the line of the head that the record changes,
+// and moves no row of a table.
+func TestUpgradeFromSchema7(t *testing.T) {
+	s, dir := newLogStore(t, logdb.Options{})
+	putWithRevision(t, s)
+	update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.Login, "a")) })
+	heads, err := s.AuditHeads(t.Context())
+	if err != nil || len(heads) != 2 {
+		t.Fatalf("AuditHeads() = %v, %v", heads, err)
+	}
+	rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaSchema), []byte{7}) })
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	tables := func(t *testing.T, s *Store) map[uint32][][2]string {
+		t.Helper()
+		got := map[uint32][][2]string{}
+		for table := tableMeta; table <= tableChains; table++ {
+			got[table] = rawTable(t, s, table)
+		}
+		return got
+	}
+	r, err := openLogReader(dir, logOpts(logdb.Options{}))
+	if err != nil {
+		t.Fatalf("openLogReader() of a store of the schema 7 = %v", err)
+	}
+	before := tables(t, r)
+	if rows := before[tableChains]; len(rows) != 0 {
+		t.Errorf("the table chains of a store of the schema 7 has %q", rows)
+	}
+	for _, anchors := range [][]audit.Head{nil, heads} {
+		var notes []string
+		if err := r.VerifyAuditNotes(t.Context(), anchors, func(text string) { notes = append(notes, text) }); err != nil || len(notes) != 0 {
+			t.Errorf("VerifyAuditNotes(%d anchors) of a reader of a store of the schema 7 = %v with the notes %q", len(anchors), err, notes)
+		}
+	}
+	checkNoProblem(t, r)
+	eventsBefore := len(allRecords(t, r))
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close() of the reader = %v", err)
+	}
+
+	w := reopenLog(t, dir, logdb.Options{})
+	after := tables(t, w)
+	// The rows that change are the schema, the head of the activity log, which the record changes, and its line.
+	keep := func(rows [][2]string, key string) [][2]string {
+		return slices.DeleteFunc(slices.Clone(rows), func(row [2]string) bool { return row[0] == key })
+	}
+	for table := tableMeta; table <= tableChains; table++ {
+		got, want := after[table], before[table]
+		switch table {
+		case tableMeta:
+			got, want = keep(keep(got, metaSchema), metaActivityLog), keep(keep(want, metaSchema), metaActivityLog)
+		case tableHeads:
+			got, want = keep(got, string(audit.ActivityLog)), keep(want, string(audit.ActivityLog))
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("the table %d after the upgrade = %q, want %q", table, got, want)
+		}
+	}
+	if i := slices.IndexFunc(after[tableMeta], func(row [2]string) bool { return row[0] == metaSchema }); i < 0 ||
+		after[tableMeta][i][1] != "\x08" {
+		t.Errorf("the schema after the upgrade is not 8: %q", after[tableMeta])
+	}
+	rs := allRecords(t, w)
+	if len(rs) != eventsBefore+1 {
+		t.Fatalf("the records after the upgrade = %d, want %d", len(rs), eventsBefore+1)
+	}
+	if last := rs[len(rs)-1]; last.Action != audit.StoreUpgrade || last.Detail["from"] != "7" || last.Detail["to"] != "8" {
+		t.Errorf("the last record after the upgrade is %+v, want store.upgrade from 7 to 8", last)
+	}
+	if err := w.VerifyAudit(t.Context(), heads); err != nil {
+		t.Errorf("VerifyAudit() with the heads from before the upgrade = %v", err)
+	}
+	checkNoProblem(t, w)
 }
 
 // engineSeq returns the number of the last commit of the engine of the daemon h.

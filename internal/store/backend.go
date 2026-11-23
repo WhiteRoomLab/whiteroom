@@ -75,6 +75,12 @@ type backendTx interface {
 	headLine(log audit.Log) (line string, ok bool, err error)
 	auditReady() (bool, error)
 	exportReady() (bool, error)
+	// chainRow returns the value of key in the table chains, and chainRows calls fn with the rows whose keys start with
+	// prefix, in order, until fn returns false (dbwire.TableChains): the chain starts and the accepted breaks of the
+	// audit logs, which only the maintenance of the daemon writes, and which a store of a table schema before 8 has none
+	// of. The backend writes none of them.
+	chainRow(key []byte) ([]byte, bool, error)
+	chainRows(prefix []byte, fn func(key, value []byte) bool) error
 	changed() bool // whether the transaction has written anything but audit events and heads
 
 	// The rows of the index tables, by key. indexScan calls fn with the keys that start with prefix, and their values,

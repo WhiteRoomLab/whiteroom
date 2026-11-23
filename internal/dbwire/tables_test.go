@@ -57,11 +57,14 @@ func TestTables(t *testing.T) {
 	if len(appendOnly) != 3 || appendOnly[0] != 3 || appendOnly[1] != 4 || appendOnly[2] != 5 {
 		t.Errorf("append only tables: %v, want 3, 4, 5", appendOnly)
 	}
+	if AppendOnly(TableChains) {
+		t.Error("the table chains is append only: the maintenance of the daemon replaces its start rows")
+	}
 	if AppendOnly(math.MaxUint32) {
 		t.Error("the table 2^32-1 is append only")
 	}
-	if TableVersion != 7 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
-		TableEntryRevisions != 5 || TableHeads != 11 || MaxHeadKey != 64 || MaxHeadLine != 255 {
+	if TableVersion != 8 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
+		TableEntryRevisions != 5 || TableHeads != 11 || TableChains != 12 || MaxHeadKey != 64 || MaxHeadLine != 255 {
 		t.Error("a fact about the tables is not the one of the plan")
 	}
 
@@ -200,5 +203,300 @@ func TestMark(t *testing.T) {
 		if got := IsDaemonEvent(c.b); got != c.want {
 			t.Errorf("IsDaemonEvent(%q) = %v, want %v", c.b, got, c.want)
 		}
+	}
+}
+
+func TestChainRows(t *testing.T) {
+	var prev, hash [32]byte
+	for i := range prev {
+		prev[i], hash[i] = byte(i+1), byte(0xF0-i)
+	}
+	at := time.Date(2026, 11, 23, 10, 20, 30, 123456789, time.UTC)
+	atBytes := appendTime(nil, at)
+	if want := []byte{0, 0, 0, 0, byte(at.Unix() >> 24), byte(at.Unix() >> 16), byte(at.Unix() >> 8), byte(at.Unix()), 0x07, 0x5B, 0xCD, 0x15}; !bytes.Equal(atBytes, want) {
+		t.Fatalf("the bytes of the time are %x, want %x", atBytes, want)
+	}
+
+	if ChainStartSize != 52 || ChainBreakSize != 44 {
+		t.Errorf("the sizes are %d and %d, want 52 and 44", ChainStartSize, ChainBreakSize)
+	}
+	start := ChainStart{First: 0x0102030405060708, Prev: prev, At: at}
+	b := AppendChainStart(nil, start)
+	want := append(append([]byte{1, 2, 3, 4, 5, 6, 7, 8}, prev[:]...), atBytes...)
+	if !bytes.Equal(b, want) || len(b) != ChainStartSize {
+		t.Errorf("the value of a chain start is %x, want %x", b, want)
+	}
+	if got, ok := ParseChainStart(b); !ok || got.First != start.First || got.Prev != prev || !got.At.Equal(at) || got.At.Location() != time.UTC {
+		t.Errorf("ParseChainStart = %+v, %v, want %+v", got, ok, start)
+	}
+	if got := AppendChainStart([]byte("xy"), start); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+		t.Errorf("AppendChainStart does not keep dst: %x", got)
+	}
+
+	brk := ChainBreak{Hash: hash, At: at}
+	b = AppendChainBreak(nil, brk)
+	want = append(bytes.Clone(hash[:]), atBytes...)
+	if !bytes.Equal(b, want) || len(b) != ChainBreakSize {
+		t.Errorf("the value of a break is %x, want %x", b, want)
+	}
+	if got, ok := ParseChainBreak(b); !ok || got.Hash != hash || !got.At.Equal(at) || got.At.Location() != time.UTC {
+		t.Errorf("ParseChainBreak = %+v, %v, want %+v", got, ok, brk)
+	}
+	if got := AppendChainBreak([]byte("xy"), brk); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+		t.Errorf("AppendChainBreak does not keep dst: %x", got)
+	}
+
+	// A time of any seconds is read, and written as it was.
+	for _, sec := range []int64{math.MaxInt64, math.MinInt64, 1 << 40, -1 << 40, 0, -1} {
+		c := ChainStart{First: 2, At: time.Unix(sec, 5)}
+		if got, ok := ParseChainStart(AppendChainStart(nil, c)); !ok || !bytes.Equal(AppendChainStart(nil, got), AppendChainStart(nil, c)) {
+			t.Errorf("a start at %d seconds: %v, %v", sec, got, ok)
+		}
+		k := ChainBreak{At: time.Unix(sec, 5)}
+		if got, ok := ParseChainBreak(AppendChainBreak(nil, k)); !ok || !bytes.Equal(AppendChainBreak(nil, got), AppendChainBreak(nil, k)) {
+			t.Errorf("a break at %d seconds: %v, %v", sec, got, ok)
+		}
+	}
+
+	good, goodBreak := AppendChainStart(nil, start), AppendChainBreak(nil, brk)
+	withNanos := func(b []byte, n uint32) []byte {
+		b = bytes.Clone(b)
+		for i := range 4 {
+			b[len(b)-1-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	withFirst := func(n uint64) []byte {
+		b := bytes.Clone(good)
+		for i := range 8 {
+			b[7-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	for name, b := range map[string][]byte{
+		"nil":                  nil,
+		"empty":                {},
+		"51 bytes":             good[:51],
+		"53 bytes":             append(bytes.Clone(good), 0),
+		"two rows":             append(bytes.Clone(good), good...),
+		"the value of a break": goodBreak,
+		"1e9 nanoseconds":      withNanos(good, 1e9),
+		"all nanoseconds":      withNanos(good, math.MaxUint32),
+		"First 0":              withFirst(0),
+		"First 1":              withFirst(1),
+	} {
+		if got, ok := ParseChainStart(b); ok {
+			t.Errorf("%s: ParseChainStart = %+v", name, got)
+		}
+	}
+	if got, ok := ParseChainStart(withFirst(2)); !ok || got.First != 2 {
+		t.Errorf("First 2: ParseChainStart = %+v, %v", got, ok)
+	}
+	if got, ok := ParseChainStart(withFirst(math.MaxUint64)); !ok || got.First != math.MaxUint64 {
+		t.Errorf("the largest First: ParseChainStart = %+v, %v", got, ok)
+	}
+	if _, ok := ParseChainStart(withNanos(good, 999999999)); !ok {
+		t.Error("999999999 nanoseconds are refused")
+	}
+	for name, b := range map[string][]byte{
+		"nil":                  nil,
+		"43 bytes":             goodBreak[:43],
+		"45 bytes":             append(bytes.Clone(goodBreak), 0),
+		"the value of a start": good,
+		"1e9 nanoseconds":      withNanos(goodBreak, 1e9),
+		"all nanoseconds":      withNanos(goodBreak, math.MaxUint32),
+	} {
+		if got, ok := ParseChainBreak(b); ok {
+			t.Errorf("%s: ParseChainBreak = %+v", name, got)
+		}
+	}
+	if _, ok := ParseChainBreak(withNanos(goodBreak, 999999999)); !ok {
+		t.Error("999999999 nanoseconds are refused")
+	}
+}
+
+func TestChainKeys(t *testing.T) {
+	if got := ChainStartKey(LogLogin); string(got) != "login" {
+		t.Errorf("ChainStartKey = %q", got)
+	}
+	if got, want := ChainBreakKey(LogActivity, 0x0102030405060708), []byte("activity\x00\x01\x02\x03\x04\x05\x06\x07\x08"); !bytes.Equal(got, want) {
+		t.Errorf("ChainBreakKey = %q, want %q", got, want)
+	}
+	if got := ChainBreakPrefix(LogLogin); string(got) != "login\x00" {
+		t.Errorf("ChainBreakPrefix = %q", got)
+	}
+	for _, c := range []struct {
+		log string
+		n   uint64
+	}{{LogLogin, 1}, {LogActivity, math.MaxUint64}, {LogLogin, 0}, {"x", 7}} {
+		key := ChainBreakKey(c.log, c.n)
+		// The key of a start is no prefix of the keys of the breaks, and the prefix of the breaks no key of a start.
+		if !bytes.HasPrefix(key, ChainBreakPrefix(c.log)) || bytes.HasPrefix(ChainStartKey(c.log), ChainBreakPrefix(c.log)) {
+			t.Errorf("%q: the key %q and the prefixes", c.log, key)
+		}
+		if log, n, ok := ParseChainBreakKey(key); !ok || log != c.log || n != c.n {
+			t.Errorf("ParseChainBreakKey(%q) = %q, %d, %v", key, log, n, ok)
+		}
+	}
+	for name, key := range map[string][]byte{
+		"nil":                      nil,
+		"a log":                    []byte("login"),
+		"a log and the byte":       []byte("login\x00"),
+		"nine bytes":               []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"no byte before a number":  []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"a log and a short number": []byte("login\x00\x00\x00\x00\x00\x00\x00\x01"),
+	} {
+		if log, n, ok := ParseChainBreakKey(key); ok {
+			t.Errorf("%s: ParseChainBreakKey = %q, %d", name, log, n)
+		}
+	}
+}
+
+func TestDaemonEvents(t *testing.T) {
+	var prev, hash [32]byte
+	for i := range prev {
+		prev[i], hash[i] = byte(i+1), byte(0xF0-i)
+	}
+	cutoff := time.Date(2025, 11, 23, 10, 20, 30, 123456789, time.UTC)
+
+	if DeletedSize != 55 || AcceptedSize != 43 || DeletedKind != 2 || AcceptedKind != 3 {
+		t.Errorf("the sizes are %d and %d, the kinds %d and %d", DeletedSize, AcceptedSize, DeletedKind, AcceptedKind)
+	}
+	for log, code := range map[string]byte{LogLogin: 1, LogActivity: 2} {
+		d := Deleted{Log: log, First: 0x0102030405060708, Prev: prev, Cutoff: cutoff}
+		b := AppendDeleted(nil, d)
+		want := append(append([]byte{0, 2, code, 1, 2, 3, 4, 5, 6, 7, 8}, prev[:]...), appendTime(nil, cutoff)...)
+		if !bytes.Equal(b, want) || len(b) != DeletedSize || !IsDaemonEvent(b) || !ValidEvent(b) {
+			t.Errorf("the deletion event of %s is %x, want %x", log, b, want)
+		}
+		if got, ok := ParseDeleted(b); !ok || got.Log != log || got.First != d.First || got.Prev != prev || !got.Cutoff.Equal(cutoff) || got.Cutoff.Location() != time.UTC {
+			t.Errorf("ParseDeleted = %+v, %v, want %+v", got, ok, d)
+		}
+		if _, ok := ParseMark(b); ok {
+			t.Error("a deletion event is read as a mark")
+		}
+		if _, ok := ParseAccepted(b); ok {
+			t.Error("a deletion event is read as an acceptance")
+		}
+		if got := AppendDeleted([]byte("xy"), d); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+			t.Errorf("AppendDeleted does not keep dst: %x", got)
+		}
+
+		a := Accepted{Log: log, N: 0x0102030405060708, Hash: hash}
+		b = AppendAccepted(nil, a)
+		want = append([]byte{0, 3, code, 1, 2, 3, 4, 5, 6, 7, 8}, hash[:]...)
+		if !bytes.Equal(b, want) || len(b) != AcceptedSize || !IsDaemonEvent(b) || !ValidEvent(b) {
+			t.Errorf("the acceptance event of %s is %x, want %x", log, b, want)
+		}
+		if got, ok := ParseAccepted(b); !ok || got != a {
+			t.Errorf("ParseAccepted = %+v, %v, want %+v", got, ok, a)
+		}
+		if _, ok := ParseMark(b); ok {
+			t.Error("an acceptance event is read as a mark")
+		}
+		if _, ok := ParseDeleted(b); ok {
+			t.Error("an acceptance event is read as a deletion")
+		}
+		if got := AppendAccepted([]byte("xy"), a); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+			t.Errorf("AppendAccepted does not keep dst: %x", got)
+		}
+	}
+
+	goodDeleted := AppendDeleted(nil, Deleted{Log: LogLogin, First: 2, Prev: prev, Cutoff: cutoff})
+	goodAccepted := AppendAccepted(nil, Accepted{Log: LogLogin, N: 1, Hash: hash})
+	goodMark := AppendMark(nil, cutoff)
+	with := func(b []byte, i int, v byte) []byte {
+		b = bytes.Clone(b)
+		b[i] = v
+		return b
+	}
+	nanos := func(b []byte, n uint32) []byte {
+		b = bytes.Clone(b)
+		for i := range 4 {
+			b[len(b)-1-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	number := func(b []byte, n uint64) []byte {
+		b = bytes.Clone(b)
+		for i := range 8 {
+			b[10-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, nanos(goodDeleted, 999999999), number(goodDeleted, 2), number(goodAccepted, math.MaxUint64)} {
+		if !ValidEvent(b) {
+			t.Errorf("ValidEvent(%x) is false", b)
+		}
+	}
+
+	// What none of the three parsers reads, and ValidEvent refuses.
+	for name, b := range map[string][]byte{
+		"nil":                     nil,
+		"the byte of the daemon":  {0},
+		"a kind and nothing else": {0, 2},
+		"the kind 4":              {0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 0":              {0, 0},
+		"the kind 255":            {0, 255},
+		"a record":                []byte(`{"log":"login","n":1}`),
+		"the first byte 1":        {1, 1},
+		"a mark of 13 bytes":      goodMark[:13],
+		"a mark of 15 bytes":      append(bytes.Clone(goodMark), 0),
+		"a mark of 1e9 nanos":     nanos(goodMark, 1e9),
+		"a mark with the kind 4":  with(goodMark, 1, 4),
+	} {
+		if ValidEvent(b) {
+			t.Errorf("%s: ValidEvent is true for %x", name, b)
+		}
+	}
+	for name, b := range map[string][]byte{
+		"nil":                        nil,
+		"54 bytes":                   goodDeleted[:54],
+		"56 bytes":                   append(bytes.Clone(goodDeleted), 0),
+		"a deletion and a mark":      append(bytes.Clone(goodDeleted), goodMark...),
+		"with a prefix":              append([]byte{'x'}, goodDeleted...),
+		"the log 0":                  with(goodDeleted, 2, 0),
+		"the log 3":                  with(goodDeleted, 2, 3),
+		"the log 255":                with(goodDeleted, 2, 255),
+		"1e9 nanoseconds":            nanos(goodDeleted, 1e9),
+		"all nanoseconds":            nanos(goodDeleted, math.MaxUint32),
+		"the first record 0":         number(goodDeleted, 0),
+		"the first record 1":         number(goodDeleted, 1),
+		"the kind of a mark":         with(goodDeleted, 1, MarkKind),
+		"the kind of an acceptance":  with(goodDeleted, 1, AcceptedKind),
+		"the first byte 1":           with(goodDeleted, 0, 1),
+		"a mark of the size of one":  bytes.Repeat([]byte{'x'}, DeletedSize),
+		"an acceptance of this size": append(bytes.Clone(goodAccepted), make([]byte, DeletedSize-AcceptedSize)...),
+	} {
+		if got, ok := ParseDeleted(b); ok {
+			t.Errorf("%s: ParseDeleted = %+v", name, got)
+		}
+		if ValidEvent(b) && !bytes.Equal(b, goodMark) {
+			t.Errorf("%s: ValidEvent is true", name)
+		}
+	}
+	for name, b := range map[string][]byte{
+		"nil":                       nil,
+		"42 bytes":                  goodAccepted[:42],
+		"44 bytes":                  append(bytes.Clone(goodAccepted), 0),
+		"with a prefix":             append([]byte{'x'}, goodAccepted...),
+		"the log 0":                 with(goodAccepted, 2, 0),
+		"the log 3":                 with(goodAccepted, 2, 3),
+		"record 0":                  number(goodAccepted, 0),
+		"the kind of a deletion":    with(goodAccepted, 1, DeletedKind),
+		"the kind of a mark":        with(goodAccepted, 1, MarkKind),
+		"the first byte 1":          with(goodAccepted, 0, 1),
+		"a deletion of this size":   goodDeleted[:AcceptedSize],
+		"a string of x of its size": bytes.Repeat([]byte{'x'}, AcceptedSize),
+	} {
+		if got, ok := ParseAccepted(b); ok {
+			t.Errorf("%s: ParseAccepted = %+v", name, got)
+		}
+	}
+	if got := AppendDeleted(nil, Deleted{Log: "other", First: 2}); got[2] != 0 || ValidEvent(got) {
+		t.Errorf("a deletion of a log that does not exist: %x", got)
+	}
+	if got := AppendAccepted(nil, Accepted{N: 1}); got[2] != 0 || ValidEvent(got) {
+		t.Errorf("an acceptance of no log: %x", got)
 	}
 }

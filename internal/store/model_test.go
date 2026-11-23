@@ -54,6 +54,7 @@ type modelState struct {
 	events    [][]byte
 	heads     map[audit.Log]audit.Head          // of the audit logs that have records
 	lines     map[audit.Log]string              // the lines of the heads for the export
+	chains    map[string][]byte                 // the rows of the table chains, which nothing of the model writes
 	index     [numIndexTables]map[string][]byte // the rows of the index tables
 	number    int64                             // the last number
 }
@@ -63,7 +64,7 @@ func (s *modelState) clone() *modelState {
 	c := &modelState{
 		objects: maps.Clone(s.objects), versions: slices.Clone(s.versions), current: maps.Clone(s.current),
 		revisions: slices.Clone(s.revisions), revByID: maps.Clone(s.revByID), events: slices.Clone(s.events),
-		heads: maps.Clone(s.heads), lines: maps.Clone(s.lines), number: s.number,
+		heads: maps.Clone(s.heads), lines: maps.Clone(s.lines), chains: maps.Clone(s.chains), number: s.number,
 	}
 	for i, rows := range s.index {
 		c.index[i] = maps.Clone(rows)
@@ -73,7 +74,7 @@ func (s *modelState) clone() *modelState {
 
 func newModelBackend() *modelBackend {
 	st := &modelState{objects: map[string][]byte{}, current: map[modelKey]int64{}, revByID: map[string]int64{},
-		heads: map[audit.Log]audit.Head{}, lines: map[audit.Log]string{}}
+		heads: map[audit.Log]audit.Head{}, lines: map[audit.Log]string{}, chains: map[string][]byte{}}
 	for i := range st.index {
 		st.index[i] = map[string][]byte{}
 	}
@@ -422,6 +423,20 @@ func (t *modelTx) auditReady() (bool, error) {
 
 func (t *modelTx) exportReady() (bool, error) {
 	return true, nil
+}
+
+func (t *modelTx) chainRow(key []byte) ([]byte, bool, error) {
+	v, ok := t.st.chains[string(key)]
+	return v, ok, nil
+}
+
+func (t *modelTx) chainRows(prefix []byte, fn func(key, value []byte) bool) error {
+	for _, k := range slices.Sorted(maps.Keys(t.st.chains)) {
+		if strings.HasPrefix(k, string(prefix)) && !fn([]byte(k), t.st.chains[k]) {
+			break
+		}
+	}
+	return nil
 }
 
 func (t *modelTx) changed() bool {
