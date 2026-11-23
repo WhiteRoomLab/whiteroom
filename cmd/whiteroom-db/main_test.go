@@ -148,6 +148,19 @@ func TestUsage(t *testing.T) {
 			t.Errorf("the usage of whiteroom-db %s does not say that the daemon must be stopped:\n%s", name, help[name])
 		}
 	}
+	// compact drops the login records older than one year, and says so, and nothing else is dropped.
+	compactWords := strings.Join(strings.Fields(help["compact"]), " ")
+	for _, text := range []string{"drops the login records older than one year, and nothing else", "one calendar year before the earlier",
+		"The activity log is never dropped", "stops at the first that is not older than the cutoff or has no mark",
+		"deleted the login records A to B, from before TIME", "A data directory of an older table schema than this program's is compacted",
+		"no login record is dropped from it", "The first writer that connects through"} {
+		if !strings.Contains(compactWords, text) {
+			t.Errorf("the usage of whiteroom-db compact does not say %q:\n%s", text, help["compact"])
+		}
+	}
+	if strings.Contains(compactWords, "Nothing is dropped") || !strings.Contains(strings.Join(strings.Fields(usage), " "), "delete the login records older than one year") {
+		t.Errorf("the usages of whiteroom-db compact do not say what it deletes:\n%s\n%s", usage, help["compact"])
+	}
 	// After a failed sync, the three refuse the data directory until the machine has restarted, and then remove the mark.
 	for _, name := range []string{"serve", "compact", "gc"} {
 		words := strings.Join(strings.Fields(help[name]), " ")

@@ -24,7 +24,8 @@ const usage = `Usage:
         make the data directory, which must be missing or empty
   whiteroom-db compact [flags]
         write the state of the data directory as a new generation of its log, and
-        remove the old one; the daemon must be stopped
+        remove the old one, and delete the login records older than one year; the
+        daemon must be stopped
   whiteroom-db gc [flags]
         remove the files of the data directory that its state does not need; the
         daemon must be stopped

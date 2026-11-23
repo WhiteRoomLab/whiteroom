@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +193,248 @@ func TestMaintain(t *testing.T) {
 	w := openClient(t, d.socks, dbwire.RoleWriter, dbclient.Options{})
 	mustCommit(t, w, row{2, "a", "4"})
 	s.stop()
+}
+
+// loginRecord returns a login record of a chain: the record n, whose prev is prev, with a member that the daemon ignores.
+func loginRecord(n int, prev string) []byte {
+	if prev == "" {
+		return fmt.Appendf(nil, `{"log":"login","n":%d,"action":"x"}`, n)
+	}
+	return fmt.Appendf(nil, `{"log":"login","n":%d,"prev":%q,"action":"x"}`, n, prev)
+}
+
+func recordHash(data []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(data)) }
+
+// loginChain returns the records 1 to n of a login history that chain.
+func loginChain(n int) [][]byte {
+	var recs [][]byte
+	prev := ""
+	for i := 1; i <= n; i++ {
+		rec := loginRecord(i, prev)
+		recs = append(recs, rec)
+		prev = recordHash(rec)
+	}
+	return recs
+}
+
+// commitAt is a commit of the engine of a data directory: its events, then the mark of the daemon with the time at.
+type commitAt struct {
+	at     time.Time
+	events [][]byte
+}
+
+// writeCommits writes the commits to the data directory data, which no process has open, straight into the engine, as a
+// daemon whose clock was at those times has written them.
+func writeCommits(t *testing.T, data string, commits ...commitAt) {
+	t.Helper()
+	srv, err := dbserver.OpenDir(data, storeOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range commits {
+		if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
+			if i == 0 {
+				if err := tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, dbwire.TableVersion)); err != nil {
+					return err
+				}
+			}
+			for _, e := range c.events {
+				if err := tx.AppendEvent(e); err != nil {
+					return err
+				}
+			}
+			return tx.AppendEvent(dbwire.AppendMark(nil, c.at))
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setSchema puts the schema row of the data directory data, which no process has open, to version.
+func setSchema(t *testing.T, data string, version uint64) {
+	t.Helper()
+	srv, err := dbserver.OpenDir(data, storeOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
+		return tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, version))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCompactDeletesLogin checks the deletion of the login records older than one year, which compact does with the time of
+// its process: its output, the store that it leaves, and what it does not drop.
+func TestCompactDeletesLogin(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	months := func(n int) time.Time { return now.AddDate(0, -n, 0) }
+	cutoff := now.AddDate(-1, 0, 0).Format(time.RFC3339) // the newest mark is that of now, which is not after the time of the process
+	activity := []byte(`{"log":"activity","n":1,"action":"x"}`)
+
+	t.Run("old records", func(t *testing.T) {
+		d := newDirs(t)
+		recs := loginChain(5)
+		writeCommits(t, d.data,
+			commitAt{months(40), [][]byte{activity, recs[0]}}, commitAt{months(30), [][]byte{recs[1]}},
+			commitAt{months(13), [][]byte{recs[2]}}, commitAt{months(11), [][]byte{recs[3]}}, commitAt{now, [][]byte{recs[4]}})
+		code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+		want := "compacted " + d.data + "\ndeleted the login records 1 to 3, from before " + cutoff + "\n"
+		if code != 0 || stdout != want || stderr != "" {
+			t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+
+		// A daemon serves the store without the records 1 to 3, and with the activity record, the start of the chain, and the
+		// event of the deletion; the check of the directory finds nothing wrong.
+		s := d.startServe(t, d.args()...)
+		r := openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
+		var start dbwire.ChainStart
+		var logins []int
+		var activities, deletions, marks int
+		if err := r.View(t.Context(), func(tx *dbclient.Tx) error {
+			v, found, err := tx.Get(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin))
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("the table chains has no chain start")
+			}
+			var ok bool
+			if start, ok = dbwire.ParseChainStart(v); !ok {
+				return errors.New("the chain start cannot be read")
+			}
+			return tx.Events(t.Context(), func(_ uint64, data []byte) bool {
+				log, n, _, isRecord := dbwire.ReadRecordID(data)
+				_, isMark := dbwire.ParseMark(data)
+				_, isDeletion := dbwire.ParseDeleted(data)
+				switch {
+				case isRecord && log == dbwire.LogLogin:
+					logins = append(logins, int(n))
+				case isRecord:
+					activities++
+				case isMark:
+					marks++
+				case isDeletion:
+					deletions++
+				}
+				return true
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if start.First != 4 || start.Prev != sha256.Sum256(recs[2]) {
+			t.Errorf("the chain start is %+v, want record 4 after the hash of record 3", start)
+		}
+		if !slices.Equal(logins, []int{4, 5}) || activities != 1 || deletions != 1 || marks != 6 {
+			t.Errorf("the store has the login records %v, %d activity records, %d deletions and %d marks, want 4 and 5, 1, 1 and 6",
+				logins, activities, deletions, marks)
+		}
+		if err := r.Verify(t.Context()); err != nil {
+			t.Errorf("Verify() = %v", err)
+		}
+		if code := s.stop(); code != 0 {
+			t.Fatalf("whiteroom-db serve = %d", code)
+		}
+		if code, stdout, stderr := runCmd(t, "check", "-data", d.data); code != 0 || stdout != "no problems found in "+d.data+"\n" || stderr != "" {
+			t.Errorf("whiteroom-db check = %d, with stdout %q and stderr %q", code, stdout, stderr)
+		}
+
+		// Nothing is old enough now: the output is that of a compaction.
+		code, stdout, stderr = runCmd(t, "compact", "-data", d.data)
+		if want := "compacted " + d.data + "\n"; code != 0 || stdout != want || stderr != "" {
+			t.Errorf("a second whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+	})
+
+	t.Run("a store of an older table schema", func(t *testing.T) {
+		d := newDirs(t)
+		recs := loginChain(3)
+		writeCommits(t, d.data, commitAt{months(40), [][]byte{activity, recs[0]}}, commitAt{months(30), [][]byte{recs[1]}},
+			commitAt{now, [][]byte{recs[2]}})
+		setSchema(t, d.data, dbwire.TableVersion-1)
+		want := "compacted " + d.data + "\n" + fmt.Sprintf("kept the login records older than one year: the store has the table schema %d, "+
+			"and the first writer that connects through whiteroom-db serve (whiteroom serve admin, for one) upgrades it to %d\n",
+			dbwire.TableVersion-1, dbwire.TableVersion)
+		for range 2 { // the second call finds the same store
+			code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+			if code != 0 || stdout != want || stderr != "" {
+				t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+			}
+		}
+		s := d.startServe(t, d.args()...)
+		r := openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
+		var logins []int
+		if err := r.View(t.Context(), func(tx *dbclient.Tx) error {
+			_, found, err := tx.Get(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin))
+			if err == nil && found {
+				err = errors.New("the table chains of the store of the older schema has a chain start")
+			}
+			if err != nil {
+				return err
+			}
+			return tx.Events(t.Context(), func(_ uint64, data []byte) bool {
+				if log, n, _, ok := dbwire.ReadRecordID(data); ok && log == dbwire.LogLogin {
+					logins = append(logins, int(n))
+				}
+				return true
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(logins, []int{1, 2, 3}) {
+			t.Errorf("the login records are %v, want 1 to 3", logins)
+		}
+		s.stop()
+	})
+
+	t.Run("no old records", func(t *testing.T) {
+		d := newDirs(t)
+		recs := loginChain(3)
+		writeCommits(t, d.data, commitAt{months(11), [][]byte{activity, recs[0]}}, commitAt{months(2), [][]byte{recs[1]}},
+			commitAt{now, [][]byte{recs[2]}})
+		code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+		if want := "compacted " + d.data + "\n"; code != 0 || stdout != want || stderr != "" {
+			t.Errorf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+		s := d.startServe(t, d.args()...)
+		r := openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
+		if err := r.View(t.Context(), func(tx *dbclient.Tx) error {
+			_, found, err := tx.Get(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin))
+			if err == nil && found {
+				err = errors.New("the table chains has a chain start")
+			}
+			return err
+		}); err != nil {
+			t.Error(err)
+		}
+		s.stop()
+	})
+
+	t.Run("a record that does not follow", func(t *testing.T) {
+		d := newDirs(t)
+		recs := loginChain(3)
+		bad := loginRecord(3, recordHash(recs[0]))
+		writeCommits(t, d.data, commitAt{months(40), [][]byte{recs[0]}}, commitAt{months(30), [][]byte{recs[1]}},
+			commitAt{months(13), [][]byte{bad}}, commitAt{now, nil})
+		stopped := "the deletion of login records stopped at record 3: prev is not the hash of record 2; check the store with whiteroom doctor\n"
+		code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+		want := "compacted " + d.data + "\ndeleted the login records 1 to 1, from before " + cutoff + "\n" + stopped
+		if code != 0 || stdout != want || stderr != "" {
+			t.Errorf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+		// A second call deletes nothing and says it again.
+		code, stdout, stderr = runCmd(t, "compact", "-data", d.data)
+		want = "compacted " + d.data + "\n" + stopped
+		if code != 0 || stdout != want || stderr != "" {
+			t.Errorf("a second whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+	})
 }
 
 // TestMaintainRefused checks that compact and gc refuse a data directory that serve refuses, with the same words, and leave

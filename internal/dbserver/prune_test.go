@@ -1,0 +1,1168 @@
+package dbserver
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb/simfs"
+)
+
+// The records of these tests are the smallest that dbwire.ReadRecordID reads, with a member that it ignores; an event of
+// the log of events is as the store writes it: the records of a commit, then its mark.
+
+var pruneNow = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+
+// monthsAgo returns the time that is n months before pruneNow.
+func monthsAgo(n int) time.Time { return pruneNow.AddDate(0, -n, 0) }
+
+func auditRecord(log string, n uint64, prev string) []byte {
+	if prev == "" {
+		return fmt.Appendf(nil, `{"log":%q,"n":%d,"action":"x"}`, log, n)
+	}
+	return fmt.Appendf(nil, `{"log":%q,"n":%d,"prev":%q,"action":"x"}`, log, n, prev)
+}
+
+// loginChain is the records 1 to N of a login history that chain.
+type loginChain struct {
+	recs [][]byte
+	sums [][sha256.Size]byte
+}
+
+func newLoginChain(n int) *loginChain {
+	c := &loginChain{}
+	prev := ""
+	for i := 1; i <= n; i++ {
+		data := auditRecord("login", uint64(i), prev)
+		c.recs = append(c.recs, data)
+		sum := sha256.Sum256(data)
+		c.sums = append(c.sums, sum)
+		prev = hashText(sum)
+	}
+	return c
+}
+
+func (c *loginChain) rec(n int) []byte { return c.recs[n-1] }
+
+func (c *loginChain) sum(n int) [sha256.Size]byte { return c.sums[n-1] }
+
+// commitAt commits events, then the mark at at, unless at is the zero time, in one commit of the engine.
+func (f *fixture) commitAt(at time.Time, events ...[]byte) {
+	f.t.Helper()
+	f.update(func(tx *logdb.Tx) {
+		for _, e := range events {
+			if err := tx.AppendEvent(e); err != nil {
+				f.t.Error(err)
+			}
+		}
+		if !at.IsZero() {
+			if err := tx.AppendEvent(dbwire.AppendMark(nil, at)); err != nil {
+				f.t.Error(err)
+			}
+		}
+	})
+}
+
+// loginFixture is a store whose commit i has the activity record i, the login record i of chain, and the mark marks[i-1]
+// (none for the zero time), and whose last commit has the activity record 99 and a mark at pruneNow, which makes the cutoff
+// a year before pruneNow. Its server is closed.
+func loginFixture(t *testing.T, chain *loginChain, marks ...time.Time) *fixture {
+	t.Helper()
+	f := newFixture(t, nil)
+	for i, at := range marks {
+		f.commitAt(at, auditRecord("activity", uint64(i+1), ""), chain.rec(i+1))
+	}
+	f.anchor()
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// anchor commits the activity record 99 with a mark at pruneNow.
+func (f *fixture) anchor() {
+	f.t.Helper()
+	f.commitAt(pruneNow, auditRecord("activity", 99, ""))
+}
+
+// commitLater opens the closed server of f, commits events with a mark at at, and closes it.
+func (f *fixture) commitLater(at time.Time, events ...[]byte) {
+	f.t.Helper()
+	f.open()
+	f.commitAt(at, events...)
+	if err := f.srv.Close(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// compactLogin runs CompactLogin at now on the world of f.
+func compactLogin(t *testing.T, f *fixture, now time.Time) Deleted {
+	t.Helper()
+	var d Deleted
+	if err := maintain(t.Context(), f.fs, "data", f.opts, func(m *logdb.Maintenance) (err error) {
+		d, err = CompactLogin(t.Context(), m, now)
+		return err
+	}); err != nil {
+		t.Fatalf("CompactLogin() = %v", err)
+	}
+	return d
+}
+
+// word returns what an event is, in a word: Ln and An for the login and the activity record n, M for a mark, Dn for the
+// deletion before the record n, Bn for the acceptance of the break at it, and ? for another event.
+func word(data []byte) string {
+	if dbwire.IsDaemonEvent(data) {
+		if _, ok := dbwire.ParseMark(data); ok {
+			return "M"
+		}
+		if d, ok := dbwire.ParseDeleted(data); ok {
+			return fmt.Sprintf("D%d", d.First)
+		}
+		if a, ok := dbwire.ParseAccepted(data); ok {
+			return fmt.Sprintf("B%d", a.N)
+		}
+		return "?"
+	}
+	log, n, _, ok := dbwire.ReadRecordID(data)
+	switch {
+	case ok && log == dbwire.LogLogin:
+		return fmt.Sprintf("L%d", n)
+	case ok && log == dbwire.LogActivity:
+		return fmt.Sprintf("A%d", n)
+	}
+	return "?"
+}
+
+// view is what a store has of the login history: its events, as words and as the engine numbers them, the chain start,
+// and the rows of the tables other than chains.
+type view struct {
+	events []logdb.Event
+	shape  string
+	start  *dbwire.ChainStart
+	rows   map[string]string
+	breaks int
+}
+
+func viewOf(t *testing.T, f *fixture) view {
+	t.Helper()
+	var v view
+	if err := maintain(t.Context(), f.fs, "data", f.opts, func(m *logdb.Maintenance) error {
+		var words []string
+		if err := m.Events(t.Context(), func(e logdb.Event) bool {
+			v.events = append(v.events, e)
+			words = append(words, word(e.Data))
+			return true
+		}); err != nil {
+			return err
+		}
+		v.shape = strings.Join(words, " ")
+		v.rows = map[string]string{}
+		return m.View(t.Context(), func(tx *logdb.Tx) error {
+			for table := uint32(1); table <= 16; table++ {
+				tx.Scan(table, nil, func(k, val []byte) bool {
+					switch {
+					case table == dbwire.TableChains && string(k) == dbwire.LogLogin:
+						start, ok := dbwire.ParseChainStart(val)
+						if ok {
+							v.start = &start
+						}
+					case table == dbwire.TableChains:
+						v.breaks++
+					default:
+						v.rows[fmt.Sprintf("%d/%q", table, k)] = string(val)
+					}
+					return true
+				})
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatalf("reading the store: %v", err)
+	}
+	return v
+}
+
+// numbered returns the events by their numbers, with their sequence numbers.
+func numbered(events []logdb.Event) map[uint64]string {
+	m := map[uint64]string{}
+	for _, e := range events {
+		m[e.Number] = fmt.Sprintf("%d:%x", e.Seq, e.Data)
+	}
+	return m
+}
+
+// kept checks that every event of after is the one of before with its number, and that before has no other event than
+// those of dropped, the words of the events that are gone.
+func kept(t *testing.T, before, after view, dropped ...string) {
+	t.Helper()
+	was := numbered(before.events)
+	got := numbered(after.events)
+	var gone []string
+	for _, e := range before.events {
+		if _, ok := got[e.Number]; !ok {
+			gone = append(gone, word(e.Data))
+		}
+	}
+	for number, text := range got {
+		if text != was[number] && !slices.Contains(after.newEvents(before), number) {
+			t.Errorf("event %d is %s, was %q", number, text, was[number])
+		}
+	}
+	if !slices.Equal(gone, dropped) {
+		t.Errorf("the events %v are gone, want %v", gone, dropped)
+	}
+}
+
+// newEvents returns the numbers of the events of v that are not in before, which is a store at an earlier time.
+func (v view) newEvents(before view) []uint64 {
+	was := numbered(before.events)
+	var out []uint64
+	for _, e := range v.events {
+		if _, ok := was[e.Number]; !ok {
+			out = append(out, e.Number)
+		}
+	}
+	return out
+}
+
+func checkDeleted(t *testing.T, got, want Deleted) {
+	t.Helper()
+	if got.First != want.First || got.Last != want.Last || got.Stopped != want.Stopped || got.Schema != want.Schema ||
+		!want.Cutoff.IsZero() && !got.Cutoff.Equal(want.Cutoff) {
+		t.Errorf("CompactLogin() = %+v, want %+v", got, want)
+	}
+}
+
+func checkStart(t *testing.T, v view, first uint64, prev [sha256.Size]byte, at time.Time) {
+	t.Helper()
+	if v.start == nil || v.start.First != first || v.start.Prev != prev || !v.start.At.Equal(at) {
+		t.Errorf("the chain start is %+v, want record %d after %x at %v", v.start, first, prev[:4], at)
+	}
+}
+
+func checkRows(t *testing.T, before, after view) {
+	t.Helper()
+	if !maps.Equal(before.rows, after.rows) {
+		t.Errorf("the rows of the tables are\n%v\nwere\n%v", after.rows, before.rows)
+	}
+}
+
+func TestCompactLoginDeletes(t *testing.T) {
+	chain := newLoginChain(6)
+	f := loginFixture(t, chain, monthsAgo(40), monthsAgo(30), monthsAgo(13), monthsAgo(11), monthsAgo(1), pruneNow)
+	before := viewOf(t, f)
+	if want := "A1 L1 M A2 L2 M A3 L3 M A4 L4 M A5 L5 M A6 L6 M A99 M"; before.shape != want {
+		t.Fatalf("the store is %q, want %q", before.shape, want)
+	}
+	cutoff := pruneNow.AddDate(-1, 0, 0)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: cutoff})
+	after := viewOf(t, f)
+	if want := "A1 M A2 M A3 M A4 L4 M A5 L5 M A6 L6 M A99 M D4 M"; after.shape != want {
+		t.Errorf("the store is %q, want %q", after.shape, want)
+	}
+	kept(t, before, after, "L1", "L2", "L3")
+	checkRows(t, before, after)
+	checkStart(t, after, 4, chain.sum(3), pruneNow)
+	last := after.events[len(after.events)-1]
+	if at, ok := dbwire.ParseMark(last.Data); !ok || !at.Equal(pruneNow) {
+		t.Errorf("the last event is %q, want the mark of now", last.Data)
+	}
+	deleted, ok := dbwire.ParseDeleted(after.events[len(after.events)-2].Data)
+	if !ok || deleted.Log != dbwire.LogLogin || deleted.First != 4 || deleted.Prev != chain.sum(3) || !deleted.Cutoff.Equal(cutoff) {
+		t.Errorf("the event of the deletion is %+v (%v), want record 4 after %x, with the cutoff %v", deleted, ok, chain.sum(3), cutoff)
+	}
+	if after.events[len(after.events)-2].Seq != last.Seq {
+		t.Error("the event of the deletion is not in the commit of the mark")
+	}
+
+	// A second call finds nothing more, and changes no event and no row.
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{})
+	second := viewOf(t, f)
+	if second.shape != after.shape || !maps.Equal(numbered(second.events), numbered(after.events)) {
+		t.Errorf("a second call made the store %q, was %q", second.shape, after.shape)
+	}
+	checkStart(t, second, 4, chain.sum(3), pruneNow)
+	checkRows(t, after, second)
+
+	// A year later the record 4 is old, and the record 5, whose mark is at the cutoff, is not.
+	later := pruneNow.AddDate(0, 11, 0)
+	f.commitLater(later, auditRecord("activity", 100, ""))
+	checkDeleted(t, compactLogin(t, f, later), Deleted{First: 4, Last: 4, Cutoff: later.AddDate(-1, 0, 0)})
+	third := viewOf(t, f)
+	if want := "A1 M A2 M A3 M A4 M A5 L5 M A6 L6 M A99 M D4 M A100 M D5 M"; third.shape != want {
+		t.Errorf("the store is %q, want %q", third.shape, want)
+	}
+	checkStart(t, third, 5, chain.sum(4), later)
+}
+
+func TestCompactLoginNothingOld(t *testing.T) {
+	chain := newLoginChain(3)
+	f := loginFixture(t, chain, monthsAgo(11), monthsAgo(5), pruneNow)
+	before := viewOf(t, f)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0)})
+	after := viewOf(t, f)
+	if after.shape != before.shape || after.start != nil {
+		t.Errorf("the store is %q with the start %+v, was %q", after.shape, after.start, before.shape)
+	}
+	kept(t, before, after)
+	checkRows(t, before, after)
+}
+
+func TestCompactLoginEveryRecord(t *testing.T) {
+	chain := newLoginChain(3)
+	f := loginFixture(t, chain, monthsAgo(40), monthsAgo(30), monthsAgo(20))
+	before := viewOf(t, f)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: pruneNow.AddDate(-1, 0, 0)})
+	after := viewOf(t, f)
+	if want := "A1 M A2 M A3 M A99 M D4 M"; after.shape != want {
+		t.Errorf("the store is %q, want %q", after.shape, want)
+	}
+	checkStart(t, after, 4, chain.sum(3), pruneNow)
+	kept(t, before, after, "L1", "L2", "L3")
+	checkRows(t, before, after)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{})
+}
+
+// TestCompactLoginCutoff checks that the cutoff is a calendar year before the earlier of the time of the process and
+// that of the newest mark: a clock that is far ahead, or one that is set back, does not make records old.
+func TestCompactLoginCutoff(t *testing.T) {
+	marks := []time.Time{monthsAgo(30), monthsAgo(8), monthsAgo(1)}
+	newest := marks[2]
+	build := func(t *testing.T) (*fixture, *loginChain) {
+		chain := newLoginChain(3)
+		f := newFixture(t, nil)
+		for i, at := range marks {
+			f.commitAt(at, chain.rec(i+1))
+		}
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return f, chain
+	}
+	t.Run("a clock far ahead", func(t *testing.T) {
+		f, chain := build(t)
+		now := pruneNow.AddDate(5, 0, 0)
+		// The newest mark, a month before pruneNow, makes the cutoff 13 months before it: only the record 1 is older.
+		checkDeleted(t, compactLogin(t, f, now), Deleted{First: 1, Last: 1, Cutoff: newest.AddDate(-1, 0, 0)})
+		checkStart(t, viewOf(t, f), 2, chain.sum(1), now)
+	})
+	t.Run("a clock set back", func(t *testing.T) {
+		f, chain := build(t)
+		early := monthsAgo(25) // the cutoff is 37 months before pruneNow: no record is older
+		checkDeleted(t, compactLogin(t, f, early), Deleted{Cutoff: early.AddDate(-1, 0, 0)})
+		if v := viewOf(t, f); v.start != nil {
+			t.Errorf("the chain start is %+v after a call with a clock that is set back", v.start)
+		}
+		now := monthsAgo(7) // before the newest mark, so that the cutoff is 19 months before pruneNow
+		checkDeleted(t, compactLogin(t, f, now), Deleted{First: 1, Last: 1, Cutoff: now.AddDate(-1, 0, 0)})
+		checkStart(t, viewOf(t, f), 2, chain.sum(1), now)
+	})
+	t.Run("a year is a calendar year", func(t *testing.T) {
+		leap := time.Date(2028, 2, 29, 10, 0, 0, 0, time.UTC)
+		cutoff := leap.AddDate(-1, 0, 0)
+		if want := time.Date(2027, 3, 1, 10, 0, 0, 0, time.UTC); !cutoff.Equal(want) {
+			t.Fatalf("a year before %v is %v, want %v", leap, cutoff, want)
+		}
+		// A record at the cutoff stays; one a nanosecond older goes.
+		for _, tt := range []struct {
+			at   time.Time
+			want Deleted
+		}{
+			{cutoff.Add(-time.Nanosecond), Deleted{First: 1, Last: 1, Cutoff: cutoff}},
+			{cutoff, Deleted{Cutoff: cutoff}},
+		} {
+			chain := newLoginChain(2)
+			f := newFixture(t, nil)
+			f.commitAt(tt.at, chain.rec(1))
+			f.commitAt(leap, chain.rec(2))
+			if err := f.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkDeleted(t, compactLogin(t, f, leap), tt.want)
+		}
+	})
+	t.Run("a year is not 365 days", func(t *testing.T) {
+		// 2024-02-29 is between: a year before 2024-03-10 10:00 is 2023-03-10 10:00, and 365 days before it is a day later.
+		now := time.Date(2024, 3, 10, 10, 0, 0, 0, time.UTC)
+		chain := newLoginChain(2)
+		f := newFixture(t, nil)
+		f.commitAt(time.Date(2023, 3, 10, 20, 0, 0, 0, time.UTC), chain.rec(1))
+		f.commitAt(now, chain.rec(2))
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		checkDeleted(t, compactLogin(t, f, now), Deleted{Cutoff: time.Date(2023, 3, 10, 10, 0, 0, 0, time.UTC)})
+	})
+	t.Run("the time of the process is in UTC", func(t *testing.T) {
+		chain := newLoginChain(2)
+		f := newFixture(t, nil)
+		f.commitAt(monthsAgo(13), chain.rec(1))
+		f.commitAt(pruneNow, chain.rec(2))
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		zone := time.FixedZone("far", 14*3600)
+		d := compactLogin(t, f, pruneNow.In(zone))
+		if d.Cutoff.Location() != time.UTC || !d.Cutoff.Equal(pruneNow.AddDate(-1, 0, 0)) {
+			t.Errorf("the cutoff is %v", d.Cutoff)
+		}
+		if v := viewOf(t, f); v.start == nil || v.start.At.Location() != time.UTC {
+			t.Errorf("the chain start is %+v", v.start)
+		}
+	})
+}
+
+// TestCompactLoginPrefix checks that the records go as a prefix, the oldest first, and that a record is not dropped
+// because it is old if one before it is not: after a clock that went back, or a commit that has no mark.
+func TestCompactLoginPrefix(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		marks   []time.Time
+		first   uint64 // the first record that remains; 0: no deletion
+		shape   string
+		stopped string
+	}{
+		{"old, young, old", []time.Time{monthsAgo(30), monthsAgo(2), monthsAgo(25)}, 2,
+			"A1 M A2 L2 M A3 L3 M A99 M D2 M", ""},
+		{"a clock that went back", []time.Time{monthsAgo(20), pruneNow, monthsAgo(40), monthsAgo(40)}, 2,
+			"A1 M A2 L2 M A3 L3 M A4 L4 M A99 M D2 M", ""},
+		{"no mark in the middle", []time.Time{monthsAgo(30), {}, monthsAgo(25)}, 2,
+			"A1 M A2 L2 A3 L3 M A99 M D2 M", ""},
+		{"records that predate the marks", []time.Time{{}, {}, monthsAgo(25)}, 0, "A1 L1 A2 L2 A3 L3 M A99 M", ""},
+		{"no mark at the end", []time.Time{monthsAgo(30), monthsAgo(25), {}}, 3, "A1 M A2 M A3 L3 A99 M D3 M", ""},
+		{"a mark at the cutoff", []time.Time{monthsAgo(30), monthsAgo(12), monthsAgo(25)}, 2,
+			"A1 M A2 L2 M A3 L3 M A99 M D2 M", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chain := newLoginChain(len(tt.marks))
+			f := loginFixture(t, chain, tt.marks...)
+			before := viewOf(t, f)
+			want := Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0)}
+			var dropped []string
+			if tt.first != 0 {
+				want.First, want.Last = 1, tt.first-1
+				for n := uint64(1); n < tt.first; n++ {
+					dropped = append(dropped, fmt.Sprintf("L%d", n))
+				}
+			}
+			checkDeleted(t, compactLogin(t, f, pruneNow), want)
+			after := viewOf(t, f)
+			if after.shape != tt.shape {
+				t.Errorf("the store is %q, want %q", after.shape, tt.shape)
+			}
+			kept(t, before, after, dropped...)
+			if tt.first == 0 && after.start != nil {
+				t.Errorf("the chain start is %+v, want none", after.start)
+			}
+			if tt.first != 0 {
+				checkStart(t, after, tt.first, chain.sum(int(tt.first)-1), pruneNow)
+			}
+		})
+	}
+}
+
+// TestCompactLoginCommits checks that the records of one commit share the mark of the commit.
+func TestCompactLoginCommits(t *testing.T) {
+	chain := newLoginChain(5)
+	f := newFixture(t, nil)
+	f.commitAt(monthsAgo(30), auditRecord("activity", 1, ""), chain.rec(1), chain.rec(2))
+	f.commitAt(monthsAgo(20), chain.rec(3))
+	f.commitAt(monthsAgo(2), chain.rec(4), chain.rec(5))
+	f.anchor()
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := viewOf(t, f)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: pruneNow.AddDate(-1, 0, 0)})
+	after := viewOf(t, f)
+	if want := "A1 M M L4 L5 M A99 M D4 M"; after.shape != want {
+		t.Errorf("the store is %q, want %q", after.shape, want)
+	}
+	kept(t, before, after, "L1", "L2", "L3")
+	checkStart(t, after, 4, chain.sum(3), pruneNow)
+}
+
+// TestCompactLoginKeeps checks that nothing but the login records is dropped: not the activity records, which are older
+// than the cutoff too, not the marks, and not what is no record, which stops the walk.
+func TestCompactLoginKeeps(t *testing.T) {
+	chain := newLoginChain(5)
+	f := newFixture(t, nil)
+	junk := []byte("not a record")
+	f.commitAt(monthsAgo(40), auditRecord("activity", 1, ""), chain.rec(1))
+	f.commitAt(monthsAgo(39), auditRecord("activity", 2, ""), chain.rec(2))
+	f.commitAt(monthsAgo(38), auditRecord("activity", 3, ""), chain.rec(3))
+	f.commitAt(monthsAgo(37), junk, auditRecord("activity", 4, ""), chain.rec(4))
+	f.commitAt(monthsAgo(36), auditRecord("activity", 5, ""), chain.rec(5))
+	f.anchor()
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := viewOf(t, f)
+	// The walk stops at the event that is no record: the records before it go, except the last of them.
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: pruneNow.AddDate(-1, 0, 0),
+		Stopped: "event 10: it is not an audit record"})
+	after := viewOf(t, f)
+	if want := "A1 M A2 M A3 L3 M ? A4 L4 M A5 L5 M A99 M D3 M"; after.shape != want {
+		t.Errorf("the store is %q, want %q", after.shape, want)
+	}
+	kept(t, before, after, "L1", "L2")
+}
+
+// TestCompactLoginEvidence checks that the walk never takes away what shows that the chain is broken: it stops at the
+// first record that does not follow its predecessor and at the first event that is no record, drops only what is before
+// the record that precedes that one, says where, and drops no record that comes after.
+func TestCompactLoginEvidence(t *testing.T) {
+	chain := newLoginChain(6)
+	other := func(log string, n uint64, prev string) []byte { return auditRecord(log, n, prev) }
+	for _, tt := range []struct {
+		name    string
+		records [][]byte
+		want    Deleted
+		start   uint64 // the first record that remains; 0: no deletion
+		shape   string
+	}{
+		{
+			name:    "a record whose prev is not the hash of the one before it",
+			records: [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), other("login", 4, hashText(chain.sum(1))), chain.rec(5)},
+			want:    Deleted{First: 1, Last: 2, Stopped: "record 4: prev is not the hash of record 3"},
+			start:   3,
+			shape:   "A1 M A2 M A3 L3 M A4 L4 M A5 L5 M A99 M D3 M",
+		},
+		{
+			name:    "a record whose number does not follow",
+			records: [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(6)},
+			want:    Deleted{First: 1, Last: 2, Stopped: "record 5: the number does not follow that of record 3"},
+			start:   3,
+			shape:   "A1 M A2 M A3 L3 M A4 L5 M A5 L6 M A99 M D3 M",
+		},
+		{
+			name:    "the first record is not the first",
+			records: [][]byte{chain.rec(2), chain.rec(3)},
+			want:    Deleted{Stopped: "record 2: the first record of a log is number 1"},
+			shape:   "A1 L2 M A2 L3 M A99 M",
+		},
+		{
+			name:    "the first record has a prev",
+			records: [][]byte{other("login", 1, hashText(chain.sum(1))), chain.rec(2)},
+			want:    Deleted{Stopped: "record 1: the first record has the hash of one before it"},
+			shape:   "A1 L1 M A2 L2 M A99 M",
+		},
+		{
+			name:    "a record twice, the second after the others",
+			records: [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(2)},
+			want:    Deleted{First: 1, Last: 2, Stopped: "record 2: the number does not follow that of record 3"},
+			start:   3,
+			shape:   "A1 M A2 M A3 L3 M A4 L2 M A99 M D3 M",
+		},
+		{
+			name:    "an event that is no record between the records",
+			records: [][]byte{chain.rec(1), chain.rec(2), []byte("junk"), chain.rec(3), chain.rec(4)},
+			want:    Deleted{First: 1, Last: 1, Stopped: "event 8: it is not an audit record"},
+			start:   2,
+			shape:   "A1 M A2 L2 M A3 ? M A4 L3 M A5 L4 M A99 M D2 M",
+		},
+		{
+			name:    "a record of a log that is neither",
+			records: [][]byte{chain.rec(1), chain.rec(2), other("other", 3, ""), chain.rec(3)},
+			want:    Deleted{First: 1, Last: 1, Stopped: "event 8: the log of the record is neither login nor activity"},
+			start:   2,
+			shape:   "A1 M A2 L2 M A3 ? M A4 L3 M A99 M D2 M",
+		},
+		{
+			name:    "an event of the daemon that cannot be read",
+			records: [][]byte{chain.rec(1), chain.rec(2), {dbwire.DaemonEvent, 0x7f}, chain.rec(3)},
+			want:    Deleted{First: 1, Last: 1, Stopped: "event 8: it is an event of the daemon that cannot be read"},
+			start:   2,
+			shape:   "A1 M A2 L2 M A3 ? M A4 L3 M A99 M D2 M",
+		},
+		{
+			name:    "a record without a number",
+			records: [][]byte{chain.rec(1), chain.rec(2), []byte(`{"log":"login","prev":"x"}`), chain.rec(3)},
+			want:    Deleted{First: 1, Last: 1, Stopped: "event 8: it is not an audit record"},
+			start:   2,
+			shape:   "A1 M A2 L2 M A3 ? M A4 L3 M A99 M D2 M",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, nil)
+			for i, rec := range tt.records {
+				f.commitAt(monthsAgo(40), auditRecord("activity", uint64(i+1), ""), rec)
+			}
+			f.anchor()
+			if err := f.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := viewOf(t, f)
+			tt.want.Cutoff = pruneNow.AddDate(-1, 0, 0)
+			checkDeleted(t, compactLogin(t, f, pruneNow), tt.want)
+			after := viewOf(t, f)
+			if after.shape != tt.shape {
+				t.Errorf("the store is %q, want %q", after.shape, tt.shape)
+			}
+			var dropped []string
+			for n := tt.want.First; n != 0 && n <= tt.want.Last; n++ {
+				dropped = append(dropped, fmt.Sprintf("L%d", n))
+			}
+			kept(t, before, after, dropped...)
+			if tt.start == 0 {
+				if after.start != nil {
+					t.Errorf("the chain start is %+v, want none", after.start)
+				}
+			} else {
+				checkStart(t, after, tt.start, chain.sum(int(tt.start)-1), pruneNow)
+			}
+			// A second call finds the same stop, and deletes nothing.
+			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Stopped: tt.want.Stopped})
+			if again := viewOf(t, f); again.shape != after.shape {
+				t.Errorf("a second call made the store %q, was %q", again.shape, after.shape)
+			}
+		})
+	}
+}
+
+// TestCompactLoginStopped checks when the walk says that it stopped: when the evidence ended it, and not when the age of
+// the records did, and not for an event that is no record with no login record after it.
+func TestCompactLoginStopped(t *testing.T) {
+	chain := newLoginChain(4)
+	cutoff := pruneNow.AddDate(-1, 0, 0)
+	t.Run("the age ends the deletion first", func(t *testing.T) {
+		// The newest mark is 20 months old, so that the cutoff is 32 months old: the record 2, 25 months old, is not old enough,
+		// but is older than a year, so that the walk goes on to the record 3, which does not follow.
+		bad := auditRecord("login", 3, hashText(chain.sum(1)))
+		f := newFixture(t, nil)
+		f.commitAt(monthsAgo(40), chain.rec(1))
+		f.commitAt(monthsAgo(25), chain.rec(2))
+		f.commitAt(monthsAgo(25), bad)
+		f.commitAt(monthsAgo(20), auditRecord("activity", 99, ""))
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 1, Cutoff: monthsAgo(20).AddDate(-1, 0, 0)})
+		checkStart(t, viewOf(t, f), 2, chain.sum(1), pruneNow)
+	})
+	t.Run("an event that is no record, with no login record after it", func(t *testing.T) {
+		f := newFixture(t, nil)
+		for i := 1; i <= 3; i++ {
+			f.commitAt(monthsAgo(40), chain.rec(i))
+		}
+		f.commitAt(monthsAgo(40), []byte("junk"), auditRecord("activity", 1, ""))
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff})
+		checkStart(t, viewOf(t, f), 3, chain.sum(2), pruneNow)
+	})
+	t.Run("an event that is no record, before every login record", func(t *testing.T) {
+		f := newFixture(t, nil)
+		f.commitAt(monthsAgo(40), []byte("junk"))
+		for i := 1; i <= 3; i++ {
+			f.commitAt(monthsAgo(40), chain.rec(i))
+		}
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "event 1: it is not an audit record"})
+		kept(t, before, viewOf(t, f))
+	})
+}
+
+// setSchema puts the schema row of the store of f, whose server is closed, to version.
+func (f *fixture) setSchema(version uint64) {
+	f.t.Helper()
+	f.open()
+	if err := f.db().Update(f.t.Context(), func(tx *logdb.Tx) error {
+		return tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, version))
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.srv.Close(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestCompactLoginOlderSchema checks that a store of a table schema older than dbwire.TableVersion is compacted and loses no
+// login record, whatever their age: the chain start and the event of a deletion are of the newest schema, which the first
+// writer that opens the store makes it. The call says so only if it would have dropped something.
+func TestCompactLoginOlderSchema(t *testing.T) {
+	older := uint64(dbwire.TableVersion - 1)
+	cutoff := pruneNow.AddDate(-1, 0, 0)
+	generation := func(f *fixture) string {
+		var names []string
+		for name := range filesOf(f.fs, "logdb/log") {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return strings.Join(names, " ")
+	}
+	t.Run("old records", func(t *testing.T) {
+		chain := newLoginChain(6)
+		f := loginFixture(t, chain, monthsAgo(40), monthsAgo(30), monthsAgo(13), monthsAgo(11), monthsAgo(1), pruneNow)
+		f.setSchema(older)
+		before, was := viewOf(t, f), generation(f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Schema: older})
+		after := viewOf(t, f)
+		kept(t, before, after)
+		checkRows(t, before, after)
+		if after.start != nil || after.shape != before.shape {
+			t.Errorf("the store is %q with the chain start %+v, was %q", after.shape, after.start, before.shape)
+		}
+		if got := generation(f); got == was {
+			t.Errorf("the log has the segments %q after the call: want a new generation", got)
+		}
+		// The call says it again, and the store is the same.
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Schema: older})
+		kept(t, after, viewOf(t, f))
+	})
+	t.Run("nothing old", func(t *testing.T) {
+		chain := newLoginChain(3)
+		f := loginFixture(t, chain, monthsAgo(11), monthsAgo(5), pruneNow)
+		f.setSchema(older)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff})
+		kept(t, before, viewOf(t, f))
+	})
+	t.Run("a stop that the schema does not hide", func(t *testing.T) {
+		chain := newLoginChain(4)
+		bad := auditRecord("login", 4, hashText(chain.sum(1)))
+		f := newFixture(t, nil)
+		for i, rec := range [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), bad} {
+			f.commitAt(monthsAgo(40), auditRecord("activity", uint64(i+1), ""), rec)
+		}
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.setSchema(older)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Schema: older,
+			Stopped: "record 4: prev is not the hash of record 3"})
+		kept(t, before, viewOf(t, f))
+	})
+	t.Run("the records that a deletion left", func(t *testing.T) {
+		chain := newLoginChain(5)
+		f := newFixture(t, nil)
+		for i := 1; i <= 5; i++ {
+			f.commitAt(monthsAgo(i), auditRecord("activity", uint64(i), ""), chain.rec(i))
+		}
+		f.update(func(tx *logdb.Tx) {
+			start := dbwire.ChainStart{First: 3, Prev: chain.sum(2), At: pruneNow}
+			if err := tx.Put(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin), dbwire.AppendChainStart(nil, start)); err != nil {
+				t.Error(err)
+			}
+		})
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.setSchema(older)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Schema: older})
+		kept(t, before, viewOf(t, f))
+	})
+	t.Run("the schema of the program", func(t *testing.T) {
+		chain := newLoginChain(3)
+		f := loginFixture(t, chain, monthsAgo(40), monthsAgo(30), monthsAgo(1))
+		f.setSchema(dbwire.TableVersion)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff})
+	})
+	t.Run("a store with no commit", func(t *testing.T) {
+		f := newFixture(t, nil)
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0)})
+	})
+}
+
+// TestCompactLoginBreaks checks the accepted breaks of the table chains: the walk goes on across a record that has one
+// for its hash, and not across one whose hash differs, or for another record, or whose number goes back, and the record
+// before an accepted gap is never the first that goes.
+func TestCompactLoginBreaks(t *testing.T) {
+	chain := newLoginChain(6)
+	broken := auditRecord("login", 4, hashText(chain.sum(1)))         // does not follow record 3
+	after := auditRecord("login", 5, hashText(sha256.Sum256(broken))) // follows it
+	build := func(t *testing.T, records [][]byte, marks []time.Time, breakAt uint64, breakHash [sha256.Size]byte) *fixture {
+		f := newFixture(t, nil)
+		for i, rec := range records {
+			f.commitAt(marks[i], auditRecord("activity", uint64(i+1), ""), rec)
+		}
+		f.update(func(tx *logdb.Tx) {
+			if err := tx.Put(dbwire.TableChains, dbwire.ChainBreakKey(dbwire.LogLogin, breakAt),
+				dbwire.AppendChainBreak(nil, dbwire.ChainBreak{Hash: breakHash, At: monthsAgo(1)})); err != nil {
+				t.Error(err)
+			}
+			if err := tx.AppendEvent(dbwire.AppendAccepted(nil, dbwire.Accepted{Log: dbwire.LogLogin, N: breakAt, Hash: breakHash})); err != nil {
+				t.Error(err)
+			}
+			if err := tx.AppendEvent(dbwire.AppendMark(nil, monthsAgo(1))); err != nil {
+				t.Error(err)
+			}
+		})
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	old := func(n int) []time.Time {
+		var marks []time.Time
+		for range n {
+			marks = append(marks, monthsAgo(40))
+		}
+		return marks
+	}
+	cutoff := pruneNow.AddDate(-1, 0, 0)
+	t.Run("an accepted break lets the walk go on", func(t *testing.T) {
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, after}, old(5), 4, sha256.Sum256(broken))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 5, Cutoff: cutoff})
+		v := viewOf(t, f)
+		// The row and the event of the acceptance stay: the record 4 is gone, and they are what is left of the break.
+		checkStart(t, v, 6, sha256.Sum256(after), pruneNow)
+		if v.breaks != 1 || !strings.Contains(v.shape, "B4") {
+			t.Errorf("the store is %q with %d breaks, want the acceptance of the break at 4 to stay", v.shape, v.breaks)
+		}
+	})
+	t.Run("a break for another hash does not", func(t *testing.T) {
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, chain.rec(5)}, old(5), 4, chain.sum(4))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff,
+			Stopped: "record 4: prev is not the hash of record 3"})
+		checkStart(t, viewOf(t, f), 3, chain.sum(2), pruneNow)
+	})
+	t.Run("a break for another record does not", func(t *testing.T) {
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, chain.rec(5)}, old(5), 5, sha256.Sum256(chain.rec(5)))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff,
+			Stopped: "record 4: prev is not the hash of record 3"})
+	})
+	t.Run("a number that goes back is not accepted", func(t *testing.T) {
+		again := chain.rec(2)
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), again}, old(4), 2, sha256.Sum256(again))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff,
+			Stopped: "record 2: the number does not follow that of record 3"})
+	})
+	t.Run("a gap that is accepted lets the walk go on", func(t *testing.T) {
+		// Record 4 is missing, and the break at record 5 is accepted.
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(6)}, old(5), 5, chain.sum(5))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 6, Cutoff: cutoff})
+		checkStart(t, viewOf(t, f), 7, chain.sum(6), pruneNow)
+	})
+	t.Run("the record before an accepted gap stays", func(t *testing.T) {
+		marks := append(old(3), monthsAgo(1), monthsAgo(1))
+		f := build(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(6)}, marks, 5, chain.sum(5))
+		before := viewOf(t, f)
+		// The records 1 to 3 are old and the record 5 is not: the first that remains would be 5, which has no record 4 before it.
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff})
+		after := viewOf(t, f)
+		checkStart(t, after, 3, chain.sum(2), pruneNow)
+		kept(t, before, after, "L1", "L2")
+	})
+}
+
+// TestCompactLoginUnreadableRows checks that a row of the table chains that cannot be read stops the walk: nothing is
+// deleted.
+func TestCompactLoginUnreadableRows(t *testing.T) {
+	chain := newLoginChain(3)
+	for _, tt := range []struct {
+		name       string
+		key, value []byte
+		stopped    string
+	}{
+		{"a chain start", dbwire.ChainStartKey(dbwire.LogLogin), []byte("short"), "the table chains: the chain start cannot be read"},
+		{"a break", dbwire.ChainBreakKey(dbwire.LogLogin, 2), []byte("short"),
+			"the table chains: a row of an accepted break cannot be read"},
+		{"a break of record 0", dbwire.ChainBreakKey(dbwire.LogLogin, 0), dbwire.AppendChainBreak(nil, dbwire.ChainBreak{At: pruneNow}),
+			"the table chains: a row of an accepted break cannot be read"},
+		{"a break with a key that is too long", append(dbwire.ChainBreakKey(dbwire.LogLogin, 2), 0),
+			dbwire.AppendChainBreak(nil, dbwire.ChainBreak{At: pruneNow}), "the table chains: a row of an accepted break cannot be read"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, nil)
+			for i := 1; i <= 3; i++ {
+				f.commitAt(monthsAgo(40), chain.rec(i))
+			}
+			f.update(func(tx *logdb.Tx) {
+				if err := tx.Put(dbwire.TableChains, tt.key, tt.value); err != nil {
+					t.Error(err)
+				}
+			})
+			f.anchor()
+			if err := f.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := viewOf(t, f)
+			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0), Stopped: tt.stopped})
+			kept(t, before, viewOf(t, f))
+		})
+	}
+}
+
+// TestCompactLoginInterrupted checks that a deletion that is stopped between its commit and the end of its compaction
+// leaves a store that the next call finishes, with the start that the first one wrote and no second one: the hook of the
+// engine fails at the compaction, and the store is copied as a crash would leave it at each point.
+func TestCompactLoginInterrupted(t *testing.T) {
+	chain := newLoginChain(6)
+	marks := []time.Time{monthsAgo(40), monthsAgo(30), monthsAgo(13), monthsAgo(11), monthsAgo(1), pruneNow}
+	full := loginFixture(t, chain, marks...)
+	beforeAll := viewOf(t, full)
+	compactLogin(t, full, pruneNow)
+	want := viewOf(t, full)
+	if want.shape != "A1 M A2 M A3 M A4 L4 M A5 L5 M A6 L6 M A99 M D4 M" {
+		t.Fatalf("the store after the deletion is %q", want.shape)
+	}
+
+	// finish calls CompactLogin on the store f, which a deletion has left in some state, and checks that it ends as full.
+	finish := func(t *testing.T, f *fixture) {
+		t.Helper()
+		second := compactLogin(t, f, pruneNow)
+		if second.First != 0 && (second.First != 1 || second.Last != 3) {
+			t.Errorf("the second call dropped the records %d to %d, want 1 to 3 or none", second.First, second.Last)
+		}
+		got := viewOf(t, f)
+		if got.shape != want.shape || !maps.Equal(numbered(got.events), numbered(want.events)) {
+			t.Errorf("after the second call the store is %q, want %q", got.shape, want.shape)
+		}
+		checkStart(t, got, 4, chain.sum(3), pruneNow)
+		checkRows(t, beforeAll, got)
+		if third := compactLogin(t, f, pruneNow); third.First != 0 {
+			t.Errorf("a third call dropped the records %d to %d", third.First, third.Last)
+		}
+	}
+
+	hookErr := errors.New("hook failed")
+	t.Run("the compaction fails", func(t *testing.T) {
+		f := loginFixture(t, chain, marks...)
+		o := f.opts
+		o.Log.Hook = func(p string) error {
+			if p == "compact:base" {
+				return hookErr
+			}
+			return nil
+		}
+		err := maintain(t.Context(), f.fs, "data", o, func(m *logdb.Maintenance) error {
+			_, err := CompactLogin(t.Context(), m, pruneNow)
+			return err
+		})
+		if !errors.Is(err, hookErr) {
+			t.Fatalf("CompactLogin() = %v, want the error of the hook", err)
+		}
+		// The start and the event are committed, and no record is gone.
+		v := viewOf(t, f)
+		if want := "A1 L1 M A2 L2 M A3 L3 M A4 L4 M A5 L5 M A6 L6 M A99 M D4 M"; v.shape != want {
+			t.Errorf("the store is %q, want %q", v.shape, want)
+		}
+		checkStart(t, v, 4, chain.sum(3), pruneNow)
+		finish(t, f)
+	})
+
+	t.Run("a crash at each point", func(t *testing.T) {
+		f := loginFixture(t, chain, marks...)
+		type image struct {
+			point string
+			world *simfs.FS
+			model string
+		}
+		var images []image
+		o := f.opts
+		o.Log.Hook = func(p string) error {
+			for _, m := range []simfs.Model{keepAll(f.fs), loseAll} {
+				images = append(images, image{p, f.fs.Crash(m), m.Name})
+			}
+			return nil
+		}
+		if err := maintain(t.Context(), f.fs, "data", o, func(m *logdb.Maintenance) error {
+			_, err := CompactLogin(t.Context(), m, pruneNow)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		points := map[string]bool{}
+		for _, im := range images {
+			points[im.point] = true
+		}
+		for _, p := range []string{"update:written", "update:synced", "compact:base", "compact:base-end", "compact:checkpoint",
+			"compact:delete"} {
+			if !points[p] {
+				t.Errorf("the engine did not call the hook %q: %v", p, slices.Sorted(maps.Keys(points)))
+			}
+		}
+		for _, im := range images {
+			t.Run(im.point+" "+im.model, func(t *testing.T) {
+				finish(t, &fixture{t: t, fs: im.world, opts: f.opts, logs: f.logs, clock: f.clock})
+			})
+		}
+	})
+}
+
+// TestCompactLoginFailure checks that an error of the commit and one of the compaction, which stop the store, leave the
+// mark of a failed sync, as Maintain does for any maintenance, and that nothing is written after the failure.
+func TestCompactLoginFailure(t *testing.T) {
+	chain := newLoginChain(4)
+	marks := []time.Time{monthsAgo(40), monthsAgo(30), monthsAgo(1), pruneNow}
+	inGen := func(gen int) func(simfs.Op) bool {
+		return func(op simfs.Op) bool {
+			return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, fmt.Sprintf("logdb/log/%016x-", gen))
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		gen  int // the generation whose sync fails
+	}{
+		{"the sync of the commit", 1},
+		{"the sync of the compaction", 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := loginFixture(t, chain, marks...)
+			var after map[string]string
+			err := maintain(t.Context(), f.fs, "data", f.opts, func(m *logdb.Maintenance) error {
+				f.fs.Inject(simfs.Fault{Match: inGen(tt.gen), Err: syscall.EIO, Times: 1})
+				_, err := CompactLogin(t.Context(), m, pruneNow)
+				after = filesOf(f.fs, "logdb")
+				return err
+			})
+			if !errors.Is(err, logdb.ErrFailed) || !errors.Is(err, syscall.EIO) {
+				t.Fatalf("Maintain() = %v, want an error that wraps ErrFailed and EIO", err)
+			}
+			if text, ok := worldFile(f.fs, "stopped"); !ok || !strings.Contains(text, "input/output error") {
+				t.Errorf("the mark is %q (%v), want the mark of the failed sync", text, ok)
+			}
+			if got := filesOf(f.fs, "logdb"); !maps.Equal(got, after) {
+				t.Errorf("the engine wrote after the failure:\n%v\nwas\n%v", slicesOf(got), slicesOf(after))
+			}
+			// The directory is refused until the machine has restarted.
+			called, err := maintainCalled(t, f, f.opts)
+			if called || !errors.Is(err, ErrNotRestarted) {
+				t.Errorf("maintain after the failure: called %v, %v, want ErrNotRestarted", called, err)
+			}
+		})
+	}
+
+	t.Run("an error of the commit that is no sync", func(t *testing.T) {
+		hookErr := errors.New("hook failed")
+		f := loginFixture(t, chain, marks...)
+		before := viewOf(t, f)
+		o := f.opts
+		o.Log.Hook = func(p string) error {
+			if p == "update:objects" {
+				return hookErr
+			}
+			return nil
+		}
+		err := maintain(t.Context(), f.fs, "data", o, func(m *logdb.Maintenance) error {
+			_, err := CompactLogin(t.Context(), m, pruneNow)
+			return err
+		})
+		if !errors.Is(err, hookErr) {
+			t.Fatalf("CompactLogin() = %v", err)
+		}
+		if _, ok := worldFile(f.fs, "stopped"); ok {
+			t.Error("the error that is no failed sync left a mark")
+		}
+		after := viewOf(t, f)
+		if after.shape != before.shape || after.start != nil {
+			t.Errorf("the store is %q with the start %+v, was %q", after.shape, after.start, before.shape)
+		}
+	})
+}
+
+// TestCompactLoginLeftover checks that the records that an earlier deletion left, which are before its chain start, are
+// dropped, whatever their age, by a call that has nothing new to delete; that the walk goes on from the start; and that a
+// record before the start that comes after the first that remains is not dropped.
+// wrong32 is a hash that no record has.
+var wrong32 = sha256.Sum256([]byte("another record"))
+
+func TestCompactLoginLeftover(t *testing.T) {
+	chain := newLoginChain(5)
+	mkWith := func(t *testing.T, marks []time.Time, startPrev [sha256.Size]byte, tail ...[]byte) *fixture {
+		f := newFixture(t, nil)
+		for i, at := range marks {
+			f.commitAt(at, auditRecord("activity", uint64(i+1), ""), chain.rec(i+1))
+		}
+		for _, rec := range tail {
+			f.commitAt(monthsAgo(1), rec)
+		}
+		f.update(func(tx *logdb.Tx) {
+			start := dbwire.ChainStart{First: 3, Prev: startPrev, At: pruneNow}
+			if err := tx.Put(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin), dbwire.AppendChainStart(nil, start)); err != nil {
+				t.Error(err)
+			}
+		})
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	mk := func(t *testing.T, marks []time.Time, tail ...[]byte) *fixture {
+		return mkWith(t, marks, chain.sum(2), tail...)
+	}
+	old := []time.Time{monthsAgo(40), monthsAgo(39), monthsAgo(38), monthsAgo(37), monthsAgo(36)}
+	young := []time.Time{monthsAgo(5), monthsAgo(4), monthsAgo(3), monthsAgo(2), monthsAgo(1)}
+	cutoff := pruneNow.AddDate(-1, 0, 0)
+	t.Run("a new deletion goes on from the start", func(t *testing.T) {
+		marks := slices.Clone(old)
+		marks[3], marks[4] = monthsAgo(3), monthsAgo(2)
+		f := mk(t, marks)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: cutoff})
+		after := viewOf(t, f)
+		checkStart(t, after, 4, chain.sum(3), pruneNow)
+		kept(t, before, after, "L1", "L2", "L3")
+		if want := "A1 M A2 M A3 M A4 L4 M A5 L5 M A99 M D4 M"; after.shape != want {
+			t.Errorf("the store is %q, want %q", after.shape, want)
+		}
+	})
+	t.Run("the first record that remains is not that of the start", func(t *testing.T) {
+		f := mkWith(t, old, wrong32)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff,
+			Stopped: "record 3: prev is not the hash that the chain start has of record 2"})
+		after := viewOf(t, f)
+		kept(t, before, after, "L1", "L2")
+		checkStart(t, after, 3, wrong32, pruneNow)
+	})
+	t.Run("nothing new to delete", func(t *testing.T) {
+		f := mk(t, young)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff})
+		after := viewOf(t, f)
+		kept(t, before, after, "L1", "L2")
+		checkStart(t, after, 3, chain.sum(2), pruneNow)
+		if len(after.events) != len(before.events)-2 {
+			t.Errorf("the store has %d events, want %d: no deletion and no mark are added", len(after.events), len(before.events)-2)
+		}
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{})
+	})
+	t.Run("a record before the start after the first that remains", func(t *testing.T) {
+		f := mk(t, young, chain.rec(2)) // a second record 2, after the record 5
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff})
+		after := viewOf(t, f)
+		kept(t, before, after, "L1", "L2")
+		if want := "A1 M A2 M A3 L3 M A4 L4 M A5 L5 M L2 M A99 M"; after.shape != want {
+			t.Errorf("the store is %q, want %q: the second record 2 must be there", after.shape, want)
+		}
+	})
+	t.Run("and the walk stops at it", func(t *testing.T) {
+		f := mk(t, old, chain.rec(2))
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 4, Cutoff: cutoff,
+			Stopped: "record 2: the number does not follow that of record 5"})
+		after := viewOf(t, f)
+		kept(t, before, after, "L1", "L2", "L3", "L4")
+		checkStart(t, after, 5, chain.sum(4), pruneNow)
+		if want := "A1 M A2 M A3 M A4 M A5 L5 M L2 M A99 M D5 M"; after.shape != want {
+			t.Errorf("the store is %q, want %q", after.shape, want)
+		}
+	})
+}

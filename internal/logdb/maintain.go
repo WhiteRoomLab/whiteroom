@@ -52,6 +52,18 @@ func (m *Maintenance) View(ctx context.Context, f func(*Tx) error) error {
 	return m.db.View(ctx, f)
 }
 
+// Events is DB.Events of the store: the events that Views see now, in order.
+func (m *Maintenance) Events(ctx context.Context, fn func(Event) bool) error {
+	return m.db.Events(ctx, fn)
+}
+
+// Update is DB.Update of the store: it takes the turn that Compact and CollectGarbage take, waiting for it until ctx ends,
+// and fails as DB.Update does after a failed sync. The commit is durable when it returns, and the store has it in what a
+// later Compact keeps.
+func (m *Maintenance) Update(ctx context.Context, f func(*Tx) error) error {
+	return m.db.Update(ctx, f)
+}
+
 // Compact writes the state, as r changes it, as the base of a new generation, goes on in it, and removes the old one.
 // A crash leaves the old generation or the new one, never a mix. It waits for a CollectGarbage that runs until ctx
 // ends. An error before the new generation is complete leaves the store in the old one, and usable unless a sync has

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 )
 
@@ -25,8 +27,29 @@ Flags:
 const compactUsage = `Usage: whiteroom-db compact [flags]
 
 Write the state of the data directory as a new generation of its log, and remove
-the old one. Nothing is dropped: the tables, the objects and the events, with their
-numbers, are those that the directory had.
+the old one. It drops the login records older than one year, and nothing else: the
+tables, the objects and the other events, with their numbers, are those that the
+directory had.
+
+A login record is as old as the mark that the daemon wrote at the end of its
+commit. The cutoff is one calendar year before the earlier of the time of this
+command and the newest mark. The records go from the oldest on, in the order of
+their numbers, and the command stops at the first that is not older than the cutoff
+or has no mark. It first commits the new start of the chain of the login records, so
+that "whiteroom doctor" checks the history from the first record that remains. The
+activity log is never dropped.
+
+The command also stops at a login record that does not follow the one before it, or
+at an event that is no record: it keeps that record and the one before it, says
+where on the standard output, and exits 0. "whiteroom doctor" tells what is wrong.
+
+On the standard output it prints "compacted DATA", and, if it dropped login
+records, "deleted the login records A to B, from before TIME" on a line of its own.
+
+A data directory of an older table schema than this program's is compacted, and
+no login record is dropped from it: the command says so on the standard output.
+The first writer that connects through "whiteroom-db serve" (such as "whiteroom
+serve admin") upgrades it; compact again then.
 
 No daemon may have the data directory open: stop "whiteroom-db serve" on it first.
 If one has, the command waits for about two seconds, and then fails without
@@ -138,13 +161,26 @@ func runCompact(ctx context.Context, args []string, e env) int {
 	if !ok {
 		return code
 	}
-	err := dbserver.Maintain(ctx, data, maintainOptions(e, "whiteroom-db compact"), func(m *logdb.Maintenance) error {
-		return m.Compact(ctx, logdb.Rewrite{})
+	var deleted dbserver.Deleted
+	err := dbserver.Maintain(ctx, data, maintainOptions(e, "whiteroom-db compact"), func(m *logdb.Maintenance) (err error) {
+		deleted, err = dbserver.CompactLogin(ctx, m, time.Now())
+		return err
 	})
 	if err != nil {
 		return failed(ctx, e, "whiteroom-db compact", err)
 	}
 	printf(e.stdout, "compacted %s\n", data)
+	if deleted.Schema != 0 {
+		printf(e.stdout, "kept the login records older than one year: the store has the table schema %d, and the first writer that "+
+			"connects through whiteroom-db serve (whiteroom serve admin, for one) upgrades it to %d\n", deleted.Schema, dbwire.TableVersion)
+	}
+	if deleted.First != 0 {
+		printf(e.stdout, "deleted the login records %d to %d, from before %s\n", deleted.First, deleted.Last,
+			deleted.Cutoff.UTC().Format(time.RFC3339))
+	}
+	if deleted.Stopped != "" {
+		printf(e.stdout, "the deletion of login records stopped at %s; check the store with whiteroom doctor\n", deleted.Stopped)
+	}
 	return 0
 }
 
