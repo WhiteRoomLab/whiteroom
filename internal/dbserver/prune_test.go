@@ -869,6 +869,44 @@ func TestCompactLoginBreaks(t *testing.T) {
 		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "record 2: the first record of a log is number 1"})
 		kept(t, before, viewOf(t, f))
 	})
+	t.Run("the cut that lands at an accepted break goes back: the record before it stays", func(t *testing.T) {
+		// The record 4 does not have the hash of the record 3, and a break at it is accepted: it cannot be the first that
+		// remains, as VerifyAudit does not honor a break at the chain start.
+		broken5 := auditRecord("login", 5, hashText(chain.sum(1)))
+		six := auditRecord("login", 6, hashText(sha256.Sum256(broken5)))
+		breakAt5 := putRow(dbwire.TableChains, dbwire.ChainBreakKey(dbwire.LogLogin, 5),
+			dbwire.AppendChainBreak(nil, dbwire.ChainBreak{Hash: sha256.Sum256(broken5), At: monthsAgo(1)}))
+		for _, tt := range []struct {
+			name    string
+			records [][]byte
+			marks   []time.Time
+			steps   []func(t *testing.T, f *fixture)
+			want    Deleted
+			first   uint64 // the first record that remains, and the hash of the record before it
+			prev    [sha256.Size]byte
+		}{
+			{"at it", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, after}, append(old(3), monthsAgo(1), monthsAgo(1)), nil,
+				Deleted{First: 1, Last: 2, Cutoff: cutoff}, 3, chain.sum(2)},
+			{"just after it", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, after}, append(old(4), monthsAgo(1)), nil,
+				Deleted{First: 1, Last: 4, Cutoff: cutoff}, 5, sha256.Sum256(broken)},
+			{"after two of them in a row", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), broken, broken5, six},
+				append(old(4), monthsAgo(1), monthsAgo(1)), []func(t *testing.T, f *fixture){breakAt5},
+				Deleted{First: 1, Last: 2, Cutoff: cutoff}, 3, chain.sum(2)},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				f := build(t, tt.records, tt.marks, 4, sha256.Sum256(broken), tt.steps...)
+				before := viewOf(t, f)
+				checkDeleted(t, compactLogin(t, f, pruneNow), tt.want)
+				after := viewOf(t, f)
+				var gone []string
+				for n := uint64(1); n < tt.first; n++ {
+					gone = append(gone, fmt.Sprintf("L%d", n))
+				}
+				kept(t, before, after, gone...)
+				checkStart(t, after, tt.first, tt.prev, pruneNow)
+			})
+		}
+	})
 	t.Run("a break at the first record that remains is not accepted", func(t *testing.T) {
 		// The chain starts at the record 3, and the records 1 and 2 are still there; the record 3 does not have the hash that
 		// the chain start has of the record 2, and a break at it is accepted.
@@ -1320,6 +1358,18 @@ func TestCompactLoginLeftoverEvidence(t *testing.T) {
 			records: [][]byte{chain.rec(1), chain.rec(2), []byte("junk"), chain.rec(3), chain.rec(4)},
 			first:   3,
 			stopped: "event 8: it is not an audit record",
+		},
+		{
+			name:    "the first record is record 1 and has a prev",
+			records: [][]byte{auditRecord("login", 1, hashText(wrong32)), chain.rec(2), chain.rec(3), chain.rec(4)},
+			first:   3,
+			stopped: "record 1: the first record has the hash of one before it",
+		},
+		{
+			name:    "the first record is not record 1 and has no prev",
+			records: [][]byte{auditRecord("login", 2, ""), chain.rec(3), chain.rec(4), chain.rec(5)},
+			first:   4,
+			stopped: "record 2: the record has no hash of the one before it, which only the first record has not",
 		},
 		{
 			name:    "an event that is no record, with no record after it",

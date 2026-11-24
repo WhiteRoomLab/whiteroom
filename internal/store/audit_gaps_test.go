@@ -182,3 +182,34 @@ func TestAuditAcceptedBreakDoesNotExcuseLostPrefix(t *testing.T) {
 		t.Errorf("VerifyAudit() after the loss of activity 1 to 3 = %v, notes %q", err, notes)
 	}
 }
+
+// TestAuditCutAtAcceptedBreak checks that a deletion whose cut would land at a record that the walk took through an accepted
+// break keeps the record before it: a break at the first record that remains is not honored, and the store would fail
+// VerifyAudit, with nothing that can repair it.
+func TestAuditCutAtAcceptedBreak(t *testing.T) {
+	// Login records 1 and 2 are old, 3 (the break) and 4 are young.
+	s, dir, _ := agedStore(t, []int{40, 39, 5, 4, 0}, []bool{true, true, true, true, false})
+	e := loginEventOf(t, s, 2)
+	data := changedRecord(t, e.Data, func(r *audit.Record) { r.Login = "forged" })
+	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{e.Number: data}, nil, nil))
+	if err := s.VerifyAudit(t.Context(), nil); err == nil {
+		t.Fatal("VerifyAudit() passes before the acceptance: there is no break")
+	}
+	s = closeAcceptReopen(t, s, dir, audit.LoginLog, 3)
+	checkVerify(t, s, dir, nil, nil, "", breakNote("login", 3))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Only the record 1 goes: the record 2 is the record before the break, and the chain starts at it.
+	if d, err := compactLoginOf(t, dir, chainTime, nil); err != nil || d.First != 1 || d.Last != 1 || d.Stopped != "" {
+		t.Fatalf("CompactLogin() = %+v, %v, want the record 1", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(2), breakNote("login", 3))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := compactLoginOf(t, dir, chainTime, nil); err != nil || d.First != 0 || d.Stopped != "" {
+		t.Errorf("the second CompactLogin() = %+v, %v, want nothing", d, err)
+	}
+}

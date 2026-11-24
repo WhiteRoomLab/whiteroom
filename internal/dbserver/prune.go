@@ -106,6 +106,7 @@ type loginRecord struct {
 	n, event uint64
 	sum      [sha256.Size]byte
 	at       time.Time // the time of the mark of its commit; zero if the commit has none
+	honored  bool      // the walk took it through a break that is accepted for it
 }
 
 // loginPass is the pass of CompactLogin over the events.
@@ -281,21 +282,30 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 			return
 		}
 	}
-	if why := p.follow(n, prev); why != "" && !p.accepted(n, sum) {
+	why := p.follow(n, prev)
+	honored := why != "" && p.accepted(n, sum)
+	if why != "" && !honored {
 		p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
 		return
 	}
 	if p.group == len(p.recs) {
 		p.seq = e.Seq
 	}
-	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum})
+	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum, honored: honored})
 }
 
 // leftFollow returns why the record n with prev, whose stored bytes have the hash sum, does not follow the records before
 // the chain start that were met, "" if it does: a break that is accepted for it lets it go, as VerifyAudit has it. The first
-// of them is not checked: the record before it was deleted.
+// of them is checked as VerifyAudit checks the first record that it reads: it has no prev if it is record 1, and has one
+// if it is not.
 func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) string {
 	if len(p.left) == 0 {
+		switch {
+		case n == 1 && prev != "":
+			return "the first record has the hash of one before it"
+		case n != 1 && prev == "":
+			return "the record has no hash of the one before it, which only the first record has not"
+		}
 		return ""
 	}
 	last := p.left[len(p.left)-1]
@@ -432,6 +442,11 @@ func (p *loginPass) plan(now time.Time) deletion {
 		eligible--
 	}
 	cut := min(old, eligible)
+	// A record that the walk took through a break cannot be the first that remains, as VerifyAudit does not honor a break at
+	// the chain start: the record before it stays, as at evidence.
+	for cut > 0 && cut < len(p.recs) && p.recs[cut].honored {
+		cut--
+	}
 	if cut > 0 {
 		d.cut = cut
 		d.cutoff = cutoff

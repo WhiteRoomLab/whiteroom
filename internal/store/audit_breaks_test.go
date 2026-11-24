@@ -68,6 +68,16 @@ func TestAuditBreakRule(t *testing.T) {
 		s, dir, _ := agedStore(t, []int{40, 39, 38, 3, 2, 1, 0}, []bool{true, true, true, true, true, true, false})
 		return s, dir
 	}
+	// The records 1 and 2 are old, and the records 3 and 4 are young; and the records 1 to 3 are old, and the records 4 and 5 are
+	// young: the cut of a deletion lands at the record 3 and just after it.
+	twoOld := func(t *testing.T) (*Store, string) {
+		s, dir, _ := agedStore(t, []int{40, 39, 5, 4, 0}, []bool{true, true, true, true, false})
+		return s, dir
+	}
+	threeOldOfFive := func(t *testing.T) (*Store, string) {
+		s, dir, _ := agedStore(t, []int{40, 39, 38, 5, 4, 0}, []bool{true, true, true, true, true, false})
+		return s, dir
+	}
 	deleteThree := func(t *testing.T, s *Store, dir string) *Store {
 		t.Helper()
 		if err := s.Close(); err != nil {
@@ -116,6 +126,9 @@ func TestAuditBreakRule(t *testing.T) {
 		verify string // the error of VerifyAudit after that, up to the number of the event, "" if it passes
 		// stop is where the walk of compact stops, as Deleted.Stopped says it (its start), "" if it does not.
 		stop string
+		// last is the last record that compact drops if the walk does not stop (6 if 0), and remains the first login record that
+		// is left then (0: not looked at). A deletion does not leave a break at the start of the chain, which is not honored.
+		last, remains uint64
 	}{
 		{name: "prev rewritten, the number follows", log: audit.LoginLog, build: allOld, n: 4,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
@@ -136,6 +149,20 @@ func TestAuditBreakRule(t *testing.T) {
 				return rewriteRecord(t, s, dir, audit.LoginLog, 3, loginChange)
 			},
 			after: replay4, verify: "the number does not follow that of record 6", stop: "record 4: the number does not follow that of record 6"},
+		{name: "the cut of a deletion lands at the record of an accepted break", log: audit.LoginLog, build: twoOld, n: 3, last: 1, remains: 2,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, s, dir, audit.LoginLog, 2, loginChange)
+			}},
+		{name: "the cut of a deletion lands at the record of an accepted break, with the records before it old", log: audit.LoginLog,
+			build: threeOld, n: 4, last: 2, remains: 3,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, s, dir, audit.LoginLog, 3, loginChange)
+			}},
+		{name: "the cut of a deletion lands just after the record of an accepted break", log: audit.LoginLog, build: threeOldOfFive, n: 3,
+			last: 3, remains: 4,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, s, dir, audit.LoginLog, 2, loginChange)
+			}},
 		{name: "an accepted record that later is the first that is read", log: audit.LoginLog, build: allOld, n: 4,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, s, dir, audit.LoginLog, 3, loginChange)
@@ -225,18 +252,25 @@ func TestAuditBreakRule(t *testing.T) {
 			}
 
 			// The walk of compact: it passes the records, or stops at the one that VerifyAudit fails at.
+			last := tt.last
+			if last == 0 {
+				last = 6
+			}
 			d, err := compactLoginOf(t, dir, chainTime, nil)
 			switch {
 			case err != nil:
 				t.Fatalf("CompactLogin() = %+v, %v", d, err)
-			case tt.stop == "" && (d.Stopped != "" || d.First != 1 || d.Last != 6):
-				t.Errorf("CompactLogin() = %+v, want the records 1 to 6, with no stop", d)
+			case tt.stop == "" && (d.Stopped != "" || d.First != 1 || d.Last != last):
+				t.Errorf("CompactLogin() = %+v, want the records 1 to %d, with no stop", d, last)
 			case tt.stop != "" && !strings.HasPrefix(d.Stopped, tt.stop):
 				t.Errorf("CompactLogin() = %+v, want the stop %q", d, tt.stop)
 			}
 			s = reopenLog(t, dir, logdb.Options{})
 			if again := s.VerifyAudit(t.Context(), nil); (verr == nil) != (again == nil) {
 				t.Errorf("VerifyAudit() = %v before whiteroom-db compact and %v after it", verr, again)
+			}
+			if got := recordsOf(t, s, audit.LoginLog); tt.remains != 0 && (len(got) == 0 || !strings.HasPrefix(got[0], fmt.Sprintf("login %d ", tt.remains))) {
+				t.Errorf("the login records after compact are %v, want the first to be record %d", got, tt.remains)
 			}
 		})
 	}
