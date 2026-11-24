@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -112,22 +113,24 @@ type segMeta struct {
 
 // Salvager is the store while Salvage runs.
 type Salvager struct {
-	fsys vfs.FS
-	o    Options
-	db   *DB // only for the files of the objects
-	plan RepairPlan
-	st   *state
-	kept []keptRec
-	meta map[segNum]segMeta
+	fsys    vfs.FS
+	o       Options
+	db      *DB // the files of the objects, and what Apply writes with
+	plan    RepairPlan
+	st      *state
+	kept    []keptRec
+	meta    map[segNum]segMeta
+	applied bool
 }
 
 // Salvage waits, until ctx ends, for the other processes that have the store in fsys open to close it, and keeps those
 // that open it from then on out, as Inspect does. Then it reads what can be read of the log, the checkpoint and the
 // objects, calls f with what a repair would keep and drop, and releases the locks; f must not use the Salvager after it
-// returns. It never opens the store as its writer and changes no file, and of o it only checks the values. Before f it
-// returns the error of a file of a newer version, of a name in log/ that is not a segment's, and of a store whose state
-// cannot be made without guessing, and of a head of a newer version. A missing or damaged head is no error: it is a
-// problem in the plan, and a repair writes it again.
+// returns. It never opens the store as its writer, and changes no file unless f calls Apply, which uses the
+// SegmentBytes and the Hook of o; of the rest of o Salvage only checks the values. Before f it returns the error of a
+// file of a newer version, of a name in log/ that is not a segment's, and of a store whose state cannot be made without
+// guessing, and of a head of a newer version. A missing or damaged head is no error: it is a problem in the plan, and
+// a repair writes it again.
 func Salvage(ctx context.Context, fsys vfs.FS, o Options, f func(*Salvager) error) error {
 	if err := o.fill(); err != nil {
 		return err
@@ -142,7 +145,7 @@ func Salvage(ctx context.Context, fsys vfs.FS, o Options, f func(*Salvager) erro
 	if err != nil {
 		return err
 	}
-	db := &DB{fsys: fsys, handles: newHandles(fsys)}
+	db := &DB{fsys: fsys, o: o, handles: newHandles(fsys)}
 	released := false
 	release := func() error {
 		released = true
@@ -216,6 +219,23 @@ func (s *Salvager) Plan() RepairPlan {
 // Events calls fn with each event that a repair keeps, in order, until it returns false: those of every record of the
 // kept generation that can be read, up to the last commit of the kept state. It reads them from the log again.
 func (s *Salvager) Events(ctx context.Context, fn func(Event) bool) error {
+	err := s.keptEvents(ctx, func(p *op) error {
+		if !fn(Event{Number: p.number, Seq: uint64(p.seq), Data: clone(p.value)}) {
+			return errStopEvents
+		}
+		return nil
+	})
+	if errors.Is(err, errStopEvents) {
+		return nil
+	}
+	return err
+}
+
+var errStopEvents = errors.New("stop")
+
+// keptEvents calls fn with the op of each event that a repair keeps, in order, until it returns an error. The data of
+// an op is in a buffer of its segment, which stays unchanged as long as fn keeps the op.
+func (s *Salvager) keptEvents(ctx context.Context, fn func(p *op) error) error {
 	var b []byte
 	cur := segNum(0)
 	for _, k := range s.kept {
@@ -239,8 +259,10 @@ func (s *Salvager) Events(ctx context.Context, fn func(Event) bool) error {
 			return &CorruptError{Path: p, Offset: int64(k.off), Reason: reason}
 		}
 		for i := range rec.ops {
-			if o := &rec.ops[i]; o.code == opEvent && !fn(Event{Number: o.number, Seq: uint64(o.seq), Data: clone(o.value)}) {
-				return nil
+			if o := &rec.ops[i]; o.code == opEvent {
+				if err := fn(o); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -253,6 +275,207 @@ func (s *Salvager) View(ctx context.Context, f func(*Tx) error) error {
 		return err
 	}
 	return (&Tx{db: s.db, st: s.st}).run(f)
+}
+
+// ErrTruncation is wrapped by the error of Apply when the plan drops commits that can be read, and Truncate is not set.
+var ErrTruncation = errors.New("the repair drops commits that can be read")
+
+type RepairPut struct {
+	Table      uint32
+	Key, Value []byte
+}
+
+// RepairOptions says what Apply does besides keeping what the plan keeps.
+type RepairOptions struct {
+	// Truncate allows dropping the commits of the plan's Truncation.
+	Truncate bool
+	// Rewrite.Event may drop or change the events that are kept, as Compact's does. The plan decides which rows and
+	// objects are kept, so Value and Object must be nil.
+	Rewrite Rewrite
+	// Puts are put in the new state, replacing the rows with their table and key; of two with the same, the last stays.
+	Puts []RepairPut
+	// Events are appended after the kept ones: they are numbered from the next event number of the kept state on, and
+	// have the sequence number of its last commit.
+	Events [][]byte
+}
+
+// RepairResult counts what Apply wrote and removed: the segments are those of every generation, the kept one included.
+type RepairResult struct {
+	Generation, Seq uint64 // of the new generation
+	Records         uint64 // that it wrote, the end of the base included
+	Events          uint64 // in the new state, those that Apply added included
+	Dropped         int    // objects of the plan that the new state does not have
+	Removed         GCResult
+}
+
+// Apply writes what the plan keeps, with the rows and the events of r, as the base of a new generation, as a compaction
+// does, goes on in it, and removes the generation that was kept, the segments of the others, the files of the objects
+// that the new state does not have and the temporary files. A crash, or an error before the end of the base, leaves the
+// store as it was; after it, repaired. It writes head again if it was missing or damaged, and the hooks of a compaction
+// fire. As Compact's, the error of a sync and of writing the end of the base wraps ErrFailed; any other error after the
+// end of the base leaves the repaired store with files that CollectGarbage or the next repair removes.
+//
+// If the plan has a Truncation and r.Truncate is not set, Apply changes nothing, and fails with an error that wraps
+// ErrTruncation. Once it has begun to write it cannot be called again, and the Salvager must not be used.
+func (s *Salvager) Apply(ctx context.Context, r RepairOptions) (RepairResult, error) {
+	var res RepairResult
+	if s.applied {
+		return res, errors.New("a repair has been applied already")
+	}
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	if r.Rewrite.Value != nil || r.Rewrite.Object != nil {
+		return res, errors.New("a repair keeps the rows and the objects of its plan: Rewrite has only Event")
+	}
+	if t := s.plan.Truncation; t != nil && !r.Truncate {
+		return res, truncationError(t)
+	}
+	puts, added, err := s.extras(r)
+	if err != nil {
+		return res, err
+	}
+	db := s.db
+	if db.head, err = s.openHead(); err != nil {
+		return res, err
+	}
+	defer func() {
+		if db.head.f != nil {
+			_ = db.head.f.Close()
+		}
+	}()
+	s.applied = true
+	lost := make(map[[32]byte]bool, len(s.plan.Objects))
+	for _, o := range s.plan.Objects {
+		lost[o.Hash] = true
+	}
+	res.Dropped = len(s.plan.Objects)
+	c := db.newCompaction(s.st, Rewrite{Event: r.Rewrite.Event, Object: func(h [32]byte) bool { return !lost[h] }})
+	c.events, c.puts, c.added = s.keptEvents, puts, added
+	n, err := db.removeOthers(s.st.gen)
+	res.Removed.Segments = n
+	if err != nil {
+		return res, err
+	}
+	if err := c.commit(ctx); err != nil {
+		return res, err
+	}
+	res.Generation, res.Seq, res.Records, res.Events = uint64(c.st.gen), uint64(c.st.seq), c.part+1, c.st.events
+	if err := s.makeHead(); err != nil {
+		return res, err
+	}
+	err = c.finish()
+	res.Removed.Segments += c.removed
+	if err != nil {
+		return res, err
+	}
+	st := db.cur.Load()
+	if err := db.gcObjects(ctx, st, &res.Removed); err != nil {
+		return res, err
+	}
+	return res, db.gcCheckpointTemps(ctx, &res.Removed)
+}
+
+func truncationError(t *Truncation) error {
+	commits := fmt.Sprintf("the commits %d to %d come", t.FirstSeq, t.LastSeq)
+	if t.FirstSeq == t.LastSeq {
+		commits = fmt.Sprintf("the commit %d comes", t.FirstSeq)
+	}
+	return fmt.Errorf("%w: %s after the damage at %s", ErrTruncation, commits, t.Damage)
+}
+
+// extras checks the rows and the events that r adds to the kept state, and returns them as the ops of the base: the
+// puts in the order of their tables and keys, and the events with their numbers.
+func (s *Salvager) extras(r RepairOptions) (puts, added []op, err error) {
+	fits := func(what string, i int, p op) error {
+		if len(appendBase(nil, s.st.seq, math.MaxUint64, []op{p})) > maxBody {
+			return fmt.Errorf("%s %d is too large for a base record", what, i)
+		}
+		return nil
+	}
+	for i, p := range r.Puts {
+		switch {
+		case p.Table == 0:
+			return nil, nil, fmt.Errorf("put %d: invalid table 0", i)
+		case len(p.Key) > MaxKey:
+			return nil, nil, fmt.Errorf("put %d: key too long: %d bytes (max %d)", i, len(p.Key), MaxKey)
+		}
+		o := op{code: opPut, table: p.Table, key: string(p.Key), value: clone(p.Value)}
+		if err := fits("put", i, o); err != nil {
+			return nil, nil, err
+		}
+		puts = append(puts, o)
+	}
+	slices.SortStableFunc(puts, func(a, b op) int { return cmp.Or(cmp.Compare(a.table, b.table), strings.Compare(a.key, b.key)) })
+	one := puts[:0] // of the puts with a table and a key, the last stays
+	for _, p := range puts {
+		if n := len(one); n > 0 && one[n-1].table == p.table && one[n-1].key == p.key {
+			one[n-1] = p
+		} else {
+			one = append(one, p)
+		}
+	}
+	puts = one
+	if len(r.Events) > 0 && s.st.seq == 0 {
+		return nil, nil, errors.New("events cannot be added to a state that has no commit")
+	}
+	next := s.st.nextEvent
+	for i, d := range r.Events {
+		if next == math.MaxUint64 {
+			return nil, nil, fmt.Errorf("event %d: no number is left", i)
+		}
+		o := op{code: opEvent, number: next, seq: s.st.seq, value: clone(d)}
+		if err := fits("event", i, o); err != nil {
+			return nil, nil, err
+		}
+		added = append(added, o)
+		next++
+	}
+	return puts, added, nil
+}
+
+// openHead opens head for writing: a valid one gives its counter, a damaged one is written whole, and a missing one,
+// which has no file, is made once the new generation is complete.
+func (s *Salvager) openHead() (headWriter, error) {
+	p := path.Join(s.fsys.Name(), "head")
+	f, err := s.fsys.OpenFile("head", os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return headWriter{bad: true}, nil
+	}
+	if err != nil {
+		return headWriter{}, entryError(p, err, false)
+	}
+	h := headWriter{f: f}
+	slot, err := readHead(f, p)
+	var ce *CorruptError
+	switch {
+	case errors.As(err, &ce):
+		h.bad = true
+	case err != nil:
+		_ = f.Close()
+		return headWriter{}, err
+	default:
+		h.counter = slot.counter + 1
+	}
+	return h, nil
+}
+
+// makeHead makes the file head if it was missing. A store without it is not opened, so this comes after the base-end,
+// when the new generation is the store.
+func (s *Salvager) makeHead() error {
+	db := s.db
+	if db.head.f != nil {
+		return nil
+	}
+	f, err := s.fsys.OpenFile("head", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	db.head.f = f
+	if err := s.fsys.SyncDir("."); err != nil {
+		return db.fail(err)
+	}
+	return nil
 }
 
 // analyze reads the store under the locks, as Salvage says, and makes what f is given.

@@ -42,11 +42,23 @@ func (db *DB) compact(ctx context.Context, r Rewrite) error {
 	if old.seq == 0 {
 		return nil // nothing to keep, and no checkpoint of it
 	}
-	if err := db.removeOthers(old.gen); err != nil {
+	if _, err := db.removeOthers(old.gen); err != nil {
 		return err
 	}
-	c := &compaction{db: db, old: old, r: r, own: new(owner),
+	c := db.newCompaction(old, r)
+	if err := c.commit(ctx); err != nil {
+		return err
+	}
+	return c.finish()
+}
+
+func (db *DB) newCompaction(old *state, r Rewrite) *compaction {
+	return &compaction{db: db, old: old, r: r, own: new(owner),
 		st: &state{gen: old.gen + 1, seq: old.seq, tables: tableMap{}, nextEvent: 1}}
+}
+
+// commit writes the new generation up to its base-end, the commit point, and abandons its files if it fails.
+func (c *compaction) commit(ctx context.Context) error {
 	if err := c.writeBase(ctx); err != nil {
 		c.abandon()
 		return err
@@ -55,29 +67,31 @@ func (db *DB) compact(ctx context.Context, r Rewrite) error {
 		c.abandon()
 		return err
 	}
-	return c.finish()
+	return nil
 }
 
 // removeOthers removes the segments of the generations other than gen: incomplete newer ones, which a compaction that
 // failed has left, and older ones. It removes the last one first and syncs log/ after each, so that a crash leaves no
-// gap in a newer generation.
-func (db *DB) removeOthers(gen genNum) error {
+// gap in a newer generation. It returns how many it has removed.
+func (db *DB) removeOthers(gen genNum) (int, error) {
 	segs, err := listSegments(db.fsys)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	n := 0
 	for _, s := range slices.Backward(segs) {
 		if s.gen == gen {
 			continue
 		}
 		if err := db.fsys.Remove(s.name); err != nil {
-			return err
+			return n, err
 		}
+		n++
 		if err := db.fsys.SyncDir("log"); err != nil {
-			return db.fail(err)
+			return n, db.fail(err)
 		}
 	}
-	return nil
+	return n, nil
 }
 
 // compaction writes the base of a new generation.
@@ -91,6 +105,14 @@ type compaction struct {
 	part uint64
 	ops  []op // of the next base record
 	size int
+
+	// A repair's. events gives the events that the old state keeps, if they are not in its log; puts, in the order of
+	// their tables and keys, and added, with their numbers and sequence number, go in the base besides what the old
+	// state has. removed counts the segments of the old generation that finish has removed.
+	events  func(ctx context.Context, fn func(p *op) error) error
+	puts    []op
+	added   []op
+	removed int
 }
 
 func (c *compaction) last() *segment {
@@ -128,9 +150,23 @@ func (c *compaction) writeBase(ctx context.Context) error {
 }
 
 func (c *compaction) addTables(ctx context.Context) error {
-	for _, id := range slices.Sorted(maps.Keys(c.old.tables)) {
+	puts := c.puts
+	for _, id := range c.tableIDs() {
+		n := 0
+		for n < len(puts) && puts[n].table == id {
+			n++
+		}
+		var mine []op // the puts in the table id
+		mine, puts = puts[:n], puts[n:]
 		var err error
 		c.old.tables[id].Ascend("", func(k string, v []byte) bool {
+			for len(mine) > 0 && mine[0].key <= k {
+				p := mine[0]
+				mine = mine[1:]
+				if err = c.add(ctx, p); err != nil || p.key == k {
+					return err == nil // a put takes the place of the row with its key
+				}
+			}
 			v = v[:len(v):len(v)]
 			if c.r.Value != nil {
 				nv, keep := c.r.Value(id, []byte(k), v)
@@ -145,8 +181,24 @@ func (c *compaction) addTables(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		for _, p := range mine {
+			if err := c.add(ctx, p); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// tableIDs returns the tables that the old state has and those that the puts are in, in ascending order.
+func (c *compaction) tableIDs() []uint32 {
+	ids := slices.Sorted(maps.Keys(c.old.tables))
+	for _, p := range c.puts {
+		if i, found := slices.BinarySearch(ids, p.table); !found {
+			ids = slices.Insert(ids, i, p.table)
+		}
+	}
+	return ids
 }
 
 // addObjects adds the objects that c.r keeps: those in records with their data, which it reads from the old segments
@@ -176,27 +228,46 @@ func (c *compaction) addObjects(ctx context.Context) error {
 	return err
 }
 
-// addEvents adds the events that c.r keeps, which it reads from the log of the old generation.
+// addEvents adds the events that c.r keeps, which it reads from the log of the old generation, or gets from c.events,
+// and then the events of c.added.
 func (c *compaction) addEvents(ctx context.Context) error {
-	return readLog(ctx, c.db.handles, c.old, func(lr logRecord) (bool, error) {
-		for _, p := range lr.rec.ops {
-			if p.code != opEvent {
-				continue
-			}
-			data := p.value[:len(p.value):len(p.value)]
-			if c.r.Event != nil {
-				d, keep := c.r.Event(Event{Number: p.number, Seq: uint64(p.seq), Data: clone(p.value)})
-				if !keep {
-					continue
+	var err error
+	if c.events != nil {
+		err = c.events(ctx, func(p *op) error { return c.addEvent(ctx, p) })
+	} else {
+		err = readLog(ctx, c.db.handles, c.old, func(lr logRecord) (bool, error) {
+			for i := range lr.rec.ops {
+				if p := &lr.rec.ops[i]; p.code == opEvent {
+					if err := c.addEvent(ctx, p); err != nil {
+						return false, err
+					}
 				}
-				data = clone(d)
 			}
-			if err := c.add(ctx, op{code: opEvent, number: p.number, seq: p.seq, value: data}); err != nil {
-				return false, err
-			}
+			return true, nil
+		})
+	}
+	if err != nil {
+		return err
+	}
+	for _, p := range c.added {
+		if err := c.add(ctx, p); err != nil {
+			return err
 		}
-		return true, nil
-	})
+	}
+	return nil
+}
+
+// addEvent adds the event p of the old state, as c.r changes it, unless c.r drops it.
+func (c *compaction) addEvent(ctx context.Context, p *op) error {
+	data := p.value[:len(p.value):len(p.value)]
+	if c.r.Event != nil {
+		d, keep := c.r.Event(Event{Number: p.number, Seq: uint64(p.seq), Data: clone(p.value)})
+		if !keep {
+			return nil
+		}
+		data = clone(d)
+	}
+	return c.add(ctx, op{code: opEvent, number: p.number, seq: p.seq, value: data})
 }
 
 // add adds p to the next base record, which it writes first if p would take it past baseBytes.
@@ -237,7 +308,7 @@ func (c *compaction) writeEnd() error {
 		keys += m.Len()
 	}
 	e := baseEnd{parts: c.part, keys: fromInt(keys), objects: fromInt(c.st.objects.Len()), events: c.st.events,
-		nextEvent: c.old.nextEvent}
+		nextEvent: max(c.old.nextEvent, c.st.nextEvent)}
 	rec := record{typ: recBaseEnd, seq: c.st.seq, end: e}
 	if err := c.write(appendBaseEnd(nil, c.st.seq, e), &rec, true); err != nil {
 		return err
@@ -328,33 +399,37 @@ func (c *compaction) finish() error {
 	if err != nil {
 		return err
 	}
-	return db.removeGeneration(c.old.gen)
+	c.removed, err = db.removeGeneration(c.old.gen)
+	return err
 }
 
-// removeGeneration removes the segments of the old generation gen. It opens them first, so that the Views that read
-// the old state can go on reading objects in them; the handles close them with the store.
-func (db *DB) removeGeneration(gen genNum) error {
+// removeGeneration removes the segments of the old generation gen, and returns how many it has removed. It opens them
+// first, so that the Views that read the old state can go on reading objects in them; the handles close them with the
+// store.
+func (db *DB) removeGeneration(gen genNum) (int, error) {
 	segs, err := listSegments(db.fsys)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var old []segFile
 	for _, s := range segs {
 		if s.gen == gen {
 			if _, err := db.handles.file(s.gen, s.index); err != nil {
-				return err
+				return 0, err
 			}
 			old = append(old, s)
 		}
 	}
+	n := 0
 	for _, s := range slices.Backward(old) {
 		_ = db.hook("compact:delete")
 		if err := db.fsys.Remove(s.name); err != nil {
-			return err
+			return n, err
 		}
+		n++
 	}
 	if err := db.fsys.SyncDir("log"); err != nil {
-		return db.fail(err)
+		return n, db.fail(err)
 	}
-	return nil
+	return n, nil
 }
