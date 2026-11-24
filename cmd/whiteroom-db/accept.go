@@ -13,9 +13,10 @@ import (
 const acceptUsage = `Usage: whiteroom-db accept-break [flags] -log LOG -record N
 
 Accept the break at record N of the audit log LOG (login or activity), once you
-have looked into it. "whiteroom doctor" reports a break as a record that does not
-follow the one before it: its prev is not the hash of that record, or its number is
-not that of that record plus one. Take LOG and N from its report:
+have looked into it. A break is a record whose number is that of the one before it
+plus one and whose prev is not the hash of that record: "whiteroom doctor" reports
+it as a record that does not follow the one before it. Take LOG and N from its
+report:
 
   audit log "login": record 7 (event 31): prev is not the hash of record 6
 
@@ -29,16 +30,17 @@ acceptance, and a break at another record is still reported.
 The command refuses, and changes nothing, a record that is not in the store (also
 one before the start of the chain, which the deletion of old login records made),
 the first record that the log is checked from (record 1, or the first that remains
-after such a deletion), a record that follows the one before it, a break that is
-accepted already, a chain whose rows cannot be read, and a data directory of an
-older table schema than this program's: the first writer that connects through
+after such a deletion), a record whose number is not that of the one before it plus
+one (a gap), a record that follows the one before it, a break that is accepted
+already, a chain whose rows cannot be read, and a data directory of an older table
+schema than this program's: the first writer that connects through
 "whiteroom-db serve" (such as "whiteroom serve admin") upgrades it.
 
 It accepts a break at a record that can be read, and no more. An event that is no
 record, which damage to the engine leaves, has no record number to name it by, and a
 record that was lost is not brought back: the gaps that unreadable or lost events
-leave wait for the repair of the engine, and "whiteroom doctor" goes on reporting an
-event that is no record.
+leave wait for the repair of the engine, and "whiteroom doctor" goes on reporting a
+gap and an event that is no record.
 
 On the standard output the command prints "accepted the break at record N of the
 audit log LOG in DATA; whiteroom doctor checks the log again from it". A refusal is

@@ -507,9 +507,9 @@ func TestVerifyAuditBreaks(t *testing.T) {
 		{"a break that the chain does not need", func(t *testing.T, f chainFixture) change {
 			return change{rows: []chainRow{breakRow(dbwire.LogLogin, 2, f.login(2))}}
 		}, "", []string{breakNote("login", 2)}},
-		{"a record that is missing", func(t *testing.T, f chainFixture) change {
+		{"a record that is missing, and an acceptance", func(t *testing.T, f chainFixture) change {
 			return change{drop: []uint64{6}, rows: []chainRow{breakRow(dbwire.LogLogin, 3, f.login(3))}}
-		}, "", []string{breakNote("login", 3)}},
+		}, `audit log "login": record 3 (event 9): the number does not follow that of record 1`, nil},
 		{"a record that is missing, and no acceptance", func(t *testing.T, f chainFixture) change {
 			return change{drop: []uint64{6}}
 		}, `audit log "login": record 3 (event 9): the number does not follow that of record 1`, nil},
@@ -564,19 +564,43 @@ func TestVerifyAuditBreakBelowStart(t *testing.T) {
 	}
 }
 
-// TestVerifyAuditBreakAnchors checks that an anchor of a record that a break lets go missing is counted, as it cannot be
-// checked.
-func TestVerifyAuditBreakAnchors(t *testing.T) {
-	f := newChainFixture(t)
-	s := closeAndRewrite(t, f.s, f.dir, rewriteRecords(nil, []uint64{6}, nil))
-	injectChains(t, s, []chainRow{breakRow(dbwire.LogLogin, 3, f.login(3))}, acceptedEvents(dbwire.LogLogin, 3, f.login(3))...)
-	checkVerify(t, s, f.dir, f.events, nil, "", breakNote("login", 3))
-	checkVerify(t, s, f.dir, f.events, f.heads, "", breakNote("login", 3))
-	anchors := []audit.Head{f.head(audit.LoginLog, 1), f.head(audit.LoginLog, 2), f.head(audit.LoginLog, 3)}
-	checkVerify(t, s, f.dir, f.events, anchors, "", breakNote("login", 3), uncheckedNote(1))
-	anchors[2].Hash = wrong
-	checkVerify(t, s, f.dir, f.events, anchors, `audit log "login": record 3 (event 9): its hash is not that of the head kept outside the store`,
-		breakNote("login", 3))
+// TestCheckEndsAnchors checks the anchors of the records that the read of a log has not met: one before the chain start is
+// counted, as it cannot be checked, and one after it, or of a log that has no chain start, is a problem, since the read of a
+// log that has a gap fails before it, and a break does not let a gap go.
+func TestCheckEndsAnchors(t *testing.T) {
+	last := sha256.Sum256([]byte("the last record"))
+	heads := []audit.Head{{Log: audit.LoginLog, N: 3, Hash: last}, {Log: audit.ActivityLog, N: 1, Hash: last}}
+	ends := func() map[audit.Log]*chainEnd {
+		return map[audit.Log]*chainEnd{audit.LoginLog: {n: 3, event: 9, hash: last}, audit.ActivityLog: {n: 1, event: 1, hash: last}}
+	}
+	login2 := audit.Head{Log: audit.LoginLog, N: 2, Hash: wrong}
+	met := map[anchorKey]bool{{audit.LoginLog, 2}: true}
+	for _, tt := range []struct {
+		name    string
+		start   *dbwire.ChainStart
+		matched map[anchorKey]bool
+		want    string
+		counted int
+	}{
+		{"a record that the read has met", nil, met, "", 0},
+		{"a record that the read has not met", nil, nil,
+			`audit log "login": the head kept outside the store is record 2, which the log does not have`, 0},
+		{"a record before the chain start", &dbwire.ChainStart{First: 4, Prev: last}, nil, "", 1},
+		{"a record before the chain start, which the read has met", &dbwire.ChainStart{First: 4, Prev: last}, met, "", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chains := map[audit.Log]chainInfo{audit.LoginLog: {start: tt.start}}
+			counted, err := checkEnds(ends(), chains, heads, []audit.Head{login2}, tt.matched)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("checkEnds() = %v", err)
+			case tt.want != "" && (err == nil || err.Error() != tt.want || !errors.Is(err, audit.ErrBroken)):
+				t.Errorf("checkEnds() = %v, want %q that wraps audit.ErrBroken", err, tt.want)
+			case counted != tt.counted:
+				t.Errorf("checkEnds() counts %d anchors that it cannot check, want %d", counted, tt.counted)
+			}
+		})
+	}
 }
 
 // TestVerifyAuditNotesNil checks that a nil note is no problem, and that a store that has none of the new rows gives no

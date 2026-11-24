@@ -195,12 +195,12 @@ func TestMaintain(t *testing.T) {
 	s.stop()
 }
 
-// loginRecord returns a login record of a chain: the record n, whose prev is prev, with a member that the daemon ignores.
+// loginRecord returns a login record of a chain: the record n, whose prev is prev, with what the daemon needs of a record.
 func loginRecord(n int, prev string) []byte {
 	if prev == "" {
-		return fmt.Appendf(nil, `{"log":"login","n":%d,"action":"x"}`, n)
+		return fmt.Appendf(nil, `{"log":"login","n":%d,"at":"2026-01-01T00:00:00Z","action":"x"}`, n)
 	}
-	return fmt.Appendf(nil, `{"log":"login","n":%d,"prev":%q,"action":"x"}`, n, prev)
+	return fmt.Appendf(nil, `{"log":"login","n":%d,"prev":%q,"at":"2026-01-01T00:00:00Z","action":"x"}`, n, prev)
 }
 
 func recordHash(data []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(data)) }
@@ -276,7 +276,7 @@ func TestCompactDeletesLogin(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	months := func(n int) time.Time { return now.AddDate(0, -n, 0) }
 	cutoff := now.AddDate(-1, 0, 0).Format(time.RFC3339) // the newest mark is that of now, which is not after the time of the process
-	activity := []byte(`{"log":"activity","n":1,"action":"x"}`)
+	activity := []byte(`{"log":"activity","n":1,"at":"2026-01-01T00:00:00Z","action":"x"}`)
 
 	t.Run("old records", func(t *testing.T) {
 		d := newDirs(t)
@@ -472,7 +472,7 @@ func TestCompactDropsLeftovers(t *testing.T) {
 	recs := loginChain(4)
 	build := func(t *testing.T, prev [sha256.Size]byte) dirs {
 		d := newDirs(t)
-		writeCommits(t, d.data, commitAt{months(30), [][]byte{[]byte(`{"log":"activity","n":1,"action":"x"}`), recs[0]}}, commitAt{months(25), [][]byte{recs[1]}},
+		writeCommits(t, d.data, commitAt{months(30), [][]byte{[]byte(`{"log":"activity","n":1,"at":"2026-01-01T00:00:00Z","action":"x"}`), recs[0]}}, commitAt{months(25), [][]byte{recs[1]}},
 			commitAt{months(2), [][]byte{recs[2]}}, commitAt{now, [][]byte{recs[3]}})
 		writeDeletion(t, d.data, 3, prev, months(20), now)
 		return d

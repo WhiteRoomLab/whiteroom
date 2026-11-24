@@ -39,9 +39,9 @@ func auditChain(log string, n int) [][]byte {
 	var recs [][]byte
 	prev := ""
 	for i := 1; i <= n; i++ {
-		rec := fmt.Appendf(nil, `{"log":%q,"n":%d,"action":"x"}`, log, i)
+		rec := fmt.Appendf(nil, `{"log":%q,"n":%d,"at":"2026-01-01T00:00:00Z","action":"x"}`, log, i)
 		if prev != "" {
-			rec = fmt.Appendf(nil, `{"log":%q,"n":%d,"prev":%q,"action":"x"}`, log, i, prev)
+			rec = fmt.Appendf(nil, `{"log":%q,"n":%d,"prev":%q,"at":"2026-01-01T00:00:00Z","action":"x"}`, log, i, prev)
 		}
 		recs = append(recs, rec)
 		prev = recordHash(rec)

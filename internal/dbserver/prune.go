@@ -223,8 +223,6 @@ func (p *loginPass) event(e logdb.Event) bool {
 		p.fail(fmt.Sprintf("event %d: it is not an audit record", e.Number))
 	case log == dbwire.LogLogin:
 		p.login(e, n, prev)
-	case log != dbwire.LogActivity:
-		p.fail(fmt.Sprintf("event %d: the log of the record is neither login nor activity", e.Number))
 	}
 	return true
 }
@@ -271,7 +269,7 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 	sum := sha256.Sum256(e.Data)
 	if len(p.recs) == 0 && p.start != nil {
 		if n < p.start.First {
-			if why := p.leftFollow(n, prev); why != "" {
+			if why := p.leftFollow(n, prev, sum); why != "" {
 				p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
 				return
 			}
@@ -293,9 +291,10 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum})
 }
 
-// leftFollow returns why the record n with prev does not follow the records before the chain start that were met, "" if it
-// does. The first of them is not checked: the record before it was deleted.
-func (p *loginPass) leftFollow(n uint64, prev string) string {
+// leftFollow returns why the record n with prev, whose stored bytes have the hash sum, does not follow the records before
+// the chain start that were met, "" if it does: a break that is accepted for it lets it go, as VerifyAudit has it. The first
+// of them is not checked: the record before it was deleted.
+func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) string {
 	if len(p.left) == 0 {
 		return ""
 	}
@@ -303,7 +302,7 @@ func (p *loginPass) leftFollow(n uint64, prev string) string {
 	switch {
 	case n != last.n+1:
 		return fmt.Sprintf("the number does not follow that of record %d", last.n)
-	case prev != hashText(last.sum):
+	case prev != hashText(last.sum) && !p.breakFor(n, sum):
 		return fmt.Sprintf("prev is not the hash of record %d", last.n)
 	}
 	return ""
@@ -372,11 +371,16 @@ func followText(start *dbwire.ChainStart, last chainLast, n uint64, prev string)
 	return ""
 }
 
-// accepted reports whether a break is accepted for the record n whose stored bytes have the hash sum, and the record
-// comes after the ones that were walked.
+// accepted reports whether a break is accepted for the record n whose stored bytes have the hash sum: it is not the first
+// record that was walked, and its number follows that of the record before it, as VerifyAudit has it.
 func (p *loginPass) accepted(n uint64, sum [sha256.Size]byte) bool {
+	return p.breakFor(n, sum) && len(p.recs) > 0 && n == p.recs[len(p.recs)-1].n+1
+}
+
+// breakFor reports whether a break is accepted for the record n whose stored bytes have the hash sum.
+func (p *loginPass) breakFor(n uint64, sum [sha256.Size]byte) bool {
 	h, ok := p.breaks[n]
-	return ok && h == sum && (len(p.recs) == 0 || n > p.recs[len(p.recs)-1].n)
+	return ok && h == sum
 }
 
 func hashText(sum [sha256.Size]byte) string {
@@ -428,10 +432,6 @@ func (p *loginPass) plan(now time.Time) deletion {
 		eligible--
 	}
 	cut := min(old, eligible)
-	// A record whose predecessor is not there (a break was accepted for it) cannot be the first that remains.
-	for cut > 0 && cut < len(p.recs) && p.recs[cut].n != p.recs[cut-1].n+1 {
-		cut--
-	}
 	if cut > 0 {
 		d.cut = cut
 		d.cutoff = cutoff

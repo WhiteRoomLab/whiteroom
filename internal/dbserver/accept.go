@@ -12,17 +12,18 @@ import (
 )
 
 // AcceptBreak accepts the break at record n of the audit log named log (dbwire.LogLogin or dbwire.LogActivity): a record
-// that does not follow the one before it in number or in hash, which is where VerifyAudit of the store fails. In one Update
-// it puts the row of the table chains that ties the acceptance to the SHA-256 of the stored bytes of the record, appends
-// the event of the acceptance and a mark of now. From then on VerifyAudit checks the log again from that record, and any
-// change to the record undoes the acceptance. It reads only the log, the number and the prev of the records, and changes
-// and drops none.
+// whose number is that of the one before it plus one and whose prev is not its hash, which is where VerifyAudit of the store
+// fails. In one Update it puts the row of the table chains that ties the acceptance to the SHA-256 of the stored bytes of
+// the record, appends the event of the acceptance and a mark of now. From then on VerifyAudit checks the log again from that
+// record, and any change to the record undoes the acceptance. It reads the records as audit.Decode does
+// (dbwire.ReadRecordID), uses only their log, number and prev, and changes and drops none.
 //
 // It refuses, and writes nothing, a record that is not in the store (also one before the chain start, and one whose number
 // the log has twice), the first record that the log is checked from, which has no record before it to break from, a record
-// that follows the one before it, a break that is accepted already for the record as it is, a chain whose rows cannot be
-// read, and a store of an older table schema than dbwire.TableVersion, for the reason of CompactLogin. An event that is no
-// record has no number to be named by, and is not looked at.
+// whose number does not follow that of the one before it (a gap, which a lost record leaves: the repair of the engine
+// handles it), a record that follows the one before it, a break that is accepted already for the record as it is, a chain
+// whose rows cannot be read, and a store of an older table schema than dbwire.TableVersion, for the reason of CompactLogin.
+// An event that is no record has no number to be named by, and is not looked at.
 func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64, now time.Time) error {
 	if log != dbwire.LogLogin && log != dbwire.LogActivity {
 		return fmt.Errorf("the audit log %q is neither %s nor %s", log, dbwire.LogLogin, dbwire.LogActivity)
@@ -62,6 +63,9 @@ func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64
 			"number", n, log)
 	case p.first:
 		return fmt.Errorf("record %d is the first record that the audit log %s is checked from: a break there is not accepted", n, log)
+	case p.gap:
+		return fmt.Errorf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that can "+
+			"be accepted, and waits for the repair of the engine", n, p.before)
 	case p.why == "":
 		return fmt.Errorf("record %d follows record %d: there is no break to accept", n, n-1)
 	case rows.accepted(n, p.sum):
@@ -96,10 +100,12 @@ type breakPass struct {
 	start *dbwire.ChainStart
 	last  chainLast
 
-	seen  int // how many records of the log have the number n
-	sum   [sha256.Size]byte
-	why   string // why the first of them does not follow the walk before it, "" if it does
-	first bool   // it is the first record of the walk
+	seen   int // how many records of the log have the number n
+	sum    [sha256.Size]byte
+	why    string // why the first of them does not follow the walk before it, "" if it does
+	first  bool   // it is the first record of the walk
+	gap    bool   // its number does not follow that of the record before it
+	before uint64 // the number of the record before it
 }
 
 func (p *breakPass) event(e logdb.Event) bool {
@@ -119,6 +125,7 @@ func (p *breakPass) event(e logdb.Event) bool {
 			return false
 		}
 		p.sum, p.first, p.why = sum, !p.last.ok, followText(p.start, p.last, n, prev)
+		p.gap, p.before = p.last.ok && n != p.last.n+1, p.last.n
 	}
 	p.last = chainLast{n: n, sum: sum, ok: true}
 	return true

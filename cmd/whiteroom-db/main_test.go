@@ -175,11 +175,16 @@ func TestUsage(t *testing.T) {
 		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
 		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
 		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
-		"wait for the repair of the engine", "accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
+		"wait for the repair of the engine", "A break is a record whose number is that of the one before it plus one",
+		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting a gap and an event that is no record",
+		"accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
 		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
 		if !strings.Contains(acceptWords, text) {
 			t.Errorf("the usage of whiteroom-db accept-break does not say %q:\n%s", text, help["accept-break"])
 		}
+	}
+	if strings.Contains(acceptWords, "or its number is not that of that record plus one") {
+		t.Errorf("the usage of whiteroom-db accept-break says that a record whose number does not follow is a break:\n%s", help["accept-break"])
 	}
 	if !strings.Contains(strings.Join(strings.Fields(usage), " "), "accept the break at record -record N of the audit log -log LOG") {
 		t.Errorf("the list of the commands does not say what accept-break does:\n%s", usage)

@@ -243,9 +243,9 @@ type chainEnd struct {
 }
 
 // follow checks that r, the record of the event number with the hash sum, follows the end c of its log, and makes it
-// the end. Nothing is checked of a record whose break is accepted: the log goes on from it.
-func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte, accepted bool) error {
-	if !accepted {
+// the end. Nothing is checked of a record whose break is honored: the log goes on from it.
+func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte, honored bool) error {
+	if !honored {
 		if err := c.check(r, number); err != nil {
 			return err
 		}
@@ -255,6 +255,13 @@ func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte, 
 	}
 	c.n, c.event, c.hash = r.N, number, sum
 	return nil
+}
+
+// honors reports whether the break that is accepted for the record n, whose hash is that of the break, is honored: the
+// record is not the first that is read, and not the first that remains after a deletion, and its number is that of the one
+// before it plus one. A break is for a record whose prev is not the hash of the one before it, and no more.
+func (c *chainEnd) honors(n uint64) bool {
+	return c.n != 0 && n == c.n+1 && (c.start == nil || n != c.start.First)
 }
 
 // check returns the error of a record that does not follow the end of its log. The first record of a log is number 1,
@@ -299,9 +306,10 @@ func (c *chainEnd) check(r audit.Record, number uint64) error {
 // the log starts at the record K that the chain start of the log names, whose prev is the hash P of the record before
 // it, and a log that has no record left has the head (K-1, P). The records before K, which a deletion that stopped
 // before its compaction has left, are checked as ever. A break that is accepted for a record, with the hash that the
-// record has, lets the record go unchecked against the one before it: the log is checked again from it. An anchor of a
-// record that the store no longer has is not checked, unless it is that of record K-1, whose hash is P. A store of a
-// table schema before 8 has no such row.
+// record has, lets the record go unchecked against the one before it: the log is checked again from it. It does so if the
+// number of the record is that of the one before it plus one, and the record is neither the first that is read nor the
+// record K; a gap is no break. An anchor of a record before K that the store no longer has is not checked, unless it is
+// that of record K-1, whose hash is P. A store of a table schema before 8 has no such row.
 func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 	return s.VerifyAuditNotes(ctx, anchors, nil)
 }
@@ -365,14 +373,14 @@ func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note
 				ends[r.Log] = end
 			}
 			sum := sha256.Sum256(data)
-			b, accepted := end.breaks[r.N]
+			b, honored := end.breaks[r.N]
 			// A break of a record before the chain start is honored, since the records before it are there until the
 			// deletion has been compacted, and is no news.
-			if accepted = accepted && b.Hash == sum; accepted && (end.start == nil || r.N >= end.start.First) {
+			if honored = honored && b.Hash == sum && end.honors(r.N); honored && (end.start == nil || r.N >= end.start.First) {
 				notes = append(notes, fmt.Sprintf("audit log %q: the break at record %d was accepted at %s; the log is checked "+
 					"again from that record", r.Log, r.N, noteTime(b.At)))
 			}
-			if broken = end.follow(r, number, sum, accepted); broken != nil {
+			if broken = end.follow(r, number, sum, honored); broken != nil {
 				return false
 			}
 			key := anchorKey{r.Log, r.N}
@@ -457,7 +465,8 @@ func (t *Tx) checkHeadLines(heads []audit.Head) error {
 
 // checkEnds checks the last record of each log, ends, against its head in the table, in heads, against the chain start
 // of the log, in chains, and against anchors, of which matched has those whose records the read of the log has met. It
-// returns how many of the anchors name a record that the log does not have, and that no check of the chain start covers.
+// returns how many of the anchors name a record before the chain start, which the log does not have, and that no check of
+// the chain start covers; one that names a record after it that the log does not have is a problem.
 func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, heads, anchors []audit.Head,
 	matched map[anchorKey]bool) (unchecked int, err error) {
 	byLog := map[audit.Log]audit.Head{}
@@ -523,7 +532,8 @@ func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, hea
 			return 0, brokenError(fmt.Sprintf("audit log %q: the head kept outside the store is record %d, but the log "+
 				"ends with record %d (event %d)", a.Log, a.N, end.n, end.event))
 		case !matched[anchorKey{a.Log, a.N}]:
-			unchecked++
+			return 0, brokenError(fmt.Sprintf("audit log %q: the head kept outside the store is record %d, which the log does not have",
+				a.Log, a.N))
 		}
 	}
 	return unchecked, nil

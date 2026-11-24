@@ -189,6 +189,12 @@ func TestAcceptBreak(t *testing.T) {
 	}
 }
 
+// gapText is the refusal of the record n, which does not follow the record before in number.
+func gapText(n, before int) string {
+	return fmt.Sprintf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that can be "+
+		"accepted, and waits for the repair of the engine", n, before)
+}
+
 // TestAcceptBreakRefused checks that each refusal says why, in the words of the command, and writes nothing.
 func TestAcceptBreakRefused(t *testing.T) {
 	chain := newChain(dbwire.LogLogin, 6)
@@ -225,6 +231,13 @@ func TestAcceptBreakRefused(t *testing.T) {
 		{"the first record that remains, with the records that a deletion left before it", good, startAt(3, wrong32),
 			dbwire.LogLogin, 3, firstText(3)},
 		{"a record that follows", good, nil, dbwire.LogLogin, 3, "record 3 follows record 2: there is no break to accept"},
+		{"a record whose number skips", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)}, nil, dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a record whose number skips, with another prev", [][]byte{chain.rec(1), chain.rec(2), changedRecord(dbwire.LogLogin, 4, chain)},
+			nil, dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a record whose number goes back", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(4)}, nil,
+			dbwire.LogLogin, 4, gapText(4, 5)},
+		{"a record whose number skips after the chain start", [][]byte{chain.rec(3), chain.rec(5)}, startAt(3, chain.sum(2)),
+			dbwire.LogLogin, 5, gapText(5, 3)},
 		{"a record that follows after the chain start", good[2:], startAt(3, chain.sum(2)), dbwire.LogLogin, 4,
 			"record 4 follows record 3: there is no break to accept"},
 		{"a record that is there twice", append(slices.Clone(good), chain.rec(2)), nil, dbwire.LogLogin, 2,
@@ -272,26 +285,28 @@ func TestAcceptBreakRefused(t *testing.T) {
 // events of its log, as VerifyAudit walks them, whatever is between them.
 func TestAcceptBreakWalk(t *testing.T) {
 	chain := newChain(dbwire.LogLogin, 6)
+	refused := func(t *testing.T, f *fixture, n uint64, want string) {
+		t.Helper()
+		before, files := viewOf(t, f), storeFiles(f)
+		if err := acceptBreak(t, f, dbwire.LogLogin, n); err == nil || err.Error() != want {
+			t.Errorf("AcceptBreak() of the record %d = %v, want %q", n, err, want)
+		}
+		if got := storeFiles(f); !maps.Equal(got, files) {
+			t.Error("the refusal changed the files of the store")
+		}
+		kept(t, before, viewOf(t, f))
+	}
 	t.Run("a record that is missing", func(t *testing.T) {
+		// The record 5 has the hash of the record 4, which is not there: its number does not follow, and a lost record is no break.
 		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(6)})
-		before := viewOf(t, f)
-		if err := acceptBreak(t, f, dbwire.LogLogin, 5); err != nil {
-			t.Fatalf("AcceptBreak() = %v", err)
-		}
-		checkAccepted(t, f, before, dbwire.LogLogin, 5, chain.sum(5))
-		if err := acceptBreak(t, f, dbwire.LogLogin, 6); err == nil || err.Error() != "record 6 follows record 5: there is no break to accept" {
-			t.Errorf("AcceptBreak() of the record 6 = %v", err)
-		}
+		refused(t, f, 5, gapText(5, 3))
+		refused(t, f, 6, "record 6 follows record 5: there is no break to accept")
 	})
 	t.Run("a number that skips", func(t *testing.T) {
 		// The record 6 has the hash of the record 4, the last one: only its number does not follow.
 		skipping := auditRecord(dbwire.LogLogin, 6, hashText(chain.sum(4)))
 		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), skipping})
-		before := viewOf(t, f)
-		if err := acceptBreak(t, f, dbwire.LogLogin, 6); err != nil {
-			t.Fatalf("AcceptBreak() = %v", err)
-		}
-		checkAccepted(t, f, before, dbwire.LogLogin, 6, sha256.Sum256(skipping))
+		refused(t, f, 6, gapText(6, 4))
 	})
 	t.Run("events that are no record", func(t *testing.T) {
 		junk, badDaemon := []byte("junk"), []byte{dbwire.DaemonEvent, 0x7f, 1, 2}
@@ -307,17 +322,9 @@ func TestAcceptBreakWalk(t *testing.T) {
 	})
 	t.Run("records in another order", func(t *testing.T) {
 		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(3), chain.rec(2)})
-		before := viewOf(t, f)
-		if err := acceptBreak(t, f, dbwire.LogLogin, 3); err != nil {
-			t.Fatalf("AcceptBreak() of the record 3 = %v", err)
-		}
-		checkAccepted(t, f, before, dbwire.LogLogin, 3, chain.sum(3))
+		refused(t, f, 3, gapText(3, 1))
 		// The record 2 comes after the record 3, which does not make it follow, though the record 1 is before.
-		before = viewOf(t, f)
-		if err := acceptBreak(t, f, dbwire.LogLogin, 2); err != nil {
-			t.Fatalf("AcceptBreak() of the record 2 = %v", err)
-		}
-		kept(t, before, viewOf(t, f))
+		refused(t, f, 2, gapText(2, 3))
 	})
 	t.Run("the records that a deletion left", func(t *testing.T) {
 		// The chain starts at the record 3, and the records 1 and 2 are still there.
