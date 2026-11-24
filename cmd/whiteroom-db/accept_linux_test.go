@@ -17,7 +17,7 @@ import (
 )
 
 // maintenanceArgs returns the arguments of the maintenance command named command on the data directory data: the arguments
-// that accept-break needs are those of a record that a store with no record refuses.
+// that accept-break needs are those of a record that a store with no record refuses, and repair is the one that changes nothing.
 func maintenanceArgs(command, data string) []string {
 	if command == "accept-break" {
 		return []string{command, "-data", data, "-log", "login", "-record", "2"}
