@@ -114,7 +114,7 @@ var (
 		"m", "mm", "z", "d0", "d1", "d2", "d3", "d4", "d5", "e", "ee", "f0", "f1", "f2", "g"}
 	prefixes = []string{"", "", "", "a", "b", "c", "ab", "b1", "m", "z", "a\x00", "\xff", "zz", "x", "d", "f"}
 	heads    = []string{"main", "audit.1", "audit_2", "A-b", "h0", "h1", "h2", "h3", "h4", "h5"}
-	tables   = []uint32{2, 2, 2, 2, 2, 6, 6, 6, 1, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12}
+	tables   = []uint32{2, 2, 2, 2, 2, 6, 6, 6, 1, 1, 3, 4, 5, 7, 8, 9, 10, 11, 13}
 )
 
 type generator struct {
@@ -444,7 +444,7 @@ func (g *generator) baseStep() step {
 		return st
 	case r < 44: // an Update that fills a table, so that it takes more than a page
 		st := step{update: true, kind: "fills", event: true, abort: g.chance(25)}
-		table := []uint32{1, 2, 2, 6, 6, 7, 8, 9, 10, 12}[g.rng.IntN(10)]
+		table := []uint32{1, 2, 2, 6, 6, 7, 8, 9, 10, 13}[g.rng.IntN(10)]
 		for _, k := range keyPool {
 			if g.chance(70) {
 				st.calls = append(st.calls, call{op: opPut, table: table, key: []byte(k), value: g.value(table)})

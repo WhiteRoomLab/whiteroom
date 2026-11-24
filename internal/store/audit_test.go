@@ -12,11 +12,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
@@ -127,7 +129,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("the events after Create() = %+v, want the record %s", events, createRecordJSON)
 	}
 	if got, want := rawTable(t, s, tableMeta), [][2]string{{"activityLog", "\x01" + string(createRecordSum())},
-		{"schema", "\x07"}}; !slices.Equal(got, want) {
+		{"schema", "\x08"}}; !slices.Equal(got, want) {
 		t.Errorf("meta after Create() = %q, want %q", got, want)
 	}
 	if got, want := rawTable(t, s, tableHeads), [][2]string{{"activity", fmt.Sprintf("audit head activity 1 sha256:%x",
@@ -148,7 +150,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("VerifyAudit() after Create() = %v", err)
 	}
 
-	// Open adds nothing to a store that is of the schema 7 already.
+	// Open adds nothing to a store that is of the schema 8 already.
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +959,7 @@ func TestUpgradeTrialEvent(t *testing.T) {
 	w := reopenLog(t, dir, logdb.Options{})
 	events := rawEvents(t, w)
 	const upgrade = `{"log":"activity","n":1,"at":"2026-11-03T08:00:00.12Z","actor":"system","action":"store.upgrade",` +
-		`"detail":{"from":"5","to":"7"}}`
+		`"detail":{"from":"5","to":"8"}}`
 	if len(events) != 2 || string(events[0].Data) != "pair 1" || string(events[1].Data) != upgrade {
 		t.Fatalf("the events after the upgrade = %d, want the trial event and the record store.upgrade", len(events))
 	}
@@ -1911,4 +1913,456 @@ func TestVerifyAuditWhileWriting(t *testing.T) {
 		t.Errorf("VerifyAudit() at the end = %v", err)
 	}
 	t.Logf("%d verifications while the writer wrote 800 records", verified)
+}
+
+// compactLoginOf runs CompactLogin at now in a maintenance of the data directory dir, which no process has open, whose
+// engine calls hook at its points; the harness's daemon of dir must have been released.
+func compactLoginOf(t *testing.T, dir string, now time.Time, hook func(point string) error) (dbserver.Deleted, error) {
+	t.Helper()
+	var d dbserver.Deleted
+	err := dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid, Hook: hook}},
+		func(m *logdb.Maintenance) (err error) {
+			d, err = dbserver.CompactLogin(t.Context(), m, now)
+			return err
+		})
+	return d, err
+}
+
+// agedStore is a store whose commit i has the activity record of the event i, a login failure when the login history is
+// to have a record, and the mark of a daemon whose clock was at the time that months[i] says: that many months before
+// chainTime, and chainTime itself for the last commit. It returns the store, open, with its directory, and the heads of the
+// logs after each of the commits.
+func agedStore(t *testing.T, months []int, login []bool) (s *Store, dir string, heads [][]audit.Head) {
+	t.Helper()
+	var clock atomic.Value
+	clock.Store(chainTime.AddDate(0, -months[0], 0))
+	o := options{log: &logdb.Options{Placement: logdb.Hybrid}, now: func() time.Time { return clock.Load().(time.Time) }}
+	dir = filepath.Join(t.TempDir(), "data")
+	s, err := create(dir, o)
+	if err != nil {
+		t.Fatalf("create() = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for i, m := range months {
+		clock.Store(chainTime.AddDate(0, -m, 0))
+		update(t, s, func(tx *Tx) error {
+			if err := tx.Record(eventRecord(fmt.Sprint(i))); err != nil {
+				return err
+			}
+			if login[i] {
+				return tx.Record(loginRecord(audit.LoginFailure, fmt.Sprint(i)))
+			}
+			return nil
+		})
+		heads = append(heads, headsOf(t, s))
+	}
+	return s, dir, heads
+}
+
+func headsOf(t *testing.T, s *Store) []audit.Head {
+	t.Helper()
+	heads, err := s.AuditHeads(t.Context())
+	if err != nil {
+		t.Fatalf("AuditHeads() = %v", err)
+	}
+	return heads
+}
+
+// recordsOf returns the lines of the records of log in s.
+func recordsOf(t *testing.T, s *Store, log audit.Log) []string {
+	t.Helper()
+	var got []audit.Record
+	for _, r := range allRecords(t, s) {
+		if r.Log == log {
+			got = append(got, r)
+		}
+	}
+	return recordLines(got)
+}
+
+// TestAuditCompactLogin checks the store after the deletion of the login records that are older than one year, which
+// whiteroom-db compact does with the marks of the daemon: VerifyAudit passes and tells the start of the chain, the
+// records that remain are those of before, the activity log and the heads are as they were, and the heads that were
+// kept outside the store are checked as far as the store still has their records.
+func TestAuditCompactLogin(t *testing.T) {
+	// The records of the login history are the commits 0, 2, 4, 5, 6 and 7; the marks of the commits 0 and 2 are 40 and 30
+	// months old, that of the commit 4 is 14 months and that of 5 13 months old, those of 6 and 7 are 11 months and 2.
+	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
+	login := []bool{true, false, true, false, true, true, true, true, false}
+	s, dir, heads := agedStore(t, months, login)
+	wantHeads := headsOf(t, s)
+	loginBefore, activityBefore := recordsOf(t, s, audit.LoginLog), recordsOf(t, s, audit.ActivityLog)
+	if len(loginBefore) != 6 {
+		t.Fatalf("the login history has %d records, want 6", len(loginBefore))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil {
+		t.Fatalf("CompactLogin() = %v", err)
+	}
+	if want := (dbserver.Deleted{First: 1, Last: 4, Cutoff: chainTime.AddDate(-1, 0, 0)}); d.First != want.First || d.Last != want.Last ||
+		!d.Cutoff.Equal(want.Cutoff) || d.Stopped != "" {
+		t.Fatalf("CompactLogin() = %+v, want %+v", d, want)
+	}
+
+	s = reopenLog(t, dir, logdb.Options{})
+	// The records 1 to 4 are gone, and the chain is checked from the record 5.
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[4:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	if got := recordsOf(t, s, audit.ActivityLog); !slices.Equal(got, activityBefore) {
+		t.Errorf("the activity records are %v, want %v", got, activityBefore)
+	}
+	if got := headsOf(t, s); !slices.Equal(got, wantHeads) {
+		t.Errorf("the heads are %v, want %v", got, wantHeads)
+	}
+	checkNoProblem(t, s)
+
+	// A head that was kept outside the store before the deletion names a record that is gone, or the one before the first
+	// that remains, which the chain start has the hash of, or a record that is there.
+	login3, login4 := headOfLog(t, heads[4], audit.LoginLog), headOfLog(t, heads[5], audit.LoginLog)
+	checkVerify(t, s, dir, nil, []audit.Head{login3}, "", startNote(5), uncheckedNote(1))
+	checkVerify(t, s, dir, nil, []audit.Head{login4}, "", startNote(5))
+	checkVerify(t, s, dir, nil, wantHeads, "", startNote(5))
+	wrongHead := login4
+	wrongHead.Hash = wrong
+	checkVerify(t, s, dir, nil, []audit.Head{wrongHead},
+		`audit log "login": the head kept outside the store is record 4, whose hash is not the hash that the chain start has`,
+		startNote(5))
+
+	// The history goes on: the next record has the hash of the last one, which the head in the table has.
+	update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, "after")) })
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 3 || !strings.HasPrefix(got[2], "login 7 ") {
+		t.Errorf("the login records are %v after a new one", got)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A second call has nothing to delete, and keeps the start.
+	if d, err := compactLoginOf(t, dir, chainTime, nil); err != nil || d.First != 0 {
+		t.Errorf("a second CompactLogin() = %+v, %v", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+}
+
+// headOfLog returns the head of log among heads.
+func headOfLog(t *testing.T, heads []audit.Head, log audit.Log) audit.Head {
+	t.Helper()
+	for _, h := range heads {
+		if h.Log == log {
+			return h
+		}
+	}
+	t.Fatalf("no head of the %s log in %v", log, heads)
+	return audit.Head{}
+}
+
+// TestAuditCompactLoginEvery checks that when every login record is old, the store has none left, VerifyAudit checks the
+// head in the table against the chain start, and the history goes on from that head.
+func TestAuditCompactLoginEvery(t *testing.T) {
+	months := []int{40, 38, 36, 0}
+	login := []bool{true, true, true, false}
+	s, dir, heads := agedStore(t, months, login)
+	wantHeads := headsOf(t, s)
+	activityBefore := recordsOf(t, s, audit.ActivityLog)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 3 || d.Stopped != "" {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 3", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(4))
+	checkVerify(t, s, dir, nil, wantHeads, "", startNote(4))
+	checkVerify(t, s, dir, nil, []audit.Head{headOfLog(t, heads[1], audit.LoginLog)}, "", startNote(4), uncheckedNote(1))
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 0 {
+		t.Errorf("the login records are %v, want none", got)
+	}
+	if got := recordsOf(t, s, audit.ActivityLog); !slices.Equal(got, activityBefore) {
+		t.Errorf("the activity records are %v, want %v", got, activityBefore)
+	}
+	if got := headsOf(t, s); !slices.Equal(got, wantHeads) {
+		t.Errorf("the heads are %v, want %v", got, wantHeads)
+	}
+	checkNoProblem(t, s)
+	update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, "after")) })
+	checkVerify(t, s, dir, nil, nil, "", startNote(4))
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 1 || !strings.HasPrefix(got[0], "login 4 ") {
+		t.Errorf("the login records are %v after a new one", got)
+	}
+}
+
+// TestAuditCompactLoginInterrupted checks the store after a deletion that has stopped between its commit and the end of its
+// compaction: it opens, VerifyAudit passes and tells that the records before the start are still there, and the next call
+// drops them, with the start that the first one wrote, and with one event of the deletion.
+func TestAuditCompactLoginInterrupted(t *testing.T) {
+	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
+	login := []bool{true, false, true, false, true, true, true, true, false}
+	s, dir, _ := agedStore(t, months, login)
+	loginBefore, activityBefore := recordsOf(t, s, audit.LoginLog), recordsOf(t, s, audit.ActivityLog)
+	wantHeads := headsOf(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hookErr := errors.New("hook failed")
+	_, err := compactLoginOf(t, dir, chainTime, func(point string) error {
+		if point == "compact:base" {
+			return hookErr
+		}
+		return nil
+	})
+	if !errors.Is(err, hookErr) {
+		t.Fatalf("CompactLogin() = %v, want the error of the hook", err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(5), leftNote("the records 1 to 4 are", 5))
+	checkVerify(t, s, dir, nil, wantHeads, "", startNote(5), leftNote("the records 1 to 4 are", 5))
+	if got := recordsOf(t, s, audit.LoginLog); !slices.Equal(got, loginBefore) {
+		t.Errorf("the login records are %v, want all of %v", got, loginBefore)
+	}
+	checkNoProblem(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 4 {
+		t.Fatalf("the second CompactLogin() = %+v, %v, want the records 1 to 4", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[4:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	if got := recordsOf(t, s, audit.ActivityLog); !slices.Equal(got, activityBefore) {
+		t.Errorf("the activity records are %v, want %v", got, activityBefore)
+	}
+	deletions := 0
+	for _, e := range allEvents(t, s) {
+		if _, ok := dbwire.ParseDeleted(e.Data); ok {
+			deletions++
+		}
+	}
+	rows := 0
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		tx.Scan(tableChains, nil, func(_, _ []byte) bool { rows++; return true })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if deletions != 1 || rows != 1 {
+		t.Errorf("the store has %d events of a deletion and %d rows of the table chains, want one each", deletions, rows)
+	}
+	checkNoProblem(t, s)
+}
+
+// acceptBreakOf runs AcceptBreak at chainTime in a maintenance of the data directory dir, which no process has open.
+func acceptBreakOf(t *testing.T, dir string, log audit.Log, n uint64) error {
+	t.Helper()
+	return dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
+		func(m *logdb.Maintenance) error {
+			return dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+		})
+}
+
+// closeAcceptReopen closes s, accepts the break at record n of log in its data directory dir, and opens the store again.
+func closeAcceptReopen(t *testing.T, s *Store, dir string, log audit.Log, n uint64) *Store {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptBreakOf(t, dir, log, n); err != nil {
+		t.Fatalf("AcceptBreak(%s, %d) = %v", log, n, err)
+	}
+	return reopenLog(t, dir, logdb.Options{})
+}
+
+// TestAuditAcceptBreak checks the store after the acceptance of a break, which whiteroom-db accept-break does: a record of
+// each log is rewritten through the engine, so that the next one does not follow it, and VerifyAudit fails there. After the
+// acceptance of the break at that record VerifyAudit passes and tells the break; a later rewrite of another record is still
+// found; a rewrite of the accepted record itself undoes the acceptance, until it is accepted again; and the log goes on.
+func TestAuditAcceptBreak(t *testing.T) {
+	type replacement struct {
+		position uint64 // the position of the record, as rewriteRecords has it
+		old, new string // the text of the record that is replaced
+	}
+	for _, tt := range []struct {
+		name   string
+		log    audit.Log
+		n      uint64      // the number of the record that is the break
+		first  replacement // the record before it, which is rewritten: the record n does not follow it
+		broken string      // the failure of VerifyAudit that comes of it
+		// The record n itself, which is rewritten to undo the acceptance, with the failure that comes of it at the record after
+		// it, and another record that is rewritten after the acceptance, with the failure that comes of that.
+		accepted, other   replacement
+		nextErr, otherErr string
+		more              audit.Record // a record that the store adds
+	}{
+		{"login", audit.LoginLog, 2, replacement{3, `"login":"0"`, `"login":"X"`},
+			`audit log "login": record 2 (event 6): prev is not the hash of record 1`,
+			replacement{6, `"login":"2"`, `"login":"Z"`}, replacement{7, `"event":"3"`, `"event":"Q"`},
+			`audit log "login": record 3 (event 9): prev is not the hash of record 2`,
+			`audit log "activity": record 6 (event 8): prev is not the hash of record 5`, loginRecord(audit.LoginFailure, "more")},
+		{"activity", audit.ActivityLog, 4, replacement{4, `"event":"1"`, `"event":"X"`},
+			`audit log "activity": record 4 (event 5): prev is not the hash of record 3`,
+			replacement{5, `"event":"2"`, `"event":"Y"`}, replacement{6, `"login":"2"`, `"login":"Z"`},
+			`audit log "activity": record 5 (event 7): prev is not the hash of record 4`,
+			`audit log "login": record 3 (event 9): prev is not the hash of record 2`, eventRecord("more")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rewrite := func(t *testing.T, s *Store, dir string, events []logdb.Event, r replacement) *Store {
+				t.Helper()
+				data := replaced(t, events[r.position-1].Data, r.old, r.new)
+				return closeAndRewrite(t, s, dir, rewriteRecords(map[uint64][]byte{r.position: data}, nil, nil))
+			}
+			// start returns a store whose break at the record n is accepted.
+			start := func(t *testing.T) (s *Store, dir string, events []logdb.Event, heads []audit.Head) {
+				t.Helper()
+				s, dir, heads = auditFixture(t)
+				events = rawEvents(t, s)
+				s = rewrite(t, s, dir, events, tt.first)
+				checkVerify(t, s, dir, events, nil, tt.broken)
+				checkVerify(t, s, dir, events, heads, tt.broken)
+				return closeAcceptReopen(t, s, dir, tt.log, tt.n), dir, events, heads
+			}
+			note := breakNote(string(tt.log), tt.n)
+
+			t.Run("accepted", func(t *testing.T) {
+				s, dir, events, heads := start(t)
+				checkVerify(t, s, dir, events, nil, "", note)
+				checkVerify(t, s, dir, events, heads, "", note)
+				checkNoProblem(t, s)
+				// The log goes on from its head: the new record has the hash of the last one.
+				update(t, s, func(tx *Tx) error { return tx.Record(tt.more) })
+				checkVerify(t, s, dir, events, nil, "", note)
+			})
+			t.Run("another record is rewritten", func(t *testing.T) {
+				s, dir, events, _ := start(t)
+				s = rewrite(t, s, dir, events, tt.other)
+				checkVerify(t, s, dir, events, nil, tt.otherErr, note)
+			})
+			t.Run("the accepted record is rewritten", func(t *testing.T) {
+				s, dir, events, _ := start(t)
+				s = rewrite(t, s, dir, events, tt.accepted)
+				// Its hash is no longer that of the acceptance: the break is reported again, and told no more.
+				checkVerify(t, s, dir, events, nil, tt.broken)
+				// The operator accepts it as it is now, and the record after it, which has the hash of the one that was there,
+				// does not follow it.
+				s = closeAcceptReopen(t, s, dir, tt.log, tt.n)
+				checkVerify(t, s, dir, events, nil, tt.nextErr, note)
+				s = closeAcceptReopen(t, s, dir, tt.log, tt.n+1)
+				checkVerify(t, s, dir, events, nil, "", note, breakNote(string(tt.log), tt.n+1))
+			})
+		})
+	}
+}
+
+// TestAuditAcceptBreakThenCompact checks the store after a deletion of the old login records that goes across an accepted
+// break: VerifyAudit passes and tells the start of the chain and not the break, which is gone with its record, and the row
+// and the event of the acceptance stay, which VerifyAudit ignores.
+func TestAuditAcceptBreakThenCompact(t *testing.T) {
+	months := []int{40, 39, 38, 37, 36, 35, 5, 0}
+	login := []bool{true, true, true, true, true, true, true, true}
+	s, dir, _ := agedStore(t, months, login)
+	// The record 2 of the login history is another one, and the record 3 is the break.
+	var data []byte
+	var number uint64
+	for _, e := range rawEvents(t, s) {
+		if r, err := audit.Decode(e.Data); err == nil && r.Log == audit.LoginLog && r.N == 2 {
+			data, number = changedRecord(t, e.Data, func(r *audit.Record) { r.Login = "forged" }), e.Number
+		}
+	}
+	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{number: data}, nil, nil))
+	checkVerify(t, s, dir, nil, nil, fmt.Sprintf(`audit log "login": record 3 (event %d): prev is not the hash of record 2`,
+		eventOf(t, s, audit.LoginLog, 3)))
+	s = closeAcceptReopen(t, s, dir, audit.LoginLog, 3)
+	checkVerify(t, s, dir, nil, nil, "", breakNote("login", 3))
+	loginBefore := recordsOf(t, s, audit.LoginLog)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 6 || d.Stopped != "" {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 6, across the break", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(7))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[6:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	accepted, rows := 0, 0
+	for _, e := range allEvents(t, s) {
+		if a, ok := dbwire.ParseAccepted(e.Data); ok && a.Log == dbwire.LogLogin && a.N == 3 {
+			accepted++
+		}
+	}
+	if err := logDB(t, s).View(t.Context(), func(tx *logdb.Tx) error {
+		tx.Scan(tableChains, nil, func(_, _ []byte) bool { rows++; return true })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 1 || rows != 2 {
+		t.Errorf("the store has %d events of the acceptance and %d rows of the table chains, want 1 and 2 (the start and the break)",
+			accepted, rows)
+	}
+	checkNoProblem(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The record is gone: its break cannot be accepted again.
+	want := "record 3 of the audit log login is not in the store: the records before record 7 were deleted"
+	if err := acceptBreakOf(t, dir, audit.LoginLog, 3); err == nil || err.Error() != want {
+		t.Errorf("AcceptBreak() of the record that was deleted = %v, want %q", err, want)
+	}
+}
+
+// TestAuditCompactLoginOlderSchema checks that a compact of a store of the table schema 7 drops no login record, and that
+// once its writer has opened it, which upgrades it to the schema 8, the next compact drops them and VerifyAudit passes.
+func TestAuditCompactLoginOlderSchema(t *testing.T) {
+	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
+	login := []bool{true, false, true, false, true, true, true, true, false}
+	s, dir, _ := agedStore(t, months, login)
+	loginBefore := recordsOf(t, s, audit.LoginLog)
+	rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaSchema), []byte{7}) })
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 0 || d.Last != 0 || d.Schema != 7 {
+		t.Fatalf("CompactLogin() of a store of the schema 7 = %+v, %v, want nothing dropped and the schema 7", d, err)
+	}
+	r := openReaderOf(t, dir)
+	checkVerify(t, r, dir, nil, nil, "")
+	if got := recordsOf(t, r, audit.LoginLog); !slices.Equal(got, loginBefore) {
+		t.Errorf("the login records are %v, want all of %v", got, loginBefore)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The writer upgrades the store.
+	w := reopenLog(t, dir, logdb.Options{})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d, err = compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 4 || d.Schema != 0 {
+		t.Fatalf("CompactLogin() after the upgrade = %+v, %v, want the records 1 to 4", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[4:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	checkNoProblem(t, s)
 }

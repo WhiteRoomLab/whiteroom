@@ -6,6 +6,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -15,16 +19,26 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/content"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver/dbtest"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/store"
 	"github.com/WhiteRoomLab/whiteroom/internal/store/storetest"
 )
 
 // noteLine starts the line that whiteroom doctor writes on stderr when it has not checked the published documents.
 const noteLine = "whiteroom doctor: note: "
+
+// The IDs of the revisions and the user of the tests that make a history in the sample site.
+const (
+	doctorUser      = "usr_01JB8T7H4MA2C5E8G1J4K7N3P6"
+	doctorRevision  = "rev_01JE0000000000000000000091"
+	doctorRevision2 = "rev_01JE0000000000000000000092"
+)
 
 // doctorOn runs whiteroom doctor on the daemon db, with the arguments args and the text stdin as the standard input, and
 // checks that the data directory is as it was: no file is made, removed or changed in it, with the hash of each. A directory
@@ -290,6 +304,97 @@ func TestDoctorProblems(t *testing.T) {
 		problems := checkProblems(t, "an original that has other bytes", s.db, code, stdout, stderr, false, "original")
 		if len(problems) == 1 && !strings.Contains(problems[0], hash) {
 			t.Errorf("the problem %q does not name the original %s", problems[0], hash)
+		}
+	})
+
+	t.Run("an original that only an earlier version of a medium refers to", func(t *testing.T) {
+		s := initSample(t)
+		w, err := storetest.Open(s.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The first medium gets another original, so that its original is the one of its first version alone.
+		var id string
+		var data []byte
+		if err := w.View(t.Context(), func(tx *store.Tx) error {
+			docs, err := tx.Documents(content.RefMedia)
+			if err != nil {
+				return err
+			}
+			if len(docs) == 0 {
+				return fmt.Errorf("the sample site has no medium")
+			}
+			id, data = docs[0].ID, docs[0].Data
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var m struct {
+			Hash string `json:"hash"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil || m.Hash == "" {
+			t.Fatalf("the medium %s: %v, with the hash %q", id, err, m.Hash)
+		}
+		old := m.Hash
+		replaced, err := w.PutOriginal(t.Context(), strings.NewReader("a new original of the first medium"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Update(t.Context(), func(tx *store.Tx) error {
+			if _, err := tx.Put(content.RefMedia, id, bytes.Replace(data, []byte(old), []byte(replaced.Hash), 1), doctorUser); err != nil {
+				return err
+			}
+			return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		digits := strings.TrimPrefix(old, "sha256:")
+		if err := os.Remove(filepath.Join(s.data, "files", digits[:2], digits)); err != nil {
+			t.Fatal(err)
+		}
+		code, stdout, stderr := doctorOn(t, s.database(), "")
+		problems := checkProblems(t, "an original of an earlier version", s.db, code, stdout, stderr, true, "original")
+		if len(problems) == 1 && (!strings.Contains(problems[0], old) || !strings.Contains(problems[0], "only of earlier versions: media "+id+" version ")) {
+			t.Errorf("the problem %q does not name the original %s as one that only a version of the medium %s refers to", problems[0], old, id)
+		}
+	})
+
+	t.Run("an object of an earlier revision that is gone", func(t *testing.T) {
+		s := initSample(t)
+		entry := entryIDs(t, s.data)[0]
+		// A revision of 80 KiB, which the engine keeps in a file of its own, and then a later one.
+		first := []byte(`{"schemaVersion": 1, "title": "` + strings.Repeat("x", 80<<10) + `"}`)
+		w, err := storetest.Open(s.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Update(t.Context(), func(tx *store.Tx) error {
+			if _, err := tx.AddRevision(entry, doctorRevision, first, doctorUser); err != nil {
+				return err
+			}
+			if _, err := tx.AddRevision(entry, doctorRevision2, []byte(`{"schemaVersion": 1, "title": "later"}`), doctorUser); err != nil {
+				return err
+			}
+			return tx.Record(audit.Record{Log: audit.ActivityLog, Actor: audit.System, Action: audit.StoreWrite})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		digits := fmt.Sprintf("%x", sha256.Sum256(first))
+		if err := os.Remove(filepath.Join(s.data, "logdb", "objects", digits[:2], digits)); err != nil {
+			t.Fatal(err)
+		}
+		code, stdout, stderr := doctorOn(t, s.database(), "")
+		problems := checkProblems(t, "an object that is gone", s.db, code, stdout, stderr, true, "engine", "history")
+		if len(problems) == 2 && !strings.HasPrefix(problems[1], "history: revisions "+doctorRevision+": ") {
+			t.Errorf("the problem %q does not name the revision %s", problems[1], doctorRevision)
 		}
 	})
 
@@ -932,4 +1037,166 @@ func doctorUsageText(t *testing.T) string {
 		t.Fatalf("whiteroom doctor -h = %d, with stdout %q and stderr:\n%s\nwant 0, and the usage on stderr", code, stdout, help)
 	}
 	return help
+}
+
+// notesOf returns the lines that whiteroom doctor wrote as notes on stderr, without what starts each of them.
+func notesOf(t *testing.T, stderr string) []string {
+	t.Helper()
+	var notes []string
+	for _, line := range splitLines(stderr) {
+		text, ok := strings.CutPrefix(strings.TrimSuffix(line, "\n"), noteLine)
+		if !ok {
+			t.Errorf("whiteroom doctor wrote %q on stderr, which is no note", line)
+		}
+		notes = append(notes, text)
+	}
+	return notes
+}
+
+// injectedTime is the time of the rows and the events that the tests of the notes make.
+var injectedTime = time.Date(2026, 11, 20, 10, 20, 30, 0, time.UTC)
+
+// injectChains puts rows of the table chains and the events of the daemon for them in the store of the data directory data,
+// as the maintenance of the daemon does, past the rules of the daemon that a client keeps to.
+func injectChains(t *testing.T, data string, rows []dbtest.Row, events ...[]byte) {
+	t.Helper()
+	h, err := dbtest.Acquire(data, dbtest.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Release() }()
+	if err := h.Inject(t.Context(), rows, events); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDoctorNotes checks that whiteroom doctor tells what is no problem on stderr, a line each that starts with the note,
+// and neither counts it nor changes its exit code: the chain start of the login history, the records that a deletion has left,
+// a break that was accepted, and the heads that it cannot check, which a deletion has made.
+func TestDoctorNotes(t *testing.T) {
+	login := func(name string) audit.Record {
+		return audit.Record{Log: audit.LoginLog, Action: audit.Login, Login: name, Client: audit.Client{Addr: "192.0.2.1", UserAgent: "test"}}
+	}
+	hashOfHead := func(h audit.Head) [32]byte { return h.Hash }
+	headsOf := func(t *testing.T, data string) map[audit.Log]audit.Head {
+		t.Helper()
+		s, err := storetest.OpenReader(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = s.Close() }()
+		heads, err := s.AuditHeads(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[audit.Log]audit.Head{}
+		for _, h := range heads {
+			got[h.Log] = h
+		}
+		return got
+	}
+	at := injectedTime.Format(time.RFC3339)
+
+	t.Run("a deletion that has not been compacted, and a break", func(t *testing.T) {
+		s := initSample(t)
+		w, err := storetest.Open(s.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Update(t.Context(), func(tx *store.Tx) error {
+			return errors.Join(tx.Record(login("a")), tx.Record(login("b")))
+		})
+		if err := errors.Join(err, w.Close()); err != nil {
+			t.Fatal(err)
+		}
+		heads := headsOf(t, s.data)
+		last, activity := heads[audit.LoginLog], heads[audit.ActivityLog]
+		if last.N != 2 {
+			t.Fatalf("the login history has the head %+v, want record 2", last)
+		}
+		// The deletion of both records has set its start, and has not been compacted; the break of the last record of the
+		// activity log is accepted.
+		injectChains(t, s.data, []dbtest.Row{
+			{Table: dbwire.TableChains, Key: dbwire.ChainStartKey(dbwire.LogLogin), Value: dbwire.AppendChainStart(nil,
+				dbwire.ChainStart{First: 3, Prev: hashOfHead(last), At: injectedTime})},
+			{Table: dbwire.TableChains, Key: dbwire.ChainBreakKey(dbwire.LogActivity, activity.N), Value: dbwire.AppendChainBreak(nil,
+				dbwire.ChainBreak{Hash: activity.Hash, At: injectedTime})},
+		}, dbwire.AppendDeleted(nil, dbwire.Deleted{Log: dbwire.LogLogin, First: 3, Prev: last.Hash, Cutoff: injectedTime.AddDate(-1, 0, 0)}),
+			dbwire.AppendAccepted(nil, dbwire.Accepted{Log: dbwire.LogActivity, N: activity.N, Hash: activity.Hash}),
+			dbwire.AppendMark(nil, injectedTime))
+
+		file := writeHeads(t, strings.Join([]string{last.String(), activity.String()}, "\n")+"\n")
+		for _, args := range [][]string{{s.site}, {"-heads", file, s.site}} {
+			code, stdout, stderr := doctorOn(t, s.database(), "", args...)
+			checkClean(t, "a deletion that has not been compacted", s.db, code, stdout, "", false)
+			want := []string{
+				`audit log "login": the records before record 3 were deleted at ` + at + `; the log is checked from record 3`,
+				fmt.Sprintf(`audit log "activity": the break at record %d was accepted at %s; the log is checked again from that record`,
+					activity.N, at),
+				`audit log "login": the records 1 to 2 are still in the store after the deletion of the records before record 3; ` +
+					`the next whiteroom-db compact removes them`,
+			}
+			if got := notesOf(t, stderr); !slices.Equal(got, want) {
+				t.Errorf("%v: the notes are\n%s\nwant\n%s", args, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		}
+		// The notes are no problems, and so are not counted when there are some.
+		dropEntryRows(t, s.data, entryIDs(t, s.data)[0])
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		checkProblems(t, "a problem and notes", s.db, code, stdout, "", false, "index")
+		if got := len(notesOf(t, stderr)); got != 3 {
+			t.Errorf("whiteroom doctor wrote %d notes on stderr, want 3", got)
+		}
+	})
+
+	t.Run("heads that name deleted records", func(t *testing.T) {
+		// A login history whose records before record 3 are gone: its first record, with the hash of the deleted one before it.
+		s := initSample(t)
+		before := sha256.Sum256([]byte("the deleted record 2"))
+		data, err := audit.Encode(audit.Record{Log: audit.LoginLog, N: 3, Prev: "sha256:" + hex.EncodeToString(before[:]), At: injectedTime,
+			Action: audit.Login, Login: "a", Client: audit.Client{Addr: "192.0.2.1", UserAgent: "test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		head := audit.Head{Log: audit.LoginLog, N: 3, Hash: sum}
+		injectChains(t, s.data, []dbtest.Row{
+			{Table: dbwire.TableChains, Key: dbwire.ChainStartKey(dbwire.LogLogin), Value: dbwire.AppendChainStart(nil,
+				dbwire.ChainStart{First: 3, Prev: before, At: injectedTime})},
+			{Table: dbwire.TableMeta, Key: []byte("loginLog"), Value: append(binary.AppendUvarint(nil, 3), sum[:]...)},
+			{Table: dbwire.TableHeads, Key: []byte(audit.LoginLog), Value: []byte(head.String())},
+		}, data, dbwire.AppendMark(nil, injectedTime))
+
+		old := func(n uint64, hash [32]byte) string {
+			return audit.Head{Log: audit.LoginLog, N: n, Hash: hash}.String() + "\n"
+		}
+		// Record 2 is the one before the first: its head is checked, and so is that of record 3, which is there.
+		file := writeHeads(t, old(1, sum)+old(1, before)+old(2, before)+head.String()+"\n")
+		code, stdout, stderr := doctorOn(t, s.database(), "", "-heads", file, s.site)
+		checkClean(t, "heads of deleted records", s.db, code, stdout, "", false)
+		want := []string{
+			`audit log "login": the records before record 3 were deleted at ` + at + `; the log is checked from record 3`,
+			"2 of the heads kept outside the store name records that the store no longer has, so they are not checked",
+		}
+		if got := notesOf(t, stderr); !slices.Equal(got, want) {
+			t.Errorf("the notes are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+
+		// The hash of the head of record 2 is that of the start, or the log is not the one that the head was kept of.
+		file = writeHeads(t, old(2, sum))
+		code, stdout, stderr = doctorOn(t, s.database(), "", "-heads", file, s.site)
+		problems := checkProblems(t, "a head of the record before the first", s.db, code, stdout, "", false, "audit")
+		if len(problems) == 1 && !strings.Contains(problems[0], "whose hash is not the hash that the chain start has") {
+			t.Errorf("the problem %q does not tell that the hash is not that of the start", problems[0])
+		}
+		if got := len(notesOf(t, stderr)); got != 1 {
+			t.Errorf("whiteroom doctor wrote %d notes on stderr, want the one of the start", got)
+		}
+	})
+
+	t.Run("a store that has none", func(t *testing.T) {
+		s := initSample(t)
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		checkClean(t, "no notes", s.db, code, stdout, stderr, false)
+	})
 }

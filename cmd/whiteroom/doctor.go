@@ -30,7 +30,9 @@ which starts with the part that it is in:
             is checked
   engine    the log and the objects of the storage engine
   index     the rows of the index, against the documents
-  original  the originals of the media that the documents refer to
+  history   the rows of the documents against the last versions of their histories,
+            the objects of every version and revision, and the lists of revisions
+  original  the originals that the media refer to, in every version
   audit     the chains of the audit logs, and the heads given with -heads
   heads     a line of the file of -heads that is not a head, or no head in it
   site      what is published, which a build checks first: the published documents
@@ -41,13 +43,20 @@ The last line tells how many problems there are, or that the command stopped aft
 could not be made (what could not be made is on the standard error), and 2 for a
 usage error.
 
+What is no problem but worth knowing goes to the standard error as a line that
+starts with "whiteroom doctor: note:", and is not counted: that the oldest records
+of the login history have been deleted (whiteroom-db compact), and that a break of
+the chain of an audit log was accepted.
+
 The store is read through the daemon as a reader: nothing is written in it, nothing
 is repaired, and a whiteroom serve admin may run on it. The command does not look
-at the originals that only old versions refer to, at drafts, at the templates of
-the pages and the images (what a build does after the checks), and at the accounts
-and the sessions; to check those, build with -db into other -out and -cache
-directories. To check a copy that whiteroom backup has made, run a whiteroom-db
-serve on it with another directory of sockets, and give that directory.
+at drafts, at the templates of the pages and the images (what a build does after
+the checks), and at the accounts and the sessions; to check those, build with -db
+into other -out and -cache directories. The engine area shows its first problem
+only: whiteroom-db check shows them all, on a data directory that no daemon has
+open. To check a copy that whiteroom backup has made, run whiteroom-db check on
+it, then a whiteroom-db serve on it with another directory of sockets, and give
+that directory.
 
 With SITE, or site in the config file, the published documents are checked as a
 build from the store checks them: from SITE it reads only the schema file
@@ -63,8 +72,10 @@ url of the settings is, and is used with SITE only.
 standard error, or whiteroom backup to its standard output, which were kept
 outside the store: the lines that have "audit head " are used, the others
 skipped, so that a log can be given as it is. Each must be the hash of the record
-of its number. After a restore, give the heads that whiteroom backup printed, not
-those that the daemon wrote after the copy was taken.
+of its number. A head of the login history that names a record that a deletion has
+removed cannot be checked, but for the one of the record before the first that is
+left; a note counts them. After a restore, give the heads that whiteroom backup
+printed, not those that the daemon wrote after the copy was taken.
 
 With -config, the items db, site, theme and url of the YAML file give what -db,
 SITE, -theme and -url leave out; the other items are checked and not used: one file
@@ -175,7 +186,8 @@ func doctor(ctx context.Context, args []string, e env, limit int) int {
 		return fail(err)
 	}
 	if !rep.full() {
-		if err := st.VerifyAudit(ctx, heads); err != nil {
+		note := func(text string) { printf(e.stderr, "%s: note: %s\n", flags.Name(), text) }
+		if err := st.VerifyAuditNotes(ctx, heads, note); err != nil {
 			if ctx.Err() != nil || errors.Is(err, store.ErrUnavailable) {
 				return fail(err)
 			}

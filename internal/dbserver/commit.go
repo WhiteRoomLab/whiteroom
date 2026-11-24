@@ -175,6 +175,8 @@ func checkOps(ops []dbwire.Op, hasStaged bool) *refusal {
 		case dbwire.OpPut, dbwire.OpDelete:
 			rows = true
 			switch {
+			case o.Table == dbwire.TableChains:
+				return &refusal{dbwire.CodeRule, fmt.Sprintf("op %d: table %d is written only by the maintenance of the daemon", i, o.Table)}
 			case o.Table == 0:
 				return &refusal{dbwire.CodeLimit, fmt.Sprintf("op %d: invalid table %d", i, o.Table)}
 			case o.Kind == dbwire.OpDelete && dbwire.AppendOnly(o.Table):

@@ -215,6 +215,149 @@ func TestMaintainErrors(t *testing.T) {
 	})
 }
 
+// TestMaintainEventsAndUpdate: Events reads the events as the DB does; Update commits as the DB does, durably before
+// any Compact, and what a Compact then keeps; after a failed sync it fails as the DB does, and nothing is written.
+func TestMaintainEventsAndUpdate(t *testing.T) {
+	ctx := context.Background()
+	fsys, db := newSim(t, Options{})
+	if err := db.Update(ctx, func(tx *Tx) error {
+		if err := tx.Put(1, []byte("a"), []byte("1")); err != nil {
+			return err
+		}
+		if err := tx.AppendEvent([]byte("first")); err != nil {
+			return err
+		}
+		return tx.AppendEvent([]byte("second"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	putKey(t, db, 1, "b", "2")
+	if err := db.Update(ctx, appendF("third")); err != nil {
+		t.Fatal(err)
+	}
+	want := eventLines(t, db)
+	if want != "1/1=first\n2/1=second\n3/3=third" {
+		t.Fatalf("the events are %q", want)
+	}
+	closeDB(t, db)
+
+	maintain(t, fsys, Options{}, func(m *Maintenance) error {
+		var got []string
+		if err := m.Events(ctx, func(e Event) bool {
+			got = append(got, fmt.Sprintf("%d/%d=%s", e.Number, e.Seq, e.Data))
+			return true
+		}); err != nil || strings.Join(got, "\n") != want {
+			t.Errorf("Events() gave %q, %v, want %q", got, err, want)
+		}
+		got = nil
+		if err := m.Events(ctx, func(e Event) bool {
+			got = append(got, string(e.Data))
+			return len(got) < 2
+		}); err != nil || !slices.Equal(got, []string{"first", "second"}) {
+			t.Errorf("Events() that stops after two gave %q, %v", got, err)
+		}
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		if err := m.Events(canceled, func(Event) bool { return true }); !errors.Is(err, context.Canceled) {
+			t.Errorf("Events() with a canceled context = %v", err)
+		}
+		if err := m.Update(canceled, putF(1, "c", "3")); !errors.Is(err, context.Canceled) {
+			t.Errorf("Update() with a canceled context = %v", err)
+		}
+
+		// The Update commits at once: its row and events are in the Views and Events of the store, and durable.
+		if err := m.Update(ctx, func(tx *Tx) error {
+			if err := tx.Put(1, []byte("c"), []byte("3")); err != nil {
+				return err
+			}
+			return tx.AppendEvent([]byte("fourth"))
+		}); err != nil {
+			t.Fatalf("Update() = %v", err)
+		}
+		seen := ""
+		if err := m.View(ctx, func(tx *Tx) error {
+			v, _ := tx.Get(1, []byte("c"))
+			seen = string(v)
+			return nil
+		}); err != nil || seen != "3" {
+			t.Errorf("a View after the Update sees %q, %v", seen, err)
+		}
+		got = nil
+		if err := m.Events(ctx, func(e Event) bool {
+			got = append(got, fmt.Sprintf("%d/%d=%s", e.Number, e.Seq, e.Data))
+			return true
+		}); err != nil || got[len(got)-1] != "4/4=fourth" {
+			t.Errorf("Events() after the Update gave %q, %v", got, err)
+		}
+		// An error of f commits nothing, and an Update that has nothing to write is no commit.
+		boom := errors.New("boom")
+		if err := m.Update(ctx, func(tx *Tx) error {
+			_ = tx.Put(1, []byte("d"), []byte("4"))
+			return boom
+		}); !errors.Is(err, boom) {
+			t.Errorf("Update() with an error of f = %v", err)
+		}
+		if err := m.Update(ctx, func(*Tx) error { return nil }); err != nil {
+			t.Errorf("Update() that writes nothing = %v", err)
+		}
+		return nil
+	})
+	afterUpdate := "1/a=1\n1/b=2\n1/c=3"
+	for _, m := range []simfs.Model{keepAll(fsys), loseAll} {
+		crashed := reopen(t, fsys.Crash(m), Options{})
+		if got := dump(t, crashed); got != afterUpdate {
+			t.Errorf("after the crash %s the rows are:\n%s\nwant:\n%s", m.Name, got, afterUpdate)
+		}
+		if got := eventLines(t, crashed); got != want+"\n4/4=fourth" {
+			t.Errorf("after the crash %s the events are %q", m.Name, got)
+		}
+		closeDB(t, crashed)
+	}
+
+	// A Compact after an Update keeps the row and the event, with their numbers.
+	maintain(t, fsys, Options{}, func(m *Maintenance) error {
+		if err := m.Update(ctx, func(tx *Tx) error {
+			if err := tx.Put(1, []byte("e"), []byte("5")); err != nil {
+				return err
+			}
+			return tx.AppendEvent([]byte("fifth"))
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return m.Compact(ctx, Rewrite{})
+	})
+	db = reopen(t, fsys.Crash(loseAll), Options{})
+	if got := dump(t, db); got != afterUpdate+"\n1/e=5" {
+		t.Errorf("after the Compact the rows are:\n%s", got)
+	}
+	if got := eventLines(t, db); got != want+"\n4/4=fourth\n5/5=fifth" {
+		t.Errorf("after the Compact the events are %q", got)
+	}
+	closeDB(t, db)
+
+	// After a failed sync, Update fails with the error of the DB, writes nothing, and the Maintenance goes on failing.
+	err := Maintain(ctx, fsys, Options{}, func(m *Maintenance) error {
+		fsys.Inject(simfs.Fault{Match: func(op simfs.Op) bool { return op.Kind == simfs.OpSync && strings.HasPrefix(op.Path, "log/") },
+			Err: syscall.EIO, Times: 1})
+		cause := m.Update(ctx, putF(1, "f", "6"))
+		called := false
+		again := m.Update(ctx, func(tx *Tx) error {
+			called = true
+			return tx.Put(1, []byte("g"), []byte("7"))
+		})
+		if !errors.Is(cause, ErrFailed) || !errors.Is(cause, syscall.EIO) || !errors.Is(again, ErrFailed) || called {
+			t.Errorf("Update() after a failed sync = %v, then %v (f called: %v)", cause, again, called)
+		}
+		if err := m.Compact(ctx, Rewrite{}); !errors.Is(err, ErrFailed) {
+			t.Errorf("Compact() after a failed Update = %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("Maintain() = %v", err)
+	}
+}
+
 // TestMaintainCompactAndGC removes what a failed commit, crashes and a compaction leave, and keeps what the state has.
 func TestMaintainCompactAndGC(t *testing.T) {
 	ctx := context.Background()

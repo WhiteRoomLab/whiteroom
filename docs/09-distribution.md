@@ -30,7 +30,7 @@
 
 ### 9.4 コマンド（案）
 
-コマンドは、2つの実行ファイルに分ける。`whiteroom`（`cmd/whiteroom`。cgoなしでビルドできる）は、サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）に、保存先（3.4）とアカウント（7.3）を扱うコマンド（`init`・`serve admin`・保存先からの `build`・`backup`・`doctor`・`account`）と、リリースを戻す `rollback`（4.4）を足したもの。管理用のサーバー（9.6）と管理のAPI（9.7）は、`whiteroom serve admin` が動かす。`whiteroom-db`（`cmd/whiteroom-db`）は、保存の層のデーモン（3.6）で、デーモンを動かす `serve`、データのディレクトリを作る `init`、圧縮と回収の `compact`・`gc`（3.6の「保守の口」）を持つ。データのディレクトリを開くのは、`whiteroom-db` だけで、`whiteroom` のコマンドは、データのディレクトリを知らず、デーモンのソケットのディレクトリ（`-db DIR`。設定の `db`）に、ソケットで繋ぐ（3.6の「接続」）。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。issue #109 の計画への答えで決めたこと（コマンドがデーモンを指す形・データのディレクトリを作る人・1つの設定ファイルを2つの実行ファイルで使うこと・一時のファイルの置き場所・起動の順）も、案（3.6）。
+コマンドは、2つの実行ファイルに分ける。`whiteroom`（`cmd/whiteroom`。cgoなしでビルドできる）は、サイトをビルドして公開する `whiteroom build`（4.3）と、公開中のリリースを配信する `whiteroom serve public`（内蔵サーバー。9.5）に、保存先（3.4）とアカウント（7.3）を扱うコマンド（`init`・`serve admin`・保存先からの `build`・`backup`・`doctor`・`account`）と、リリースを戻す `rollback`（4.4）を足したもの。管理用のサーバー（9.6）と管理のAPI（9.7）は、`whiteroom serve admin` が動かす。`whiteroom-db`（`cmd/whiteroom-db`）は、保存の層のデーモン（3.6）で、デーモンを動かす `serve`、データのディレクトリを作る `init`、圧縮と回収の `compact`・`gc`、何も変えずに確かめる `check`、読める鎖の切れ目を認める `accept-break`（3.6の「保守の口」）を持つ。データのディレクトリを開くのは、`whiteroom-db` だけで、`whiteroom` のコマンドは、データのディレクトリを知らず、デーモンのソケットのディレクトリ（`-db DIR`。設定の `db`）に、ソケットで繋ぐ（3.6の「接続」）。この節の規則は、「決定済み」と書いたもの（9.1）のほかは、どれも仮に決めたもの（案）。issue #109 の計画への答えで決めたこと（コマンドがデーモンを指す形・データのディレクトリを作る人・1つの設定ファイルを2つの実行ファイルで使うこと・一時のファイルの置き場所・起動の順）も、案（3.6）。
 
 **名前とサブコマンド**
 
@@ -59,27 +59,29 @@
 | --- | --- |
 | `whiteroom-db serve [フラグ]` | データのディレクトリを開き、書き手用と読み手用の2つのソケットで、止めるまで配信する。Linuxだけ |
 | `whiteroom-db init [フラグ]` | データのディレクトリを作る（無いか、空のディレクトリ） |
-| `whiteroom-db compact [フラグ]` | ログを新しい世代に書き直し、古い世代を消す。デーモンを止めて動かす |
+| `whiteroom-db compact [フラグ]` | ログを新しい世代に書き直し、古い世代を消し、ログイン履歴の、1年より古い記録を落とす。デーモンを止めて動かす |
 | `whiteroom-db gc [フラグ]` | 状態が要らないファイルを消す。デーモンを止めて動かす |
+| `whiteroom-db check [フラグ]` | データのディレクトリ（写しなど）の問題を探して示す。何も変えない。デーモンを止めて動かす |
+| `whiteroom-db accept-break [フラグ]` | 監査の記録の、読める鎖の切れ目を、認める（記録は変えない）。デーモンを止めて動かす |
 | `whiteroom-db help` | 使い方を示す（`whiteroom-db -h`・`-help`・`--help` も同じ） |
 
-ビルドを止めて再開するコマンド（4.4の「戻す操作」。管理のAPIにはある。9.7）は、まだ無い（6.12の108・240）。`whiteroom rollback` は、出力先の `current` を切り替えるだけで、ビルドを止めない（下記）。ビルドの後にNginxに設定を読み込み直させるコマンド（6.12の113）と、写しから戻すコマンド、保存先を直すコマンド（`backup` の「戻す手順」と6.12の131）も、まだ無い。デーモンを動かしたまま圧縮・回収するコマンドも無い（3.6の「保守の口」。6.12の133）。
+ビルドを止めて再開するコマンド（4.4の「戻す操作」。管理のAPIにはある。9.7）は、まだ無い（6.12の108・240）。`whiteroom rollback` は、出力先の `current` を切り替えるだけで、ビルドを止めない（下記）。ビルドの後にNginxに設定を読み込み直させるコマンド（6.12の113）と、写しから戻すコマンド（`backup` の「戻す手順」。6.12の131・258）も、まだ無い。壊れた保存先を直すコマンドも、まだ無い：エンジンの修復は、#144（6.12の131）。作ったのは、ログイン履歴の古い記録を消す `whiteroom-db compact` と、読める鎖の切れ目を認める `whiteroom-db accept-break` だけ。形の版を移すコマンドも、まだ無い（#145）。デーモンを動かしたまま圧縮・回収するコマンドも無い（3.6の「保守の口」。6.12の133）。
 
 規則：
 
 - フラグ：Goの `flag` パッケージの書き方（`-out DIR`・`-out=DIR`。`--out` も同じ）で、引数（`SITE`・`OUT`）より前に書く。引数より後ろのものは、引数とみなす（引数が多すぎる誤り（`whiteroom build: too many arguments: give at most one SITE, after the flags`）になる）。`whiteroom-db` のサブコマンドは、引数を取らない（フラグだけ。書くと、`whiteroom-db init: unexpected argument "extra": the command takes flags only` と使い方を示して、2で終わる）。
 - 使い方：引数の無い `whiteroom` は、使い方を標準エラーに、`whiteroom help` は標準出力に示す。サブコマンドの `-h`（`whiteroom build -h`・`whiteroom serve admin -h`・`whiteroom account reset -h` など）は、そのサブコマンドの使い方とフラグを、標準エラーに示して、0で終わる。`whiteroom-db` も同じ（引数の無い `whiteroom-db` は、使い方を標準エラーに示して、2で終わる。`whiteroom-db help`・`-h`・`-help`・`--help` は標準出力に、`whiteroom-db serve -h` などは標準エラーに示して、0で終わる）。使い方の文は、各コマンドの `-h` が正で、この節は、その要点と、理由を書く。
 - 知らないもの：知らないコマンドには、`whiteroom: unknown command "x"` と `Run "whiteroom help" for usage.` を示す（`whiteroom-db` は、`whiteroom-db: unknown command "x"` と `Run "whiteroom-db help" for usage.`）。`whiteroom serve` の後ろには、`public` か `admin` を書く（`help`・`-h`・`-help`・`--help` には `whiteroom help` と同じ使い方を、ほかには `whiteroom serve: unknown server "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom serve` だけなら、使い方を標準エラーに示して、2で終わる）。`whiteroom account` の後ろには、`reset` か `delete` を書く（`help`・`-h`・`-help`・`--help` には、`account` の使い方を標準出力に示して、0で終わる。ほかには `whiteroom account: unknown subcommand "x"` と `Run "whiteroom help" for usage.` を示す。`whiteroom account` だけなら、使い方を標準エラーに示して、2で終わる）。
-- 設定ファイル：`-config FILE` を書いたコマンドだけが読む（下記の「設定ファイル」）。`whiteroom` で `-config` を取るのは、`init`・`build`・`serve admin`・`backup`・`doctor`・`account reset`・`account delete`。`rollback` と `serve public` は、設定ファイルを読まない。`whiteroom-db` は、4つのサブコマンドとも取る。
+- 設定ファイル：`-config FILE` を書いたコマンドだけが読む（下記の「設定ファイル」）。`whiteroom` で `-config` を取るのは、`init`・`build`・`serve admin`・`backup`・`doctor`・`account reset`・`account delete`。`rollback` と `serve public` は、設定ファイルを読まない。`whiteroom-db` は、6つのサブコマンドとも取る。
 - パスの `..`：引数・フラグ・設定ファイルのパスの `..` は、OSと同じ順に解く（案）。`link` がシンボリックリンクなら、`link/..` は、`link` の指す先の親で、`link` のあるディレクトリではない。コマンドがパスを繋ぐとき（`SITE` の下の既定の出力先とキャッシュと一時のファイルのディレクトリ、設定ファイルのディレクトリからの相対パス、警告とエラーに示すパス）は、ディレクトリでないもの（シンボリックリンクなど）か、見られないものの後の `..` を、その前の要素と一緒に残し、ほかは文字の上で整える（`SITE` が `link/..` なら、出力先は `link/../out` で、結果の行もそう示す。`conf` がディレクトリなら、`conf/whiteroom.yaml` の `data: ../data` は `data`）。絶対パスにするとき（キャッシュのディレクトリ、`serve public` の出力先、出力先とキャッシュの比べ方（4.3））は、`..` があれば、シンボリックリンクを解いた絶対パスにする。デーモンが開くデータのディレクトリのパスの `..` がシンボリックリンクの後にあれば、それを解いた絶対パスで開く（エンジンは、ファイルの名前を文字の上で繋ぐため。エンジン（3.5）のエラーに示すパスも、その絶対パスから示す）。
 
 **終了コード**
 
 | コード | 意味 |
 | --- | --- |
-| `0` | 成功（使い方を求めた `whiteroom help`・`-h` も。問題を見つけなかった `whiteroom doctor`。止める合図（Ctrl-C・SIGTERM）で止めた `whiteroom serve public`・`whiteroom serve admin`・`whiteroom-db serve`） |
-| `1` | 失敗（サイトの問題、ビルドや配信のエラー、取り消したビルド、デーモンに届かない（2秒待つ）・デーモンが、30秒、何も送らない（長い要求も、デーモンの合図が、30秒、途切れたとき）・書き手の接続が別のプロセスのもの・書き手として繋げないユーザー、`whiteroom-db` がデータのディレクトリを開けない・作れない・別のプロセスが開いている・同期に失敗した後、マシンを再起動していない・データのディレクトリそのものに書けない（どちらも `serve`・`compact`・`gc`。3.6の「同期の失敗」）・マシンの起動ごとのIDを読めない、待ち受けられない、`whiteroom doctor` が問題を見つけたとき、と、確かめを動かせなかったとき） |
-| `2` | 使い方の誤り（引数の無い `whiteroom`・`whiteroom serve`・`whiteroom account`・`whiteroom-db`、知らないコマンド・サブコマンド・フラグ、多すぎる引数・足りない引数、範囲の外の値、データのディレクトリ（`whiteroom-db`）とソケットのディレクトリ（`whiteroom`・`whiteroom-db serve`）を決めていないこと、設定ファイルの問題と、設定ファイルを読めないこと、名前の見つからないユーザーとグループ、通らない `-url`、`-addr` と `-socket` の両方、loopback でない `-addr`、オリジンの無いソケット） |
+| `0` | 成功（使い方を求めた `whiteroom help`・`-h` も。問題を見つけなかった `whiteroom doctor` と `whiteroom-db check`。止める合図（Ctrl-C・SIGTERM）で止めた `whiteroom serve public`・`whiteroom serve admin`・`whiteroom-db serve`） |
+| `1` | 失敗（サイトの問題、ビルドや配信のエラー、取り消したビルド、デーモンに届かない（2秒待つ）・デーモンが、30秒、何も送らない（長い要求も、デーモンの合図が、30秒、途切れたとき）・書き手の接続が別のプロセスのもの・書き手として繋げないユーザー、`whiteroom-db` がデータのディレクトリを開けない・作れない・別のプロセスが開いている・同期に失敗した後、マシンを再起動していない・データのディレクトリそのものに書けない（どちらも `serve`・`compact`・`gc`・`accept-break`。3.6の「同期の失敗」）・マシンの起動ごとのIDを読めない、待ち受けられない、`whiteroom doctor` と `whiteroom-db check` が問題を見つけたとき、と、確かめを動かせなかったとき、`whiteroom-db accept-break` が、切れ目を認められないとき（断る文を、標準エラーに）。`check` は、同期に失敗した後の同じ起動の印を断るが、書けないデータのディレクトリは断らない） |
+| `2` | 使い方の誤り（引数の無い `whiteroom`・`whiteroom serve`・`whiteroom account`・`whiteroom-db`、知らないコマンド・サブコマンド・フラグ、多すぎる引数・足りない引数、範囲の外の値、データのディレクトリ（`whiteroom-db`）とソケットのディレクトリ（`whiteroom`・`whiteroom-db serve`）を決めていないこと、設定ファイルの問題と、設定ファイルを読めないこと、`whiteroom-db accept-break` の `-log` と `-record` の誤り（無い・値が正しくない）、名前の見つからないユーザーとグループ、通らない `-url`、`-addr` と `-socket` の両方、loopback でない `-addr`、オリジンの無いソケット） |
 
 - 使い方の誤りを2に、`-h` を0にするのは、Goの `flag` パッケージと同じ。
 - 標準出力と標準エラーの読む側が終わったとき（パイプの先のプロセスが終わったときなど）：止めるまで動く3つ（`whiteroom-db serve`・`whiteroom serve admin`・`whiteroom serve public`）は、書けなくても、動き続け（書けなかった頭は、次の合図に、また試す）、止める合図で、0で終わる（3.6の「頭の書き出し」。#130）。ほかのコマンドは、Goの既定のまま、ふつうの Unix のコマンドと同じに、SIGPIPE で終わる（`whiteroom doctor | head -n 1` など）。
@@ -90,7 +92,7 @@
 
 環境ごとに変える値（パス・待ち受け・サイトのURL・デーモンの上限など）を、1つのYAMLのファイルに集められる（案。環境ごとの値は6.12の68）。同じファイルを、`whiteroom` にも、`whiteroom-db` にも渡せる（下記）。
 
-- 読むのは、`-config FILE` を書いたコマンドだけ（`whiteroom` の `init`・`build`・`serve admin`・`backup`・`doctor`・`account reset`・`account delete` と、`whiteroom-db` の `serve`・`init`・`compact`・`gc`）。既定の場所（`/etc` やホームのディレクトリなど）は無く、環境変数も読まない。`whiteroom serve public` と `whiteroom rollback` は、読まない（フラグと引数だけで足りる）。
+- 読むのは、`-config FILE` を書いたコマンドだけ（`whiteroom` の `init`・`build`・`serve admin`・`backup`・`doctor`・`account reset`・`account delete` と、`whiteroom-db` の `serve`・`init`・`compact`・`gc`・`check`・`accept-break`）。既定の場所（`/etc` やホームのディレクトリなど）は無く、環境変数も読まない。`whiteroom serve public` と `whiteroom rollback` は、読まない（フラグと引数だけで足りる）。
 - 形：最上位は項目のマッピング。YAMLは、スキーマのファイル（6.6.8）と同じ読み手と範囲で読む（6.6.8の「YAMLの範囲（案）」。`null`・アンカー・複数行の値などは不可）。1MiBまで。`addr: 127.0.0.1:8081` は引用符なしで書ける。`[` で始まる値（`addr: "[::1]:8081"`）は、引用符で囲む。
 - 項目（どれも省ける。同じ意味のフラグ・引数があり、それが勝つ）：
 
@@ -139,7 +141,7 @@
 - 相対パス：設定ファイルの中のパス（`data`・`db`・`site`・`theme`・`out`・`cache`・`tmp`・`socket`）は、そのファイルのディレクトリからのもの（`conf/whiteroom.yaml` の `data: data` は、`conf/data`。`..` は、上記の「パスの `..`」）。絶対パスは、そのまま。`socket` の、`@` で始まる値も、そのまま（`serve admin` が断る。下記）。フラグと引数の相対パスは、作業ディレクトリからのもの。ソケットのパスは、Linuxで107バイトまでなので、`db` と `socket` は、短い絶対パスにする（3.6の「接続」）。
 - どのコマンドが、どの項目を使うか（`○` が使う）：
 
-| 項目 | `whiteroom init` | `build` | `serve admin` | `doctor` | `backup` | `account` | `whiteroom-db serve` | `whiteroom-db init`・`compact`・`gc` |
+| 項目 | `whiteroom init` | `build` | `serve admin` | `doctor` | `backup` | `account` | `whiteroom-db serve` | `whiteroom-db init`・`compact`・`gc`・`check`・`accept-break` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `data` | | | | | | | ○（必須） | ○（必須） |
 | `db` | ○（必須） | ○（あれば、保存先からビルドする） | ○（必須） | ○（必須） | ○（必須） | ○（必須） | ○（必須） | |
@@ -268,6 +270,8 @@ whiteroom-db serve [-config FILE] [-data DIR] [-db DIR] [-writer-user USER] [-wr
 whiteroom-db init [-config FILE] [-data DIR]
 whiteroom-db compact [-config FILE] [-data DIR]
 whiteroom-db gc [-config FILE] [-data DIR]
+whiteroom-db check [-config FILE] [-data DIR]
+whiteroom-db accept-break [-config FILE] [-data DIR] -log LOG -record N
 ```
 
 DBのデーモン（3.6）の実行ファイル。データのディレクトリ（3.4）を開く、ただ1つのプロセスで、`whiteroom` の `init`・`serve admin`・`account` は書き手として、`build -db`・`backup`・`doctor` と、管理用のサーバーの読みは、読み手として、ソケットで繋ぐ。`serve` は、Linuxだけで動く（相手のUnixユーザーを、OSから受け取るため。6.12の283）。値の決め方は、`whiteroom` と同じ：フラグ、設定ファイルの項目、既定の順（上記の「設定ファイル」）。
@@ -298,14 +302,22 @@ DBのデーモン（3.6）の実行ファイル。データのディレクトリ
 - 起動の行：2つのソケットを作ったら、標準出力に1行（`serving the data directory DATA on the sockets in DB (writer: user N)`）。`DATA` と `DB` は、フラグか設定ファイルの値のまま、`N` は、書き手のユーザーの番号。管理用のサーバーと、ほかのコマンドは、この後で動かす（下記の「設定の例」）。
 - 標準エラーに書くもの（3.6の「頭の書き出し」）：(1) 鎖の頭の行（日時なし。7.4）：`audit head <ログ> <番号> sha256:<16進数>`。起動のとき（記録のあるログのすべて）、1分ごと（変わったものだけ）、止めるときに書く。標準エラーを journald などに残して、保存先の外の頭にする（`whiteroom doctor -heads` で照らす。下記。6.12の236）。保存先を作ったばかりで、記録が無いうちは、書かない。(2) ログの行（日時つき）：空きを読めない（`cannot read the free space (…)`）、同期に失敗して、書くのを止めた（`the store has stopped after a sync failed (…); writes are refused until the daemon is started again after a restart of the machine`）、頭を読めない・書けない（`cannot read the heads: …`・`cannot write a head: …`）、同期に失敗して止まったときに、印を残せなかった（`cannot leave the mark data/stopped (…); do not start the daemon on data again before the machine restarts`）、マシンを再起動した後の起動が、前の印を消した（`data: a sync failed at 2026-11-23T08:49:00Z (sync data/logdb/log/…: input/output error) before the machine restarted; the mark data/stopped is removed: check the store with whiteroom doctor`）、前の印を消せなかった（`cannot remove the mark data/stopped: …`）。行に、キーも、値も入らない。書けなくても（読む側の終わったパイプでも）、デーモンは止まらず、終了コードも変わらない（上記の「終了コード」）。
 - 止める：Ctrl-C（SIGINT）か SIGTERM で、待ち受けを閉じ（ソケットのファイルも、ここで消える。書き手のロックのファイルは残る）、動いている要求が終わるのを10秒まで待ち、最後の頭を書き、エンジンを閉じて、0で終わる。2回目のシグナルでは、待たずに、すぐに終わる。強制終了（SIGKILL・電源の断）では、ソケットのファイルが残る（次の起動が、古いものとして置き換える）。止めるのは、管理用のサーバーと、書くコマンドの後（下記の「設定の例」）。
-- 動かし続ける間：デーモンは、データのディレクトリごとに1つ。書き手は1つ：書き手のコマンドは、動いている間、書き手のロックを持ち、別の書き手は、約2秒待って、`DB: another process is connected as the writer` で失敗する（デーモンの `busy` も、同じ文。3.6の「接続」）。同期に失敗したときは、そのデーモンは、書くのを止め（読みは続く。プロセスは終わらないので、systemd の `Restart=always` も、再起動しない）、データのディレクトリに印を残す（3.6の「同期の失敗」）：マシンを再起動するまで、`serve`・`compact`・`gc` は、そのデータのディレクトリを、上記の「起動の順」の文で断る（終了コード1。`Restart=` で起動し直す仕組みは、起動の回数の上限の後に、ユニットを失敗にする）。マシンを再起動してから、起動し直す（3.5の「運用の制約」）：その起動が、印を消して、ログに1行書くので、`whiteroom doctor` で、保存先を確かめる。印は、マシンを再起動する前に、手で消さない。
+- 動かし続ける間：デーモンは、データのディレクトリごとに1つ。書き手は1つ：書き手のコマンドは、動いている間、書き手のロックを持ち、別の書き手は、約2秒待って、`DB: another process is connected as the writer` で失敗する（デーモンの `busy` も、同じ文。3.6の「接続」）。同期に失敗したときは、そのデーモンは、書くのを止め（読みは続く。プロセスは終わらないので、systemd の `Restart=always` も、再起動しない）、データのディレクトリに印を残す（3.6の「同期の失敗」）：マシンを再起動するまで、`serve`・`compact`・`gc`・`accept-break` は、そのデータのディレクトリを、上記の「起動の順」の文で断る（終了コード1。`Restart=` で起動し直す仕組みは、起動の回数の上限の後に、ユニットを失敗にする）。マシンを再起動してから、起動し直す（3.5の「運用の制約」）：その起動が、印を消して、ログに1行書くので、`whiteroom doctor` で、保存先を確かめる。印は、マシンを再起動する前に、手で消さない。
 
-`init`・`compact`・`gc` は、`-config FILE` と `-data DIR` だけを取る（`data` を使う）：
+`init`・`compact`・`gc`・`check` は、`-config FILE` と `-data DIR` だけを取る（`data` を使う）。`accept-break` は、この2つに、`-log LOG` と `-record N` を足す：
 
 - `init`：データのディレクトリを作る。無いか、空のディレクトリで、親が無ければ作り、作った名前を同期する（3.4の「作る」）。作るのは、`files/` と、コミットの無い `logdb/` だけで、最初のコミットは、書き手が作る（`whiteroom init`）。成功したら、標準出力に `created the data directory DATA`。空でなければ、何も作らずに、`whiteroom-db init: data: not empty; a new data directory needs a missing or empty directory` で、1で終わる。作った後の失敗（書き込みの失敗など）は、作ったものを消さない：`DATA` を空にしてから、やり直す。
-- `compact`：いまの状態を、新しい世代のログに書き直して、古い世代を消す（何も落とさない。3.5の「保守モード」）。成功したら、`compacted DATA`。同期に失敗した後の印があれば、マシンを再起動する前は断り、再起動した後は、印を消して、標準エラーに1行書く（下記）。
+- `compact`：いまの状態を、新しい世代のログに書き直して、古い世代を消し、ログイン履歴の、1年より古い記録を落とす（案。#70 の計画への答え（2026-11-23）で決めた。ほかには、何も落とさない（削除が足すもの、新しい鎖の始まりと、削除のイベントと、印を除く）：アクティビティログの記録も、表も、オブジェクトも、残る。期間は、設定で変えられない。古さの決め方・順・止まる所は、3.6の「保守の口」の「`compact` が落とすもの」。7.4の「保持の期間と個人の情報」）。標準出力は、成功したとき、`compacted DATA`。続けて、次の行が、あるときだけ付く（この順）：(1) 表の版が8より古い保存先は、何も落とさず、`kept the login records older than one year: the store has the table schema S, and the first writer that connects through whiteroom-db serve (whiteroom serve admin, for one) upgrades it to 8`（書き手が繋ぎ、表の版を8にした後に、もう1度 `compact` する）。(2) 落としたとき、`deleted the login records A to B, from before TIME`（A と B は、今回消した記録の番号。TIME は、切り捨ての時刻。UTC。RFC 3339。秒まで）。前の `compact` が、途中で止まって残した記録は、次の `compact` が、古さによらず、落とし（A と B に含まれる）、TIME は、残りだけのときは、その削除の切り捨ての時刻：落とすのは、残りが、番号が続き、最後が鎖の始まりの1つ前で、そのハッシュが合い、その削除のイベントがあるときだけ。合わなければ、証拠として残し、(3) で言う。(3) 落とすのを、続かない記録か、記録でないイベント（`VerifyAudit` が、記録として読めないもの）か、読めない鎖の行か、残りが合わないことで、止めたとき、`the deletion of login records stopped at WHERE; check the store with whiteroom doctor`（その記録と、1つ前の記録は残す。終了コードは 0。古さだけで止まったときは、書かない：3.6の「保守の口」）。同期に失敗した後の印があれば、マシンを再起動する前は断り、再起動した後は、印を消して、標準エラーに1行書く（下記）。
 - `gc`：いまの世代でないセグメントと、状態が持たないオブジェクトのファイルと、一時のファイルを消す（原本は消さない。6.12の125）。成功したら、`collected garbage in DATA: N segments, N object files, N temporary files`。同期に失敗した後の印があれば、マシンを再起動する前は断り、再起動した後は、印を消して、標準エラーに1行書く（下記）。
-- `compact` と `gc` は、デーモンを止めて、サーバーの上で動かす：履歴を消せる操作なので、ソケットには出さない（3.6の「保守の口」）。データのディレクトリを開いているプロセスがあれば、約2秒待って、何も変えずに、`whiteroom-db gc: data: the data directory is in use; stop whiteroom-db serve on it first` で、1で終わる。待つ間も、保守が、エンジンのロックを持つので、動いているデーモンへの `whiteroom backup` は、その間、`whiteroom backup: the engine failed` で、1で終わる（2026-11-16に、動かして確かめた）。同期に失敗した後の印（3.6の「同期の失敗」）も、デーモンと同じに守る：マシンの起動ごとのIDを読めなければ、`whiteroom-db gc: cannot read the boot ID of the machine: …` で、マシンを再起動する前の印があれば、`whiteroom-db gc: data: a sync failed at …, and the machine has not restarted since; restart the machine before starting whiteroom-db on this directory again` で、何も変えずに、1で終わる。データのディレクトリそのものに書けなければ、`whiteroom-db gc: data: whiteroom-db cannot write in the data directory (permission denied); it must be able to leave the mark of a failed sync there: give the directory to the user of the daemon` で、同じに、1で終わる。マシンを再起動した後の印は、エンジンを開いた後に消し、標準エラーに `whiteroom-db gc: data: a sync failed at … before the machine restarted; the mark data/stopped is removed: check the store with whiteroom doctor` と書いて、続ける。保守の中で、エンジンが `ErrFailed` で失敗したときは、印を残す。
+- `check`（案。#70 の計画への答え（2026-11-23）で決めた。3.6の「保守の口」の `check`）：データのディレクトリの問題を探して、示し、何も変えない。使うのは、`whiteroom backup` の写しを、デーモンを動かす前に確かめるとき（下記の「`whiteroom backup`」の「戻す手順」）と、止めたデーモンのデータのディレクトリを確かめるとき。見るのは、2つの領域：`engine`（エンジンのファイル。デーモンが開くときの復旧が変えるもの・使わないものと、ログとオブジェクトの問題の、すべて）と `original`（`files/` のすべての原本を、名前のハッシュと照らす）。見ないもの：表の行（索引・履歴・監査・アカウント）と、文書が指す原本の有無は、写しの上で、もう1つのデーモンを動かして、`whiteroom doctor`（下記）で確かめる。表の版（`meta` の `schema`）も、見ない：デーモンの知る版より新しい版の写しも、`check` は通し、起動を断るのは、`serve`（と、`compact`・`gc`・`accept-break`）だけ（`check` の使い方の文にも、書いてある。範囲の残りは、6.12の288）。クラッシュで止まったデーモンのデータのディレクトリは、デーモンの `Open` が直すもの（書きかけの末尾・`head` のずれ）を持つので、`check` は、問題として示す（直す前に示す）：デーモンを1度動かして、閉じると、通る。
+  - 出力：問題を、1行ずつ、標準出力に、領域で始めて示す（`engine: <ファイル> at offset N: <理由>`・`original: files/<2桁>/<ハッシュ>: <理由>`。位置が無いときは、`engine: <ファイル>: <理由>`）。キーも値も、オブジェクトと原本のデータも、出ない。最後に、まとめの1行：`no problems found in DATA`（0）、`N problems found in DATA`（1。1件なら `1 problem found in DATA`）、1000件で止めたときは `stopped after 1000 problems in DATA`（1）。確かめを動かせなかったとき（開いているプロセスがある・同期に失敗した後の印・マシンの起動ごとのIDを読めない・`DATA` がデータのディレクトリでない・中断）は、標準エラーに `whiteroom-db check: <理由>` を示し、まとめの行は示さず、1で終わる（デーモンが開いているときは、約2秒待って、何も変えずに、`whiteroom-db check: data: the data directory is in use; stop whiteroom-db serve on it first`）。
+  - 何も変えない：書けないデータのディレクトリ（ディレクトリが0500、ファイルが0400でも）でも動く。エンジンのファイルにも、`files/` にも、書く呼び出しを、1つも使わない。デーモンが残した、`files/` の一時のファイルも、前の起動で同期に失敗したときの印（`<DATA>/stopped`）も、そのまま残す（`serve`・`compact`・`gc`・`accept-break` は、印を消す）。同じ起動の印と、読めない印は、`compact`・`gc` と同じ文で断る。
+  - 写しが示すもの：書きかけの末尾（`a torn tail, which Open would cut off`）と、`head` が、ログの終わりを指さないこと（`head names sequence 5, but the log ends with sequence 4`）は、チェックポイントが、写しの最後のレコードより前にあるか、無い写しで、2行並ぶ。チェックポイントが、最後のレコードまで届いている写しは、最後のレコードが切れると、チェックポイントが、ログと組にならず、1行になる（`engine: <DATA>/logdb/checkpoint: the log does not have sequence 5 at <DATA>/logdb/log/0000000000000001-0000000000000001.log offset 130248`）。どちらも、デーモンが開く前に示し、写しを変えない。例は、下記の「例」（3.5の「移行・バックアップ・リストアの条件」）。
+- `accept-break`（案。#70 の計画への答え（2026-11-23）で決めた。3.6の「保守の口」の `accept-break`。7.4の「改ざんの検知」）：`-log LOG -record N` で指す、監査の記録の、鎖の切れ目を、操作する人が調べた後に、認める（`LOG` は `login` か `activity`）。記録は、書き換えず、落とさず、足さない。デーモンを止めて、サーバーの上で動かす（ソケットには出さない：破られた管理のサーバーが、自分の書き換えを、認められないため）。`LOG` と `N` は、`whiteroom doctor` が示す問題の行（`audit log "login": record 7 (event 31): prev is not the hash of record 6`）の、ログと、記録の番号。切れ目とは、番号が、前の記録に1を足したもので、`prev` が、前の記録のハッシュでない記録：番号が続かない記録は、穴で、認めない（案。#70 のレビューへの答え（2026-11-24）で決めた）。
+  - 成功：標準出力に `accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it`（`DATA` は、フラグか設定ファイルの値のまま）、終了コードは 0、標準エラーには何も書かない（前の起動の印を消したときの1行は除く）。残る跡は、表 `chains` の行と、デーモンのイベント（0x03）と、その印。そのあと、`whiteroom doctor` は、その記録から、鎖を確かめ直し、切れ目を、問題でなく、告げる：`whiteroom doctor: note: audit log "login": the break at record 6 was accepted at 2026-11-24T02:42:10Z; the log is checked again from that record`（下記の「例」）。記録が、認めた後に書き換わると、認めたことにならず、`doctor` は、問題を示す（もう1度認められる）。
+  - 断る：標準エラーに `whiteroom-db accept-break: <文>`、終了コード1、何も変えない。記録が無い（`record N of the audit log LOG is not in the store`。鎖の始まりより前の記録は、`…: the records before record K were deleted`）、同じ番号の記録が2つ以上ある、最初に読む記録（`record N is the first record that the audit log LOG is checked from: a break there is not accepted`）、穴（`record N does not follow record M in number: a gap, which a lost record leaves, is not a break that can be accepted, and waits for the repair of the engine`）、前の記録に続く記録（`record N follows record N-1: there is no break to accept`）、認めてある（`the break at record N of the audit log LOG is already accepted`）、鎖の行が読めない、表の版が古い（`the store has the table schema S, and the first writer that connects through whiteroom-db serve (whiteroom serve admin, for one) upgrades it to T: accept the break then`）。文と順は、3.6の「保守の口」。記録として読めないイベントと、失われた記録の穴は、認められず、`whiteroom doctor` が、問題として示し続ける（穴を認めないことは、#70 のレビューへの答え（2026-11-24）で決めた）（エンジンの修復は、#144。6.12の289）。
+  - 使い方の誤り（2）：`-log` が無い（`whiteroom-db accept-break: no audit log: give -log login or -log activity`）、`login` でも `activity` でもない、`-record` が無い（`…: no record: give -record N, the number that whiteroom doctor reports`）、1より小さい（`…: the records are numbered from 1, not 0`）、数でない。`-log` と `-record` は、フラグだけで、設定ファイルの項目は無い。データのディレクトリを開いているプロセス・同期に失敗した後の印・書けないデータのディレクトリは、`compact`・`gc` と同じ（下記）。
+- `compact` と `gc` と `accept-break` は、デーモンを止めて、サーバーの上で動かす：履歴を消せる操作なので、ソケットには出さない（3.6の「保守の口」）。`check` も、デーモンが開いていないデータのディレクトリにだけ動かす（保守と同じロックを取るので、動いている間、デーモンは、すぐには始まれず、`Backup` は失敗する）。データのディレクトリを開いているプロセスがあれば、約2秒待って、何も変えずに、`whiteroom-db gc: data: the data directory is in use; stop whiteroom-db serve on it first`（`accept-break` なら `whiteroom-db accept-break: data: …`）で、1で終わる。待つ間も、保守が、エンジンのロックを持つので、動いているデーモンへの `whiteroom backup` は、その間、`whiteroom backup: the engine failed` で、1で終わる（2026-11-16に、動かして確かめた）。同期に失敗した後の印（3.6の「同期の失敗」）も、デーモンと同じに守る：マシンの起動ごとのIDを読めなければ、`whiteroom-db gc: cannot read the boot ID of the machine: …` で、マシンを再起動する前の印があれば、`whiteroom-db gc: data: a sync failed at …, and the machine has not restarted since; restart the machine before starting whiteroom-db on this directory again` で、何も変えずに、1で終わる。データのディレクトリそのものに書けなければ、`whiteroom-db gc: data: whiteroom-db cannot write in the data directory (permission denied); it must be able to leave the mark of a failed sync there: give the directory to the user of the daemon` で、同じに、1で終わる。マシンを再起動した後の印は、エンジンを開いた後に消し、標準エラーに `whiteroom-db gc: data: a sync failed at … before the machine restarted; the mark data/stopped is removed: check the store with whiteroom doctor`（`accept-break` なら、行の初めが `whiteroom-db accept-break:`）と書いて、続ける。保守の中で、エンジンが `ErrFailed` で失敗したときは、印を残す。
 - どれも、データのディレクトリを決めなければ、使い方の誤り（2）。
 
 **`whiteroom init`**
@@ -423,15 +435,16 @@ whiteroom backup [-config FILE] [-db DIR] DEST
 - 動いているデーモンの保守（`whiteroom-db compact`・`gc`）が、エンジンのロックを待つ約2秒の間は、`whiteroom backup: the engine failed` で、1で終わる（3.6の「保守の口」）。
 - `DEST` の場所（#124）：`DEST` が、デーモンのデータのディレクトリそのものか、その中なら、何も作らずに、1で断る（`whiteroom backup: DATA/files/b: DEST is in the data directory of the daemon`）。デーモンが `Hello` の答えで伝える、データのディレクトリの識別（デバイス番号と inode。Linuxだけ）を、`DEST` と、その親（シンボリックリンクと `..` は、カーネルのとおりに解く。`DEST` が無ければ、親から）と比べる（3.6の「保守の口」）。データのディレクトリそのものは、空でないので、その前に断る（`not empty`）。別のマウント名前空間で動くデーモン（コンテナーなど）は、デバイス番号が違いうるので、確かめが効かない：`DEST` を、データのディレクトリの中に置かない。理由：デーモンは、`files/` を、名前の順にたどって送り、コマンドが `DEST` に書いたものに、たどっている先で出会うと、それも送る。直す前は、`DEST` を `files/` の中（`<データのディレクトリ>/files/b`）にした実行は、終了コード0で終わり、`b/` は、保存先の `files/` に残って、あとのバックアップも、それを持った（次に `files/c` に取ると、`c/` の中に、`b/` と、原本が重なって入った）。写しの中に、原本が何重に入るかは、デーモンが、そのディレクトリを読むときに、コマンドが、そこまでに何を書いていたかで決まり、上限の保証は無かった（見本のサイトの6つの原本で、2026-11-16の、窓の前の木では3重、後の木では5回とも1重。2026-11-17の `main` では、`files/c` の写しに12）。設定の例（別のUnixユーザーで、データのディレクトリが0700）では、`DEST` のユーザーが、データのディレクトリに書けないので、権限も `DEST` を断る。
 - 記録：保存先にも写しにも、記録（7.4の操作 `backup`）を足さない。読み手のプロセスは、保存先に書けないため（6.12の234）。残りの論点（世代・圧縮・暗号化・`Check` を動かさないこと・同じ `DEST` に、同時に書くプロセスがあるときの後始末）は6.12の258。
-- 写しの確かめ：写しは、データのディレクトリなので、もう1つのデーモンを、別のソケットのディレクトリで、写しの上で動かし（`whiteroom-db serve -data COPY -db OTHER`。書き手として開くので、切れかけのログの末尾を切る。3.5の「復旧」）、`whiteroom doctor -db OTHER -heads HEADS`（下記）で確かめる。`backup` は、写しを確かめない。写しから同じ名前のリリースをビルドできることは、テストが確かめる（`cmd/whiteroom` の `TestBackupBuildsSameRelease`。10章）。
+- 写しの確かめ（案。#70 の計画への答え（2026-11-23）で決めた）：(1) まず、デーモンを動かさずに、`whiteroom-db check -data COPY`（上記）で、写しを、何も変えずに確かめる。(2) 続けて、もう1つのデーモンを、別のソケットのディレクトリで、写しの上で動かし（`whiteroom-db serve -data COPY -db OTHER`）、`whiteroom doctor -db OTHER -heads HEADS`（下記）で、表の行（索引・監査・文書が指す原本）と、鎖の頭を確かめる。この順にする理由：(2) のデーモンは、書き手として開くので、切れかけのログの末尾を切り、`head` を書き直し（3.5の「復旧」）、写しを、確かめる前に変えてしまう。最後のセグメントが欠けた写しと、最後のレコードが切れた写しは、デーモンが、1つ前のコミットまでで開け、`whiteroom doctor` は、`-heads` に、写しを取ったときの頭を渡さなければ、問題を示さない（2026-11-23に、動かして確かめた。下記の「例」）。`check` は、どちらも、デーモンが開く前に示し、写しを変えない。`check` が確かめないもの（表の行・表の版）は、上記の `check` の説明。`backup` は、写しを確かめない。写しから同じ名前のリリースをビルドできることは、テストが確かめる（`cmd/whiteroom` の `TestBackupBuildsSameRelease`。10章）。
 
 戻す手順（写しから戻すコマンドは無い。写しを、データのディレクトリの場所に置くこと。3.5の「移行・バックアップ・リストアの条件」）：
 
 1. 管理用のサーバーを止める（`whiteroom serve admin` を、Ctrl-C か SIGTERM で止める）。続けて、デーモンを止める（`whiteroom-db serve` を、同じに止める。止めるときに、最後の頭が、標準エラーに書かれる）。動いているプロセスは、開いたときのデータのディレクトリのつもりで書き続けるため。
 2. 壊れたデータのディレクトリを、別の名前に変えて残し（`mv data data.old`）、写しを、その場所に置く（`cp -a backup1 data`。モードを保つ：ディレクトリ0700・ファイル0600。持ち主は、デーモンのユーザー（`logdb/` と `files/` だけでなく、データのディレクトリそのものも：書けなければ、デーモンは、`whiteroom-db cannot write in the data directory` で、起動しない）：別のUnixユーザーに分けた形では、デーモンのユーザーで写すか、root で持ち主を替える。動かしていない。6.12の262）。
-3. デーモンを起動する（`whiteroom-db serve`）。
-4. `whiteroom doctor -config whiteroom.yaml -heads HEADS SITE` で確かめる（`HEADS` は、`backup` が標準出力に書いた頭の行のファイル。それより前に書き出した頭を、足してもよい）。問題が無ければ（0）、次へ進む。
-5. 管理用のサーバーを起動する。
+3. 置いた写しを、デーモンを動かす前に確かめる（`whiteroom-db check -config whiteroom.yaml`。上記の `check`）。問題があれば（1で終わる）、デーモンを起動せず、写しを置き直すか、ほかの写しを使う（デーモンが開くと、切れかけの末尾を切り、写しを変えてしまう）。
+4. デーモンを起動する（`whiteroom-db serve`）。
+5. `whiteroom doctor -config whiteroom.yaml -heads HEADS SITE` で確かめる（`HEADS` は、`backup` が標準出力に書いた頭の行のファイル。それより前に書き出した頭を、足してもよい）。問題が無ければ（0）、次へ進む。
+6. 管理用のサーバーを起動する。
 
 戻した後に起こること：写しは、取ったときの保存先そのものなので、アカウントとセッションの行も、写しのときに戻る（パスワードの変更は、2026-11-16に、デーモンを通して動かして確かめた。ほかは、2026-11-14に、デーモンを入れる前の形で、この順に動かして確かめた：ログアウトで終えたセッション、写しの後に作ったセッション、無効化。どれも、行を書き戻すだけなので、デーモンを通しても、同じ理由で、そうなる）。
 
@@ -448,7 +461,7 @@ whiteroom backup [-config FILE] [-db DIR] DEST
 whiteroom doctor [-config FILE] [-db DIR] [-heads FILE] [-theme DIR] [-url URL] [SITE]
 ```
 
-デーモン（ソケットのディレクトリ `DIR`）の保存先の問題を調べて、示す。何も直さない（直す道具は、まだ無い。6.12の131）。
+デーモン（ソケットのディレクトリ `DIR`）の保存先の問題を調べて、示す。何も直さない（壊れた保存先を直す道具は、まだ無い：エンジンの修復は、#144。6.12の131）。
 
 | 引数・フラグ | 内容 | 省略したとき |
 | --- | --- | --- |
@@ -459,23 +472,25 @@ whiteroom doctor [-config FILE] [-db DIR] [-heads FILE] [-theme DIR] [-url URL] 
 | `-theme DIR` | `SITE/theme` の代わりのテーマ（`SITE` のときだけ） | 設定ファイルの `theme`、無ければ `SITE/theme` |
 | `-url URL` | サイトのURLの上書き（`SITE` のときだけ。上記の「環境ごとの `url`」） | 設定ファイルの `url` |
 
-- 動き：読み手用のソケットに繋ぎ、保存先に何も書かず、何も直さない（`whiteroom serve admin` が動いていてもよい）。`engine` の確かめは、デーモンの `Verify`（3.6の「保守の口」）で、デーモンが、すべてのログをディスクから読み直す間、デーモンの `Commit` を待たせる（管理用のサーバーの書き込みも、その分、待つ。読みは続く）。1回の `doctor` が待たせるのは、`Verify` の1回分：330MiBのデータのディレクトリで、`Verify` は0.189〜0.260秒、その間に送った `Commit` は、197〜256ミリ秒待った（2026-11-16。1つのマシン。ほかの大きさでは、測っていない。3.6の「測った値」）。
-- 費用：`engine`・`index`・`original` の確かめ（`store.Check`）にかかる時間は、サンプルサイトだけ（投稿0件）・投稿1,000件・5,000件・20,000件の保存先で、8.46ミリ秒・288ミリ秒・1,396ミリ秒・5,599ミリ秒（5回の中央値。2026-11-16。1つのマシンで、デーモンを、テストのプロセスの中に置き、ソケットのファイルで繋いだ測り。3.6の「測った値」）。`audit` と `site` の確かめと、`-heads` の読みは、含まない。費用は、データのディレクトリの大きさに比例する（原本の確かめは、いまのメディアの原本の合計の大きさに比例する。原本の大きいサイトでの時間は、測っていない。6.12の260）。
+- 動き：読み手用のソケットに繋ぎ、保存先に何も書かず、何も直さない（`whiteroom serve admin` が動いていてもよい）。`engine` の確かめは、デーモンの `Verify`（3.6の「保守の口」）で、デーモンが、すべてのログをディスクから読み直す間、デーモンの `Commit` を待たせる（管理用のサーバーの書き込みも、その分、待つ。読みは続く）。1回の `doctor` が待たせるのは、`Verify` の1回分：330MiBのデータのディレクトリで、`Verify` は0.189〜0.260秒、その間に送った `Commit` は、197〜256ミリ秒待った（2026-11-16。1つのマシン。ほかの大きさでは、測っていない。3.6の「測った値」）。`Verify` の時間と、その間の最大のメモリは、データのディレクトリの大きさに比例し、2.8GiBで、冷えたとき約2.7秒、約4.2GB（2026-11-23。88MiBから2.8GiBで測った。3.6の「測った値」）。`Verify` は、最初の問題だけを示す：問題のすべてを、場所つきで示すのは、`whiteroom-db check`（上記。デーモンが動いていないデータのディレクトリに）。
+- 費用：`engine`・`index`・`history`・`original` の確かめ（`store.Check`）にかかる時間は、サンプルサイトだけ（投稿0件）・投稿1,000件・5,000件・20,000件の保存先で、7.6ミリ秒・315ミリ秒・1,524ミリ秒・6,051ミリ秒（中央値。2026-11-23。1回ずつ。1つのマシンで、デーモンを、テストのプロセスの中に置き、ソケットのファイルで繋いだ測り。3.6の「測った値」）。`history` の領域と、前の版が指す原本の確かめを足す前の、同じ測りは、5.2ミリ秒・286ミリ秒・1,393ミリ秒・5,591ミリ秒で、足して、投稿1,000件以上で、8〜10%、増えた。`audit` と `site` の確かめと、`-heads` の読みは、含まない。費用は、データのディレクトリの大きさに比例する（原本の確かめは、メディアの文書の、すべての版が指す原本の合計の大きさに比例する：置き換えた前の版の原本も、全体を読み、ハッシュを求める。測った保存先の投稿は、版を1つ、リビジョンを1つか2つ持ち、置き換えた原本が無いので、原本の大きいサイトと、原本を置き換えた履歴の長いサイトでの時間は、測っていない。6.12の260）。
 - 見るもの：次の領域の順に調べ、領域ごとに、問題を示す。
   - `open`：デーモンに届かない（2秒待つ）か、30秒、答えないか、保存先を読めない（コミットがまだ無いときも）。ほかは、調べない。
   - `engine`：エンジンのログとオブジェクト（`Verify`。3.5）。
   - `index`：索引の行（`summaries`・`references`・最後の番号）が、文書から作る行と合うか（3.4の「索引」）。
-  - `original`：いまのメディアの文書が指す原本が、あり、ハッシュが合うか（3.4の「原本」）。
-  - `audit`：監査の記録の鎖（`VerifyAudit`。7.4）。`-heads` があれば、その頭が、その番号の記録のハッシュと合うか。
+  - `history`（案。#70 の計画への答え（2026-11-23）で決めた）：文書の、いまの行（`documents`）が、その履歴の最後の版と同じか。履歴の、消した印でないすべての版と、すべてのリビジョンが指すオブジェクトが、あり、ハッシュが合うか（最後と公開中のリビジョンだけでなく）。エントリーごとのリビジョンの並び（`entryRevisions`）と、リビジョンの表が、両方向で合うか（3.4の「操作」の `Check`）。
+  - `original`：メディアの文書が指す原本が、あり、ハッシュが合うか（3.4の「原本」）。いまの版のものと、前の版だけが指すもの（置き換える前の版の原本）の、両方。後者は、問題の文に `only of earlier versions: media <ID> version <番号>` が付く。
+  - `audit`：監査の記録の鎖（`VerifyAudit`。7.4）。ログイン履歴の古い記録を消した後は、鎖の始まりから確かめ、認めた切れ目から確かめ直す。`-heads` があれば、その頭が、その番号の記録のハッシュと合うか。
   - `heads`：`-heads` のファイルの、頭として読めない行と、頭が1つも無いこと。
   - `site`：`SITE` があるとき、公開するものを、ビルドが、リリースを書く前にする検証（`build.Check`。公開するドキュメントとスキーマ・参照・リダイレクト・出力するパス。4.3・6.7）で調べる。スキーマのファイルや使う言語を変えた後に、通らなくなる公開中のものも、ここで分かる（6.9・6.12の109）。設定の文書が無い保存先は、`site: the store has no site settings` の1行。
-- 見ないもの：下書きと、公開していないリビジョン、履歴の版だけが指す原本と、どの文書も指さない原本（6.12の125）、アカウントとセッションの表、`serve admin` の設定（`-origin`・`-trusted-proxy` など。6.12の254）、テンプレートの実行と画像（ビルドが、検証の後にすること）。後の2つは、別の `-out` と `-cache` に、`whiteroom build -db` をして確かめる。
+- 見ないもの：下書きと、公開していないリビジョンの中身（オブジェクトのハッシュは、`history` が確かめるが、中身の検証は、しない）、どの文書も指さない原本（6.12の125）、アカウントとセッションの表、`serve admin` の設定（`-origin`・`-trusted-proxy` など。6.12の254）、テンプレートの実行と画像（ビルドが、検証の後にすること）。後の2つは、別の `-out` と `-cache` に、`whiteroom build -db` をして確かめる。
 - 出力：問題は、標準出力に、1行ずつ、領域で始めて示す（`<領域>: <対象>: <理由>`か、`<領域>: <理由>`）。問題の行に、文書の中身は出ない。最後に、まとめの1行：`no problems found in DB`（0）、`N problems found in DB`（1）、1000件で止めたときは `stopped after N problems in DB`（1）。`DB` は、ソケットのディレクトリ。
 - 確かめを動かせなかったとき（`-heads` のファイルを開けない・`SITE` を開けない・中断など）：標準エラーに `whiteroom doctor: <理由>` を示し、まとめの行は示さず、1で終わる。デーモンに届かないときは、確かめが始まっていないので、`open` の問題（`open: DB: cannot reach the daemon: dial unix DB/reader.sock: connect: no such file or directory` と `1 problem found in DB`）で、1で終わる。デーモンが、接続を受けて、30秒、答えないときも、同じ（`open: DB: cannot reach the daemon: the daemon has sent nothing for 30s` と `1 problem found in DB`。30〜31秒の後）。確かめの途中で、デーモンに届かなくなったとき（要求が、30秒、答えられなかったときも。`Verify` と `Events` は、デーモンの合図が、30秒、途切れたとき）は、届かないことを、問題としては示さず、標準エラーに `whiteroom doctor: DB: cannot reach the daemon: …` を示して、まとめの行なしで、1で終わる（それまでに見つけた問題の行は、出ている）。`Verify` と、監査の確かめ（`Events`）の途中で止まったデーモンも、同じ（標準エラーに `whiteroom doctor: DB: cannot reach the daemon: the daemon has sent nothing for 30s`。2.6GBの保存先で、`Verify` の途中で止めると、止めてから30.67秒で、標準出力は空だった。3.6の「測った値」）。止める合図（Ctrl-C）は、いつも先に効き、標準エラーに `whiteroom doctor: interrupted` を示して、まとめの行なしで、1で終わる（上記の「終了コード」）。`SITE` が決まらないときは、サイトを確かめるはずだった場合にだけ（保存先を読めて、問題が1000件に達していないとき）、標準エラーに、サイトを確かめなかったことの1行（`whiteroom doctor: note: no SITE, so the published documents are not checked against the schema file and the theme; give SITE, or site in the config file`）を示す（ほかに問題が無ければ、0）。
+- 告げること（案。#70 の計画への答え（2026-11-23）で決めた）：問題ではないが、知っておくことは、標準エラーに、`whiteroom doctor: note: <文>` の行で示す。数えず、まとめの行も、終了コードも、変えない。ログイン履歴の古い記録を、`whiteroom-db compact` が消したこと（`audit log "login": the records before record 4 were deleted at 2026-11-24T02:42:03Z; the log is checked from record 4`）、削除が止まった後に、まだ残っている記録があること、認めた切れ目（`whiteroom-db accept-break`）があること、消した記録を指すので照らせなかった頭の数（文は7.4の「改ざんの検知」の「告げること」）。
 - 終了コード：0（問題なし）、1（問題があるとき。確かめを動かせなかったとき）、2（使い方の誤り。`SITE` の無い `-theme`・`-url` も）。
-- `-heads`：保存先の外に書き出した頭を、デーモンの標準エラーのログ（頭の行のほかに、日時つきの行がある）と、`backup` の標準出力を、そのまま渡せる：`audit head ` を含む行だけを使い、ほかは読み飛ばす（`-` は標準入力。1行は1MiBまで）。頭として読めない行は、`heads` の問題で、頭が1つも読めなければ、それも `heads` の問題（`heads: FILE: no line with a head of an audit log`）。journald から、サービスの行だけを取り出す例は、まだ無い（6.12の262）。
-- 写しの確かめ：写しの上で、もう1つのデーモンを、別のソケットのディレクトリで動かし、そのディレクトリを渡す（上記の `backup` の「写しの確かめ」）。
-- 例は、下の「例」（写しの確かめ・頭との照らし合わせ・原本の欠けた保存先）。
+- `-heads`：保存先の外に書き出した頭を、デーモンの標準エラーのログ（頭の行のほかに、日時つきの行がある）と、`backup` の標準出力を、そのまま渡せる：`audit head ` を含む行だけを使い、ほかは読み飛ばす（`-` は標準入力。1行は1MiBまで）。ログイン履歴の古い記録を消した後は、鎖の始まりの1つ前の記録を指す頭は、始まりが持つハッシュと照らし、それより前の記録を指す頭は、記録が無いので、照らせず、数を告げる（上記の「告げること」。7.4）。頭として読めない行は、`heads` の問題で、頭が1つも読めなければ、それも `heads` の問題（`heads: FILE: no line with a head of an audit log`）。journald から、サービスの行だけを取り出す例は、まだ無い（6.12の262）。
+- 写しの確かめ：デーモンを動かす前に、`whiteroom-db check`（上記）で、何も変えずに確かめ、続けて、写しの上で、もう1つのデーモンを、別のソケットのディレクトリで動かし、そのディレクトリを渡す（上記の `backup` の「写しの確かめ」）。
+- 例は、下の「例」（写しの確かめ・頭との照らし合わせ・原本の欠けた保存先・古い記録を消した後の告げること・切れ目を認めること）。
 
 **`whiteroom account`**
 
@@ -512,7 +527,7 @@ whiteroom account delete [-config FILE] [-db DIR] ID
 デーモン・管理用のサーバー・コマンドと、下の設定ファイルの形は、2026-11-16に、Linuxで、1つのUnixユーザー（手元のユーザー）で、動かして確かめた（パスだけを、手元のものに替えて。「例」の出力は、そのときのもの）。ステージングの設定ファイルは、`socket` と `origin` を除いた形で、`whiteroom-db serve`・`doctor`・`build` に渡し、その出力先で `rollback` を動かして確かめた。`serve admin` に `url` を渡す形は、テスト `TestServeAdminURL` が確かめる。確かめていないのは、別のUnixユーザーとグループに分けた形：ユーザーとグループを作り、ソケットのディレクトリとデータのディレクトリの持ち主を替えるので、root が要る（この変更の確かめでは、使わなかった）。下の3つのユーザーと、ソケットのディレクトリの持ち主とグループと、2つのソケットのグループは、設定の仕組み（`writerUser`・`writerGroup`・`readerGroup`、ソケットのファイルのモード0660、データのディレクトリの0700。3.6の「接続」）から書いたもので、動かしていない（6.12の262）。1つのユーザーで確かめたのは、次の2つ：`writerGroup` と `readerGroup` に、自分のグループを書くと、2つのソケットのファイルが、モード0660と、そのグループで作られること。`-writer-user` に、別のユーザーの番号を書くと、書き手として繋ぐコマンド（`whiteroom account`・`serve admin`・`init`）は、`the user 1000 is not the writer of this daemon` で、すぐ1で終わり、読み手のコマンド（`doctor`・`backup`）は動くこと。確かめたNginxは1.30.6（root でないユーザー、127.0.0.1の空いたポート、httpで、`location` だけを置いたもの）。この確かめと、SSHのポート転送の確かめは、2026-11-14に、管理用のサーバーが、データのディレクトリを直接開いていた形で動かしたもので、確かめたのは、管理用のサーバーのHTTPの側（`socket`・`origin`・`addr`・`trustedProxies` と `location`）。この側は、デーモンを入れても変えていないが、動かし直していない。TLS（`listen 443 ssl` と証明書）の設定は、書かない（9.3・9.6）。SSHのポート転送は、書き方をマニュアルで確かめただけで、動かしていない。
 
 - 3つのプロセスと、Unixユーザー（9.2の分け方のとおり。ユーザーの名前は、例）：
-  - デーモンのユーザー（例：`whiteroomdb`）：`whiteroom-db init`・`serve`・`compact`・`gc` を動かす。データのディレクトリ（ディレクトリ0700・ファイル0600。3.4）は、このユーザーだけのもので、`/var/lib/whiteroom-db` も、このユーザーのもの。ソケットのディレクトリ（例：`/run/whiteroom-db`）も、このユーザーが作る（デーモンは、作らない。`/run` は、起動のたびに空になるので、起動の手順（systemdのユニットは、まだ無い）が作る）：持ち主はデーモンのユーザー、グループは管理用のユーザーのグループ（例：`whiteroom`）、モードは0750（グループが、通れる）。デーモンを動かし直すときも、消さない（中の `writer.lock` を残す。3.6の「接続」）。デーモンが、ソケットのファイルのグループを替える（`chown`）には、デーモンのユーザーが、そのグループ（ここでは `whiteroom`）に入っている必要がある（root で動かすなら、要らない）。
+  - デーモンのユーザー（例：`whiteroomdb`）：`whiteroom-db init`・`serve`・`compact`・`gc`・`check`・`accept-break` を動かす。データのディレクトリ（ディレクトリ0700・ファイル0600。3.4）は、このユーザーだけのもので、`/var/lib/whiteroom-db` も、このユーザーのもの。ソケットのディレクトリ（例：`/run/whiteroom-db`）も、このユーザーが作る（デーモンは、作らない。`/run` は、起動のたびに空になるので、起動の手順（systemdのユニットは、まだ無い）が作る）：持ち主はデーモンのユーザー、グループは管理用のユーザーのグループ（例：`whiteroom`）、モードは0750（グループが、通れる）。デーモンを動かし直すときも、消さない（中の `writer.lock` を残す。3.6の「接続」）。デーモンが、ソケットのファイルのグループを替える（`chown`）には、デーモンのユーザーが、そのグループ（ここでは `whiteroom`）に入っている必要がある（root で動かすなら、要らない）。
   - 管理用のユーザー（例：`whiteroom`）：`whiteroom init`・`serve admin`・`backup`・`doctor`・`account`・保存先からの `build` を動かす。デーモンの `writerUser` に、このユーザーを書く（書き手として繋げるのは、そのユーザーだけ。既定は、デーモン自身で、それでは、管理用のサーバーは繋げない）。`writerGroup` と `readerGroup` に、このユーザーのグループを書き、2つのソケットのファイル（モード0660）に、そのグループで繋げるようにする。出力先は、このユーザーが、umask 022 で書き（ディレクトリ0755・ファイル0644。4.3）、画像のキャッシュと、一時のファイルのディレクトリ（`tmp`）も、このユーザーのもの。
   - 公開用のユーザー（`whiteroom serve public` を動かすユーザーか、Nginx のユーザー）：出力先を読む。umask が 022 より厳しいと、出力先のモードが狭くなり、公開用のユーザーが読めない。公開用のサーバー（9.5）は、出力先だけを読み、保存先も、デーモンも開かない。
 - 設定ファイル（本番）。デーモンと、管理用のサーバーと、コマンドが、同じファイル（例：`/etc/whiteroom/whiteroom.yaml`。秘密を書かないので、3つのユーザーが読めるモード0644）を、`-config` で読む（上記の「設定ファイル」。それぞれ、自分の項目を使い、相手の項目は、型と範囲だけを確かめる）。`socket` は、管理用のユーザーだけが書けるディレクトリに置く：
@@ -658,18 +673,43 @@ $ cat copy.yaml
 data: backup1
 db: /run/user/1000/whiteroom-copy
 site: site
+$ whiteroom-db check -config copy.yaml
+no problems found in backup1
 $ whiteroom-db serve -config copy.yaml
 serving the data directory backup1 on the sockets in /run/user/1000/whiteroom-copy (writer: user 1000)
 $ whiteroom doctor -config copy.yaml -heads heads1.txt
 no problems found in /run/user/1000/whiteroom-copy
 ```
 
+- `whiteroom-db check` の行は、2026-11-24に、同じ形の写しで動かして確かめた（ほかの行は、2026-11-16）。`check` は、デーモンを動かす前に、写しを、何も変えずに確かめる（上記の「`whiteroom backup`」の「写しの確かめ」）。
 - 写しの上のデーモンを止めた後に `whiteroom doctor -config copy.yaml` を動かすと、デーモンに2秒届かずに、次のように示して、1で終わる：
 
 ```text
 open: /run/user/1000/whiteroom-copy: cannot reach the daemon: dial unix /run/user/1000/whiteroom-copy/reader.sock: connect: no such file or directory
 1 problem found in /run/user/1000/whiteroom-copy
 ```
+
+写しの、最後のレコードが切れているとき（2026-11-24に、動かし直した：`backup1` を取り直し（`heads1.txt` は、`audit head activity 5 sha256:…` の1行）、その写し `backup-cut` の、ログの最後の8バイトを切った）。`whiteroom-db check` は、デーモンが開く前に、問題を示し、写しを変えない。デーモンを、その写しの上で動かすと、切れた末尾を、写しから切って開け、`whiteroom doctor` は、`-heads` を渡さなければ、問題を示さない：
+
+```text
+$ whiteroom-db check -data backup-cut
+engine: backup-cut/logdb/log/0000000000000001-0000000000000001.log at offset 130248: a torn tail, which Open would cut off
+engine: backup-cut/logdb/head: head names sequence 5, but the log ends with sequence 4
+2 problems found in backup-cut
+$ whiteroom-db serve -data backup-cut -db /run/user/1000/whiteroom-copy
+serving the data directory backup-cut on the sockets in /run/user/1000/whiteroom-copy (writer: user 1000)
+$ whiteroom doctor -db /run/user/1000/whiteroom-copy site
+no problems found in /run/user/1000/whiteroom-copy
+$ whiteroom doctor -db /run/user/1000/whiteroom-copy -heads heads1.txt site
+audit: audit log "activity": the head kept outside the store is record 5, but the log ends with record 4 (event 7)
+1 problem found in /run/user/1000/whiteroom-copy
+$ whiteroom-db check -data backup-cut
+no problems found in backup-cut
+```
+
+- 最後の `check` が通るのは、デーモンが、開くときに、`backup-cut` から、切れた末尾を切ったため（セグメントは、切った後の131,184バイトから、130,248バイトになった）。コミット5は、写しから無くなった。
+- `backup1` は、チェックポイントが、最後のレコードより前にあるので、切れた末尾と、`head` のずれの、2行が並ぶ。デーモンを止めた直後のデータのディレクトリ `data`（チェックポイントが、最後のレコードまで届く）の写し `data-torn` の、ログの最後の8バイトを切ると、`check` の問題は、1行になる：`engine: data-torn/logdb/checkpoint: the log does not have sequence 5 at data-torn/logdb/log/0000000000000001-0000000000000001.log offset 130248`。
+- ほかの傷（`backup1` の写しで）：ログの先頭に近い1バイトの書き換え（チェックポイントより前なので、デーモンは、そこを読まずに開ける）は、`engine: backup-old/logdb/log/0000000000000001-0000000000000001.log at offset 64: bad record CRC`。原本の1バイトの書き換えは、`original: files/02/026f…: the data has the hash sha256:1171…`（ハッシュは `…` と省いた）。どちらも、1行で、まとめは `1 problem found in <写し>`、終了コードは 1。
 
 写しを、ステージングのデータのディレクトリとして置き、もう1つのデーモンで開いて、ステージングのURLでビルドして、戻す（`staging.yaml` の `url` が、サイトのURLを上書きする。上記の「環境ごとの `url`」）：
 
@@ -782,13 +822,65 @@ $ whiteroom-db serve -config whiteroom.yaml
 whiteroom-db serve: data/logdb: another process holds the writer lock
 $ whiteroom-db gc -config whiteroom.yaml
 whiteroom-db gc: data: the data directory is in use; stop whiteroom-db serve on it first
+$ whiteroom-db check -config whiteroom.yaml
+whiteroom-db check: data: the data directory is in use; stop whiteroom-db serve on it first
 $ whiteroom-db compact -data data.old
 compacted data.old
 $ whiteroom-db gc -data data.old
 collected garbage in data.old: 0 segments, 0 object files, 0 temporary files
 ```
 
-- 上の `init` は、データのディレクトリがあるとき。`serve` は、同じデータのディレクトリを、別のデーモンが開いているとき（約2秒待って、失敗する）。`gc` は、デーモンが動いているとき（約2秒待って、何も変えずに失敗する）。`compact` と `gc` は、デーモンを止めて動かし、ここでは、前のデータのディレクトリ `data.old` に動かした。
+- 上の `init` は、データのディレクトリがあるとき。`serve` は、同じデータのディレクトリを、別のデーモンが開いているとき（約2秒待って、失敗する）。`gc` と `check` は、デーモンが動いているとき（どちらも、約2秒待って、何も変えずに失敗する。`check` の行は、2026-11-24に動かして確かめた）。`compact` と `gc` は、デーモンを止めて動かし、ここでは、前のデータのディレクトリ `data.old` に動かした。
+
+ログイン履歴の古い記録を消す（2026-11-24。動かした日には、1年より古い記録が無いので、デーモンと管理用のサーバーを動かして、ログインを3回（1回は失敗）した後に、そのコミットの印の時刻を、エンジンの圧縮の書き直しで、2年前に書き換えた。この例のための、捨てる道具で、リポジトリには無い。4回目のログインは、そのあとの、新しい記録）。デーモンを止めた後で：
+
+```text
+$ whiteroom-db compact -config whiteroom.yaml
+compacted data
+deleted the login records 1 to 3, from before 2025-11-24T02:42:01Z
+$ whiteroom-db check -config whiteroom.yaml
+no problems found in data
+$ whiteroom-db serve -config whiteroom.yaml
+serving the data directory data on the sockets in /run/user/1000/whiteroom (writer: user 1000)
+$ whiteroom doctor -config whiteroom.yaml
+whiteroom doctor: note: audit log "login": the records before record 4 were deleted at 2026-11-24T02:42:03Z; the log is checked from record 4
+no problems found in /run/user/1000/whiteroom
+$ whiteroom-db compact -config whiteroom.yaml
+compacted data
+```
+
+- 記録4（4回目のログイン）は、新しいので、残った。`doctor` は、告げること（上記の「`whiteroom doctor`」の「告げること」）を、標準エラーに出し、問題ではないので、まとめの行は `no problems found` で、終了コードは 0。2回目の `compact` は、落とすものが無い。時刻は、UTC。
+
+ログイン履歴の記録が、書き換わったとき（2026-11-24。上の続きで、デーモンと管理用のサーバーを動かして、ログインを3回（記録5から7）した後に、止めて、記録5の `userAgent` の1文字を、エンジンの圧縮の書き直しで書き換えた。この例のための、捨てる道具で、リポジトリには無い）。`doctor` は、記録6で、鎖が切れていると示す。デーモンは、`doctor` の間だけ動かし、`accept-break` と `check` の前に止めた。切れ目でない記録と、最初に読む記録と、無い記録は、断られ、記録6は、認められる：
+
+```text
+$ whiteroom-db serve -config whiteroom.yaml
+serving the data directory data on the sockets in /run/user/1000/whiteroom (writer: user 1000)
+$ whiteroom doctor -config whiteroom.yaml
+whiteroom doctor: note: audit log "login": the records before record 4 were deleted at 2026-11-24T02:42:03Z; the log is checked from record 4
+audit: audit log "login": record 6 (event 27): prev is not the hash of record 5
+1 problem found in /run/user/1000/whiteroom
+$ whiteroom-db accept-break -config whiteroom.yaml -log login -record 5
+whiteroom-db accept-break: record 5 follows record 4: there is no break to accept
+$ whiteroom-db accept-break -config whiteroom.yaml -log login -record 4
+whiteroom-db accept-break: record 4 is the first record that the audit log login is checked from: a break there is not accepted
+$ whiteroom-db accept-break -config whiteroom.yaml -log login -record 99
+whiteroom-db accept-break: record 99 of the audit log login is not in the store
+$ whiteroom-db accept-break -config whiteroom.yaml -log login -record 6
+accepted the break at record 6 of the audit log login in data; whiteroom doctor checks the log again from it
+$ whiteroom-db accept-break -config whiteroom.yaml -log login -record 6
+whiteroom-db accept-break: the break at record 6 of the audit log login is already accepted
+$ whiteroom-db check -config whiteroom.yaml
+no problems found in data
+$ whiteroom-db serve -config whiteroom.yaml
+serving the data directory data on the sockets in /run/user/1000/whiteroom (writer: user 1000)
+$ whiteroom doctor -config whiteroom.yaml
+whiteroom doctor: note: audit log "login": the records before record 4 were deleted at 2026-11-24T02:42:03Z; the log is checked from record 4
+whiteroom doctor: note: audit log "login": the break at record 6 was accepted at 2026-11-24T02:42:10Z; the log is checked again from that record
+no problems found in /run/user/1000/whiteroom
+```
+
+- 記録4は、削除の後に残った、最初の記録で、記録5は、記録4に続くので、どちらも、認められない（記録4と、記録1は、最初に読む記録）。デーモンが開いているときの `accept-break` は、約2秒待って、`whiteroom-db accept-break: data: the data directory is in use; stop whiteroom-db serve on it first` で、1で終わる。`-record` を書かないと、`whiteroom-db accept-break: no record: give -record N, the number that whiteroom doctor reports` と、使い方を、標準エラーに示して、2で終わる。`whiteroom doctor` は、認めた切れ目を、問題でなく、告げ（終了コードは 0）、2つの告げることは、上から、鎖の始まり、認めた切れ目の順。
 
 デーモンに届かないとき（2秒待って、1で終わる）と、保存先が新しくないとき：
 

@@ -68,9 +68,9 @@ func createOn(ctx context.Context, d dbclient.Dialer, now func() time.Time, o db
 
 // Open opens the store that the daemon of d serves, as its writer. While it is open, Open in another process fails
 // with an error that says that another process is connected as the writer, after the connection has been tried again
-// for 2 seconds, and other processes read the store with OpenReader. A store of the table schema 1 to 6 gets the schema 7
+// for 2 seconds, and other processes read the store with OpenReader. A store of the table schema 1 to 7 gets the schema 8
 // in one Update, with the record store.upgrade (7.4) and the rows of heads of its audit logs: one of the schema 1 gets
-// its index too (it has none), and one of the schema 2 to 6 gets nothing else and has no document read; if that fails,
+// its index too (it has none), and one of the schema 2 to 7 gets nothing else and has no document read; if that fails,
 // so does Open, and the store is unchanged unless the error says that it is not known whether the commit was made: the
 // next Open finds out. A daemon whose store has no schema is an error that wraps ErrNoStore. ctx bounds Open alone: the
 // connection, the Hello, the check of the schema and the upgrade; the store that it returns does not depend on it.

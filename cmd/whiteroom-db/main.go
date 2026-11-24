@@ -24,13 +24,22 @@ const usage = `Usage:
         make the data directory, which must be missing or empty
   whiteroom-db compact [flags]
         write the state of the data directory as a new generation of its log, and
-        remove the old one; the daemon must be stopped
+        remove the old one, and delete the login records older than one year; the
+        daemon must be stopped
   whiteroom-db gc [flags]
         remove the files of the data directory that its state does not need; the
         daemon must be stopped
+  whiteroom-db check [flags]
+        look for what is wrong in the data directory, such as a copy of a backup,
+        and change nothing; the daemon must be stopped
+  whiteroom-db accept-break [flags]
+        accept the break at record -record N of the audit log -log LOG (login or
+        activity) that "whiteroom doctor" reports, and change no record; the daemon
+        must be stopped
 
-Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h" or
-"whiteroom-db gc -h" for the flags.
+Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h",
+"whiteroom-db gc -h", "whiteroom-db check -h" or "whiteroom-db accept-break -h" for
+the flags.
 `
 
 func main() {
@@ -81,6 +90,10 @@ func run(ctx context.Context, args []string, e env) int {
 		return runCompact(ctx, args[1:], e)
 	case "gc":
 		return runGC(ctx, args[1:], e)
+	case "check":
+		return runCheck(ctx, args[1:], e)
+	case "accept-break":
+		return runAcceptBreak(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
 		printf(e.stdout, "%s", usage)
 		return 0

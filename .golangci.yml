@@ -623,6 +623,9 @@ linters:
         - pattern: ^dbserver\.EngineOf$
           pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/dbserver$
           msg: テストだけが使う（エンジンを直接触る）
+        - pattern: ^dbwire\.RecordShape$
+          pkg: ^github\.com/WhiteRoomLab/whiteroom/internal/dbwire$
+          msg: テストだけが使う（audit.Record の形との一致を確かめる）
         - pattern: ^filepath\.Abs$
           pkg: ^path/filepath$
           msg: fspath.Abs を使う（filepath.Abs は、シンボリックリンクの後ろの .. を、文字の上で消す）
