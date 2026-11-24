@@ -961,6 +961,126 @@ func TestRepairOldGapAtTheEnd(t *testing.T) {
 	}
 }
 
+// checkpointBytes returns the checkpoint of the store, and setCheckpoint replaces it.
+func (s *auditStore) checkpointBytes() []byte {
+	s.t.Helper()
+	var b []byte
+	s.fs.Walk(func(p string, data []byte) {
+		if p == "logdb/checkpoint" {
+			b = data
+		}
+	})
+	if b == nil {
+		s.t.Fatal("the store has no checkpoint")
+	}
+	return b
+}
+
+func (s *auditStore) setCheckpoint(b []byte) {
+	s.t.Helper()
+	f, err := s.fs.OpenFile("logdb/checkpoint", os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if _, err := f.Write(b); err != nil {
+		s.t.Fatal(err)
+	}
+	if err := errors.Join(f.Sync(), f.Close()); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+// TestRepairOldGapAtTheEndTruncated checks that the events that a repair drops after the state that it keeps do not pay for the
+// records that the head of a log names after its last record: those records were written in the commits of the kept state. The
+// login records 3 to 5 never reached the log (a gap that was there before), and the head of the login history names them.
+func TestRepairOldGapAtTheEndTruncated(t *testing.T) {
+	// build makes the commits 1 to 4 (the activity records 1 to 4, the login records 1 and 2), the commits 5 to 7, which the head
+	// of the login history names the records 3 to 5 in and have none, and the commits 8 and 9 (the activity records 5 and 6, the
+	// login record 6). The checkpoint that the store is left with covers the commits up to the commit 9, and the commits 10 to 12
+	// (the activity records 7 to 9, the login record 7) come after it.
+	build := func(t *testing.T) *auditStore {
+		s := newFixtureStore(t)
+		for range 4 {
+			s.commit()
+		}
+		for range 3 {
+			s.lose(dbwire.LogLogin)
+		}
+		s.commit()
+		s.commit()
+		if err := s.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		covers := s.checkpointBytes()
+		s.reopen()
+		for range 3 {
+			s.commit()
+		}
+		if err := s.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s.setCheckpoint(covers)
+		return s
+	}
+	for _, tc := range []struct {
+		name        string
+		damaged     []int
+		holes, gaps []string
+		keptThrough uint64
+	}{
+		// The damage at the commit 10 ends the kept state, the checkpoint's: the events of the commits 11 and 12 are of the commits
+		// that the repair drops, and the records 3 to 6 of the login history, which the checkpoint's head names, are not in them.
+		{"the lost commits before the kept state pay", []int{8, 9, 10}, []string{"login 3-6", "activity 5-6"}, nil, 9},
+		// The events of the commit 9 (3 of them) are all that pays: 4 records are missing in the login history, 1 in the activity log.
+		{"the truncation does not make up the rest", []int{9, 10}, []string{"activity 6-6"}, []string{"login 3-6"}, 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := build(t)
+			s.damage(tc.damaged...)
+			rep, _ := s.apply(RepairOptions{Truncate: true})
+			p, tr := rep.Plan, rep.Plan.Truncation
+			if p.Checkpoint != "used" || p.Seq != tc.keptThrough || tr == nil || tr.LastSeq != 12 || tr.FirstEvent < p.NextEvent {
+				t.Fatalf("the plan is %+v (truncation %+v), want the checkpoint's state of the commit %d, and a truncation after its events",
+					p, tr, tc.keptThrough)
+			}
+			if !slices.Equal(holeWords(rep), tc.holes) || !slices.Equal(gapWords(rep), tc.gaps) {
+				t.Errorf("the holes are %q and the gaps %q, want %q and %q", holeWords(rep), gapWords(rep), tc.holes, tc.gaps)
+			}
+			if len(tc.gaps) == 0 {
+				s.auditView().checkChains(t)
+			}
+		})
+	}
+	t.Run("the truncation does not pay", func(t *testing.T) {
+		s := newFixtureStore(t)
+		s.commit() // 1: activity 1
+		s.commit() // 2: activity 2, login 1
+		s.commit() // 3: activity 3
+		s.commit() // 4: activity 4, login 2
+		for range 3 {
+			s.lose(dbwire.LogLogin) // 5 to 7: the head of the login history names 3, 4 and 5
+		}
+		for range 4 {
+			s.commit() // 8 to 11: the commit 8 is damaged, and the commits after it are dropped
+		}
+		if err := s.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s.withoutCheckpoint() // the state is read from the log, and a damage after its start drops the commits after it
+		s.damage(8)
+		rep, _ := s.apply(RepairOptions{Truncate: true})
+		if tr := rep.Plan.Truncation; tr == nil || tr.FirstSeq != 9 || tr.LastSeq != 11 || tr.FirstEvent < rep.Plan.NextEvent {
+			t.Fatalf("the truncation is %+v, want the commits 9 to 11, after the events of the kept state (%d)", tr, rep.Plan.NextEvent)
+		}
+		if len(rep.Holes) != 0 || !slices.Equal(gapWords(rep), []string{"login 3-5"}) {
+			t.Errorf("the holes are %q and the gaps %q, want only the gap that was there before", holeWords(rep), gapWords(rep))
+		}
+		if a := s.auditView(); len(a.holes[dbwire.LogLogin]) != 0 {
+			t.Errorf("the rows of the holes of the login history are %v, want none", a.holes[dbwire.LogLogin])
+		}
+	})
+}
+
 func TestRepairFailedSync(t *testing.T) {
 	boom := syscall.EIO
 	for _, tc := range []struct {
@@ -1770,6 +1890,76 @@ func TestRepairKeepFailsKeepsOthers(t *testing.T) {
 	}
 	if after := keptFiles(s.fs); !maps.Equal(after, dataBefore) {
 		t.Errorf("the failed copy changed logdb/ of the data directory")
+	}
+}
+
+// TestRepairKeepDurable checks that the copy, which is the only pre-repair state once the repair has removed the old generation,
+// is whole after a crash that loses every change that was not synced: its files, and the names of its files and directories.
+func TestRepairKeepDurable(t *testing.T) {
+	s := newAuditStore(t, 8)
+	s.damage(4)
+	before := keptFiles(s.fs)
+	rep, keep := s.apply(RepairOptions{})
+	if !rep.Applied || rep.Kept != "keep/logdb" {
+		t.Fatalf("Repair() = %+v", rep)
+	}
+	if got := keptFiles(keep.Crash(loseAll)); !maps.Equal(got, before) {
+		t.Errorf("after a crash that loses what is not synced the copy has %d files, want those of logdb/ as they were (%d)", len(got), len(before))
+	}
+}
+
+// TestRepairKeepMadeDurable checks that the directory that the repair makes for the copy is there after a crash that loses what
+// is not synced.
+func TestRepairKeepMadeDurable(t *testing.T) {
+	parent := simfs.New("top")
+	if _, _, err := mkdirDurable(parent, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := parent.Crash(loseAll).Lstat("keep"); err != nil || !info.IsDir() {
+		t.Errorf("after a crash the directory is %v, %v", info, err)
+	}
+}
+
+// TestRepairKeepDiscardKeepsOthers checks that a copy that fails removes the directory that it made only while it is that
+// directory: what another process has put in its place is not the copy's to remove.
+func TestRepairKeepDiscardKeepsOthers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		other func(t *testing.T, w *keepWorld, keep string)
+	}{
+		{"a file", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.Remove(keep); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(keep, []byte("another copy"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"another empty directory", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.Rename(keep, w.path("old")); err != nil {
+				t.Fatal(err)
+			}
+			mkdir(t, keep)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newKeepWorld(t)
+			keep := w.path("keep")
+			c, err := checkKeep(w.data, keep)
+			if err != nil || c.parent == nil {
+				t.Fatalf("checkKeep() = %+v, %v", c, err)
+			}
+			k, err := openKeep(w.info, keep, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = k.fs.Close() }()
+			tc.other(t, w, keep)
+			k.discard()
+			if _, err := os.Lstat(keep); err != nil {
+				t.Errorf("the failed copy removed what another process put in the place of its directory: %v", err)
+			}
+		})
 	}
 }
 

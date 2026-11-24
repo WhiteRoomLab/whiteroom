@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -216,7 +215,7 @@ func (rr *repairRun) run() error {
 	}); err != nil {
 		return err
 	}
-	w := &auditWalk{logs: logs, lost: lostEvents(plan), drop: rr.r.DropUnreadable, rep: rep}
+	w := &auditWalk{logs: logs, lost: lostEvents(plan), next: plan.NextEvent, drop: rr.r.DropUnreadable, rep: rep}
 	if err := s.Events(rr.ctx, w.event); err != nil {
 		return err
 	}
@@ -363,9 +362,9 @@ func checkKeep(data, keep string) (keepCheck, error) {
 		}
 		if in {
 			if d, i, _, err := fspath.FileID(keep); err == nil && d == dev && i == ino {
-				return keepCheck{}, fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
+				return keepCheck{}, keepIsData(keep)
 			}
-			return keepCheck{}, fmt.Errorf("%s: -keep is in the data directory: the copy of logdb/ must be kept apart from it", keep)
+			return keepCheck{}, keepInData(keep)
 		}
 	}
 	info, err := os.Lstat(keep)
@@ -412,6 +411,19 @@ func osKeep(data vfs.FS, keep string) keepMaker {
 	}
 }
 
+func keepIsData(keep string) error {
+	return fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
+}
+
+func keepInData(keep string) error {
+	return fmt.Errorf("%s: -keep is in the data directory: the copy of logdb/ must be kept apart from it", keep)
+}
+
+// keepAbove is the refusal of a directory whose directories above it cannot be looked at.
+func keepAbove(keep string, err error) error {
+	return fmt.Errorf("%s: cannot tell whether -keep is in the data directory: %w", keep, err)
+}
+
 // keepChanged is the refusal of a directory that is not the one that checkKeep saw.
 func keepChanged(keep string) error {
 	return fmt.Errorf("%s: changed while the repair opened it: run the repair again", keep)
@@ -419,8 +431,8 @@ func keepChanged(keep string) error {
 
 // openKeep opens the directory keep, which checkKeep has checked, and makes it if c says that it is missing. It checks the
 // directory that it opened, through the open directory, and not by its name: it is the one that checkKeep saw (or that this
-// run has made), it is not the data directory, whose directory is dataInfo, and it is empty. The names of what it checked can
-// lead elsewhere by now. A directory that it fails to take is removed again, if this run has made it.
+// run has made), it is not the data directory, whose directory is dataInfo, or in it, and it is empty. The names of what it
+// checked can lead elsewhere by now. A directory that it fails to take is removed again, if this run has made it.
 func openKeep(dataInfo fs.FileInfo, keep string, c keepCheck) (*keepDir, error) {
 	keep = fspath.Clean(keep)
 	var parent vfs.FS
@@ -428,7 +440,7 @@ func openKeep(dataInfo fs.FileInfo, keep string, c keepCheck) (*keepDir, error) 
 	want := c.info
 	if c.info == nil {
 		var err error
-		if parent, made, want, err = makeKeep(keep, c.parent); err != nil {
+		if parent, made, want, err = makeKeep(keep, c.parent, dataInfo); err != nil {
 			return nil, err
 		}
 	}
@@ -460,9 +472,10 @@ func openKeep(dataInfo fs.FileInfo, keep string, c keepCheck) (*keepDir, error) 
 }
 
 // makeKeep makes the directory keep, which checkKeep found missing, in its parent, which is opened first and compared with
-// the parent that checkKeep saw: the directory is made where the check looked, whatever the names lead to now, and it is made
-// durable there. It returns the open parent, what removes the directory again, and the directory that it made.
-func makeKeep(keep string, checked fs.FileInfo) (parent vfs.FS, remove func(), made fs.FileInfo, err error) {
+// the parent that checkKeep saw, and checked not to be the data directory, whose directory is data, or in it: the directory is
+// made where the check looked, whatever the names lead to now, and it is made durable there. It returns the open parent, what
+// removes the directory again, and the directory that it made.
+func makeKeep(keep string, checked, data fs.FileInfo) (parent vfs.FS, remove func(), made fs.FileInfo, err error) {
 	parent, _, err = dataRoot(filepath.Dir(keep))
 	if err != nil {
 		return nil, nil, nil, err
@@ -476,14 +489,26 @@ func makeKeep(keep string, checked fs.FileInfo) (parent vfs.FS, remove func(), m
 	} else if !os.SameFile(info, checked) {
 		return fail(keepChanged(filepath.Dir(keep)))
 	}
-	base := filepath.Base(keep)
-	// Not MkdirAll: a parent that is missing is a mistake in -keep, not something to make.
-	if err := parent.Mkdir(base, 0o700); err != nil {
+	if level, err := dataLevel(parent, data); err != nil {
+		return fail(keepAbove(keep, err))
+	} else if level >= 0 {
+		return fail(keepInData(keep))
+	}
+	if remove, made, err = mkdirDurable(parent, filepath.Base(keep)); err != nil {
 		return fail(err)
 	}
-	made, err = parent.Lstat(base)
-	if err != nil {
-		return fail(err)
+	return parent, remove, made, nil
+}
+
+// mkdirDurable makes the directory base in parent, and syncs parent. It returns what removes the directory again, if it is still
+// the one that it made and is empty, and the directory that it made. It is not MkdirAll: a parent that is missing is a
+// mistake in -keep, not something to make.
+func mkdirDurable(parent vfs.FS, base string) (remove func(), made fs.FileInfo, err error) {
+	if err := parent.Mkdir(base, 0o700); err != nil {
+		return nil, nil, err
+	}
+	if made, err = parent.Lstat(base); err != nil {
+		return nil, nil, err
 	}
 	remove = func() {
 		if now, err := parent.Lstat(base); err == nil && os.SameFile(now, made) {
@@ -492,9 +517,9 @@ func makeKeep(keep string, checked fs.FileInfo) (parent vfs.FS, remove func(), m
 	}
 	if err := parent.SyncDir("."); err != nil {
 		remove()
-		return fail(err)
+		return nil, nil, err
 	}
-	return parent, remove, made, nil
+	return remove, made, nil
 }
 
 // checkOpenedKeep checks the open directory root of the copy.
@@ -505,9 +530,14 @@ func checkOpenedKeep(root vfs.FS, keep string, dataInfo, want fs.FileInfo) error
 	}
 	switch {
 	case os.SameFile(info, dataInfo):
-		return fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
+		return keepIsData(keep)
 	case !os.SameFile(info, want):
 		return keepChanged(keep)
+	}
+	if level, err := dataLevel(root, dataInfo); err != nil {
+		return keepAbove(keep, err)
+	} else if level >= 0 {
+		return keepInData(keep)
 	}
 	entries, err := root.ReadDir(".")
 	if err != nil {
@@ -678,11 +708,6 @@ func (l lost) between(a, b uint64) uint64 {
 	return n
 }
 
-// after returns how many numbers above a are lost.
-func (l lost) after(a uint64) uint64 {
-	return l.between(a, math.MaxUint64)
-}
-
 // classified is what an event of the log is to the repair.
 type classified struct {
 	record     bool // a record of an audit log: log, n and prev
@@ -706,6 +731,7 @@ func classify(data []byte) classified {
 type auditWalk struct {
 	logs map[string]*auditLog
 	lost lost
+	next uint64 // the number after the last event of the kept state
 	drop bool
 	rep  *RepairReport
 	err  error
@@ -775,8 +801,9 @@ func (w *auditWalk) finish() error {
 		if l.bad != "" {
 			return fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		}
-		// The records that the head names after the last one that was read, against the events dropped after it.
-		if l.dropped+w.lost.after(l.lastEvent) >= l.head.n-expected+1 {
+		// The records that the head names after the last one that was read, against the events dropped after it: the records were
+		// written in the commits of the kept state, so the events of the commits after it are none of them.
+		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-expected+1 {
 			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: expected, Last: l.head.n, Hash: l.head.hash, Row: true})
 		} else {
 			w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: name, First: expected, Last: l.head.n})

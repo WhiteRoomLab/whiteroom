@@ -72,6 +72,7 @@ type Truncation struct {
 // RepairPlan is what a repair keeps and drops. Recovery is what Open would change or not use, as Inspect says it.
 type RepairPlan struct {
 	Generation, Seq uint64
+	NextEvent       uint64 // the number after the last event of the kept state: the events from it on are of commits that are dropped
 	Source          StateSource
 	Checkpoint      string // "used", "none", "stale", "damaged: " and why, or "not this log's"
 	Spans           []Span
@@ -516,7 +517,8 @@ func analyze(ctx context.Context, fsys vfs.FS, o Options, db *DB) (*Salvager, er
 	slices.Reverse(ignored)
 	sc := res.sc
 	s := &Salvager{fsys: fsys, o: o, db: db, st: res.st, kept: sc.kept, meta: sc.segs}
-	s.plan = RepairPlan{Generation: uint64(res.st.gen), Seq: uint64(res.st.seq), Spans: sc.spans, Truncation: sc.trunc}
+	s.plan = RepairPlan{Generation: uint64(res.st.gen), Seq: uint64(res.st.seq), NextEvent: res.st.nextEvent, Spans: sc.spans,
+		Truncation: sc.trunc}
 	switch {
 	case !res.useCk:
 		s.plan.Source = FromLog

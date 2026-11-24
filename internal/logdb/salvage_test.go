@@ -298,6 +298,12 @@ func checkPlan(t *testing.T, got, want RepairPlan) {
 	if (got.Truncation == nil) != (want.Truncation == nil) || got.Truncation != nil && *got.Truncation != *want.Truncation {
 		t.Errorf("truncation: %+v, want %+v", got.Truncation, want.Truncation)
 	}
+	if got.NextEvent == 0 || want.NextEvent != 0 && got.NextEvent != want.NextEvent {
+		t.Errorf("next event %d, want %d", got.NextEvent, want.NextEvent)
+	}
+	if tr := got.Truncation; tr != nil && tr.FirstEvent != 0 && tr.FirstEvent < got.NextEvent {
+		t.Errorf("the truncation has the event %d, before the next event of the kept state, %d", tr.FirstEvent, got.NextEvent)
+	}
 	if got.Generation != want.Generation || got.Seq != want.Seq || got.Source != want.Source || got.Checkpoint != want.Checkpoint {
 		t.Errorf("generation %d, sequence %d, from %v (%s), want %d, %d, from %v (%s)", got.Generation, got.Seq, got.Source,
 			got.Checkpoint, want.Generation, want.Seq, want.Source, want.Checkpoint)
@@ -688,7 +694,8 @@ func TestSalvageCheckpointRecord(t *testing.T) {
 		}
 		ev := uint64(n)
 		own := func(objects []LostObject, spans ...Span) RepairPlan {
-			return RepairPlan{Generation: 1, Seq: uint64(n), Source: FromCheckpointAlone, Checkpoint: "used", Spans: spans, Objects: objects}
+			return RepairPlan{Generation: 1, Seq: uint64(n), NextEvent: uint64(n) + 1, Source: FromCheckpointAlone, Checkpoint: "used", Spans: spans,
+				Objects: objects}
 		}
 		check := func(t *testing.T, fsys *simfs.FS, want RepairPlan, events []string) {
 			t.Helper()
@@ -888,7 +895,7 @@ func TestSalvageRecordAfterCheckpoint(t *testing.T) {
 					}
 					got := salvage(t, fsys, s.o)
 					sp := span(r, d.reason)
-					checkPlan(t, got.plan, RepairPlan{Generation: 1, Seq: uint64(k - 1), Source: FromCheckpoint, Checkpoint: "used",
+					checkPlan(t, got.plan, RepairPlan{Generation: 1, Seq: uint64(k - 1), NextEvent: uint64(k), Source: FromCheckpoint, Checkpoint: "used",
 						Spans: []Span{sp}, Truncation: &Truncation{Damage: sp.Problem, FirstSeq: uint64(k + 1), LastSeq: 9,
 							FirstEvent: uint64(k), LastEvent: 9}})
 					s.checkKept(t, got, k-1)
@@ -1074,7 +1081,7 @@ func TestSalvageNoCheckpoint(t *testing.T) {
 				d.apply(t, fsys, r)
 				got := salvage(t, fsys, s.o)
 				sp := span(r, d.reason)
-				checkPlan(t, got.plan, RepairPlan{Generation: 1, Seq: uint64(k - 1), Source: FromLog, Checkpoint: "none", Spans: []Span{sp},
+				checkPlan(t, got.plan, RepairPlan{Generation: 1, Seq: uint64(k - 1), NextEvent: uint64(k), Source: FromLog, Checkpoint: "none", Spans: []Span{sp},
 					Truncation: &Truncation{Damage: sp.Problem, FirstSeq: uint64(k + 1), LastSeq: 9, FirstEvent: uint64(k), LastEvent: 9}})
 				s.checkKept(t, got, k-1)
 				cut := s.copy()
