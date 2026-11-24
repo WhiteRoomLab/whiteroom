@@ -81,6 +81,22 @@ func startAt(first uint64, prev [sha256.Size]byte) func(t *testing.T, f *fixture
 		dbwire.AppendChainStart(nil, dbwire.ChainStart{First: first, Prev: prev, At: pruneNow}))
 }
 
+// holeAt is the step of a store that puts the row of the hole of the records first to last of log, whose last has the hash
+// hash.
+func holeAt(log string, first, last uint64, hash [sha256.Size]byte) func(t *testing.T, f *fixture) {
+	return putRow(dbwire.TableChains, dbwire.ChainHoleKey(log, first),
+		dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: last, Hash: hash, At: pruneNow}))
+}
+
+// holeText is the refusal of the record n, which comes after the hole of the records first to last.
+func holeText(n, first, last int) string {
+	if first == last {
+		return fmt.Sprintf("record %d comes after the record %d that whiteroom-db repair dropped: there is no break to accept", n, first)
+	}
+	return fmt.Sprintf("record %d comes after the records %d to %d that whiteroom-db repair dropped: there is no break to accept", n,
+		first, last)
+}
+
 // storeFiles returns every file of the world of f with what it holds, except the head of the engine, which each open of the
 // engine writes again.
 func storeFiles(f *fixture) map[string]string {
@@ -197,7 +213,7 @@ func gapText(n, before int) string {
 
 // TestAcceptBreakRefused checks that each refusal says why, in the words of the command, and writes nothing.
 func TestAcceptBreakRefused(t *testing.T) {
-	chain := newChain(dbwire.LogLogin, 6)
+	chain, activity := newChain(dbwire.LogLogin, 6), newChain(dbwire.LogActivity, 4)
 	good := [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), chain.rec(5), chain.rec(6)}
 	withBreak := slices.Clone(good)
 	withBreak[3] = changedRecord(dbwire.LogLogin, 4, chain) // the record 5 is the break
@@ -249,6 +265,34 @@ func TestAcceptBreakRefused(t *testing.T) {
 			[]byte("short")), dbwire.LogLogin, 5, unreadable("login", "the chain start cannot be read")},
 		{"a row of a break that cannot be read", withBreak, putRow(dbwire.TableChains, dbwire.ChainBreakKey(dbwire.LogLogin, 2),
 			[]byte("short")), dbwire.LogLogin, 5, unreadable("login", "a row of an accepted break cannot be read")},
+		{"a record after a hole", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)}, holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)),
+			dbwire.LogLogin, 4, holeText(4, 3, 3)},
+		{"a record after a hole of two records", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)},
+			holeAt(dbwire.LogLogin, 3, 4, chain.sum(4)), dbwire.LogLogin, 5, holeText(5, 3, 4)},
+		{"a record after a hole, with another prev", [][]byte{chain.rec(1), chain.rec(2), auditRecord(dbwire.LogLogin, 4, hashText(wrong32))},
+			holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)), dbwire.LogLogin, 4, gapText(4, 2)},
+		{"the first record after a hole at the start", [][]byte{chain.rec(2), chain.rec(3)}, holeAt(dbwire.LogLogin, 1, 1, chain.sum(1)),
+			dbwire.LogLogin, 2, holeText(2, 1, 1)},
+		{"the first record after a hole at the chain start", [][]byte{chain.rec(5), chain.rec(6)}, func(t *testing.T, f *fixture) {
+			startAt(3, chain.sum(2))(t, f)
+			holeAt(dbwire.LogLogin, 3, 4, chain.sum(4))(t, f)
+		}, dbwire.LogLogin, 5, holeText(5, 3, 4)},
+		{"a record after a hole, in the activity log", [][]byte{activity.rec(1), activity.rec(3)},
+			holeAt(dbwire.LogActivity, 2, 2, activity.sum(2)), dbwire.LogActivity, 3, holeText(3, 2, 2)},
+		{"a record that follows the one after a hole", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5)},
+			holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)), dbwire.LogLogin, 5, "record 5 follows record 4: there is no break to accept"},
+		{"a record after a hole that is one record wider", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			holeAt(dbwire.LogLogin, 3, 4, chain.sum(4)), dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a record after a hole that is one record narrower", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)},
+			holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)), dbwire.LogLogin, 5, gapText(5, 2)},
+		{"a record after a hole that starts after the record before it", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			holeAt(dbwire.LogLogin, 4, 4, chain.sum(3)), dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a record after a hole with another hash", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			holeAt(dbwire.LogLogin, 3, 3, wrong32), dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a record after a hole of the other log", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			holeAt(dbwire.LogActivity, 3, 3, chain.sum(3)), dbwire.LogLogin, 4, gapText(4, 2)},
+		{"a row of a hole that cannot be read", withBreak, putRow(dbwire.TableChains, dbwire.ChainHoleKey(dbwire.LogLogin, 2),
+			[]byte("short")), dbwire.LogLogin, 5, unreadable("login", "a row of a hole cannot be read")},
 		{"a chain start of the activity log", withBreak, putRow(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogActivity),
 			dbwire.AppendChainStart(nil, dbwire.ChainStart{First: 3, Prev: wrong32, At: pruneNow})), dbwire.LogActivity, 5,
 			unreadable("activity", "a chain start for a log of which only the login records are ever deleted")},
@@ -307,6 +351,30 @@ func TestAcceptBreakWalk(t *testing.T) {
 		skipping := auditRecord(dbwire.LogLogin, 6, hashText(chain.sum(4)))
 		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), skipping})
 		refused(t, f, 6, gapText(6, 4))
+	})
+	t.Run("a break after a hole", func(t *testing.T) {
+		// The record 3 is lost, and the record 5 is another one, so that the record 6 is a break: the record 4, which comes after
+		// the hole, has the hash of the record 3, and the walk goes on from it.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), changedRecord(dbwire.LogLogin, 5, chain), chain.rec(6)},
+			holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)))
+		before := viewOf(t, f)
+		if err := acceptBreak(t, f, dbwire.LogLogin, 4); err == nil || err.Error() != holeText(4, 3, 3) {
+			t.Errorf("AcceptBreak() of the record after the hole = %v, want %q", err, holeText(4, 3, 3))
+		}
+		kept(t, before, viewOf(t, f))
+		if err := acceptBreak(t, f, dbwire.LogLogin, 6); err != nil {
+			t.Fatalf("AcceptBreak() = %v", err)
+		}
+		after := viewOf(t, f)
+		kept(t, before, after)
+		if want := before.shape + " B6 M"; after.shape != want {
+			t.Errorf("the store is %q, want %q", after.shape, want)
+		}
+		rows := chainTable(t, f)
+		if len(rows) != 2 || rows[string(dbwire.ChainBreakKey(dbwire.LogLogin, 6))] == "" ||
+			rows[string(dbwire.ChainHoleKey(dbwire.LogLogin, 3))] == "" {
+			t.Errorf("the table chains has %d rows, want the hole and the break at the record 6", len(rows))
+		}
 	})
 	t.Run("events that are no record", func(t *testing.T) {
 		junk, badDaemon := []byte("junk"), []byte{dbwire.DaemonEvent, 0x7f, 1, 2}

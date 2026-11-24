@@ -19,11 +19,14 @@ import (
 // (dbwire.ReadRecordID), uses only their log, number and prev, and changes and drops none.
 //
 // It refuses, and writes nothing, a record that is not in the store (also one before the chain start, and one whose number
-// the log has twice), the first record that the log is checked from, which has no record before it to break from, a record
-// whose number does not follow that of the one before it (a gap, which a lost record leaves: the repair of the engine
-// handles it), a record that follows the one before it, a break that is accepted already for the record as it is, a chain
-// whose rows cannot be read, and a store of an older table schema than dbwire.TableVersion, for the reason of CompactLogin.
-// An event that is no record has no number to be named by, and is not looked at.
+// the log has twice), a record that follows a hole that a repair has recorded (the table chains has it, with the hash that
+// the record has as its prev: VerifyAudit passes the record, so there is no break to accept; the hole is not a break, and
+// the records that it lost are not there to be named), the first record that the log is checked from, which has no record
+// before it to break from, a record whose number does not follow that of the one before it and that no row records as a hole
+// (a gap, which a lost record leaves: the repair of the engine handles it), a record that follows the one before it, a break
+// that is accepted already for the record as it is, a chain whose rows cannot be read, and a store of an older table schema
+// than dbwire.TableVersion, for the reason of CompactLogin. An event that is no record has no number to be named by, and is
+// not looked at.
 func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64, now time.Time) error {
 	if log != dbwire.LogLogin && log != dbwire.LogActivity {
 		return fmt.Errorf("the audit log %q is neither %s nor %s", log, dbwire.LogLogin, dbwire.LogActivity)
@@ -51,7 +54,7 @@ func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64
 		return fmt.Errorf("record %d of the audit log %s is not in the store: the records before record %d were deleted", n, log,
 			rows.start.First)
 	}
-	p := &breakPass{log: log, n: n, start: rows.start}
+	p := &breakPass{log: log, n: n, start: rows.start, holes: rows.holes}
 	if err := m.Events(ctx, p.event); err != nil {
 		return err
 	}
@@ -61,6 +64,12 @@ func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64
 	case p.seen > 1:
 		return fmt.Errorf("record %d of the audit log %s is in the store more than once, so a break at it cannot be named by its "+
 			"number", n, log)
+	case p.hole != nil:
+		lost := fmt.Sprintf("the records %d to %d", p.hole.First, p.hole.Last)
+		if p.hole.First == p.hole.Last {
+			lost = fmt.Sprintf("the record %d", p.hole.First)
+		}
+		return fmt.Errorf("record %d comes after %s that whiteroom-db repair dropped: there is no break to accept", n, lost)
 	case p.first:
 		return fmt.Errorf("record %d is the first record that the audit log %s is checked from: a break there is not accepted", n, log)
 	case p.gap:
@@ -98,6 +107,7 @@ type breakPass struct {
 	log   string
 	n     uint64
 	start *dbwire.ChainStart
+	holes map[uint64]dbwire.ChainHole
 	last  chainLast
 
 	seen   int // how many records of the log have the number n
@@ -106,6 +116,8 @@ type breakPass struct {
 	first  bool   // it is the first record of the walk
 	gap    bool   // its number does not follow that of the record before it
 	before uint64 // the number of the record before it
+	// hole is the hole that it follows, as VerifyAudit passes it, nil if none.
+	hole *dbwire.ChainHole
 }
 
 func (p *breakPass) event(e logdb.Event) bool {
@@ -126,6 +138,9 @@ func (p *breakPass) event(e logdb.Event) bool {
 		}
 		p.sum, p.first, p.why = sum, !p.last.ok, followText(p.start, p.last, n, prev)
 		p.gap, p.before = p.last.ok && n != p.last.n+1, p.last.n
+		if h, ok := dbwire.HoleBefore(p.holes, p.start, p.last.n, n, prev); ok {
+			p.hole = &h
+		}
 	}
 	p.last = chainLast{n: n, sum: sum, ok: true}
 	return true

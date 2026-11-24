@@ -300,13 +300,14 @@ func TestAccept(t *testing.T) {
 		want   string // the error, or "" for an Open that works
 	}{
 		{"a fresh store", nil, false, ""},
+		{"schema 9", uv(9), true, ""},
 		{"schema 8", uv(8), true, ""},
 		{"schema 7", uv(7), true, ""},
 		{"schema 6", uv(6), true, ""},
 		{"schema 1", uv(1), true, ""},
-		{"schema 9", uv(9), true, "data/logdb: the store schema is of version 9, newer than this program knows (8)"},
+		{"schema 10", uv(10), true, "data/logdb: the store schema is of version 10, newer than this program knows (9)"},
 		{"a schema of 2^40", uv(1 << 40), true,
-			"data/logdb: the store schema is of version 1099511627776, newer than this program knows (8)"},
+			"data/logdb: the store schema is of version 1099511627776, newer than this program knows (9)"},
 		{"commits and no schema", nil, true, "data/logdb: not a store of whiteroom (no schema version)"},
 		{"schema 0", uv(0), true, `data/logdb: meta "schema": invalid value`},
 		{"an empty row", []byte{}, true, `data/logdb: meta "schema": invalid value`},

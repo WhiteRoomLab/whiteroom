@@ -129,7 +129,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("the events after Create() = %+v, want the record %s", events, createRecordJSON)
 	}
 	if got, want := rawTable(t, s, tableMeta), [][2]string{{"activityLog", "\x01" + string(createRecordSum())},
-		{"schema", "\x08"}}; !slices.Equal(got, want) {
+		{"schema", "\x09"}}; !slices.Equal(got, want) {
 		t.Errorf("meta after Create() = %q, want %q", got, want)
 	}
 	if got, want := rawTable(t, s, tableHeads), [][2]string{{"activity", fmt.Sprintf("audit head activity 1 sha256:%x",
@@ -150,7 +150,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("VerifyAudit() after Create() = %v", err)
 	}
 
-	// Open adds nothing to a store that is of the schema 8 already.
+	// Open adds nothing to a store that is of the schema 9 already.
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -959,7 +959,7 @@ func TestUpgradeTrialEvent(t *testing.T) {
 	w := reopenLog(t, dir, logdb.Options{})
 	events := rawEvents(t, w)
 	const upgrade = `{"log":"activity","n":1,"at":"2026-11-03T08:00:00.12Z","actor":"system","action":"store.upgrade",` +
-		`"detail":{"from":"5","to":"8"}}`
+		`"detail":{"from":"5","to":"9"}}`
 	if len(events) != 2 || string(events[0].Data) != "pair 1" || string(events[1].Data) != upgrade {
 		t.Fatalf("the events after the upgrade = %d, want the trial event and the record store.upgrade", len(events))
 	}
@@ -2326,7 +2326,7 @@ func TestAuditAcceptBreakThenCompact(t *testing.T) {
 }
 
 // TestAuditCompactLoginOlderSchema checks that a compact of a store of the table schema 7 drops no login record, and that
-// once its writer has opened it, which upgrades it to the schema 8, the next compact drops them and VerifyAudit passes.
+// once its writer has opened it, which upgrades it to the schema 9, the next compact drops them and VerifyAudit passes.
 func TestAuditCompactLoginOlderSchema(t *testing.T) {
 	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
 	login := []bool{true, false, true, false, true, true, true, true, false}

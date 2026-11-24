@@ -190,7 +190,7 @@ func state(t *testing.T, s *Store) string {
 
 func TestCreate(t *testing.T) {
 	forBackends(t, allBackends, func(t *testing.T, tb testBackend) {
-		// A new store has the schema 8 and the record store.create, with the mark of the daemon after it, and nothing else.
+		// A new store has the schema 9 and the record store.create, with the mark of the daemon after it, and nothing else.
 		dir := newDaemonDir(t, tb.options())
 		s, err := createOnDir(dir, tb.options())
 		if err != nil {
