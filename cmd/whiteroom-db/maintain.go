@@ -123,8 +123,8 @@ func setup(name, usage string, args []string, e env) (data string, code int, ok 
 	return data, code, ok
 }
 
-// setupFlags is setup for a command that has flags of its own, which add defines before the arguments are parsed. It
-// returns the flags too, for the usage errors of the command.
+// setupFlags is setup for a command that has flags of its own (accept-break and repair), which add defines before the
+// arguments are parsed. It returns the flags too, for the usage errors of the command.
 func setupFlags(name, usage string, args []string, e env, add func(*flag.FlagSet)) (flags *flag.FlagSet, data string, code int, ok bool) {
 	flags = newFlagSet(name, usage, e.stderr)
 	var config, flagData string

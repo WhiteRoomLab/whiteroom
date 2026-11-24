@@ -116,8 +116,8 @@ func TestAuditGapIsNoBreak(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := "record 3 does not follow record 1 in number: a gap, which a lost record leaves, is not a break that can be accepted, " +
-		"and waits for the repair of the engine"
+	want := "record 3 does not follow record 1 in number: a gap, which a lost record leaves, is not a break that can be accepted: " +
+		"whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem"
 	if err := acceptBreakOf(t, dir, audit.LoginLog, 3); err == nil || err.Error() != want {
 		t.Fatalf("AcceptBreak(login, 3) = %v, want %q", err, want)
 	}

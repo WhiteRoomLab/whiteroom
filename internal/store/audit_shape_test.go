@@ -212,3 +212,57 @@ func FuzzReadRecordIDAgrees(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) { checkSameRecord(t, data) })
 }
+
+// checkSameHeadLine checks that dbwire.ParseHeadLine reads a line as audit.ParseHead does, or does not read it: a line that
+// ParseHeadLine reads is exactly the line that audit.Head.String writes, and audit.ParseHead reads the same head from it.
+func checkSameHeadLine(t testing.TB, line string) {
+	t.Helper()
+	log, n, hash, ok := dbwire.ParseHeadLine([]byte(line))
+	head, err := audit.ParseHead(line)
+	if !ok {
+		return
+	}
+	want := audit.Head{Log: audit.Log(log), N: n, Hash: hash}
+	if err != nil || head != want || want.String() != line {
+		t.Errorf("ParseHeadLine(%q) = %q, %d, %x; audit.ParseHead = %+v, %v; String = %q", line, log, n, hash, head, err,
+			want.String())
+	}
+}
+
+// TestParseHeadLineAgrees checks that dbwire.ParseHeadLine, which the daemon reads the rows of the table heads with, reads
+// the lines that audit.Head.String writes, and no other: a line that audit.ParseHead refuses, or reads from a part of it
+// (what a logger put before it, more space, upper case digits), is refused too.
+func TestParseHeadLineAgrees(t *testing.T) {
+	var hash [32]byte
+	for i := range hash {
+		hash[i] = byte(i*37 + 11)
+	}
+	for _, log := range []audit.Log{audit.LoginLog, audit.ActivityLog} {
+		for _, n := range []uint64{1, 2, 9, 10, 255, 1 << 32, 1<<64 - 1} {
+			line := audit.Head{Log: log, N: n, Hash: hash}.String()
+			got, number, sum, ok := dbwire.ParseHeadLine([]byte(line))
+			if !ok || got != string(log) || number != n || sum != hash {
+				t.Errorf("ParseHeadLine(%q) = %q, %d, %x, %v", line, got, number, sum, ok)
+			}
+			checkSameHeadLine(t, line)
+		}
+	}
+	valid := audit.Head{Log: audit.LoginLog, N: 12, Hash: hash}.String()
+	digits := valid[len(valid)-64:]
+	for _, line := range []string{
+		"", " ", valid + "\n", valid + " ", " " + valid, "journal: " + valid, "x" + valid, strings.ToUpper(valid),
+		strings.Replace(valid, digits, strings.ToUpper(digits), 1), strings.Replace(valid, "login", "other", 1),
+		strings.Replace(valid, "login 12", "login 012", 1), strings.Replace(valid, "login 12", "login 0", 1),
+		strings.Replace(valid, "login 12", "login -12", 1), strings.Replace(valid, "login 12", "login +12", 1),
+		strings.Replace(valid, "login 12", "login 18446744073709551616", 1), strings.Replace(valid, "login ", "login  ", 1),
+		strings.Replace(valid, "login ", "login\t", 1), strings.Replace(valid, "sha256:", "sha512:", 1),
+		strings.Replace(valid, "sha256:", "", 1), valid[:len(valid)-1], valid + "0", valid + " x", "audit head login 12",
+		"audit head login sha256:" + digits, strings.Replace(valid, "audit head", "audit  head", 1),
+		strings.Replace(valid, digits[:1], "g", 1),
+	} {
+		if _, _, _, ok := dbwire.ParseHeadLine([]byte(line)); ok {
+			t.Errorf("ParseHeadLine(%q) reads the line", line)
+		}
+		checkSameHeadLine(t, line)
+	}
+}

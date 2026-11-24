@@ -2,6 +2,7 @@ package dbwire
 
 import (
 	"bytes"
+	"encoding/hex"
 	"math"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestTables(t *testing.T) {
 	if AppendOnly(math.MaxUint32) {
 		t.Error("the table 2^32-1 is append only")
 	}
-	if TableVersion != 8 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
+	if TableVersion != 9 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
 		TableEntryRevisions != 5 || TableHeads != 11 || TableChains != 12 || MaxHeadKey != 64 || MaxHeadLine != 255 {
 		t.Error("a fact about the tables is not the one of the plan")
 	}
@@ -217,8 +218,8 @@ func TestChainRows(t *testing.T) {
 		t.Fatalf("the bytes of the time are %x, want %x", atBytes, want)
 	}
 
-	if ChainStartSize != 52 || ChainBreakSize != 44 {
-		t.Errorf("the sizes are %d and %d, want 52 and 44", ChainStartSize, ChainBreakSize)
+	if ChainStartSize != 52 || ChainBreakSize != 44 || ChainHoleSize != 52 {
+		t.Errorf("the sizes are %d, %d and %d, want 52, 44 and 52", ChainStartSize, ChainBreakSize, ChainHoleSize)
 	}
 	start := ChainStart{First: 0x0102030405060708, Prev: prev, At: at}
 	b := AppendChainStart(nil, start)
@@ -313,6 +314,62 @@ func TestChainRows(t *testing.T) {
 	if _, ok := ParseChainBreak(withNanos(goodBreak, 999999999)); !ok {
 		t.Error("999999999 nanoseconds are refused")
 	}
+
+	// The value of a hole: Last, Hash and the time. The row has First in its key.
+	hole := ChainHole{First: 3, Last: 0x0102030405060708, Hash: hash, At: at}
+	b = AppendChainHole(nil, hole)
+	want = append(append([]byte{1, 2, 3, 4, 5, 6, 7, 8}, hash[:]...), atBytes...)
+	if !bytes.Equal(b, want) || len(b) != ChainHoleSize {
+		t.Errorf("the value of a hole is %x, want %x", b, want)
+	}
+	const goldenHole = "0000000000000009" + "f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1" + "000000006b04136e075bcd15"
+	if got := AppendChainHole(nil, ChainHole{First: 9, Last: 9, Hash: hash, At: at}); hex.EncodeToString(got) != goldenHole {
+		t.Errorf("the value of a hole is %x, want %s", got, goldenHole)
+	}
+	if got, ok := ParseChainHole(3, b); !ok || got != (ChainHole{First: 3, Last: hole.Last, Hash: hash, At: got.At}) || !got.At.Equal(at) || got.At.Location() != time.UTC {
+		t.Errorf("ParseChainHole = %+v, %v, want %+v", got, ok, hole)
+	}
+	if got := AppendChainHole([]byte("xy"), hole); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+		t.Errorf("AppendChainHole does not keep dst: %x", got)
+	}
+	// A hole of one record, and the largest.
+	if got, ok := ParseChainHole(7, AppendChainHole(nil, ChainHole{Last: 7, At: at})); !ok || got.First != 7 || got.Last != 7 {
+		t.Errorf("a hole of one record: %+v, %v", got, ok)
+	}
+	if got, ok := ParseChainHole(1, AppendChainHole(nil, ChainHole{Last: math.MaxUint64, At: at})); !ok || got.Last != math.MaxUint64 {
+		t.Errorf("the largest hole: %+v, %v", got, ok)
+	}
+	goodHole := AppendChainHole(nil, ChainHole{Last: 9, Hash: hash, At: at})
+	for name, c := range map[string]struct {
+		first uint64
+		b     []byte
+	}{
+		"nil":                       {3, nil},
+		"51 bytes":                  {3, goodHole[:51]},
+		"53 bytes":                  {3, append(bytes.Clone(goodHole), 0)},
+		"two rows":                  {3, append(bytes.Clone(goodHole), goodHole...)},
+		"the value of a break":      {3, goodBreak},
+		"1e9 nanoseconds":           {3, withNanos(goodHole, 1e9)},
+		"all nanoseconds":           {3, withNanos(goodHole, math.MaxUint32)},
+		"First 0":                   {0, goodHole},
+		"Last under First":          {10, goodHole},
+		"Last 0":                    {3, AppendChainHole(nil, ChainHole{Last: 0, Hash: hash, At: at})},
+		"the largest First, Last 9": {math.MaxUint64, goodHole},
+	} {
+		if got, ok := ParseChainHole(c.first, c.b); ok {
+			t.Errorf("%s: ParseChainHole = %+v", name, got)
+		}
+	}
+	if _, ok := ParseChainHole(9, goodHole); !ok {
+		t.Error("First 9, Last 9 is refused")
+	}
+	if _, ok := ParseChainHole(3, withNanos(goodHole, 999999999)); !ok {
+		t.Error("999999999 nanoseconds are refused")
+	}
+	// The value of a hole has the size and the layout of that of a chain start: the keys tell them apart. It is no break.
+	if _, ok := ParseChainBreak(goodHole); ok {
+		t.Error("the value of a hole is read as a break")
+	}
 }
 
 func TestChainKeys(t *testing.T) {
@@ -338,6 +395,46 @@ func TestChainKeys(t *testing.T) {
 			t.Errorf("ParseChainBreakKey(%q) = %q, %d, %v", key, log, n, ok)
 		}
 	}
+	if got, want := ChainHoleKey(LogActivity, 0x0102030405060708), []byte("activity\x01\x01\x02\x03\x04\x05\x06\x07\x08"); !bytes.Equal(got, want) {
+		t.Errorf("ChainHoleKey = %q, want %q", got, want)
+	}
+	if got := ChainHolePrefix(LogLogin); string(got) != "login\x01" {
+		t.Errorf("ChainHolePrefix = %q", got)
+	}
+	for _, c := range []struct {
+		log   string
+		first uint64
+	}{{LogLogin, 1}, {LogActivity, math.MaxUint64}, {"x", 7}} {
+		key := ChainHoleKey(c.log, c.first)
+		// The prefixes of the holes and of the breaks, and the key of a start, are none a prefix of the keys of another.
+		if !bytes.HasPrefix(key, ChainHolePrefix(c.log)) || bytes.HasPrefix(key, ChainBreakPrefix(c.log)) ||
+			bytes.HasPrefix(ChainBreakKey(c.log, c.first), ChainHolePrefix(c.log)) || bytes.HasPrefix(ChainStartKey(c.log), ChainHolePrefix(c.log)) {
+			t.Errorf("%q: the key %q and the prefixes", c.log, key)
+		}
+		if log, first, ok := ParseChainHoleKey(key); !ok || log != c.log || first != c.first {
+			t.Errorf("ParseChainHoleKey(%q) = %q, %d, %v", key, log, first, ok)
+		}
+		// A key of a hole is no key of a break, and a key of a break is no key of a hole.
+		if log, n, ok := ParseChainBreakKey(key); ok {
+			t.Errorf("ParseChainBreakKey(%q) = %q, %d", key, log, n)
+		}
+		if log, first, ok := ParseChainHoleKey(ChainBreakKey(c.log, c.first)); ok {
+			t.Errorf("ParseChainHoleKey(a break) = %q, %d", log, first)
+		}
+	}
+	for name, key := range map[string][]byte{
+		"nil":                      nil,
+		"a log":                    []byte("login"),
+		"a log and the byte":       []byte("login\x01"),
+		"nine bytes":               []byte("\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the number 0":             []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the byte of a break":      []byte("login\x00\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"a log and a short number": []byte("login\x01\x00\x00\x00\x00\x00\x00\x01"),
+	} {
+		if log, first, ok := ParseChainHoleKey(key); ok {
+			t.Errorf("%s: ParseChainHoleKey = %q, %d", name, log, first)
+		}
+	}
 	for name, key := range map[string][]byte{
 		"nil":                      nil,
 		"a log":                    []byte("login"),
@@ -359,8 +456,9 @@ func TestDaemonEvents(t *testing.T) {
 	}
 	cutoff := time.Date(2025, 11, 23, 10, 20, 30, 123456789, time.UTC)
 
-	if DeletedSize != 55 || AcceptedSize != 43 || DeletedKind != 2 || AcceptedKind != 3 {
-		t.Errorf("the sizes are %d and %d, the kinds %d and %d", DeletedSize, AcceptedSize, DeletedKind, AcceptedKind)
+	if DeletedSize != 55 || AcceptedSize != 43 || HoleSize != 51 || DeletedKind != 2 || AcceptedKind != 3 || HoleKind != 4 {
+		t.Errorf("the sizes are %d, %d and %d, the kinds %d, %d and %d", DeletedSize, AcceptedSize, HoleSize, DeletedKind,
+			AcceptedKind, HoleKind)
 	}
 	for log, code := range map[string]byte{LogLogin: 1, LogActivity: 2} {
 		d := Deleted{Log: log, First: 0x0102030405060708, Prev: prev, Cutoff: cutoff}
@@ -400,10 +498,38 @@ func TestDaemonEvents(t *testing.T) {
 		if got := AppendAccepted([]byte("xy"), a); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
 			t.Errorf("AppendAccepted does not keep dst: %x", got)
 		}
+
+		h := Hole{Log: log, First: 0x0102030405060708, Last: 0x1112131415161718, Hash: hash}
+		b = AppendHole(nil, h)
+		want = append([]byte{0, 4, code, 1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18}, hash[:]...)
+		if !bytes.Equal(b, want) || len(b) != HoleSize || !IsDaemonEvent(b) || !ValidEvent(b) {
+			t.Errorf("the hole event of %s is %x, want %x", log, b, want)
+		}
+		if got, ok := ParseHole(b); !ok || got != h {
+			t.Errorf("ParseHole = %+v, %v, want %+v", got, ok, h)
+		}
+		if _, ok := ParseMark(b); ok {
+			t.Error("a hole event is read as a mark")
+		}
+		if _, ok := ParseDeleted(b); ok {
+			t.Error("a hole event is read as a deletion")
+		}
+		if _, ok := ParseAccepted(b); ok {
+			t.Error("a hole event is read as an acceptance")
+		}
+		if got := AppendHole([]byte("xy"), h); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
+			t.Errorf("AppendHole does not keep dst: %x", got)
+		}
+	}
+	const goldenHoleEvent = "0004" + "02" + "0000000000000003" + "0000000000000004" +
+		"f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1"
+	if got := AppendHole(nil, Hole{Log: LogActivity, First: 3, Last: 4, Hash: hash}); hex.EncodeToString(got) != goldenHoleEvent {
+		t.Errorf("the hole event is %x, want %s", got, goldenHoleEvent)
 	}
 
 	goodDeleted := AppendDeleted(nil, Deleted{Log: LogLogin, First: 2, Prev: prev, Cutoff: cutoff})
 	goodAccepted := AppendAccepted(nil, Accepted{Log: LogLogin, N: 1, Hash: hash})
+	goodHole := AppendHole(nil, Hole{Log: LogLogin, First: 2, Last: 2, Hash: hash})
 	goodMark := AppendMark(nil, cutoff)
 	with := func(b []byte, i int, v byte) []byte {
 		b = bytes.Clone(b)
@@ -424,7 +550,8 @@ func TestDaemonEvents(t *testing.T) {
 		}
 		return b
 	}
-	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, nanos(goodDeleted, 999999999), number(goodDeleted, 2), number(goodAccepted, math.MaxUint64)} {
+	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, goodHole, nanos(goodDeleted, 999999999), number(goodDeleted, 2),
+		number(goodAccepted, math.MaxUint64), AppendHole(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64})} {
 		if !ValidEvent(b) {
 			t.Errorf("ValidEvent(%x) is false", b)
 		}
@@ -435,7 +562,11 @@ func TestDaemonEvents(t *testing.T) {
 		"nil":                     nil,
 		"the byte of the daemon":  {0},
 		"a kind and nothing else": {0, 2},
-		"the kind 4":              {0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 5":              {0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 4 of 11 bytes":  {0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"a hole of 50 bytes":      goodHole[:50],
+		"a hole of 52 bytes":      append(bytes.Clone(goodHole), 0),
+		"a hole and a mark":       append(bytes.Clone(goodHole), goodMark...),
 		"the kind 0":              {0, 0},
 		"the kind 255":            {0, 255},
 		"a record":                []byte(`{"log":"login","n":1}`),
@@ -444,6 +575,7 @@ func TestDaemonEvents(t *testing.T) {
 		"a mark of 15 bytes":      append(bytes.Clone(goodMark), 0),
 		"a mark of 1e9 nanos":     nanos(goodMark, 1e9),
 		"a mark with the kind 4":  with(goodMark, 1, 4),
+		"a mark with the kind 5":  with(goodMark, 1, 5),
 	} {
 		if ValidEvent(b) {
 			t.Errorf("%s: ValidEvent is true for %x", name, b)
@@ -464,6 +596,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the first record 1":         number(goodDeleted, 1),
 		"the kind of a mark":         with(goodDeleted, 1, MarkKind),
 		"the kind of an acceptance":  with(goodDeleted, 1, AcceptedKind),
+		"the kind of a hole":         with(goodDeleted, 1, HoleKind),
 		"the first byte 1":           with(goodDeleted, 0, 1),
 		"a mark of the size of one":  bytes.Repeat([]byte{'x'}, DeletedSize),
 		"an acceptance of this size": append(bytes.Clone(goodAccepted), make([]byte, DeletedSize-AcceptedSize)...),
@@ -484,6 +617,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the log 3":                 with(goodAccepted, 2, 3),
 		"record 0":                  number(goodAccepted, 0),
 		"the kind of a deletion":    with(goodAccepted, 1, DeletedKind),
+		"the kind of a hole":        with(goodAccepted, 1, HoleKind),
 		"the kind of a mark":        with(goodAccepted, 1, MarkKind),
 		"the first byte 1":          with(goodAccepted, 0, 1),
 		"a deletion of this size":   goodDeleted[:AcceptedSize],
@@ -493,10 +627,207 @@ func TestDaemonEvents(t *testing.T) {
 			t.Errorf("%s: ParseAccepted = %+v", name, got)
 		}
 	}
+	holeFirst := func(b []byte, n uint64) []byte {
+		b = bytes.Clone(b)
+		for i := range 8 {
+			b[10-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	holeLast := func(b []byte, n uint64) []byte {
+		b = bytes.Clone(b)
+		for i := range 8 {
+			b[18-i] = byte(n >> (8 * i))
+		}
+		return b
+	}
+	for name, b := range map[string][]byte{
+		"nil":                         nil,
+		"50 bytes":                    goodHole[:50],
+		"52 bytes":                    append(bytes.Clone(goodHole), 0),
+		"with a prefix":               append([]byte{'x'}, goodHole...),
+		"the log 0":                   with(goodHole, 2, 0),
+		"the log 3":                   with(goodHole, 2, 3),
+		"the log 255":                 with(goodHole, 2, 255),
+		"the first record 0":          holeFirst(goodHole, 0),
+		"the last record under first": holeLast(goodHole, 1),
+		"the last record 0":           holeLast(goodHole, 0),
+		"the kind of a deletion":      with(goodHole, 1, DeletedKind),
+		"the kind of an acceptance":   with(goodHole, 1, AcceptedKind),
+		"the kind of a mark":          with(goodHole, 1, MarkKind),
+		"the first byte 1":            with(goodHole, 0, 1),
+		"an acceptance of this size":  append(bytes.Clone(goodAccepted), make([]byte, HoleSize-AcceptedSize)...),
+		"a deletion of this size":     goodDeleted[:HoleSize],
+		"a string of x of its size":   bytes.Repeat([]byte{'x'}, HoleSize),
+	} {
+		if got, ok := ParseHole(b); ok {
+			t.Errorf("%s: ParseHole = %+v", name, got)
+		}
+	}
+	// A hole is no deletion or acceptance, however it is padded or cut to their sizes.
+	for _, b := range [][]byte{goodHole, append(bytes.Clone(goodHole), make([]byte, DeletedSize-HoleSize)...), goodHole[:AcceptedSize]} {
+		if got, ok := ParseDeleted(b); ok {
+			t.Errorf("ParseDeleted(a hole of %d bytes) = %+v", len(b), got)
+		}
+		if got, ok := ParseAccepted(b); ok {
+			t.Errorf("ParseAccepted(a hole of %d bytes) = %+v", len(b), got)
+		}
+	}
+	if got, ok := ParseHole(holeLast(holeFirst(goodHole, 7), 7)); !ok || got.First != 7 || got.Last != 7 {
+		t.Errorf("a hole of the record 7: %+v, %v", got, ok)
+	}
+	if got := AppendHole(nil, Hole{Log: "other", First: 2, Last: 2}); got[2] != 0 || ValidEvent(got) {
+		t.Errorf("a hole of a log that does not exist: %x", got)
+	}
 	if got := AppendDeleted(nil, Deleted{Log: "other", First: 2}); got[2] != 0 || ValidEvent(got) {
 		t.Errorf("a deletion of a log that does not exist: %x", got)
 	}
 	if got := AppendAccepted(nil, Accepted{N: 1}); got[2] != 0 || ValidEvent(got) {
 		t.Errorf("an acceptance of no log: %x", got)
+	}
+}
+
+func TestParseHeadLine(t *testing.T) {
+	hex64 := strings.Repeat("0123456789abcdef", 4)
+	var hash [32]byte
+	for i := range hash {
+		hash[i] = byte(i * 7)
+	}
+	for _, c := range []struct {
+		line string
+		log  string
+		n    uint64
+	}{
+		{"audit head login 1 sha256:" + hex64, "login", 1},
+		{"audit head activity 12 sha256:" + hex64, "activity", 12},
+		{"audit head activity 18446744073709551615 sha256:" + hex64, "activity", math.MaxUint64},
+	} {
+		log, n, h, ok := ParseHeadLine([]byte(c.line))
+		if !ok || log != c.log || n != c.n || hex.EncodeToString(h[:]) != hex64 {
+			t.Errorf("ParseHeadLine(%q) = %q, %d, %x, %v", c.line, log, n, h, ok)
+		}
+		if !validHeadLine([]byte(c.line)) {
+			t.Errorf("%q is no valid row of the heads", c.line)
+		}
+	}
+	line := "audit head login 3 sha256:" + hex.EncodeToString(hash[:])
+	if log, n, h, ok := ParseHeadLine([]byte(line)); !ok || log != "login" || n != 3 || h != hash {
+		t.Errorf("ParseHeadLine(%q) = %q, %d, %x, %v", line, log, n, h, ok)
+	}
+	for name, line := range map[string]string{
+		"nil":                        "",
+		"no prefix":                  "login 1 sha256:" + hex64,
+		"a prefix of a logger":       "journal: audit head login 1 sha256:" + hex64,
+		"a log that is not one":      "audit head other 1 sha256:" + hex64,
+		"a log in upper case":        "audit head Login 1 sha256:" + hex64,
+		"the number 0":               "audit head login 0 sha256:" + hex64,
+		"a leading zero":             "audit head login 01 sha256:" + hex64,
+		"a plus sign":                "audit head login +1 sha256:" + hex64,
+		"a negative number":          "audit head login -1 sha256:" + hex64,
+		"a number over 64 bits":      "audit head login 18446744073709551616 sha256:" + hex64,
+		"a number that is no number": "audit head login x sha256:" + hex64,
+		"hash digits in upper case":  "audit head login 1 sha256:" + strings.ToUpper(hex64),
+		"a digit that is not hex":    "audit head login 1 sha256:" + hex64[:63] + "g",
+		"63 digits":                  "audit head login 1 sha256:" + hex64[:63],
+		"65 digits":                  "audit head login 1 sha256:" + hex64 + "0",
+		"another algorithm":          "audit head login 1 sha512:" + hex64,
+		"no algorithm":               "audit head login 1 " + hex64,
+		"two spaces":                 "audit head login  1 sha256:" + hex64,
+		"a tab":                      "audit head login\t1 sha256:" + hex64,
+		"a space at the end":         "audit head login 1 sha256:" + hex64 + " ",
+		"a newline at the end":       "audit head login 1 sha256:" + hex64 + "\n",
+		"a field more":               "audit head login 1 sha256:" + hex64 + " x",
+		"a field less":               "audit head login sha256:" + hex64,
+		"the prefix in upper case":   "AUDIT HEAD login 1 sha256:" + hex64,
+		"the prefix without a space": "audit headlogin 1 sha256:" + hex64,
+		"a space before the prefix":  " audit head login 1 sha256:" + hex64,
+	} {
+		if log, n, h, ok := ParseHeadLine([]byte(line)); ok {
+			t.Errorf("%s: ParseHeadLine(%q) = %q, %d, %x", name, line, log, n, h)
+		}
+	}
+}
+
+func TestChainHoleFollows(t *testing.T) {
+	var hash, other [32]byte
+	hash[0], other[0] = 1, 2
+	text := "sha256:01" + strings.Repeat("00", 31)
+	h := ChainHole{First: 3, Last: 5, Hash: hash}
+	for _, c := range []struct {
+		name string
+		n    uint64
+		prev string
+		want bool
+	}{
+		{"the record after the hole", 6, text, true},
+		{"the record Last", 5, text, false},
+		{"two records after", 7, text, false},
+		{"the record First", 3, text, false},
+		{"the record 0", 0, text, false},
+		{"another hash", 6, "sha256:02" + strings.Repeat("00", 31), false},
+		{"no hash", 6, "", false},
+		{"the hash in upper case", 6, strings.ToUpper(text), false},
+		{"a hash without the algorithm", 6, text[len("sha256:"):], false},
+	} {
+		if got := h.Follows(c.n, c.prev); got != c.want {
+			t.Errorf("%s: Follows(%d, %q) = %v, want %v", c.name, c.n, c.prev, got, c.want)
+		}
+	}
+	// The largest hole: the record after it has no number, so none follows it.
+	if (ChainHole{First: 1, Last: math.MaxUint64, Hash: hash}).Follows(0, text) {
+		t.Error("the record 0 follows the hole that ends with the largest number")
+	}
+	if !(ChainHole{First: 1, Last: 1, Hash: other}).Follows(2, "sha256:02"+strings.Repeat("00", 31)) {
+		t.Error("the record 2 does not follow the hole of the record 1")
+	}
+}
+
+func TestHoleBefore(t *testing.T) {
+	var h3, h6 [32]byte
+	h3[0], h6[0] = 3, 6
+	text := func(sum [32]byte) string { return "sha256:" + hex.EncodeToString(sum[:]) }
+	holes := map[uint64]ChainHole{
+		3: {First: 3, Last: 4, Hash: h3},
+		6: {First: 6, Last: 6, Hash: h6},
+		1: {First: 1, Last: 2, Hash: h3},
+	}
+	start := &ChainStart{First: 3}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		last  uint64
+		n     uint64
+		prev  string
+		want  uint64 // the first record of the hole that is passed, 0 for none
+	}{
+		{"after the record before the hole", nil, 2, 5, text(h3), 3},
+		{"a hole of one record", nil, 5, 7, text(h6), 6},
+		{"before any record, from the record 1", nil, 0, 3, text(h3), 1},
+		{"before any record, with the chain start at 3", start, 0, 5, text(h3), 3},
+		{"before any record, with a chain start that is after the hole", &ChainStart{First: 5}, 0, 3, text(h3), 0},
+		{"the record that the walk expects", nil, 2, 3, text(h3), 0},
+		{"the record after the hole, with another hash", nil, 2, 5, text(h6), 0},
+		{"the record after the hole, with no hash", nil, 2, 5, "", 0},
+		{"two records after the hole", nil, 2, 6, text(h3), 0},
+		{"the last record of the hole", nil, 2, 4, text(h3), 0},
+		{"a walk that is not where a hole starts", nil, 3, 5, text(h3), 0},
+		{"the first record of the walk, with the chain start at 3, is the chain start's", start, 0, 3, text(h3), 0},
+	} {
+		got, ok := HoleBefore(holes, c.start, c.last, c.n, c.prev)
+		if want := c.want != 0; ok != want || ok && got.First != c.want {
+			t.Errorf("%s: HoleBefore(last %d, n %d) = %+v, %v, want the hole at %d", c.name, c.last, c.n, got, ok, c.want)
+		}
+	}
+	if _, ok := HoleBefore(nil, nil, 0, 5, text(h3)); ok {
+		t.Error("a walk with no holes passes a record")
+	}
+	for _, c := range []struct {
+		start *ChainStart
+		last  uint64
+		want  uint64
+	}{{nil, 0, 1}, {start, 0, 3}, {nil, 4, 5}, {start, 4, 5}, {nil, 1, 2}} {
+		if got := ChainExpected(c.start, c.last); got != c.want {
+			t.Errorf("ChainExpected(%v, %d) = %d, want %d", c.start, c.last, got, c.want)
+		}
 	}
 }

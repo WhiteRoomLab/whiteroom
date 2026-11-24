@@ -38,9 +38,10 @@ schema than this program's: the first writer that connects through
 
 It accepts a break at a record that can be read, and no more. An event that is no
 record, which damage to the engine leaves, has no record number to name it by, and a
-record that was lost is not brought back: the gaps that unreadable or lost events
-leave wait for the repair of the engine, and "whiteroom doctor" goes on reporting a
-gap and an event that is no record.
+record that was lost is not brought back. "whiteroom-db repair" records as a hole a
+gap that it makes itself, by dropping what it cannot read; a gap that it did not
+make stays a problem, and "whiteroom doctor" goes on reporting it and an event that
+is no record.
 
 On the standard output the command prints "accepted the break at record N of the
 audit log LOG in DATA; whiteroom doctor checks the log again from it". A refusal is

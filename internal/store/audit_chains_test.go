@@ -590,7 +590,7 @@ func TestCheckEndsAnchors(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			chains := map[audit.Log]chainInfo{audit.LoginLog: {start: tt.start}}
-			counted, err := checkEnds(ends(), chains, heads, []audit.Head{login2}, tt.matched)
+			counted, err := checkEnds(ends(), chains, heads, []audit.Head{login2}, tt.matched, func(string) {})
 			switch {
 			case tt.want == "" && err != nil:
 				t.Errorf("checkEnds() = %v", err)
@@ -643,7 +643,8 @@ func TestAuditEventsOfTheDaemonAreSkipped(t *testing.T) {
 		{"an acceptance cut short", accepted[:len(accepted)-1]},
 		{"an acceptance of the record 0", append(append([]byte{0, 3, 1}, make([]byte, 8)...), accepted[11:]...)},
 		{"an acceptance of the log 0", append([]byte{0, 3, 0}, accepted[3:]...)},
-		{"the kind 4", []byte{0, 4, 1, 2, 3}},
+		{"the kind 5", []byte{0, 5, 1, 2, 3}},
+		{"a hole cut short", []byte{0, 4, 1, 2, 3}},
 		{"the byte of the daemon alone", []byte{0}},
 		{"the kind of a mark and the size of a deletion", append([]byte{0, 1}, deleted[2:]...)},
 	} {

@@ -36,10 +36,14 @@ const usage = `Usage:
         accept the break at record -record N of the audit log -log LOG (login or
         activity) that "whiteroom doctor" reports, and change no record; the daemon
         must be stopped
+  whiteroom-db repair [flags]
+        show what a repair of a damaged data directory would drop and lose, and
+        change nothing; with -apply -keep DIR, copy logdb/ to DIR and repair the
+        directory; the daemon must be stopped
 
 Run "whiteroom-db serve -h", "whiteroom-db init -h", "whiteroom-db compact -h",
-"whiteroom-db gc -h", "whiteroom-db check -h" or "whiteroom-db accept-break -h" for
-the flags.
+"whiteroom-db gc -h", "whiteroom-db check -h", "whiteroom-db accept-break -h" or
+"whiteroom-db repair -h" for the flags.
 `
 
 func main() {
@@ -94,6 +98,8 @@ func run(ctx context.Context, args []string, e env) int {
 		return runCheck(ctx, args[1:], e)
 	case "accept-break":
 		return runAcceptBreak(ctx, args[1:], e)
+	case "repair":
+		return runRepair(ctx, args[1:], e)
 	case "help", "-h", "-help", "--help":
 		printf(e.stdout, "%s", usage)
 		return 0

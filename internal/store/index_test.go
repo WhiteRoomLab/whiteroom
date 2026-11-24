@@ -1750,14 +1750,14 @@ func TestIndexUndecodable(t *testing.T) {
 }
 
 // TestIndexUpgrade checks that a store of the table schema 1, as the program wrote it before the index, can be read but
-// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 8 with the record
+// for its index by a reader, gets its index, equal to the one that it would have had, and the schema 9 with the record
 // store.upgrade when its writer opens it, once; that a store of the schema 2, which has the index without the scheduled
 // items, of the schema 3, which has no accounts, of the schema 4, which has no sessions, of the schema 5, which has no
-// audit log, or of the schema 6, which has no table heads, gets the schema 8, the record and its head, and the rows of
+// audit log, or of the schema 6, which has no table heads, gets the schema 9, the record and its head, and the rows of
 // heads, in one commit that writes nothing else and reads no document; and that a failure of any of them leaves the
 // store as it was. A damaged object stops the upgrade of the schema 1, which makes the index from the documents, and
 // not that of the schema 2 to 6, which leaves the object to the reads that use it. The stores of the schemas before 7
-// are made of a store of the schema 8 as the programs of those schemas left them: without the rows of heads, and for
+// are made of a store of the schema 9 as the programs of those schemas left them: without the rows of heads, and for
 // the schemas before 6, without the audit events and the heads in meta too.
 func TestIndexUpgrade(t *testing.T) {
 	ops := []string{"op_A", "op_B"}
@@ -1890,7 +1890,7 @@ func TestIndexUpgrade(t *testing.T) {
 		events int                    // the audit events that it has
 	}
 	// upgradedTablesOf returns the rows of the tables of s, a store of the schema from, 2 to 6, as its upgrade must leave
-	// them: as they are, but for the schema 8, the head of the activity log, which has the record store.upgrade, and the
+	// them: as they are, but for the schema 9, the head of the activity log, which has the record store.upgrade, and the
 	// rows of heads, which the heads of the logs that have records give.
 	upgradedTablesOf := func(t *testing.T, s *Store, from uint64) upgraded {
 		t.Helper()
@@ -1954,7 +1954,7 @@ func TestIndexUpgrade(t *testing.T) {
 		}
 	}
 	// checkOnlySchema checks that s, which has just upgraded a store of the schema from, 2 to 6, which up describes, has
-	// the schema 8 and the record store.upgrade in one commit more, and the rows of the tables that upgradedTablesOf
+	// the schema 9 and the record store.upgrade in one commit more, and the rows of the tables that upgradedTablesOf
 	// has returned. It reads the log too if readLog is true, as checkUpgradeRecord does.
 	checkOnlySchema := func(t *testing.T, s *Store, up upgraded, from uint64, readLog bool) {
 		t.Helper()
@@ -2088,7 +2088,7 @@ func TestIndexUpgrade(t *testing.T) {
 				t.Fatalf("Close() of the reader = %v", err)
 			}
 
-			// Its writer builds the index in one commit, and sets the schema 8 and the record.
+			// Its writer builds the index in one commit, and sets the schema 9 and the record.
 			s = reopenLog(t, dir, *tb.log)
 			if v := schemaOf(t, s); v != logSchemaVersion {
 				t.Errorf("the schema after Open() = %d, want %d", v, logSchemaVersion)
@@ -2112,7 +2112,7 @@ func TestIndexUpgrade(t *testing.T) {
 
 	// A store of the schema 2, which has the index without the scheduled items, one of the schema 3, which has no
 	// accounts, one of the schema 4, which has no sessions, one of the schema 5, which has no audit log, and one of the
-	// schema 6, which has no table heads, get the schema 8 with the index, the accounts, the sessions and the audit log
+	// schema 6, which has no table heads, get the schema 9 with the index, the accounts, the sessions and the audit log
 	// that they have.
 	for _, schema := range olderSchemas {
 		t.Run(fmt.Sprintf("schema %d", schema), func(t *testing.T) {
@@ -2189,7 +2189,7 @@ func TestIndexUpgrade(t *testing.T) {
 					t.Fatalf("Close() of the reader = %v", err)
 				}
 
-				// Its writer sets the schema 8 and the record in one commit, and writes nothing else.
+				// Its writer sets the schema 9 and the record in one commit, and writes nothing else.
 				s = reopenLog(t, dir, *tb.log)
 				checkOnlySchema(t, s, up, schema, true)
 				checkConsistent(t, s)
@@ -2388,7 +2388,7 @@ func TestIndexUpgrade(t *testing.T) {
 						t.Fatalf("Close() of the reader = %v", err)
 					}
 
-					// Its writer sets the schema 8 and the record in one commit, and writes nothing else.
+					// Its writer sets the schema 9 and the record in one commit, and writes nothing else.
 					s = reopenLog(t, dir, *tb.log)
 					checkOnlySchema(t, s, up, schema, false)
 					checkIndexState(t, s, want, ops...)

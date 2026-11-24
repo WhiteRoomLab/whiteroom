@@ -103,11 +103,8 @@ func recoveryProblems(name string, r *recovery) []Problem {
 			"generation %d is newer than that of the store and incomplete: Open ignores its segments, and CollectGarbage removes them", gen)})
 	}
 	ckp := Problem{Path: path.Join(name, "checkpoint"), Offset: -1}
-	switch why, damaged := strings.CutPrefix(r.info.Checkpoint, "damaged: "); {
+	switch why, damaged := strings.CutPrefix(withoutKeys(r.info.Checkpoint), "damaged: "); {
 	case damaged:
-		if strings.HasPrefix(why, "keys out of order") {
-			why = "keys out of order" // the reason quotes the keys
-		}
 		ckp.Reason = fmt.Sprintf("damaged (%s): Open reads the log from the start of its generation", why)
 		ps = append(ps, ckp)
 	case r.info.Checkpoint == "stale":

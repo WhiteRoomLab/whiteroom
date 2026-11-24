@@ -32,8 +32,10 @@ type Deleted struct {
 //
 // The records go as a prefix in the order of their events, and only while their chain is whole. The walk stops at a record
 // that is not old enough or has no mark, and at evidence: a record that does not follow the one before it (unless a break
-// is accepted for it), an event that is no record, a chain start that cannot be read. At evidence it also keeps the record
-// before, so that the pair stays for a repair.
+// is accepted for it, or it follows a hole that a repair recorded, as VerifyAudit has it), an event that is no record, a
+// chain start or a row of a break or of a hole that cannot be read. At evidence it also keeps the record before, so that the
+// pair stays for a repair. A record that the walk takes through a break or a hole is never the first that remains: the cut
+// moves back before it, and the rows of the breaks and of the holes stay.
 //
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
@@ -106,7 +108,7 @@ type loginRecord struct {
 	n, event uint64
 	sum      [sha256.Size]byte
 	at       time.Time // the time of the mark of its commit; zero if the commit has none
-	honored  bool      // the walk took it through a break that is accepted for it
+	honored  bool      // the walk took it through a break that is accepted for it, or through a hole
 }
 
 // loginPass is the pass of CompactLogin over the events.
@@ -114,6 +116,7 @@ type loginPass struct {
 	upper  time.Time // a record that is not older than this is never dropped, so the walk does not keep any after it
 	start  *dbwire.ChainStart
 	breaks map[uint64][sha256.Size]byte // by record: the hash that the accepted break at it is for
+	holes  map[uint64]dbwire.ChainHole  // by their first record
 	schema uint64                       // the table schema of the store if it is older than dbwire.TableVersion, else 0
 
 	recs    []loginRecord // the walked records, in the order of their events
@@ -142,15 +145,16 @@ type leftover struct {
 func (p *loginPass) readChains(tx *logdb.Tx) error {
 	p.schema = olderSchema(tx)
 	rows := readChainRows(tx, dbwire.LogLogin)
-	p.start, p.breaks, p.stop = rows.start, rows.breaks, rows.bad
+	p.start, p.breaks, p.holes, p.stop = rows.start, rows.breaks, rows.holes, rows.bad
 	return nil
 }
 
-// chainRows is what the table chains has of one log: its chain start, and the hash that each accepted break is for, by the
-// number of its record.
+// chainRows is what the table chains has of one log: its chain start, the hash that each accepted break is for, by the number
+// of its record, and its holes, by their first records.
 type chainRows struct {
 	start  *dbwire.ChainStart
 	breaks map[uint64][sha256.Size]byte
+	holes  map[uint64]dbwire.ChainHole
 	bad    string // why a row cannot be read, "" if every row can
 }
 
@@ -176,6 +180,22 @@ func readChainRows(tx *logdb.Tx, log string) chainRows {
 			rows.breaks = map[uint64][sha256.Size]byte{}
 		}
 		rows.breaks[n] = b.Hash
+		return true
+	})
+	if rows.bad != "" {
+		return rows
+	}
+	tx.Scan(dbwire.TableChains, dbwire.ChainHolePrefix(log), func(k, v []byte) bool {
+		name, first, keyOK := dbwire.ParseChainHoleKey(k)
+		h, valueOK := dbwire.ParseChainHole(first, v)
+		if !keyOK || !valueOK || name != log {
+			rows.bad = "the table chains: a row of a hole cannot be read"
+			return false
+		}
+		if rows.holes == nil {
+			rows.holes = map[uint64]dbwire.ChainHole{}
+		}
+		rows.holes[first] = h
 		return true
 	})
 	return rows
@@ -283,7 +303,9 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 		}
 	}
 	why := p.follow(n, prev)
-	honored := why != "" && p.accepted(n, sum)
+	// A record that follows a hole is taken through it: the cut of a deletion does not land on it, since its prev is not the
+	// hash of the record that would come before it.
+	honored := why != "" && (p.accepted(n, sum) || p.holed(n, prev))
 	if why != "" && !honored {
 		p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
 		return
@@ -310,12 +332,28 @@ func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) str
 	}
 	last := p.left[len(p.left)-1]
 	switch {
+	case n != last.n+1 && p.holeAfter(last.n, n, prev):
 	case n != last.n+1:
 		return fmt.Sprintf("the number does not follow that of record %d", last.n)
 	case prev != hashText(last.sum) && !p.breakFor(n, sum):
 		return fmt.Sprintf("prev is not the hash of record %d", last.n)
 	}
 	return ""
+}
+
+// holeAfter reports whether the record n with prev follows a hole in a walk that has read the record numbered last (0 if none).
+func (p *loginPass) holeAfter(last, n uint64, prev string) bool {
+	_, ok := dbwire.HoleBefore(p.holes, p.start, last, n, prev)
+	return ok
+}
+
+// holed reports whether the record n with prev follows a hole, after the walked records.
+func (p *loginPass) holed(n uint64, prev string) bool {
+	var last uint64
+	if len(p.recs) > 0 {
+		last = p.recs[len(p.recs)-1].n
+	}
+	return p.holeAfter(last, n, prev)
 }
 
 // leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is

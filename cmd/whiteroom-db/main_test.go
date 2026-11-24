@@ -116,6 +116,7 @@ func TestUsage(t *testing.T) {
 		{"gc", gcUsage, []string{"-config FILE", "-data DIR"}},
 		{"check", checkUsage, []string{"-config FILE", "-data DIR"}},
 		{"accept-break", acceptUsage, []string{"-config FILE", "-data DIR", "-log LOG", "-record N"}},
+		{"repair", repairUsage, []string{"-config FILE", "-data DIR", "-apply", "-keep DIR", "-truncate", "-drop-unreadable-records"}},
 	} {
 		code, stdout, stderr := runCmd(t, c.name, "-h")
 		if code != 0 || stdout != "" || !strings.HasPrefix(stderr, c.usage) {
@@ -144,7 +145,7 @@ func TestUsage(t *testing.T) {
 			t.Errorf("the usage of whiteroom-db serve does not say %q", text)
 		}
 	}
-	for _, name := range []string{"compact", "gc", "check", "accept-break"} {
+	for _, name := range []string{"compact", "gc", "check", "accept-break", "repair"} {
 		if !strings.Contains(help[name], "No daemon may have the data directory open") {
 			t.Errorf("the usage of whiteroom-db %s does not say that the daemon must be stopped:\n%s", name, help[name])
 		}
@@ -167,16 +168,17 @@ func TestUsage(t *testing.T) {
 	if strings.Contains(compactWords, "Nothing is dropped") || !strings.Contains(strings.Join(strings.Fields(usage), " "), "delete the login records older than one year") {
 		t.Errorf("the usages of whiteroom-db compact do not say what it deletes:\n%s\n%s", usage, help["compact"])
 	}
-	// accept-break changes no record, says which traces it leaves and what it refuses, and leaves what damage to the engine
-	// leaves to the repair of the engine.
+	// accept-break changes no record, says which traces it leaves and what it refuses, and says that only a gap that
+	// whiteroom-db repair makes is recorded as a hole.
 	acceptWords := strings.Join(strings.Fields(help["accept-break"]), " ")
 	for _, text := range []string{"changes no record and drops none", "leaves three traces", "a row of the table chains",
 		"an event of the daemon in the log", "checks the log again from record N", "tells the break in a note, not as a problem",
 		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
 		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
 		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
-		"wait for the repair of the engine", "A break is a record whose number is that of the one before it plus one",
-		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting a gap and an event that is no record",
+		"records as a hole a gap that it makes itself", "a gap that it did not make stays a problem",
+		"A break is a record whose number is that of the one before it plus one",
+		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting it and an event that is no record",
 		"accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
 		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
 		if !strings.Contains(acceptWords, text) {
@@ -189,8 +191,8 @@ func TestUsage(t *testing.T) {
 	if !strings.Contains(strings.Join(strings.Fields(usage), " "), "accept the break at record -record N of the audit log -log LOG") {
 		t.Errorf("the list of the commands does not say what accept-break does:\n%s", usage)
 	}
-	// After a failed sync, the four refuse the data directory until the machine has restarted, and then remove the mark.
-	for _, name := range []string{"serve", "compact", "gc", "accept-break"} {
+	// After a failed sync, the five refuse the data directory until the machine has restarted, and then remove the mark.
+	for _, name := range []string{"serve", "compact", "gc", "accept-break", "repair"} {
 		words := strings.Join(strings.Fields(help[name]), " ")
 		for _, text := range []string{"After a sync has failed", "<DATA>/stopped", "until the machine has restarted"} {
 			if !strings.Contains(words, text) {
@@ -213,6 +215,35 @@ func TestUsage(t *testing.T) {
 	}
 	if strings.Contains(checkWords, "removes the mark") {
 		t.Errorf("the usage of whiteroom-db check says that it removes the mark:\n%s", help["check"])
+	}
+
+	// repair says what it keeps, drops and leaves, what -apply needs and what the output is, and that it changes nothing without it.
+	repairWords := strings.Join(strings.Fields(help["repair"]), " ")
+	for _, text := range []string{"Without -apply it only shows what a repair would drop and lose, and changes nothing",
+		"not the mark <DATA>/stopped", "works on a data directory that it cannot write in",
+		"keeps the state of the last commit that comes before the first damage that cannot be read",
+		"the state of the checkpoint, which covers the damage before it", "It drops what cannot be read",
+		"the objects whose data cannot be read or does not have their hash", "Nothing in files/ is changed",
+		"A row that names a dropped object stays", "the original of a medium that is missing",
+		"drops them only with -truncate: it refuses, and changes nothing, if it must drop them and -truncate is not given",
+		"refuses a store that it would leave without a commit: restore that store from a copy",
+		"records each hole, in the same generation, in the table chains and with an event of the daemon",
+		"A store of the table schema 8 gets the schema 9 for that; one of an older schema is refused",
+		"A gap that is no hole of this repair stays what it was", "is kept, and its number is told, unless -drop-unreadable-records is given",
+		"-apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and makes them durable, and then repairs",
+		"DIR must be missing, in a directory that exists, or empty, and must not be the data directory or in it",
+		"It must not be a symbolic link itself (the directories that hold it may be)",
+		"keep it as private as the data directory", "-keep and -apply need each other",
+		"-truncate and -drop-unreadable-records without -apply change what is shown",
+		`"kept the files of DATA/logdb in DIR/logdb"`, `"repaired DATA: generation G, sequence S"`, `"nothing to repair in DATA"`,
+		`after "whiteroom-db repair:"`, "2 for a usage error", "without -apply the mark is left where it is",
+		"A sync that fails in the repair itself makes it leave the mark; one that fails in the copy does not"} {
+		if !strings.Contains(repairWords, text) {
+			t.Errorf("the usage of whiteroom-db repair does not say %q:\n%s", text, help["repair"])
+		}
+	}
+	if !strings.Contains(strings.Join(strings.Fields(usage), " "), "show what a repair of a damaged data directory would drop and lose, and change nothing") {
+		t.Errorf("the list of the commands does not say what repair does:\n%s", usage)
 	}
 
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
@@ -292,6 +323,21 @@ func TestUsage(t *testing.T) {
 			usageErr("accept-break", "unexpected argument \"x\": the command takes flags only")},
 		{[]string{"accept-break", "-config", missing}, 2, "", "whiteroom-db accept-break: " + openErr.Error() + "\n"},
 		{[]string{"accept-break", "-config", broken}, 2, "", brokenLine},
+		{[]string{"repair"}, 2, "", usageErr("repair", "no data directory: give -data DIR, or data in the config file")},
+		{[]string{"repair", "-x"}, 2, "", "flag provided but not defined: -x\n" + help["repair"]},
+		{[]string{"repair", "-data", ""}, 2, "", usageErr("repair", "no data directory: give -data DIR, or data in the config file")},
+		{[]string{"repair", "-data", "d", "x"}, 2, "", usageErr("repair", "unexpected argument \"x\": the command takes flags only")},
+		{[]string{"repair", "-data", "d", "-apply"}, 2, "",
+			usageErr("repair", "no copy of logdb/: give -keep DIR, the directory for it, with -apply")},
+		{[]string{"repair", "-data", "d", "-apply", "-keep", ""}, 2, "",
+			usageErr("repair", "no copy of logdb/: give -keep DIR, the directory for it, with -apply")},
+		{[]string{"repair", "-data", "d", "-keep", "k"}, 2, "", usageErr("repair", "-keep is for -apply: give -apply too, or leave out -keep")},
+		{[]string{"repair", "-data", "d", "-keep", ""}, 2, "", usageErr("repair", "-keep is for -apply: give -apply too, or leave out -keep")},
+		{[]string{"repair", "-data", "d", "-truncate", "-keep", "k"}, 2, "",
+			usageErr("repair", "-keep is for -apply: give -apply too, or leave out -keep")},
+		{[]string{"repair", "-data", "d", "-apply=x"}, 2, "", "invalid boolean value \"x\" for -apply: parse error\n" + help["repair"]},
+		{[]string{"repair", "-config", missing}, 2, "", "whiteroom-db repair: " + openErr.Error() + "\n"},
+		{[]string{"repair", "-config", broken}, 2, "", brokenLine},
 	} {
 		code, stdout, stderr := runCmd(t, tt.args...)
 		if code != tt.code || stdout != tt.stdout || stderr != tt.stderr {

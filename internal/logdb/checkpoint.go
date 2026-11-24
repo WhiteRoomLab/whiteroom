@@ -11,6 +11,7 @@ import (
 	"math"
 	"path"
 	"slices"
+	"strings"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb/vfs"
 )
@@ -76,6 +77,14 @@ func readCheckpoint(fsys vfs.FS) (*checkpoint, string, error) {
 		return nil, "damaged: " + reason, nil
 	}
 	return &checkpoint{path: p, h: h, st: st, own: own}, "", nil
+}
+
+// withoutKeys returns why, which readCheckpoint gives, without the keys that the reason of a damaged checkpoint quotes.
+func withoutKeys(why string) string {
+	if strings.HasPrefix(why, "damaged: keys out of order") {
+		return "damaged: keys out of order"
+	}
+	return why
 }
 
 // decodeCheckpoint returns the state in body, the body of a checkpoint whose header is h, with nodes of own, or says

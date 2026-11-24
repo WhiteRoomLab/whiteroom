@@ -503,8 +503,8 @@ func TestCompactDropsLeftovers(t *testing.T) {
 	})
 }
 
-// TestMaintainRefused checks that compact, gc and accept-break refuse a data directory that serve refuses, with the same words, and leave
-// it as it was.
+// TestMaintainRefused checks that compact, gc, accept-break and repair (with and without -apply) refuse a data directory that
+// serve refuses, with the same words, and leave it as it was.
 func TestMaintainRefused(t *testing.T) {
 	d := newDirs(t)
 	s := d.startServe(t, d.args()...)
@@ -527,8 +527,9 @@ func TestMaintainRefused(t *testing.T) {
 	before := files(t, d.data)
 	reason := fmt.Sprintf("%s: the store schema is of version %d, newer than this program knows (%d)\n",
 		filepath.Join(d.data, "logdb"), dbwire.TableVersion+1, dbwire.TableVersion)
+	keep := filepath.Join(d.root, "keep")
 	for _, args := range [][]string{{"compact", "-data", d.data}, {"gc", "-data", d.data}, maintenanceArgs("accept-break", d.data),
-		append([]string{"serve"}, d.args()...)} {
+		{"repair", "-data", d.data}, {"repair", "-data", d.data, "-apply", "-keep", keep}, append([]string{"serve"}, d.args()...)} {
 		code, stdout, stderr := runCmd(t, args...)
 		if want := "whiteroom-db " + args[0] + ": " + reason; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s of a newer schema = %d, with stdout %q and stderr %q, want 1, nothing and %q", args[0], code,
@@ -538,6 +539,9 @@ func TestMaintainRefused(t *testing.T) {
 	if got := files(t, d.data); !maps.Equal(got, before) {
 		t.Errorf("the commands that refused a newer schema changed the files:\n%v\nwas\n%v", got, before)
 	}
+	if _, err := os.Lstat(keep); !os.IsNotExist(err) {
+		t.Errorf("the refused repair made %s: %v", keep, err)
+	}
 
 	// A directory that is not a data directory, or not there, is left as it is.
 	empty := filepath.Join(d.root, "empty")
@@ -545,7 +549,7 @@ func TestMaintainRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(d.root, "missing")
-	for _, command := range []string{"compact", "gc", "accept-break"} {
+	for _, command := range []string{"compact", "gc", "accept-break", "repair"} {
 		code, stdout, stderr := runCmd(t, maintenanceArgs(command, empty)...)
 		if want := "whiteroom-db " + command + ": " + filepath.Join(empty, "logdb") + ": missing directory\n"; code != 1 || stdout != "" || stderr != want {
 			t.Errorf("whiteroom-db %s of an empty directory = %d, with stdout %q and stderr %q, want 1, nothing and %q", command, code,
@@ -558,16 +562,16 @@ func TestMaintainRefused(t *testing.T) {
 		}
 	}
 	if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
-		t.Errorf("compact, gc and accept-break made %v (%v) in an empty directory", entries, err)
+		t.Errorf("compact, gc, accept-break and repair made %v (%v) in an empty directory", entries, err)
 	}
 	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
-		t.Errorf("compact, gc or accept-break made a missing directory: %v", err)
+		t.Errorf("compact, gc, accept-break or repair made a missing directory: %v", err)
 	}
 
 	// A signal while they wait for a daemon ends them, as an interruption and not as a directory in use.
 	d = newDirs(t)
 	s = d.startServe(t, d.args()...)
-	for _, command := range []string{"compact", "gc", "accept-break"} {
+	for _, command := range []string{"compact", "gc", "accept-break", "repair"} {
 		ctx, cancel := context.WithCancel(t.Context())
 		time.AfterFunc(300*time.Millisecond, cancel)
 		start := time.Now()

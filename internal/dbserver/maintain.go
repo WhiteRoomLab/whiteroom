@@ -40,6 +40,23 @@ func Maintain(ctx context.Context, dir string, o Options, f func(*logdb.Maintena
 
 // maintain is Maintain on the data directory root, which stays the caller's; dir is its name in errors.
 func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*logdb.Maintenance) error) error {
+	o.Log.Accept = acceptSchema(fspath.Join(dir, "logdb"))
+	return maintainWith(ctx, root, dir, o, false, func(ctx context.Context, fsys vfs.FS, entered func(), g func(*logdb.Maintenance) error) error {
+		return logdb.Maintain(ctx, fsys, o.Log, func(m *logdb.Maintenance) error {
+			entered()
+			return g(m)
+		})
+	}, f)
+}
+
+// maintainWith is what the maintenances of the engine have in common: the checks of the data directory and of the mark of a
+// failed sync, the wait of two seconds for the other processes, and the mark that a failure with the sentence of the engine
+// leaves. open runs the maintenance of the engine in fsys, and calls entered once it holds the locks; f runs inside it.
+//
+// With readOnly it only looks: the engine's file system refuses every write, no mark is removed or left, and the directory
+// need not be writable.
+func maintainWith[E any](ctx context.Context, root vfs.FS, dir string, o Options, readOnly bool,
+	open func(ctx context.Context, fsys vfs.FS, entered func(), f func(E) error) error, f func(E) error) error {
 	boot, err := bootOf(o)
 	if err != nil {
 		return err
@@ -52,23 +69,25 @@ func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*l
 	if _, err := checkMark(root, dir, boot); err != nil {
 		return err
 	}
-	if err := checkWritable(dir, o.osDir); err != nil {
-		return err
-	}
-	if o.Hook != nil {
-		_ = o.Hook("maintain:checked")
+	if !readOnly {
+		if err := checkWritable(dir, o.osDir); err != nil {
+			return err
+		}
+		if o.Hook != nil {
+			_ = o.Hook("maintain:checked")
+		}
 	}
 	logFS, err := root.Sub("logdb")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = logFS.Close() }()
-	o.Log.Accept = acceptSchema(fspath.Join(dir, "logdb"))
 	now := o.Now
 	if now == nil {
 		now = time.Now
 	}
 	frozen := new(atomic.Bool)
+	frozen.Store(readOnly)
 	engineFS := vfs.FS(&writeFS{FS: logFS, to: new(atomic.Pointer[atomic.Uint64]), frozen: frozen})
 	// leave writes the mark for the failure err, which a failed write of it is added to.
 	leave := func(err error) error {
@@ -84,9 +103,10 @@ func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*l
 	defer timer.Stop()
 	entered, marked := false, false
 	var refused error
-	err = logdb.Maintain(waitCtx, engineFS, o.Log, func(m *logdb.Maintenance) error {
+	err = open(waitCtx, engineFS, func() {
 		entered = true
 		timer.Stop()
+	}, func(e E) error {
 		// A process that stopped while this one waited for the locks has left its mark since the first look: the engine must
 		// not write what the page cache has and the disk may not when it closes.
 		earlier, err := checkMark(root, dir, boot)
@@ -95,11 +115,11 @@ func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*l
 			refused = err
 			return err
 		}
-		if earlier != nil {
+		if earlier != nil && !readOnly {
 			removeMark(root, dir, earlier, o.Logf)
 		}
-		err = f(m)
-		if errors.Is(err, logdb.ErrFailed) {
+		err = f(e)
+		if errors.Is(err, logdb.ErrFailed) && !readOnly {
 			// Before the engine lets go of its locks: no daemon may open the directory between the failure and the mark.
 			marked = true
 			err = leave(err)
@@ -114,7 +134,7 @@ func maintain(ctx context.Context, root vfs.FS, dir string, o Options, f func(*l
 		return refused
 	case err != nil && !entered && ctx.Err() == nil && errors.Is(err, context.Canceled):
 		return fmt.Errorf("%s: %w", dir, ErrInUse)
-	case err != nil && !marked && errors.Is(err, logdb.ErrFailed):
+	case err != nil && !marked && !readOnly && errors.Is(err, logdb.ErrFailed):
 		// The open of the engine failed, which has let go of its locks.
 		return leave(err)
 	}

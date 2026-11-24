@@ -12,15 +12,18 @@ const (
 	MarkKind    byte = 0x01
 	MarkSize         = 14
 
-	// DeletedKind is the event of the deletion of the oldest records of a log, and AcceptedKind that of the acceptance of
-	// a break in a log, which the maintenance of the daemon adds with the rows of TableChains that it writes.
+	// DeletedKind is the event of the deletion of the oldest records of a log, AcceptedKind that of the acceptance of a
+	// break in a log, and HoleKind that of a hole that a repair has made in a log, which the maintenance of the daemon adds
+	// with the rows of TableChains that it writes.
 	DeletedKind  byte = 0x02
 	AcceptedKind byte = 0x03
+	HoleKind     byte = 0x04
 	DeletedSize       = 3 + 8 + 32 + 12
 	AcceptedSize      = 3 + 8 + 32
+	HoleSize          = 3 + 8 + 8 + 32
 )
 
-// The byte that names a log in the events DeletedKind and AcceptedKind.
+// The byte that names a log in the events DeletedKind, AcceptedKind and HoleKind.
 const (
 	logLoginByte    byte = 1
 	logActivityByte byte = 2
@@ -58,6 +61,14 @@ type Accepted struct {
 	Log  string
 	N    uint64
 	Hash [32]byte
+}
+
+// Hole is the event of the hole of the records First to Last of the log named Log, whose last, the record Last, has the
+// SHA-256 Hash of its stored bytes, which a repair has dropped.
+type Hole struct {
+	Log         string
+	First, Last uint64
+	Hash        [32]byte
 }
 
 // AppendDeleted appends the event d to dst: DaemonEvent, DeletedKind, the log as a byte (1 login, 2 activity; 0 for a
@@ -113,8 +124,34 @@ func ParseAccepted(b []byte) (Accepted, bool) {
 	return a, true
 }
 
-// ValidEvent reports whether b is an event that the daemon adds: a mark, or a DeletedKind or AcceptedKind event whose
-// fields are valid.
+// AppendHole appends the event h to dst: DaemonEvent, HoleKind, the log as AppendDeleted has it, First and Last as uint64s
+// and Hash.
+func AppendHole(dst []byte, h Hole) []byte {
+	dst = append(dst, DaemonEvent, HoleKind, logByte(h.Log))
+	dst = binary.BigEndian.AppendUint64(dst, h.First)
+	dst = binary.BigEndian.AppendUint64(dst, h.Last)
+	return append(dst, h.Hash[:]...)
+}
+
+// ParseHole returns the event that b is. It refuses a First of 0 and a Last under First.
+func ParseHole(b []byte) (Hole, bool) {
+	if len(b) != HoleSize || b[0] != DaemonEvent || b[1] != HoleKind {
+		return Hole{}, false
+	}
+	log, ok := logName(b[2])
+	if !ok {
+		return Hole{}, false
+	}
+	h := Hole{Log: log, First: binary.BigEndian.Uint64(b[3:]), Last: binary.BigEndian.Uint64(b[11:])}
+	copy(h.Hash[:], b[19:])
+	if h.First == 0 || h.Last < h.First {
+		return Hole{}, false
+	}
+	return h, true
+}
+
+// ValidEvent reports whether b is an event that the daemon adds: a mark, or a DeletedKind, AcceptedKind or HoleKind event
+// whose fields are valid.
 func ValidEvent(b []byte) bool {
 	if len(b) < 2 || b[0] != DaemonEvent {
 		return false
@@ -128,6 +165,9 @@ func ValidEvent(b []byte) bool {
 		return ok
 	case AcceptedKind:
 		_, ok := ParseAccepted(b)
+		return ok
+	case HoleKind:
+		_, ok := ParseHole(b)
 		return ok
 	}
 	return false

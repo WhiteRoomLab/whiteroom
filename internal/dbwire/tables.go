@@ -2,11 +2,14 @@ package dbwire
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	"strconv"
+	"strings"
 	"time"
 )
 
 // TableVersion is the table schema that this protocol version works with.
-const TableVersion = 8
+const TableVersion = 9
 
 // The tables of internal/store that the daemon acts on without reading rows.
 const (
@@ -19,8 +22,9 @@ const (
 	// writes out as it is.
 	TableHeads uint32 = 11
 
-	// TableChains has the chain starts and the accepted breaks of the audit logs (ChainStart, ChainBreak), which only the
-	// maintenance of the daemon writes: the daemon refuses a Commit that puts or deletes one of its rows.
+	// TableChains has the chain starts, the accepted breaks and the holes of the audit logs (ChainStart, ChainBreak,
+	// ChainHole), which only the maintenance of the daemon writes: the daemon refuses a Commit that puts or deletes one of
+	// its rows.
 	TableChains uint32 = 12
 )
 
@@ -71,6 +75,53 @@ func validHeadLine(line []byte) bool {
 	return true
 }
 
+// ParseHeadLine returns the log, the number and the hash of the head that line tells, in the form that audit.Head.String
+// writes and no other: "audit head ", the log (login or activity), the number from 1 in decimal digits without a leading
+// zero, "sha256:" and 64 lower case hexadecimal digits, each after one space.
+func ParseHeadLine(line []byte) (log string, n uint64, hash [32]byte, ok bool) {
+	rest, found := strings.CutPrefix(string(line), "audit head ")
+	if !found {
+		return "", 0, hash, false
+	}
+	fields := strings.Split(rest, " ")
+	if len(fields) != 3 || fields[0] != LogLogin && fields[0] != LogActivity {
+		return "", 0, hash, false
+	}
+	n, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil || n < 1 || strconv.FormatUint(n, 10) != fields[1] {
+		return "", 0, hash, false
+	}
+	digits, found := strings.CutPrefix(fields[2], "sha256:")
+	if !found || len(digits) != 2*len(hash) || strings.Trim(digits, "0123456789abcdef") != "" {
+		return "", 0, hash, false
+	}
+	if _, err := hex.Decode(hash[:], []byte(digits)); err != nil {
+		return "", 0, [32]byte{}, false
+	}
+	return fields[0], n, hash, true
+}
+
+// ChainExpected returns the number of the record that a walk of a log expects next, after the record numbered last, which is 0
+// if the walk has read none: the record after it, or, before any, the first that remains after a deletion (start.First), or 1.
+func ChainExpected(start *ChainStart, last uint64) uint64 {
+	switch {
+	case last != 0:
+		return last + 1
+	case start != nil:
+		return start.First
+	}
+	return 1
+}
+
+// HoleBefore returns the hole of holes, by their first records, that the record n with the prev text prev follows in a walk
+// of a log that has read the record numbered last (0 if none) and has the chain start start (nil if none): the hole that has
+// the record that the walk expects as its first, and that ChainHole.Follows says n follows. It is the one rule by which
+// VerifyAudit of the store, whiteroom-db compact and accept-break pass a record through a hole.
+func HoleBefore(holes map[uint64]ChainHole, start *ChainStart, last, n uint64, prev string) (ChainHole, bool) {
+	h, ok := holes[ChainExpected(start, last)]
+	return h, ok && h.Follows(n, prev)
+}
+
 // ChainStart is the row of a log in TableChains, with the log name as its key: the deletion of the oldest records of
 // the log has left First as its first record, and Prev is the SHA-256 of the stored bytes of the record before it.
 type ChainStart struct {
@@ -86,10 +137,21 @@ type ChainBreak struct {
 	At   time.Time
 }
 
+// ChainHole is a row of TableChains, with ChainHoleKey as its key: the records of a log from First, the number in the key,
+// to Last were lost and dropped by a repair. Hash is the SHA-256 of the stored bytes of the record Last, which is the prev of
+// the record after the hole, or, for a hole at the end of the log, the hash of its head. The record after it follows the hole
+// as if it were the record Last.
+type ChainHole struct {
+	First, Last uint64
+	Hash        [32]byte
+	At          time.Time
+}
+
 // The sizes of the values of TableChains, in bytes.
 const (
 	ChainStartSize = 8 + 32 + 8 + 4
 	ChainBreakSize = 32 + 8 + 4
+	ChainHoleSize  = 8 + 32 + 8 + 4
 )
 
 // ChainStartKey returns the key of the chain start of the log named log.
@@ -110,6 +172,24 @@ func ParseChainBreakKey(key []byte) (log string, n uint64, ok bool) {
 		return "", 0, false
 	}
 	return string(key[:len(key)-9]), binary.BigEndian.Uint64(key[len(key)-8:]), true
+}
+
+// ChainHoleKey returns the key of the hole of the log named log that starts at record first: the name, 0x01 and first as 8
+// bytes, big-endian. The keys of the holes of a log start with ChainHolePrefix.
+func ChainHoleKey(log string, first uint64) []byte {
+	return binary.BigEndian.AppendUint64(ChainHolePrefix(log), first)
+}
+
+// ChainHolePrefix returns what the keys of the holes of the log named log start with.
+func ChainHolePrefix(log string) []byte { return append([]byte(log), 1) }
+
+// ParseChainHoleKey returns the log and the first record of the key of a hole. It refuses a first of 0.
+func ParseChainHoleKey(key []byte) (log string, first uint64, ok bool) {
+	if len(key) < 10 || key[len(key)-9] != 1 {
+		return "", 0, false
+	}
+	first = binary.BigEndian.Uint64(key[len(key)-8:])
+	return string(key[:len(key)-9]), first, first != 0
 }
 
 // AppendChainStart appends the value of the chain start c to dst: First as a uint64, Prev, and the seconds since
@@ -154,6 +234,36 @@ func ParseChainBreak(b []byte) (ChainBreak, bool) {
 	}
 	c.At = at
 	return c, true
+}
+
+// AppendChainHole appends the value of the hole c to dst, which has First in its key: Last as a uint64, Hash, and At as
+// AppendChainStart has it.
+func AppendChainHole(dst []byte, c ChainHole) []byte {
+	dst = binary.BigEndian.AppendUint64(dst, c.Last)
+	dst = append(dst, c.Hash[:]...)
+	return appendTime(dst, c.At)
+}
+
+// ParseChainHole returns the hole that b is the value of, with first, the number of its key. It refuses a first of 0 and a
+// Last under first.
+func ParseChainHole(first uint64, b []byte) (ChainHole, bool) {
+	if len(b) != ChainHoleSize {
+		return ChainHole{}, false
+	}
+	c := ChainHole{First: first, Last: binary.BigEndian.Uint64(b)}
+	copy(c.Hash[:], b[8:])
+	at, ok := parseTime(b[40:])
+	if !ok || c.First == 0 || c.Last < c.First {
+		return ChainHole{}, false
+	}
+	c.At = at
+	return c, true
+}
+
+// Follows reports whether the record n with the prev text prev, which a walk of a log meets when the record that it expects is
+// First, follows the hole c: it is the one after Last, and its prev is the hash Hash. No more is passed than the hole records.
+func (c ChainHole) Follows(n uint64, prev string) bool {
+	return n > c.Last && n-1 == c.Last && prev == "sha256:"+hex.EncodeToString(c.Hash[:])
 }
 
 // appendTime appends the seconds of t as an int64 and its nanoseconds as a uint32, big-endian.
