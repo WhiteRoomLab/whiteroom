@@ -53,7 +53,8 @@ is given. A writer that sends what the store never sends leaves such events, and
 
 -apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and
 makes them durable, and then repairs. DIR must be missing, in a directory that
-exists, or empty, and must not be the data directory or in it. The copy and the
+exists, or empty, and must not be the data directory or in it. It must not be a
+symbolic link itself (the directories that hold it may be). The copy and the
 files/ of the data directory are a data directory that "whiteroom-db check" shows
 the damage of again. The copy holds all that logdb/ holds, the hashes of the
 passwords and the audit logs included: keep it as private as the data directory.

@@ -110,6 +110,7 @@ func trySalvage(t *testing.T, fsys vfs.FS, o Options) (*salvaged, error) {
 	if tr := res.plan.Truncation; tr != nil {
 		noRow(tr.Damage.String())
 	}
+	noRow(res.plan.Checkpoint)
 	return res, nil
 }
 
@@ -1133,6 +1134,19 @@ func TestSalvageDamagedCheckpoint(t *testing.T) {
 			Recovery:   []Problem{{Path: simPath("checkpoint"), Offset: -1, Reason: "damaged (bad body CRC): Open reads the log from the start of its generation"}}})
 		s.checkKept(t, got, 5)
 	})
+	t.Run("keys out of order", func(t *testing.T) {
+		// The reason that the decoder gives quotes the keys, which are no part of a plan.
+		fsys := s.copy()
+		body := slices.Concat(uv(1, 0, 1, 1, 2), kv("KEYMARKB", "VALMARK"), kv("KEYMARKA", "VALMARK"))
+		setFile(t, fsys, "checkpoint", rawCkp(ckpOf(t, fsys), body))
+		got := salvage(t, fsys, s.o)
+		checkPlan(t, got.plan, RepairPlan{Generation: 1, Seq: 9, Source: FromLog, Checkpoint: "damaged: keys out of order",
+			Recovery: recoveryProblemsOf(t, copyFS(fsys))})
+		if len(got.plan.Recovery) != 1 || !got.plan.Empty() {
+			t.Errorf("plan %+v", got.plan)
+		}
+		s.checkKept(t, got, 9)
+	})
 	t.Run("a checkpoint of an older generation", func(t *testing.T) {
 		withBaseBytes(t, 300)
 		fsys, db := newSim(t, salvageOptions)
@@ -1521,6 +1535,20 @@ func TestSalvageCheckpointGeneration(t *testing.T) {
 			t.Errorf("span %d: %+v", i, sp)
 		}
 	}
+	t.Run("as many missing segments as the bound", func(t *testing.T) {
+		at := copyFS(fsys)
+		setCkpHeader(t, at, func(h *ckpHeader) { h.seg = maxMissingSegments })
+		if got, err := trySalvage(t, at, salvageOptions); err != nil || len(got.plan.Spans) != maxMissingSegments {
+			t.Errorf("Salvage: %v, %+v", err, got)
+		}
+	})
+	t.Run("one more missing segment than the bound", func(t *testing.T) {
+		over := copyFS(fsys)
+		setCkpHeader(t, over, func(h *ckpHeader) { h.seg = maxMissingSegments + 1 })
+		if _, err := trySalvage(t, over, salvageOptions); err == nil || !strings.Contains(err.Error(), "too many missing segments") {
+			t.Errorf("Salvage: %v", err)
+		}
+	})
 	t.Run("too many missing segments", func(t *testing.T) {
 		far := copyFS(fsys)
 		setCkpHeader(t, far, func(h *ckpHeader) { h.seg = 1 << 40 })

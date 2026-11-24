@@ -867,6 +867,100 @@ func TestRepairWidensHole(t *testing.T) {
 	}
 }
 
+// TestRepairOldGap checks that records that were missing before the repair are no hole of it unless the repair drops as many
+// events between the records around them as there are records missing: the login records 2 to k+1 never reached the log (the
+// gap that whiteroom doctor reports), and the commit 3, whose two events are the activity record 3 and a mark, is damaged.
+func TestRepairOldGap(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		lost        int // the login records that never reached the log
+		holes, gaps []string
+		loginRows   int // the rows of the table chains for the login history
+	}{
+		{"fewer records than events", 1, []string{"login 2-2", "activity 3-3"}, nil, 1},
+		{"as many records as events", 2, []string{"login 2-3", "activity 3-3"}, nil, 1},
+		{"one record more than events", 3, []string{"activity 3-3"}, []string{"login 2-4"}, 0},
+		{"five records more than events", 5, []string{"activity 3-3"}, []string{"login 2-6"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newFixtureStore(t)
+			s.commit() // the segment 1: activity 1
+			s.commit() // the segment 2: activity 2, login 1
+			for range tc.lost {
+				s.lose(dbwire.LogLogin)
+			}
+			s.commit() // the activity record 3, with a mark
+			s.commit() // activity 4, login tc.lost+2
+			s.commit() // activity 5
+			s.commit() // activity 6, login tc.lost+3
+			if err := s.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if before, _, err := s.repair(RepairOptions{}); err != nil || len(before.Holes) != 0 ||
+				!slices.Equal(gapWords(before), []string{fmt.Sprintf("login 2-%d", tc.lost+1)}) {
+				t.Fatalf("before the damage, Repair() = %+v, %v, want the gap of the lost records", before, err)
+			}
+			s.damage(2 + tc.lost + 1)
+			rep, _ := s.apply(RepairOptions{})
+			if !slices.Equal(holeWords(rep), tc.holes) || !slices.Equal(gapWords(rep), tc.gaps) {
+				t.Errorf("the holes are %q and the gaps %q, want %q and %q", holeWords(rep), gapWords(rep), tc.holes, tc.gaps)
+			}
+			a := s.auditView()
+			if rows := len(a.holes[dbwire.LogLogin]); rows != tc.loginRows {
+				t.Errorf("the table chains has %d rows of holes of the login history, want %d", rows, tc.loginRows)
+			}
+			if tc.loginRows > 0 {
+				a.checkChains(t)
+				return
+			}
+			// The gap is as it was: no row passes it, and it is shown again.
+			again, _, err := s.repair(RepairOptions{})
+			if err != nil || again.Things() != 0 || !slices.Equal(gapWords(again), tc.gaps) {
+				t.Errorf("the second repair = %+v, %v, want the gap again", again, err)
+			}
+		})
+	}
+}
+
+// TestRepairOldGapAtTheEnd checks the same at the end of a log: the head of the activity log names the records after the last
+// that is read, and they are a hole of the repair only if it drops as many events after that record as there are records. The
+// last commit, whose events are the activity record and a mark, is damaged, and so is the login record of it if its number is
+// even; the commits before it that have a mark and no record of the log are the records that never reached it.
+func TestRepairOldGapAtTheEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		commits     int // before the records that never reached the log
+		lost        int // the activity records that never reached the log
+		holes, gaps []string
+	}{
+		// 3 events (activity 6, login 3, a mark) against the records 5 and 6.
+		{"more events than records", 4, 1, []string{"login 3-3", "activity 5-6"}, nil},
+		// 2 events (activity 5, a mark) against the records 4 and 5.
+		{"as many events as records", 3, 1, []string{"activity 4-5"}, nil},
+		// 2 events (activity 7, a mark) against the records 5 to 7.
+		{"one record more than events", 4, 2, nil, []string{"activity 5-7"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newFixtureStore(t)
+			for range tc.commits {
+				s.commit()
+			}
+			for range tc.lost {
+				s.lose(dbwire.LogActivity)
+			}
+			s.commit() // the last commit
+			if err := s.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s.damage(tc.commits + tc.lost + 1)
+			rep, _ := s.apply(RepairOptions{})
+			if !slices.Equal(holeWords(rep), tc.holes) || !slices.Equal(gapWords(rep), tc.gaps) {
+				t.Errorf("the holes are %q and the gaps %q, want %q and %q", holeWords(rep), gapWords(rep), tc.holes, tc.gaps)
+			}
+		})
+	}
+}
+
 func TestRepairFailedSync(t *testing.T) {
 	boom := syscall.EIO
 	for _, tc := range []struct {
@@ -1640,6 +1734,399 @@ func TestRepairKeepFails(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(s.dir, "stopped")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a failed copy left the mark: %v", err)
 	}
+}
+
+// TestRepairKeepFailsKeepsOthers checks that a copy that fails removes only what it made: a logdb/ that is in the directory of
+// the copy already, which another process made after the check that it was empty, is not the copy's to remove.
+func TestRepairKeepFailsKeepsOthers(t *testing.T) {
+	s := newAuditStore(t, 8)
+	s.damage(4)
+	keep := simfs.New("keep")
+	// What the other process has copied so far: another store's copy.
+	if err := keep.Mkdir("logdb", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := keep.Mkdir("logdb/log", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := keep.OpenFile("logdb/log/0000000000000001-0000000000000001.log", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("the only copy of another store")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := worldFiles(keep)
+	dataBefore := keptFiles(s.fs)
+	rep, err := repair(t.Context(), s.fs, "data", s.opts, RepairOptions{Apply: true, Keep: "keep"}, keepOn(keep))
+	if err == nil || rep.Applied || rep.Kept != "" {
+		t.Fatalf("Repair() = %+v, %v, want the error of the copy in a logdb/ that is there", rep, err)
+	}
+	if after := worldFiles(keep); !maps.Equal(after, before) {
+		t.Errorf("the failed copy removed files that it did not make: %v, was %v", slices.Sorted(maps.Keys(after)), slices.Sorted(maps.Keys(before)))
+	}
+	if after := keptFiles(s.fs); !maps.Equal(after, dataBefore) {
+		t.Errorf("the failed copy changed logdb/ of the data directory")
+	}
+}
+
+// TestRepairKeepIsData checks that a copy whose directory is the data directory fails without removing the store: the logdb/
+// that its Mkdir meets is not the copy's.
+func TestRepairKeepIsData(t *testing.T) {
+	s := newAuditStore(t, 8)
+	s.damage(4)
+	before := keptFiles(s.fs)
+	data := func() (*keepDir, error) { return &keepDir{fs: s.fs, name: "keep"}, nil }
+	rep, err := repair(t.Context(), s.fs, "data", s.opts, RepairOptions{Apply: true, Keep: "keep"}, data)
+	if err == nil || rep.Applied {
+		t.Fatalf("Repair() = %+v, %v, want the error of the copy", rep, err)
+	}
+	if after := keptFiles(s.fs); !maps.Equal(after, before) {
+		t.Errorf("logdb/ of the data directory has %d files, and had %d", len(after), len(before))
+	}
+}
+
+// keepWorld is a data directory on the OS that has a logdb/ of a few files, and the directories that the tests make around it.
+type keepWorld struct {
+	top, data string
+	root      vfs.FS      // the data directory
+	info      fs.FileInfo // of the data directory
+	before    map[string]string
+}
+
+func newKeepWorld(t *testing.T) *keepWorld {
+	t.Helper()
+	w := &keepWorld{top: t.TempDir()}
+	w.data = filepath.Join(w.top, "data")
+	for _, d := range []string{w.data, filepath.Join(w.data, "logdb"), filepath.Join(w.data, "logdb", "log"), filepath.Join(w.data, "sub")} {
+		mkdir(t, d)
+	}
+	for name, data := range map[string]string{"logdb/log/1.log": "a segment", "logdb/checkpoint": "a checkpoint", "logdb/head": "a head"} {
+		if err := os.WriteFile(filepath.Join(w.data, filepath.FromSlash(name)), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var err error
+	if w.root, err = vfs.OpenRoot(w.data); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.root.Close() })
+	if w.info, err = w.root.Lstat("."); err != nil {
+		t.Fatal(err)
+	}
+	w.before = contents(t, w.data)
+	return w
+}
+
+func (w *keepWorld) path(name string) string { return filepath.Join(w.top, name) }
+
+func (w *keepWorld) link(t *testing.T, name, target string) string {
+	t.Helper()
+	if err := os.Symlink(target, w.path(name)); err != nil {
+		t.Fatal(err)
+	}
+	return w.path(name)
+}
+
+// unchanged checks that the data directory is as it was.
+func (w *keepWorld) unchanged(t *testing.T) {
+	t.Helper()
+	if after := contents(t, w.data); !maps.Equal(after, w.before) {
+		t.Errorf("the data directory changed:\n%v\nwas\n%v", after, w.before)
+	}
+}
+
+// TestRepairKeepSymlinks checks the directory of the copy that is, or is under, a symbolic link: the directory itself may not be
+// one, which another process can point elsewhere between the check and its use, and the directories that hold it may.
+func TestRepairKeepSymlinks(t *testing.T) {
+	w := newKeepWorld(t)
+	elsewhere := w.path("elsewhere")
+	mkdir(t, elsewhere)
+	empty := w.path("empty")
+	mkdir(t, empty)
+	toData, toSub, toEmpty := w.link(t, "to-data", w.data), w.link(t, "to-sub", filepath.Join(w.data, "sub")), w.link(t, "to-empty", empty)
+	dangling, danglingInData := w.link(t, "dangling", w.path("nothing")), w.link(t, "dangling-in-data", filepath.Join(w.data, "missing"))
+	parent := w.link(t, "parent", elsewhere)
+	const dataWhat = ": -keep is the data directory: the copy of logdb/ must be kept apart from it"
+	const inDataWhat = ": -keep is in the data directory: the copy of logdb/ must be kept apart from it"
+	const linkWhat = ": a symbolic link; -keep needs a missing or empty directory itself, not a link to one"
+	for _, tc := range []struct{ name, keep, want string }{
+		{"a link to the data directory", toData, toData + dataWhat},
+		{"a link into the data directory", toSub, toSub + inDataWhat},
+		{"a missing directory under a link to the data directory", filepath.Join(toData, "new"), filepath.Join(toData, "new") + inDataWhat},
+		{"a dangling link into the data directory", danglingInData, danglingInData + linkWhat},
+		{"a link to an empty directory", toEmpty, toEmpty + linkWhat},
+		{"a link to an empty directory, with a slash", toEmpty + "/", toEmpty + linkWhat},
+		{"a link to nothing", dangling, dangling + linkWhat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := checkKeep(w.data, tc.keep)
+			if err == nil || err.Error() != tc.want {
+				t.Errorf("checkKeep() = %v, want %q", err, tc.want)
+			}
+			if k, err := osKeep(w.root, tc.keep)(); err == nil || err.Error() != tc.want {
+				if err == nil {
+					_ = k.fs.Close()
+				}
+				t.Errorf("osKeep()() = %v, want %q", err, tc.want)
+			}
+			w.unchanged(t)
+			if entries, err := os.ReadDir(empty); err != nil || len(entries) != 0 {
+				t.Errorf("the empty directory behind the link has %v (%v)", entries, err)
+			}
+		})
+	}
+	if _, err := os.Lstat(filepath.Join(w.data, "missing")); err == nil {
+		t.Error("the dangling link made a directory in the data directory")
+	}
+
+	// The directories that hold the directory of the copy may be links: it is made, or taken, where they lead.
+	t.Run("a missing directory under a link", func(t *testing.T) {
+		keep := filepath.Join(parent, "new")
+		k, err := osKeep(w.root, keep)()
+		if err != nil {
+			t.Fatalf("osKeep()() = %v", err)
+		}
+		if info, err := os.Lstat(filepath.Join(elsewhere, "new")); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Errorf("the directory that the repair made is %v, %v", info, err)
+		}
+		if err := k.fs.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Run("an empty directory under a link", func(t *testing.T) {
+		mkdir(t, filepath.Join(elsewhere, "ready"))
+		k, err := osKeep(w.root, filepath.Join(parent, "ready"))()
+		if err != nil {
+			t.Fatalf("osKeep()() = %v", err)
+		}
+		if k.made != nil {
+			t.Error("the repair made a directory that was there")
+		}
+		if err := k.fs.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	w.unchanged(t)
+}
+
+// TestRepairKeepChanged checks that the directory that is opened is the one that was checked: whatever the name leads to by then,
+// the copy does not go into another directory, the data directory, or one that has something in it, and nothing is written.
+func TestRepairKeepChanged(t *testing.T) {
+	const changed = ": changed while the repair opened it: run the repair again"
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, w *keepWorld, keep string)
+		want   func(w *keepWorld, keep string) string
+	}{
+		{"another empty directory", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.Rename(keep, w.path("old")); err != nil {
+				t.Fatal(err)
+			}
+			mkdir(t, keep)
+		}, func(w *keepWorld, keep string) string { return keep + changed }},
+		{"an empty directory in the data directory", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.Remove(keep); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(w.data, "sub"), keep); err != nil {
+				t.Fatal(err)
+			}
+		}, func(w *keepWorld, keep string) string { return keep + changed }},
+		{"a link to an empty directory", func(t *testing.T, w *keepWorld, keep string) {
+			other := w.path("other")
+			mkdir(t, other)
+			if err := os.Remove(keep); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(other, keep); err != nil {
+				t.Fatal(err)
+			}
+		}, func(w *keepWorld, keep string) string { return keep + changed }},
+		{"the data directory", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.Remove(keep); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(w.data, keep); err != nil {
+				t.Fatal(err)
+			}
+		}, func(w *keepWorld, keep string) string {
+			return keep + ": -keep is the data directory: the copy of logdb/ must be kept apart from it"
+		}},
+		{"a file in it", func(t *testing.T, w *keepWorld, keep string) {
+			if err := os.WriteFile(filepath.Join(keep, "x"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, func(w *keepWorld, keep string) string {
+			return keep + ": not empty; -keep needs a missing or empty directory"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newKeepWorld(t)
+			keep := w.path("keep")
+			mkdir(t, keep)
+			c, err := checkKeep(w.data, keep)
+			if err != nil || c.info == nil {
+				t.Fatalf("checkKeep() = %+v, %v", c, err)
+			}
+			tc.change(t, w, keep)
+			k, err := openKeep(w.info, keep, c)
+			if want := tc.want(w, keep); err == nil || err.Error() != want {
+				if err == nil {
+					_ = k.fs.Close()
+				}
+				t.Fatalf("openKeep() = %v, want %q", err, want)
+			}
+			w.unchanged(t)
+			for _, name := range []string{"sub", "other", "old"} {
+				if _, err := os.Stat(filepath.Join(w.path(name), "logdb")); err == nil {
+					t.Errorf("a copy was started in %s", name)
+				}
+			}
+		})
+	}
+
+	// A directory that was missing is made where the check looked, and nothing that is there instead is touched.
+	t.Run("a missing directory that is there", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			make func(t *testing.T, w *keepWorld, keep string)
+		}{
+			{"a link to an empty directory", func(t *testing.T, w *keepWorld, keep string) {
+				mkdir(t, w.path("target"))
+				if err := os.Symlink(w.path("target"), keep); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"a directory that has a file", func(t *testing.T, w *keepWorld, keep string) {
+				mkdir(t, keep)
+				if err := os.WriteFile(filepath.Join(keep, "x"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				w := newKeepWorld(t)
+				keep := w.path("keep")
+				c, err := checkKeep(w.data, keep)
+				if err != nil || c.info != nil || c.parent == nil {
+					t.Fatalf("checkKeep() = %+v, %v", c, err)
+				}
+				tc.make(t, w, keep)
+				before := contents(t, w.top)
+				if k, err := openKeep(w.info, keep, c); err == nil {
+					_ = k.fs.Close()
+					t.Fatal("openKeep() takes what is there")
+				}
+				if after := contents(t, w.top); !maps.Equal(after, before) {
+					t.Errorf("the refusal changed what is there:\n%v\nwas\n%v", after, before)
+				}
+			})
+		}
+	})
+
+	// The directory that holds a missing one is the one that was checked, also if its name leads elsewhere by now.
+	t.Run("another parent", func(t *testing.T) {
+		for _, to := range []string{"other", "data"} {
+			t.Run(to, func(t *testing.T) {
+				w := newKeepWorld(t)
+				mkdir(t, w.path("first"))
+				mkdir(t, w.path("other"))
+				parent := w.link(t, "parent", w.path("first"))
+				keep := filepath.Join(parent, "keep")
+				c, err := checkKeep(w.data, keep)
+				if err != nil || c.info != nil {
+					t.Fatalf("checkKeep() = %+v, %v", c, err)
+				}
+				target := w.path("other")
+				if to == "data" {
+					target = w.data
+				}
+				if err := os.Remove(parent); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, parent); err != nil {
+					t.Fatal(err)
+				}
+				if k, err := openKeep(w.info, keep, c); err == nil || err.Error() != filepath.Dir(keep)+changed {
+					if err == nil {
+						_ = k.fs.Close()
+					}
+					t.Errorf("openKeep() = %v, want %q", err, filepath.Dir(keep)+changed)
+				}
+				for _, name := range []string{"first", "other"} {
+					if entries, err := os.ReadDir(w.path(name)); err != nil || len(entries) != 0 {
+						t.Errorf("%s has %v (%v) after the refusal", name, entries, err)
+					}
+				}
+				w.unchanged(t)
+			})
+		}
+	})
+}
+
+// TestRepairKeepRace checks, on the OS, that the directory of the copy is never the data directory while another process
+// turns the name from an empty directory to a link to the data directory and back, and that a copy that is made and discarded
+// in what it gets leaves the data directory as it was.
+func TestRepairKeepRace(t *testing.T) {
+	w := newKeepWorld(t)
+	keep := w.path("keep")
+	src, err := w.root.Sub("logdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = src.Close() }()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			time.Sleep(20 * time.Microsecond)
+			_ = os.Remove(keep)
+			if i%2 == 0 {
+				_ = os.Mkdir(keep, 0o700)
+			} else {
+				_ = os.Symlink(w.data, keep)
+			}
+		}
+	}()
+	opened, refused := 0, 0
+	calls := 0
+	for ; calls < 1500 || (opened < 20 && calls < 30000); calls++ {
+		k, err := osKeep(w.root, keep)()
+		if err != nil {
+			refused++
+			continue
+		}
+		opened++
+		if info, err := k.fs.Lstat("."); err != nil || os.SameFile(info, w.info) {
+			t.Errorf("the directory of the copy is the data directory (%v)", err)
+			_ = k.fs.Close()
+			continue
+		}
+		if opened <= 50 {
+			// The directory may be removed under it by now: that fails the copy, which is not the point.
+			_ = k.copyLogdb(t.Context(), src)
+			k.discard()
+		}
+		_ = k.fs.Close()
+	}
+	close(stop)
+	wg.Wait()
+	t.Logf("%d calls: %d refused, %d opened", calls, refused, opened)
+	if opened == 0 || refused == 0 {
+		t.Errorf("%d calls were refused and %d opened a directory: want both", refused, opened)
+	}
+	w.unchanged(t)
 }
 
 // TestRepairUnrecordable checks that a hole whose record after it names no hash that can be read is told and not recorded: the

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -40,7 +41,8 @@ type RepairOptions struct {
 	// Without it they are kept, and listed.
 	DropUnreadable bool
 	// Keep is the directory that gets a copy of logdb/, as it is, before anything is changed: it must be missing (its parent
-	// must exist) or empty, and not in the data directory. It is required with Apply, and not allowed without it.
+	// must exist) or empty, not a symbolic link itself, and not the data directory or in it. It is required with Apply, and not
+	// allowed without it.
 	Keep string
 	// Now is the time of the rows of the holes and of the mark after their events; zero: Options.Now, or the time.
 	Now time.Time
@@ -57,8 +59,8 @@ type RepairHole struct {
 	Row bool
 }
 
-// RepairGap is a gap in an audit log that the repair does not make: records First to Last are missing, and no event that the
-// repair drops lies where they were.
+// RepairGap is a gap in an audit log that the repair does not make: records First to Last are missing, and the repair drops
+// fewer events where they were than there are records, so that they were lost before it.
 type RepairGap struct {
 	Log         string
 	First, Last uint64
@@ -137,7 +139,7 @@ func Repair(ctx context.Context, dir string, o Options, r RepairOptions) (Repair
 			return RepairReport{}, err
 		}
 	}
-	return repair(ctx, root, dir, o, r, osKeep(opened, r.Keep))
+	return repair(ctx, root, dir, o, r, osKeep(root, r.Keep))
 }
 
 // repair is Repair on the data directory root, which stays the caller's; dir is its name in errors. mk makes the directory of
@@ -308,7 +310,7 @@ func (rr *repairRun) keep() error {
 		return err
 	}
 	defer func() { _ = src.Close() }()
-	if err := copyLogdb(rr.ctx, src, k.fs); err != nil {
+	if err := k.copyLogdb(rr.ctx, src); err != nil {
 		k.discard()
 		return err
 	}
@@ -318,130 +320,241 @@ func (rr *repairRun) keep() error {
 
 // keepDir is the directory of the copy of logdb/.
 type keepDir struct {
-	fs   vfs.FS
-	name string
-	made func() // removes the directory, which the repair has made; nil if it was there
+	fs      vfs.FS
+	name    string
+	created []string // what the copy has made in fs, in the order in which it made them
+	made    func()   // removes the directory, which the repair has made, if it is still that one and empty; nil if it was there
 }
 
-// discard removes what a copy that failed has made, as far as it can.
+// discard removes what a copy that failed has made, and nothing else, as far as it can: a logdb/ that was there before, or
+// that came from somewhere else while the copy ran, is not its to remove.
 func (k *keepDir) discard() {
-	removeAll(k.fs, "logdb")
+	for _, name := range slices.Backward(k.created) {
+		_ = k.fs.Remove(name)
+	}
+	k.created = nil
 	if k.made != nil {
 		k.made()
 	}
-}
-
-// removeAll removes name in fsys, and what is in it.
-func removeAll(fsys vfs.FS, name string) {
-	if entries, err := fsys.ReadDir(name); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				removeAll(fsys, path.Join(name, e.Name()))
-			} else {
-				_ = fsys.Remove(path.Join(name, e.Name()))
-			}
-		}
-	}
-	_ = fsys.Remove(name)
 }
 
 // keepMaker makes the directory of the copy: it checks that the directory is one that can take it, and makes it if it is
 // missing.
 type keepMaker func() (*keepDir, error)
 
-// checkKeep checks that the directory keep on the OS can take the copy of logdb/ of the data directory data: it is not in it,
-// and is missing, which a parent that exists makes, or empty. It reports whether it is missing.
-func checkKeep(data, keep string) (missing bool, err error) {
+// keepCheck is what checkKeep saw of the directory of the copy.
+type keepCheck struct {
+	info   fs.FileInfo // the directory, as lstat(2) tells it; nil if it is missing
+	parent fs.FileInfo // the directory that holds the missing directory; nil if it is there
+}
+
+// checkKeep checks that the directory keep on the OS can take the copy of logdb/ of the data directory data: it is not in
+// it, as the kernel resolves the names, and is missing, which a parent that exists makes, or empty. It is not a symbolic link
+// itself: a name that another process can point elsewhere between this check and the use of it is not one to put a copy in.
+// The directories that hold it may be links.
+func checkKeep(data, keep string) (keepCheck, error) {
+	keep = fspath.Clean(keep)
 	if dev, ino, ok, err := fspath.FileID(data); err != nil {
-		return false, err
+		return keepCheck{}, err
 	} else if ok {
 		in, err := fspath.In(keep, dev, ino)
 		if err != nil {
-			return false, err
+			return keepCheck{}, err
 		}
 		if in {
 			if d, i, _, err := fspath.FileID(keep); err == nil && d == dev && i == ino {
-				return false, fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
+				return keepCheck{}, fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
 			}
-			return false, fmt.Errorf("%s: -keep is in the data directory: the copy of logdb/ must be kept apart from it", keep)
+			return keepCheck{}, fmt.Errorf("%s: -keep is in the data directory: the copy of logdb/ must be kept apart from it", keep)
 		}
 	}
-	switch info, err := os.Stat(keep); {
+	info, err := os.Lstat(keep)
+	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		// Not made with its parents: a parent that is missing is a mistake in -keep.
-		if parent, err := os.Stat(filepath.Dir(keep)); err != nil {
-			return false, err
-		} else if !parent.IsDir() {
-			return false, fmt.Errorf("%s: not a directory; -keep needs a missing or empty directory in a directory", filepath.Dir(keep))
+		parent, err := os.Stat(filepath.Dir(keep))
+		if err != nil {
+			return keepCheck{}, err
 		}
-		return true, nil
+		if !parent.IsDir() {
+			return keepCheck{}, fmt.Errorf("%s: not a directory; -keep needs a missing or empty directory in a directory", filepath.Dir(keep))
+		}
+		return keepCheck{parent: parent}, nil
 	case err != nil:
-		return false, err
+		return keepCheck{}, err
+	case info.Mode()&fs.ModeSymlink != 0:
+		return keepCheck{}, fmt.Errorf("%s: a symbolic link; -keep needs a missing or empty directory itself, not a link to one", keep)
 	case !info.IsDir():
-		return false, fmt.Errorf("%s: not a directory; -keep needs a missing or empty directory", keep)
+		return keepCheck{}, fmt.Errorf("%s: not a directory; -keep needs a missing or empty directory", keep)
 	}
 	entries, err := os.ReadDir(keep)
 	if err != nil {
-		return false, err
+		return keepCheck{}, err
 	}
 	if len(entries) > 0 {
-		return false, fmt.Errorf("%s: not empty; -keep needs a missing or empty directory", keep)
+		return keepCheck{}, fmt.Errorf("%s: not empty; -keep needs a missing or empty directory", keep)
 	}
-	return false, nil
+	return keepCheck{info: info}, nil
 }
 
-// osKeep makes the keepMaker of the directory keep on the OS, for the data directory data.
-func osKeep(data, keep string) keepMaker {
+// osKeep makes the keepMaker of the directory keep on the OS, for the data directory data, which is the directory of root.
+func osKeep(data vfs.FS, keep string) keepMaker {
 	return func() (*keepDir, error) {
-		missing, err := checkKeep(data, keep)
+		c, err := checkKeep(data.Name(), keep)
 		if err != nil {
 			return nil, err
 		}
-		if missing {
-			// Not MkdirAll: a parent that is missing is a mistake in -keep, not something to make.
-			if err := os.Mkdir(keep, 0o700); err != nil {
-				return nil, err
-			}
-			if err := fspath.SyncParent(keep); err != nil {
-				_ = os.Remove(keep)
-				return nil, err
-			}
-		}
-		root, _, err := dataRoot(keep)
+		dataInfo, err := data.Lstat(".")
 		if err != nil {
-			if missing {
-				_ = os.Remove(keep)
-			}
 			return nil, err
 		}
-		k := &keepDir{fs: root, name: keep}
-		if missing {
-			k.made = func() { _ = os.Remove(keep) }
-		}
-		return k, nil
+		return openKeep(dataInfo, keep, c)
 	}
 }
 
-// copyLogdb copies every file of src, the directory logdb/ of the data directory, and the directories, to logdb/ of dst, which
-// must be empty, and makes them durable: the files, then the directories. The files are copied as they are, not read as the
-// engine reads them. A failed sync is no failure of the data directory, which the copy does not write in.
-func copyLogdb(ctx context.Context, src, dst vfs.FS) error {
-	if err := dst.Mkdir("logdb", 0o700); err != nil {
+// keepChanged is the refusal of a directory that is not the one that checkKeep saw.
+func keepChanged(keep string) error {
+	return fmt.Errorf("%s: changed while the repair opened it: run the repair again", keep)
+}
+
+// openKeep opens the directory keep, which checkKeep has checked, and makes it if c says that it is missing. It checks the
+// directory that it opened, through the open directory, and not by its name: it is the one that checkKeep saw (or that this
+// run has made), it is not the data directory, whose directory is dataInfo, and it is empty. The names of what it checked can
+// lead elsewhere by now. A directory that it fails to take is removed again, if this run has made it.
+func openKeep(dataInfo fs.FileInfo, keep string, c keepCheck) (*keepDir, error) {
+	keep = fspath.Clean(keep)
+	var parent vfs.FS
+	var made func()
+	want := c.info
+	if c.info == nil {
+		var err error
+		if parent, made, want, err = makeKeep(keep, c.parent); err != nil {
+			return nil, err
+		}
+	}
+	closeAll := func() {
+		if made != nil {
+			made()
+		}
+		if parent != nil {
+			_ = parent.Close()
+		}
+	}
+	var root vfs.FS
+	var err error
+	if parent != nil {
+		root, err = parent.Sub(filepath.Base(keep))
+	} else {
+		root, _, err = dataRoot(keep)
+	}
+	if err != nil {
+		closeAll()
+		return nil, err
+	}
+	if err := checkOpenedKeep(root, keep, dataInfo, want); err != nil {
+		_ = root.Close()
+		closeAll()
+		return nil, err
+	}
+	return &keepDir{fs: &keepFS{FS: root, parent: parent}, name: keep, made: made}, nil
+}
+
+// makeKeep makes the directory keep, which checkKeep found missing, in its parent, which is opened first and compared with
+// the parent that checkKeep saw: the directory is made where the check looked, whatever the names lead to now, and it is made
+// durable there. It returns the open parent, what removes the directory again, and the directory that it made.
+func makeKeep(keep string, checked fs.FileInfo) (parent vfs.FS, remove func(), made fs.FileInfo, err error) {
+	parent, _, err = dataRoot(filepath.Dir(keep))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	fail := func(err error) (vfs.FS, func(), fs.FileInfo, error) {
+		_ = parent.Close()
+		return nil, nil, nil, err
+	}
+	if info, err := parent.Lstat("."); err != nil {
+		return fail(err)
+	} else if !os.SameFile(info, checked) {
+		return fail(keepChanged(filepath.Dir(keep)))
+	}
+	base := filepath.Base(keep)
+	// Not MkdirAll: a parent that is missing is a mistake in -keep, not something to make.
+	if err := parent.Mkdir(base, 0o700); err != nil {
+		return fail(err)
+	}
+	made, err = parent.Lstat(base)
+	if err != nil {
+		return fail(err)
+	}
+	remove = func() {
+		if now, err := parent.Lstat(base); err == nil && os.SameFile(now, made) {
+			_ = parent.Remove(base)
+		}
+	}
+	if err := parent.SyncDir("."); err != nil {
+		remove()
+		return fail(err)
+	}
+	return parent, remove, made, nil
+}
+
+// checkOpenedKeep checks the open directory root of the copy.
+func checkOpenedKeep(root vfs.FS, keep string, dataInfo, want fs.FileInfo) error {
+	info, err := root.Lstat(".")
+	if err != nil {
 		return err
 	}
+	switch {
+	case os.SameFile(info, dataInfo):
+		return fmt.Errorf("%s: -keep is the data directory: the copy of logdb/ must be kept apart from it", keep)
+	case !os.SameFile(info, want):
+		return keepChanged(keep)
+	}
+	entries, err := root.ReadDir(".")
+	if err != nil {
+		return err
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("%s: not empty; -keep needs a missing or empty directory", keep)
+	}
+	return nil
+}
+
+// keepFS is the open directory of the copy, with the directory that holds it if the repair made it there.
+type keepFS struct {
+	vfs.FS
+	parent vfs.FS
+}
+
+func (k *keepFS) Close() error {
+	err := k.FS.Close()
+	if k.parent != nil {
+		err = errors.Join(err, k.parent.Close())
+	}
+	return err
+}
+
+// copyLogdb copies every file of src, the directory logdb/ of the data directory, and the directories, to logdb/ of k.fs,
+// which must have none, and makes them durable: the files, then the directories. It records what it makes in k.created. The
+// files are copied as they are, not read as the engine reads them. A failed sync is no failure of the data directory, which
+// the copy does not write in.
+func (k *keepDir) copyLogdb(ctx context.Context, src vfs.FS) error {
+	if err := k.fs.Mkdir("logdb", 0o700); err != nil {
+		return err
+	}
+	k.created = append(k.created, "logdb")
 	dirs := []string{"logdb"}
-	if err := copyDir(ctx, src, dst, ".", "logdb", &dirs); err != nil {
+	if err := k.copyDir(ctx, src, ".", "logdb", &dirs); err != nil {
 		return err
 	}
 	for _, d := range slices.Backward(dirs) {
-		if err := dst.SyncDir(d); err != nil {
+		if err := k.fs.SyncDir(d); err != nil {
 			return err
 		}
 	}
-	return dst.SyncDir(".")
+	return k.fs.SyncDir(".")
 }
 
-func copyDir(ctx context.Context, src, dst vfs.FS, from, to string, dirs *[]string) error {
+func (k *keepDir) copyDir(ctx context.Context, src vfs.FS, from, to string, dirs *[]string) error {
 	entries, err := src.ReadDir(from)
 	if err != nil {
 		return err
@@ -453,15 +566,16 @@ func copyDir(ctx context.Context, src, dst vfs.FS, from, to string, dirs *[]stri
 		in, out := path.Join(from, e.Name()), path.Join(to, e.Name())
 		switch {
 		case e.IsDir():
-			if err := dst.Mkdir(out, 0o700); err != nil {
+			if err := k.fs.Mkdir(out, 0o700); err != nil {
 				return err
 			}
+			k.created = append(k.created, out)
 			*dirs = append(*dirs, out)
-			if err := copyDir(ctx, src, dst, in, out, dirs); err != nil {
+			if err := k.copyDir(ctx, src, in, out, dirs); err != nil {
 				return err
 			}
 		case e.Type().IsRegular():
-			if err := copyFile(ctx, src, dst, in, out); err != nil {
+			if err := k.copyFile(ctx, src, in, out); err != nil {
 				return err
 			}
 		default:
@@ -471,16 +585,17 @@ func copyDir(ctx context.Context, src, dst vfs.FS, from, to string, dirs *[]stri
 	return nil
 }
 
-func copyFile(ctx context.Context, src, dst vfs.FS, from, to string) error {
+func (k *keepDir) copyFile(ctx context.Context, src vfs.FS, from, to string) error {
 	in, err := src.Open(from)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := dst.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	out, err := k.fs.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
+	k.created = append(k.created, to)
 	if _, err := io.CopyBuffer(out, ctxReader{ctx, in}, make([]byte, 128<<10)); err != nil {
 		_ = out.Close()
 		return err
@@ -501,7 +616,7 @@ type auditLog struct {
 	head  *auditHead
 
 	last, lastEvent uint64 // the last record that was read, and its event; 0: none
-	dropped         bool   // an event that the repair drops was met after the last record
+	dropped         uint64 // the unreadable events that the repair drops, met after the last record
 }
 
 type auditHead struct {
@@ -552,16 +667,20 @@ func lostEvents(plan logdb.RepairPlan) lost {
 	return l
 }
 
-// between reports whether a number n with a < n < b is lost.
-func (l lost) between(a, b uint64) bool {
-	i := sort.Search(len(l.hi), func(i int) bool { return l.hi[i] > a })
-	return i < len(l.hi) && max(l.lo[i], a+1) < b
+// between returns how many numbers n with a < n < b are lost.
+func (l lost) between(a, b uint64) uint64 {
+	var n uint64
+	for i := sort.Search(len(l.hi), func(i int) bool { return l.hi[i] > a }); i < len(l.hi) && l.lo[i] < b; i++ {
+		if lo, hi := max(l.lo[i], a+1), min(l.hi[i], b-1); lo <= hi {
+			n += hi - lo + 1
+		}
+	}
+	return n
 }
 
-// after reports whether a number above a is lost.
-func (l lost) after(a uint64) bool {
-	n := len(l.hi)
-	return n > 0 && l.hi[n-1] > a
+// after returns how many numbers above a are lost.
+func (l lost) after(a uint64) uint64 {
+	return l.between(a, math.MaxUint64)
 }
 
 // classified is what an event of the log is to the repair.
@@ -602,7 +721,7 @@ func (w *auditWalk) event(e logdb.Event) bool {
 		}
 		if w.drop {
 			for _, l := range w.logs {
-				l.dropped = true
+				l.dropped++
 			}
 		}
 	case c.record:
@@ -616,10 +735,12 @@ func (w *auditWalk) record(l *auditLog, c classified, number uint64) {
 	if c.n > expected {
 		w.skip(l, c, number, expected)
 	}
-	l.last, l.lastEvent, l.dropped = c.n, number, false
+	l.last, l.lastEvent, l.dropped = c.n, number, 0
 }
 
-// skip finds what the record c, which has the event number number, skips: the log expected the record expected.
+// skip finds what the record c, which has the event number number, skips: the log expected the record expected. The records
+// that it skips are a hole of the repair only if the repair drops at least as many events between the two records as there
+// are records missing: one audit record is one event, so with fewer, a gap that was there before the repair is part of them.
 func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 	if l.bad != "" {
 		w.err = fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
@@ -627,7 +748,7 @@ func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 	}
 	switch _, recorded := dbwire.HoleBefore(l.holes, l.start, l.last, c.n, c.prev); {
 	case recorded:
-	case l.dropped || w.lost.between(l.lastEvent, number):
+	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-expected:
 		h := RepairHole{Log: l.name, First: expected, Last: c.n - 1}
 		h.Hash, h.Row = parseHash(c.prev)
 		w.rep.Holes = append(w.rep.Holes, h)
@@ -654,7 +775,8 @@ func (w *auditWalk) finish() error {
 		if l.bad != "" {
 			return fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		}
-		if l.dropped || w.lost.after(l.lastEvent) {
+		// The records that the head names after the last one that was read, against the events dropped after it.
+		if l.dropped+w.lost.after(l.lastEvent) >= l.head.n-expected+1 {
 			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: expected, Last: l.head.n, Hash: l.head.hash, Row: true})
 		} else {
 			w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: name, First: expected, Last: l.head.n})

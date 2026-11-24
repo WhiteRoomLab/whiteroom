@@ -527,7 +527,7 @@ func analyze(ctx context.Context, fsys vfs.FS, o Options, db *DB) (*Salvager, er
 	}
 	switch {
 	case ck == nil:
-		s.plan.Checkpoint = why
+		s.plan.Checkpoint = withoutKeys(why)
 	case ck.h.gen < res.st.gen:
 		s.plan.Checkpoint = "stale"
 	case res.useCk:

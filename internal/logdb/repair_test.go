@@ -1040,6 +1040,112 @@ func TestCrashDuringRepair(t *testing.T) {
 	}
 }
 
+// TestCrashDuringRepairOfStrayGeneration crashes after each operation of Apply on a store that has an incomplete newer
+// generation with a middle segment gone, which Open refuses ("missing segment"). Apply removes the segments of that generation
+// from the last one, so that from some operation on, what is left of it is consecutive, and Open ignores it: Open gives what it
+// gave before, the repaired store, or the kept generation as Open reads it without the stray one, which has the data of the
+// store without the repair's rows and events. Never another state.
+func TestCrashDuringRepairOfStrayGeneration(t *testing.T) {
+	withBaseBytes(t, 200)
+	fsys := simfs.New(simDir)
+	armed := false
+	o := Options{SegmentBytes: 400, Placement: Hybrid, Threshold: 100, Hook: func(p string) error {
+		if armed && p == "compact:base" {
+			fsys.CrashAt(fsys.Counted())
+		}
+		return nil
+	}}
+	db, err := Create(fsys, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for i := range 8 {
+		change(t, db, i)
+	}
+	if err := db.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	armed = true
+	if err := compactDB(db, Rewrite{}); !errors.Is(err, simfs.ErrCrashed) {
+		t.Fatalf("compact: %v", err)
+	}
+	image := fsys.Crash(loseAll)
+	o.Hook = nil
+	var newer []string
+	for _, name := range logNames(t, image) {
+		if g, _, _ := parseSegName(path.Base(name)); g == 2 {
+			newer = append(newer, name)
+		}
+	}
+	if len(newer) < 3 {
+		t.Fatalf("the incomplete generation 2 has %d segments, want 3 or more: %v", len(newer), newer)
+	}
+	removeFile(t, image, newer[1]) // a middle segment of the incomplete generation
+	// The kept generation 1 has a record before its checkpoint that cannot be read: Open does not read it.
+	recordDamages[1].apply(t, image, commitAt(t, locateRecords(t, image, 1), 2))
+
+	before := outcome(t, copyFS(image), o)
+	if !strings.Contains(before, "missing segment 2 of generation 2") {
+		t.Fatalf("before: %s", before)
+	}
+	// What Open gives of the kept generation alone: the store as if the incomplete one had never been there.
+	alone := copyFS(image)
+	for _, name := range newer {
+		if name != newer[1] {
+			removeFile(t, alone, name)
+		}
+	}
+	old := outcome(t, alone, o)
+	if strings.HasPrefix(old, "error") {
+		t.Fatalf("generation 1 alone: %s", old)
+	}
+
+	r := RepairOptions{Puts: repairRows, Events: repairEvents}
+	clean := copyFS(image)
+	start := clean.Counted()
+	if res := repair(t, clean, o, r); res.err != nil {
+		t.Fatal(res.err)
+	}
+	ops := clean.Counted() - start
+	after := outcome(t, copyFS(clean), o)
+	if strings.HasPrefix(after, "error") {
+		t.Fatalf("after: %s", after)
+	}
+	counts := map[string]int{}
+	firstOld := -1
+	for k := range ops + 1 {
+		f := copyFS(image)
+		f.CrashAt(f.Counted() + k)
+		_ = Salvage(context.Background(), f, o, func(s *Salvager) error {
+			_, _ = s.Apply(context.Background(), r)
+			return nil
+		})
+		for _, m := range simfs.Models(f.Pending(), 4, nil) {
+			switch got := outcome(t, f.Crash(m), o); got {
+			case before:
+				counts["before"]++
+			case after:
+				counts["after"]++
+			case old:
+				counts["generation 1 alone"]++
+				if firstOld < 0 {
+					firstOld = k
+				}
+			default:
+				t.Fatalf("a crash after %d of %d operations, %s: none of before, after and generation 1 alone:\n%s", k, ops, m.Name, got)
+			}
+		}
+	}
+	t.Logf("before: %s", strings.SplitN(before, "\n", 2)[0])
+	t.Logf("generation 1 alone: %s", strings.SplitN(old, "\n", 2)[0])
+	t.Logf("after: %s", strings.SplitN(after, "\n", 2)[0])
+	t.Logf("%d crash points: %v; the first crash that opens generation 1 alone is after %d operations", ops+1, counts, firstOld)
+	if counts["generation 1 alone"] == 0 {
+		t.Errorf("no crash opens generation 1 alone: the corner is not reached")
+	}
+}
+
 // TestRepairFaults checks what an operation of Apply that fails leaves: before the base-end, the store as it was;
 // after it, the repaired store; and that a second repair finishes the work.
 func TestRepairFaults(t *testing.T) {

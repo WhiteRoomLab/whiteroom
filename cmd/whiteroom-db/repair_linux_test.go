@@ -379,8 +379,17 @@ func TestRepairKeepRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, full, "x", "x")
+	linked := filepath.Join(d.root, "linked")
+	if err := os.Mkdir(linked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(d.root, "link")
+	if err := os.Symlink(linked, link); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct{ keep, want string }{
 		{full, full + ": not empty; -keep needs a missing or empty directory"},
+		{link, link + ": a symbolic link; -keep needs a missing or empty directory itself, not a link to one"},
 		{d.data, d.data + ": -keep is the data directory: the copy of logdb/ must be kept apart from it"},
 		{filepath.Join(d.data, "keep"), filepath.Join(d.data, "keep") + ": -keep is in the data directory: the copy of logdb/ must be kept apart from it"},
 	} {
@@ -395,6 +404,9 @@ func TestRepairKeepRefused(t *testing.T) {
 	}
 	if got := fileBytes(t, full); len(got) != 1 {
 		t.Errorf("the refusal changed the directory that was not empty: %v", got)
+	}
+	if got := fileBytes(t, linked); len(got) != 0 {
+		t.Errorf("the refusal of the link wrote in what it points to: %v", got)
 	}
 	// An empty directory takes the copy.
 	empty := filepath.Join(d.root, "empty")

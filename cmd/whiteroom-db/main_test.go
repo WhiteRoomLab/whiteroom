@@ -232,6 +232,7 @@ func TestUsage(t *testing.T) {
 		"A gap that is no hole of this repair stays what it was", "is kept, and its number is told, unless -drop-unreadable-records is given",
 		"-apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and makes them durable, and then repairs",
 		"DIR must be missing, in a directory that exists, or empty, and must not be the data directory or in it",
+		"It must not be a symbolic link itself (the directories that hold it may be)",
 		"keep it as private as the data directory", "-keep and -apply need each other",
 		"-truncate and -drop-unreadable-records without -apply change what is shown",
 		`"kept the files of DATA/logdb in DIR/logdb"`, `"repaired DATA: generation G, sequence S"`, `"nothing to repair in DATA"`,
