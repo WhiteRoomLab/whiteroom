@@ -169,8 +169,8 @@ func TestRepairKeepParentFlip(t *testing.T) {
 					}
 				}
 			}()
-			wins, opened, tries := 0, 0, 3000
-			for range tries {
+			wins, opened, calls := 0, 0, 0
+			for ; calls < 3000 || (opened < 20 && calls < 30000); calls++ {
 				k, err := osKeep(w.root, keep)()
 				if err != nil {
 					continue
@@ -196,7 +196,7 @@ func TestRepairKeepParentFlip(t *testing.T) {
 			}
 			close(stop)
 			<-done
-			t.Logf("%d calls: %d opened a directory, %d of them in the data directory", tries, opened, wins)
+			t.Logf("%d calls: %d opened a directory, %d of them in the data directory", calls, opened, wins)
 			if wins > 0 {
 				t.Errorf("osKeep gave a directory of the data directory %d times", wins)
 			}
