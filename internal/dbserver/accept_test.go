@@ -208,7 +208,7 @@ func TestAcceptBreak(t *testing.T) {
 // gapText is the refusal of the record n, which does not follow the record before in number.
 func gapText(n, before int) string {
 	return fmt.Sprintf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that can be "+
-		"accepted, and waits for the repair of the engine", n, before)
+		"accepted: whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem", n, before)
 }
 
 // TestAcceptBreakRefused checks that each refusal says why, in the words of the command, and writes nothing.

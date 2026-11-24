@@ -23,10 +23,10 @@ import (
 // the record has as its prev: VerifyAudit passes the record, so there is no break to accept; the hole is not a break, and
 // the records that it lost are not there to be named), the first record that the log is checked from, which has no record
 // before it to break from, a record whose number does not follow that of the one before it and that no row records as a hole
-// (a gap, which a lost record leaves: the repair of the engine handles it), a record that follows the one before it, a break
-// that is accepted already for the record as it is, a chain whose rows cannot be read, and a store of an older table schema
-// than dbwire.TableVersion, for the reason of CompactLogin. An event that is no record has no number to be named by, and is
-// not looked at.
+// (a gap, which a lost record leaves: only whiteroom-db repair records a hole, one that it makes), a record that follows the
+// one before it, a break that is accepted already for the record as it is, a chain whose rows cannot be read, and a store of an
+// older table schema than dbwire.TableVersion, for the reason of CompactLogin. An event that is no record has no number to be
+// named by, and is not looked at.
 func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64, now time.Time) error {
 	if log != dbwire.LogLogin && log != dbwire.LogActivity {
 		return fmt.Errorf("the audit log %q is neither %s nor %s", log, dbwire.LogLogin, dbwire.LogActivity)
@@ -74,7 +74,7 @@ func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64
 		return fmt.Errorf("record %d is the first record that the audit log %s is checked from: a break there is not accepted", n, log)
 	case p.gap:
 		return fmt.Errorf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that can "+
-			"be accepted, and waits for the repair of the engine", n, p.before)
+			"be accepted: whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem", n, p.before)
 	case p.why == "":
 		return fmt.Errorf("record %d follows record %d: there is no break to accept", n, n-1)
 	case rows.accepted(n, p.sum):

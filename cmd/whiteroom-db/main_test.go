@@ -168,16 +168,17 @@ func TestUsage(t *testing.T) {
 	if strings.Contains(compactWords, "Nothing is dropped") || !strings.Contains(strings.Join(strings.Fields(usage), " "), "delete the login records older than one year") {
 		t.Errorf("the usages of whiteroom-db compact do not say what it deletes:\n%s\n%s", usage, help["compact"])
 	}
-	// accept-break changes no record, says which traces it leaves and what it refuses, and leaves what damage to the engine
-	// leaves to the repair of the engine.
+	// accept-break changes no record, says which traces it leaves and what it refuses, and says that only a gap that
+	// whiteroom-db repair makes is recorded as a hole.
 	acceptWords := strings.Join(strings.Fields(help["accept-break"]), " ")
 	for _, text := range []string{"changes no record and drops none", "leaves three traces", "a row of the table chains",
 		"an event of the daemon in the log", "checks the log again from record N", "tells the break in a note, not as a problem",
 		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
 		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
 		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
-		"wait for the repair of the engine", "A break is a record whose number is that of the one before it plus one",
-		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting a gap and an event that is no record",
+		"records as a hole a gap that it makes itself", "a gap that it did not make stays a problem",
+		"A break is a record whose number is that of the one before it plus one",
+		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting it and an event that is no record",
 		"accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
 		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
 		if !strings.Contains(acceptWords, text) {

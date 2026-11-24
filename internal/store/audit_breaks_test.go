@@ -56,7 +56,7 @@ func TestAuditBreakRule(t *testing.T) {
 	withPrev := func(r *audit.Record) { r.Prev = hashText(wrong[:]) }
 	gap := func(n, before int) string {
 		return fmt.Sprintf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that "+
-			"can be accepted, and waits for the repair of the engine", n, before)
+			"can be accepted: whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem", n, before)
 	}
 	holeText := func(n, first, last int) string {
 		if first == last {
