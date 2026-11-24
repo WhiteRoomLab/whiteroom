@@ -37,7 +37,13 @@ type Deleted struct {
 //
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
-// leaves records that the next call drops, without a new chain start.
+// leaves records. The next call drops them, whatever their age and without a new chain start, only if they are exactly the
+// records before the chain start (they follow each other, the last is the record before it, with the hash that the chain
+// start has) and the store has the event of that deletion. Otherwise they are evidence, and the call keeps them and
+// says where it stopped. The cutoff of a call that drops only them is that of the event of the deletion.
+//
+// The mark that the commit of a deletion or of an acceptance of a break appends is the time of that trace, and not the
+// newest mark: a store that has had no commit since is not cut further by the compactions that follow.
 //
 // A store of a table schema older than dbwire.TableVersion is compacted and nothing is dropped from it: the chain start
 // and the event of a deletion are of the schema 8, which the first writer that opens the store (store.Open) makes it.
@@ -116,9 +122,20 @@ type loginPass struct {
 	// stop is what ended the walk at evidence, and stopLogin is whether a login record was at or after it.
 	stop      string
 	stopLogin bool
-	left      struct{ n, first, last, event uint64 } // the records before the chain start, which an earlier deletion left
+	left      []leftover // the login records before the chain start that come before the first walked record
+	deleted   *dbwire.Deleted
 	newest    time.Time
 	haveMark  bool
+	// trace is whether the commit of the sequence number traceSeq has a deletion or an acceptance of a break: its mark is
+	// the time of that trace, which is not that of a commit of the writer.
+	trace    bool
+	traceSeq uint64
+}
+
+// leftover is a login record before the chain start: one that an earlier deletion left, if the chain start says so.
+type leftover struct {
+	n, event uint64
+	sum      [sha256.Size]byte
 }
 
 func (p *loginPass) readChains(tx *logdb.Tx) error {
@@ -181,7 +198,7 @@ func (p *loginPass) event(e logdb.Event) bool {
 	if dbwire.IsDaemonEvent(e.Data) {
 		switch t, ok := dbwire.ParseMark(e.Data); {
 		case ok:
-			if !p.haveMark || t.After(p.newest) {
+			if (!p.haveMark || t.After(p.newest)) && (!p.trace || e.Seq != p.traceSeq) {
 				p.newest, p.haveMark = t, true
 			}
 			if p.group < len(p.recs) {
@@ -189,6 +206,12 @@ func (p *loginPass) event(e logdb.Event) bool {
 			}
 		case !dbwire.ValidEvent(e.Data):
 			p.fail(fmt.Sprintf("event %d: it is an event of the daemon that cannot be read", e.Number))
+		default:
+			p.trace, p.traceSeq = true, e.Seq
+			if d, valid := dbwire.ParseDeleted(e.Data); valid && d.Log == dbwire.LogLogin && p.start != nil && d.First == p.start.First &&
+				d.Prev == p.start.Prev && p.deleted == nil {
+				p.deleted = &d
+			}
 		}
 		return true
 	}
@@ -224,10 +247,16 @@ func (p *loginPass) settle(at time.Time) {
 	p.group = len(p.recs)
 }
 
-// end gives the records of the last commit, which has no mark if none has followed.
+// end gives the records of the last commit, which has no mark if none has followed, and ends the records before the chain
+// start if no walked record has.
 func (p *loginPass) end() {
 	if p.group < len(p.recs) {
 		p.settle(time.Time{})
+	}
+	if len(p.recs) == 0 && p.stop == "" && p.start != nil {
+		if why := p.leftEnd(0); why != "" {
+			p.stop, p.stopLogin = why, true
+		}
 	}
 }
 
@@ -240,13 +269,19 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 		return
 	}
 	sum := sha256.Sum256(e.Data)
-	if len(p.recs) == 0 && p.start != nil && n < p.start.First {
-		if p.left.n == 0 {
-			p.left.first = n
+	if len(p.recs) == 0 && p.start != nil {
+		if n < p.start.First {
+			if why := p.leftFollow(n, prev); why != "" {
+				p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
+				return
+			}
+			p.left = append(p.left, leftover{n: n, event: e.Number, sum: sum})
+			return
 		}
-		p.left.n++
-		p.left.last, p.left.event = n, e.Number
-		return
+		if why := p.leftEnd(n); why != "" {
+			p.stop, p.stopLogin = why, true
+			return
+		}
 	}
 	if why := p.follow(n, prev); why != "" && !p.accepted(n, sum) {
 		p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
@@ -256,6 +291,42 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 		p.seq = e.Seq
 	}
 	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum})
+}
+
+// leftFollow returns why the record n with prev does not follow the records before the chain start that were met, "" if it
+// does. The first of them is not checked: the record before it was deleted.
+func (p *loginPass) leftFollow(n uint64, prev string) string {
+	if len(p.left) == 0 {
+		return ""
+	}
+	last := p.left[len(p.left)-1]
+	switch {
+	case n != last.n+1:
+		return fmt.Sprintf("the number does not follow that of record %d", last.n)
+	case prev != hashText(last.sum):
+		return fmt.Sprintf("prev is not the hash of record %d", last.n)
+	}
+	return ""
+}
+
+// leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is
+// the end of the records before the chain start, "" if they are or there are none. next is the number of the record that
+// comes after them, 0 if none does.
+func (p *loginPass) leftEnd(next uint64) string {
+	if len(p.left) == 0 {
+		return ""
+	}
+	last := p.left[len(p.left)-1]
+	switch {
+	case last.n+1 != p.start.First && next != 0:
+		return fmt.Sprintf("record %d: the number does not follow that of record %d", next, last.n)
+	case last.n+1 != p.start.First:
+		return fmt.Sprintf("record %d: the chain starts at record %d, so the records before it end with record %d", last.n,
+			p.start.First, p.start.First-1)
+	case last.sum != p.start.Prev:
+		return fmt.Sprintf("record %d: its hash is not the hash that the chain start has of it", last.n)
+	}
+	return ""
 }
 
 // follow returns why the record n with prev does not follow the walked records, "" if it does.
@@ -329,12 +400,26 @@ func (p *loginPass) plan(now time.Time) deletion {
 	if p.haveMark && p.newest.Before(ref) {
 		ref = p.newest
 	}
-	d := deletion{cutoff: ref.AddDate(-1, 0, 0), limit: p.left.event, dropFirst: p.left.first, dropLast: p.left.last}
+	cutoff := ref.AddDate(-1, 0, 0)
+	d := deletion{cutoff: cutoff}
 	if p.start != nil {
 		d.first = p.start.First
 	}
+	// The records before the chain start go if the walk has not stopped before its first record, which would make them the
+	// record before the stop: they are exactly the end of the records before the chain start, and the store has the event
+	// of that deletion.
+	left := len(p.left) > 0 && (p.stop == "" || len(p.recs) > 0)
+	if left && p.deleted == nil {
+		d.stopped = fmt.Sprintf("record %d: the store has no event of a deletion that left the records before record %d", p.left[0].n,
+			p.start.First)
+		return d
+	}
+	if left {
+		d.limit, d.dropFirst, d.dropLast = p.left[len(p.left)-1].event, p.left[0].n, p.left[len(p.left)-1].n
+		d.cutoff = p.deleted.Cutoff
+	}
 	old := 0
-	for old < len(p.recs) && !p.recs[old].at.IsZero() && p.recs[old].at.Before(d.cutoff) {
+	for old < len(p.recs) && !p.recs[old].at.IsZero() && p.recs[old].at.Before(cutoff) {
 		old++
 	}
 	// The record before one that does not follow its predecessor stays, with it.
@@ -349,17 +434,18 @@ func (p *loginPass) plan(now time.Time) deletion {
 	}
 	if cut > 0 {
 		d.cut = cut
+		d.cutoff = cutoff
 		d.first = p.recs[cut-1].n + 1
 		if cut < len(p.recs) {
 			d.first = p.recs[cut].n
 		}
 		d.limit = p.recs[cut-1].event
 		d.dropLast = p.recs[cut-1].n
-		if p.left.n == 0 {
+		if !left {
 			d.dropFirst = p.recs[0].n
 		}
 	}
-	if p.stop != "" && p.stopLogin && old == len(p.recs) {
+	if p.stop != "" && (p.stopLogin || (len(p.left) > 0 && len(p.recs) == 0)) && old == len(p.recs) {
 		d.stopped = p.stop
 	}
 	return d

@@ -30,7 +30,8 @@ const compactUsage = `Usage: whiteroom-db compact [flags]
 Write the state of the data directory as a new generation of its log, and remove
 the old one. It drops the login records older than one year, and nothing else: the
 tables, the objects and the other events, with their numbers, are those that the
-directory had.
+directory had, but for what a deletion adds (the new start of the chain, the event
+of the deletion and a mark).
 
 A login record is as old as the mark that the daemon wrote at the end of its
 commit. The cutoff is one calendar year before the earlier of the time of this
@@ -43,6 +44,13 @@ activity log is never dropped.
 The command also stops at a login record that does not follow the one before it, or
 at an event that is no record: it keeps that record and the one before it, says
 where on the standard output, and exits 0. "whiteroom doctor" tells what is wrong.
+
+A compaction that stops before its end leaves the login records that it was to drop.
+The next compact drops them, whatever their age, if they are exactly the records
+before the chain start (each follows the one before it, and the last has the hash
+that the chain start has) and the store has the event of that deletion; TIME is then
+the cutoff of that earlier run. If they are not, it keeps them, and says where it
+stopped, as for a record that does not follow.
 
 On the standard output it prints "compacted DATA", and, if it dropped login
 records, "deleted the login records A to B, from before TIME" on a line of its own.

@@ -154,7 +154,12 @@ func TestUsage(t *testing.T) {
 	for _, text := range []string{"drops the login records older than one year, and nothing else", "one calendar year before the earlier",
 		"The activity log is never dropped", "stops at the first that is not older than the cutoff or has no mark",
 		"deleted the login records A to B, from before TIME", "A data directory of an older table schema than this program's is compacted",
-		"no login record is dropped from it", "The first writer that connects through"} {
+		"no login record is dropped from it", "The first writer that connects through",
+		"but for what a deletion adds (the new start of the chain, the event of the deletion and a mark)",
+		"A compaction that stops before its end leaves the login records that it was to drop",
+		"drops them, whatever their age, if they are exactly the records before the chain start",
+		"the store has the event of that deletion; TIME is then the cutoff of that earlier run",
+		"If they are not, it keeps them, and says where it stopped"} {
 		if !strings.Contains(compactWords, text) {
 			t.Errorf("the usage of whiteroom-db compact does not say %q:\n%s", text, help["compact"])
 		}
@@ -195,7 +200,8 @@ func TestUsage(t *testing.T) {
 	checkWords := strings.Join(strings.Fields(help["check"]), " ")
 	for _, text := range []string{"After a sync has failed", "<DATA>/stopped", "until the machine has restarted",
 		"is left where it is", "checks a data directory that it cannot write in", "change nothing", "writes nothing",
-		"stopped after 1000 of them", "engine or original"} {
+		"stopped after 1000 of them", "engine or original", "does not look at the rows, the table schema among them",
+		`a copy whose schema is newer than this program's passes the check, and "whiteroom-db serve" refuses it`} {
 		if !strings.Contains(checkWords, text) {
 			t.Errorf("the usage of whiteroom-db check does not say %q:\n%s", text, help["check"])
 		}

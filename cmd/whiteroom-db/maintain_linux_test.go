@@ -437,6 +437,72 @@ func TestCompactDeletesLogin(t *testing.T) {
 	})
 }
 
+// writeDeletion commits to the data directory data, which no process has open, the chain start before the record first, the
+// event of the deletion that made it, which has cutoff, and a mark of at, as a deletion that has not compacted leaves them.
+func writeDeletion(t *testing.T, data string, first uint64, prev [sha256.Size]byte, cutoff, at time.Time) {
+	t.Helper()
+	srv, err := dbserver.OpenDir(data, storeOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
+		start := dbwire.ChainStart{First: first, Prev: prev, At: at}
+		if err := tx.Put(dbwire.TableChains, dbwire.ChainStartKey(dbwire.LogLogin), dbwire.AppendChainStart(nil, start)); err != nil {
+			return err
+		}
+		deleted := dbwire.Deleted{Log: dbwire.LogLogin, First: first, Prev: prev, Cutoff: cutoff}
+		if err := tx.AppendEvent(dbwire.AppendDeleted(nil, deleted)); err != nil {
+			return err
+		}
+		return tx.AppendEvent(dbwire.AppendMark(nil, at))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCompactDropsLeftovers checks that compact drops the login records that a deletion that stopped before its compaction has
+// left, with the cutoff of that deletion on its line, and keeps them, and says where it stopped, if they are not exactly the
+// records before the chain start.
+func TestCompactDropsLeftovers(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	months := func(n int) time.Time { return now.AddDate(0, -n, 0) }
+	recs := loginChain(4)
+	build := func(t *testing.T, prev [sha256.Size]byte) dirs {
+		d := newDirs(t)
+		writeCommits(t, d.data, commitAt{months(30), [][]byte{[]byte(`{"log":"activity","n":1,"action":"x"}`), recs[0]}}, commitAt{months(25), [][]byte{recs[1]}},
+			commitAt{months(2), [][]byte{recs[2]}}, commitAt{now, [][]byte{recs[3]}})
+		writeDeletion(t, d.data, 3, prev, months(20), now)
+		return d
+	}
+	t.Run("exactly the records before the chain start", func(t *testing.T) {
+		d := build(t, sha256.Sum256(recs[1]))
+		// The line says the cutoff of the deletion that left the records, which is not that of this call.
+		want := "compacted " + d.data + "\ndeleted the login records 1 to 2, from before " + months(20).Format(time.RFC3339) + "\n"
+		code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+		if code != 0 || stdout != want || stderr != "" {
+			t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+		code, stdout, stderr = runCmd(t, "compact", "-data", d.data)
+		if want := "compacted " + d.data + "\n"; code != 0 || stdout != want || stderr != "" {
+			t.Errorf("a second whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+	})
+	t.Run("not the records before the chain start", func(t *testing.T) {
+		d := build(t, sha256.Sum256([]byte("another record")))
+		stopped := "the deletion of login records stopped at record 2: its hash is not the hash that the chain start has of it; " +
+			"check the store with whiteroom doctor\n"
+		for range 2 {
+			code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+			if want := "compacted " + d.data + "\n" + stopped; code != 0 || stdout != want || stderr != "" {
+				t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+			}
+		}
+	})
+}
+
 // TestMaintainRefused checks that compact, gc and accept-break refuse a data directory that serve refuses, with the same words, and leave
 // it as it was.
 func TestMaintainRefused(t *testing.T) {

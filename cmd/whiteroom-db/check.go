@@ -39,10 +39,11 @@ standard error: what the sync was to write may be in the page cache only. The
 refusal changes nothing. A mark <DATA>/stopped of a failure from before the last
 restart is left where it is: the daemon removes it when it starts.
 
-The command does not look at the rows. To check them, with the index, the audit
-logs and the originals that the documents refer to, start a daemon on the data
-directory (on a copy, with its own directory of sockets), and run "whiteroom
-doctor" on it.
+The command does not look at the rows, the table schema among them: a copy whose
+schema is newer than this program's passes the check, and "whiteroom-db serve"
+refuses it. To check the rows, with the index, the audit logs and the originals
+that the documents refer to, start a daemon on the data directory (on a copy, with
+its own directory of sockets), and run "whiteroom doctor" on it.
 
 With -config, the item data of the YAML file gives what -data leaves out; the file
 may hold other items, which are checked and not used. Without it, no config file
