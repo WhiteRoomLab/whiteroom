@@ -1,15 +1,17 @@
 package dbwire
 
 import (
+	"cmp"
 	"encoding/binary"
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
 // TableVersion is the table schema that this protocol version works with.
-const TableVersion = 9
+const TableVersion = 10
 
 // The tables of internal/store that the daemon acts on without reading rows.
 const (
@@ -22,9 +24,9 @@ const (
 	// writes out as it is.
 	TableHeads uint32 = 11
 
-	// TableChains has the chain starts, the accepted breaks and the holes of the audit logs (ChainStart, ChainBreak,
-	// ChainHole), which only the maintenance of the daemon writes: the daemon refuses a Commit that puts or deletes one of
-	// its rows.
+	// TableChains has the chain starts, the accepted breaks, the holes and the accepted gaps of the audit logs (ChainStart,
+	// ChainBreak, and ChainHole, which a hole and a gap both use), which only the maintenance of the daemon writes: the daemon
+	// refuses a Commit that puts or deletes one of its rows.
 	TableChains uint32 = 12
 )
 
@@ -113,13 +115,240 @@ func ChainExpected(start *ChainStart, last uint64) uint64 {
 	return 1
 }
 
-// HoleBefore returns the hole of holes, by their first records, that the record n with the prev text prev follows in a walk
-// of a log that has read the record numbered last (0 if none) and has the chain start start (nil if none): the hole that has
-// the record that the walk expects as its first, and that ChainHole.Follows says n follows. It is the one rule by which
-// VerifyAudit of the store, whiteroom-db compact and accept-break pass a record through a hole.
-func HoleBefore(holes map[uint64]ChainHole, start *ChainStart, last, n uint64, prev string) (ChainHole, bool) {
-	h, ok := holes[ChainExpected(start, last)]
-	return h, ok && h.Follows(n, prev)
+// BreakHonored reports whether the break that is accepted for the record n is honored in a walk of a log that has the chain start
+// start (nil if none) and has read the record numbered last (0 if none; the records that a deletion left before the chain start
+// count). n must be the record that the walk expects (ChainExpected): the one after last, or, before any, 1 or the first that
+// remains after a deletion (K). K is not honored when a record before it has been read, which a deletion left: those are checked
+// against each other, and K against the chain start. The row must also have the hash of the stored bytes of the record, which the
+// caller checks. VerifyAudit of the store, whiteroom-db compact and accept-break all decide by this rule.
+func BreakHonored(start *ChainStart, last, n uint64) bool {
+	return n == ChainExpected(start, last) && (last == 0 || start == nil || n != start.First)
+}
+
+// PassedRow is a row of TableChains that a walk passes: a hole that a repair recorded, or, if Gap, a gap that is accepted.
+type PassedRow struct {
+	ChainHole
+	Gap bool
+}
+
+// passQuery is what ChainPass and ChainEndPass look for.
+type passQuery struct {
+	holes, gaps map[uint64]ChainHole
+	// reach is the number that a row must end below to be followed by another: n-1 for a record n, the number of the head.
+	reach    uint64
+	n        uint64
+	prev     string
+	headHash [32]byte
+	end      bool
+	// dead is the numbers from which no row leads to the end: a walk does not look at them twice.
+	dead map[uint64]struct{}
+}
+
+// done reports whether the row ends the pass: the record n follows it, or the head is its end.
+func (q *passQuery) done(row ChainHole) bool {
+	if q.end {
+		return row.Last == q.reach && row.Hash == q.headHash
+	}
+	return row.Follows(q.n, q.prev)
+}
+
+// try returns the rows that go from the row, which is a gap if gap, to the end, nil if none does.
+func (q *passQuery) try(row ChainHole, gap bool) []PassedRow {
+	if q.done(row) {
+		return []PassedRow{{row, gap}}
+	}
+	if row.Last >= q.reach {
+		return nil
+	}
+	next := row.Last + 1
+	if _, failed := q.dead[next]; failed {
+		return nil
+	}
+	if rest := q.from(next); rest != nil {
+		return append([]PassedRow{{row, gap}}, rest...)
+	}
+	if q.dead == nil {
+		q.dead = map[uint64]struct{}{}
+	}
+	q.dead[next] = struct{}{}
+	return nil
+}
+
+// from returns the rows that start with the hole, or else the gap, whose first record is first, and lead to the end.
+func (q *passQuery) from(first uint64) []PassedRow {
+	if h, found := q.holes[first]; found {
+		if rows := q.try(h, false); rows != nil {
+			return rows
+		}
+	}
+	if g, found := q.gaps[first]; found {
+		return q.try(g, true)
+	}
+	return nil
+}
+
+// run returns the rows that a walk that has read the record numbered last (0 if none) passes, with the chain start start (nil if
+// none).
+func (q *passQuery) run(start *ChainStart, last uint64) []PassedRow {
+	if rows := q.from(ChainExpected(start, last)); rows != nil || last != 0 || start == nil {
+		return rows
+	}
+	// A walk that has read nothing of a log that a deletion has cut starts with a row that holds the first record that remains:
+	// the one that starts there, or one that starts before it.
+	for _, c := range coveringRows(q.holes, q.gaps, start) {
+		if rows := q.try(c.ChainHole, c.Gap); rows != nil {
+			return rows
+		}
+	}
+	return nil
+}
+
+// coveringRows returns the rows that hold the first record that remains, K, but do not start there (First < K <= Last), by their
+// first records, a hole before a gap with one first.
+func coveringRows(holes, gaps map[uint64]ChainHole, start *ChainStart) []PassedRow {
+	var covering []PassedRow
+	collect := func(rows map[uint64]ChainHole, gap bool) {
+		for first, row := range rows {
+			if first < start.First && start.First <= row.Last {
+				covering = append(covering, PassedRow{row, gap})
+			}
+		}
+	}
+	collect(holes, false)
+	collect(gaps, true)
+	slices.SortFunc(covering, func(a, b PassedRow) int {
+		if c := cmp.Compare(a.First, b.First); c != 0 {
+			return c
+		}
+		if a.Gap != b.Gap {
+			if a.Gap {
+				return 1
+			}
+			return -1
+		}
+		return 0
+	})
+	return covering
+}
+
+// ChainPass returns the rows that pass the record n with the prev text prev in a walk of a log that has read the record numbered
+// last (0 if none) and has the chain start start (nil if none), in order, nil if none do: a hole of holes, by their first records,
+// or else a gap of gaps, which has the record that the walk expects as its first, and then, as long as the record n is above the
+// record after a row, the hole, or else the gap, that starts with that record; the last of them is the one that ChainHole.Follows
+// says n follows. A walk that has read no record of a log with a chain start K starts with a row that holds K, if none starts
+// there (First < K <= Last; the one with the lowest First, a hole before a gap, is looked at first). A row is passed exactly as it
+// records: the ones before it end where the next begins. It is the one rule by which VerifyAudit of the store, whiteroom-db compact,
+// accept-break and repair pass a record through what the rows record as lost.
+func ChainPass(holes, gaps map[uint64]ChainHole, start *ChainStart, last, n uint64, prev string) []PassedRow {
+	if n == 0 || len(holes) == 0 && len(gaps) == 0 {
+		return nil
+	}
+	q := passQuery{holes: holes, gaps: gaps, reach: n - 1, n: n, prev: prev}
+	return q.run(start, last)
+}
+
+// ChainEndPass returns the rows that pass the head of a log, which names the record headN with the hash headHash, after the last
+// record that a walk has read (last, 0 if none), in order, nil if none do: ChainPass's rows, from the one that starts with the
+// record that the walk expects (or holds the first that remains, at the start of a walk), to the one whose Last and Hash are those
+// of the head. A log ends with such a row as it ends with a record.
+func ChainEndPass(holes, gaps map[uint64]ChainHole, start *ChainStart, last, headN uint64, headHash [32]byte) []PassedRow {
+	if len(holes) == 0 && len(gaps) == 0 {
+		return nil
+	}
+	q := passQuery{holes: holes, gaps: gaps, reach: headN, headHash: headHash, end: true}
+	return q.run(start, last)
+}
+
+// reachQuery is what ChainReach looks for.
+type reachQuery struct {
+	holes, gaps map[uint64]ChainHole
+	target      uint64
+	// ways is the longest way that leads on from each number: a walk does not look at one twice.
+	ways map[uint64][]PassedRow
+}
+
+// from returns the longest way of rows that starts with the hole, or else the gap, whose first record is first, nil if there is no
+// row.
+func (q *reachQuery) from(first uint64) []PassedRow {
+	if rows, seen := q.ways[first]; seen {
+		return rows
+	}
+	var best []PassedRow
+	if h, found := q.holes[first]; found {
+		best = q.follow(h, false, first)
+	}
+	if g, found := q.gaps[first]; found {
+		if rows := q.follow(g, true, first); reachEnd(rows) > reachEnd(best) {
+			best = rows
+		}
+	}
+	q.ways[first] = best
+	return best
+}
+
+// follow returns the row, which starts at first, and the longest way that goes on from it, nil if it ends at or above the target.
+func (q *reachQuery) follow(row ChainHole, gap bool, first uint64) []PassedRow {
+	if row.Last < first || row.Last >= q.target {
+		return nil
+	}
+	return append([]PassedRow{{row, gap}}, q.from(row.Last+1)...)
+}
+
+// reachEnd returns the number of the last record of the last row, 0 if there is none.
+func reachEnd(rows []PassedRow) uint64 {
+	if len(rows) == 0 {
+		return 0
+	}
+	return rows[len(rows)-1].Last
+}
+
+// ChainReach returns the rows that a walk of a log that has read the record numbered last (0 if none) and has the chain start start
+// (nil if none) goes through from the record that it expects (ChainPass's rows: the hole, or else the gap, that starts with it, and
+// then the row that starts with the record after each; at the start of a walk of a log with a chain start, a row that holds K too),
+// whether or not any of them passes a record: every row ends below target, the number of the record that they are to lead to (the
+// number after the head, for the head of the log), so that the last of them ends at target-1 at the most. If rows lead on in more than
+// one way, it is the longest, the one that ends the latest. It is nil if no row starts there. The repair counts the records that it
+// loses from the end of these rows, and records a hole from there.
+func ChainReach(holes, gaps map[uint64]ChainHole, start *ChainStart, last, target uint64) []PassedRow {
+	if len(holes) == 0 && len(gaps) == 0 {
+		return nil
+	}
+	q := reachQuery{holes: holes, gaps: gaps, target: target, ways: map[uint64][]PassedRow{}}
+	best := q.from(ChainExpected(start, last))
+	if last != 0 || start == nil {
+		return best
+	}
+	for _, c := range coveringRows(holes, gaps, start) {
+		if c.Last >= target {
+			continue
+		}
+		if rows := append([]PassedRow{c}, q.from(c.Last+1)...); reachEnd(rows) > reachEnd(best) {
+			best = rows
+		}
+	}
+	return best
+}
+
+// ChainCross checks the step of a walk of a log that has the chain start start, whose first record that remains is K and whose
+// Prev is P, from the last record that the walk has read before the rows (lastN, 0 if none; lastHash is its hash) through the rows
+// that it passes (ChainPass or ChainEndPass) to a record at or above K, or to the head. The hash of the record K-1 that the walk
+// knows must be P: lastHash, if lastN is K-1 and a row follows it (the record K itself would be checked through its prev), and
+// the Hash of a row that ends with K-1. ok is false if one is not, and bad is that row, or nil for the record lastN. A row that holds
+// K-1 and K leaves no hash of K-1 to check, and passes. VerifyAudit of the store, whiteroom-db compact and accept-break step
+// across K by this rule alone, and whiteroom-db repair tells by it whether accept-break accepts the gap that it does not make.
+func ChainCross(start *ChainStart, lastN uint64, lastHash [32]byte, rows []PassedRow) (ok bool, bad *PassedRow) {
+	if start == nil || len(rows) == 0 {
+		return true, nil
+	}
+	if lastN != 0 && lastN == start.First-1 && lastHash != start.Prev {
+		return false, nil
+	}
+	for i := range rows {
+		if rows[i].Last == start.First-1 && rows[i].Hash != start.Prev {
+			return false, &rows[i]
+		}
+	}
+	return true, nil
 }
 
 // ChainStart is the row of a log in TableChains, with the log name as its key: the deletion of the oldest records of
@@ -140,7 +369,7 @@ type ChainBreak struct {
 // ChainHole is a row of TableChains, with ChainHoleKey as its key: the records of a log from First, the number in the key,
 // to Last were lost and dropped by a repair. Hash is the SHA-256 of the stored bytes of the record Last, which is the prev of
 // the record after the hole, or, for a hole at the end of the log, the hash of its head. The record after it follows the hole
-// as if it were the record Last.
+// as if it were the record Last. The row of an accepted gap (ChainGapKey) has the same value.
 type ChainHole struct {
 	First, Last uint64
 	Hash        [32]byte
@@ -185,7 +414,29 @@ func ChainHolePrefix(log string) []byte { return append([]byte(log), 1) }
 
 // ParseChainHoleKey returns the log and the first record of the key of a hole. It refuses a first of 0.
 func ParseChainHoleKey(key []byte) (log string, first uint64, ok bool) {
-	if len(key) < 10 || key[len(key)-9] != 1 {
+	return parseChainRangeKey(key, 1)
+}
+
+// ChainGapKey returns the key of the gap of the log named log that starts at record first, which whiteroom-db accept-break
+// accepts: the name, 0x02 and first as 8 bytes, big-endian. The keys of the gaps of a log start with ChainGapPrefix. The
+// value is that of a hole (AppendChainHole, ParseChainHole): First, the number in the key, is the first record that is
+// missing, Last the last one, and Hash the SHA-256 of the stored bytes of the record Last, which is the prev that the record
+// after the gap has, or, for a gap at the end of the log, the hash of its head.
+func ChainGapKey(log string, first uint64) []byte {
+	return binary.BigEndian.AppendUint64(ChainGapPrefix(log), first)
+}
+
+// ChainGapPrefix returns what the keys of the accepted gaps of the log named log start with.
+func ChainGapPrefix(log string) []byte { return append([]byte(log), 2) }
+
+// ParseChainGapKey returns the log and the first record of the key of an accepted gap. It refuses a first of 0.
+func ParseChainGapKey(key []byte) (log string, first uint64, ok bool) {
+	return parseChainRangeKey(key, 2)
+}
+
+// parseChainRangeKey reads the key of a row that has a first record in it: the name, the byte kind and first.
+func parseChainRangeKey(key []byte, kind byte) (log string, first uint64, ok bool) {
+	if len(key) < 10 || key[len(key)-9] != kind {
 		return "", 0, false
 	}
 	first = binary.BigEndian.Uint64(key[len(key)-8:])

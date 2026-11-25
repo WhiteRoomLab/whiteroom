@@ -1070,9 +1070,22 @@ func injectChains(t *testing.T, data string, rows []dbtest.Row, events ...[]byte
 	}
 }
 
+// TestDoctorUsageNotes checks that the usage of whiteroom doctor lists the notes, among them the holes that whiteroom-db repair
+// recorded and the breaks and the gaps that whiteroom-db accept-break accepted.
+func TestDoctorUsageNotes(t *testing.T) {
+	words := strings.Join(strings.Fields(doctorUsageText(t)), " ")
+	for _, text := range []string{"that the oldest records of the login history have been deleted (whiteroom-db compact)",
+		"that records of an audit log were lost and dropped by whiteroom-db repair (a hole)",
+		"and that a break of the chain of an audit log, or a gap in it, was accepted (whiteroom-db accept-break)"} {
+		if !strings.Contains(words, text) {
+			t.Errorf("the usage of whiteroom doctor does not say %q", text)
+		}
+	}
+}
+
 // TestDoctorNotes checks that whiteroom doctor tells what is no problem on stderr, a line each that starts with the note,
 // and neither counts it nor changes its exit code: the chain start of the login history, the records that a deletion has left,
-// a break that was accepted, and the heads that it cannot check, which a deletion has made.
+// a break that was accepted, a gap that was accepted, and the heads that it cannot check, which a deletion has made.
 func TestDoctorNotes(t *testing.T) {
 	login := func(name string) audit.Record {
 		return audit.Record{Log: audit.LoginLog, Action: audit.Login, Login: name, Client: audit.Client{Addr: "192.0.2.1", UserAgent: "test"}}
@@ -1191,6 +1204,36 @@ func TestDoctorNotes(t *testing.T) {
 		}
 		if got := len(notesOf(t, stderr)); got != 1 {
 			t.Errorf("whiteroom doctor wrote %d notes on stderr, want the one of the start", got)
+		}
+	})
+
+	t.Run("a gap that was accepted", func(t *testing.T) {
+		// The head of the activity log names a record that is one above its last, which the log does not have, and whiteroom-db
+		// accept-break accepted the gap at the end of the log.
+		s := initSample(t)
+		activity := headsOf(t, s.data)[audit.ActivityLog]
+		lost := sha256.Sum256([]byte("the record that is missing"))
+		head := audit.Head{Log: audit.ActivityLog, N: activity.N + 1, Hash: lost}
+		rows := []dbtest.Row{
+			{Table: dbwire.TableMeta, Key: []byte("activityLog"), Value: append(binary.AppendUvarint(nil, head.N), lost[:]...)},
+			{Table: dbwire.TableHeads, Key: []byte(audit.ActivityLog), Value: []byte(head.String())},
+		}
+		// Without the row of the gap the head is a problem.
+		injectChains(t, s.data, rows, dbwire.AppendMark(nil, injectedTime))
+		code, stdout, stderr := doctorOn(t, s.database(), "", s.site)
+		problems := checkProblems(t, "a head that names a record that is missing", s.db, code, stdout, stderr, false, "audit")
+		if len(problems) == 1 && !strings.Contains(problems[0], "the head in the table is record") {
+			t.Errorf("the problem %q does not tell that the head names a record that the log does not have", problems[0])
+		}
+		injectChains(t, s.data, []dbtest.Row{{Table: dbwire.TableChains, Key: dbwire.ChainGapKey(dbwire.LogActivity, head.N),
+			Value: dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: head.N, Hash: lost, At: injectedTime})}},
+			dbwire.AppendGap(nil, dbwire.Hole{Log: dbwire.LogActivity, First: head.N, Last: head.N, Hash: lost}), dbwire.AppendMark(nil, injectedTime))
+		code, stdout, stderr = doctorOn(t, s.database(), "", s.site)
+		checkClean(t, "a gap that was accepted", s.db, code, stdout, "", false)
+		want := []string{fmt.Sprintf(`audit log "activity": record %d is missing, and the gap was accepted at %s; the log ends with record %d`,
+			head.N, at, activity.N)}
+		if got := notesOf(t, stderr); !slices.Equal(got, want) {
+			t.Errorf("the notes are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 	})
 

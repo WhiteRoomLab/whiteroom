@@ -45,8 +45,9 @@ usage error.
 
 What is no problem but worth knowing goes to the standard error as a line that
 starts with "whiteroom doctor: note:", and is not counted: that the oldest records
-of the login history have been deleted (whiteroom-db compact), and that a break of
-the chain of an audit log was accepted.
+of the login history have been deleted (whiteroom-db compact), that records of an
+audit log were lost and dropped by whiteroom-db repair (a hole), and that a break of
+the chain of an audit log, or a gap in it, was accepted (whiteroom-db accept-break).
 
 The store is read through the daemon as a reader: nothing is written in it, nothing
 is repaired, and a whiteroom serve admin may run on it. The command does not look

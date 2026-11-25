@@ -3,6 +3,7 @@ package dbwire
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestTables(t *testing.T) {
 	if AppendOnly(math.MaxUint32) {
 		t.Error("the table 2^32-1 is append only")
 	}
-	if TableVersion != 9 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
+	if TableVersion != 10 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
 		TableEntryRevisions != 5 || TableHeads != 11 || TableChains != 12 || MaxHeadKey != 64 || MaxHeadLine != 255 {
 		t.Error("a fact about the tables is not the one of the plan")
 	}
@@ -370,6 +371,15 @@ func TestChainRows(t *testing.T) {
 	if _, ok := ParseChainBreak(goodHole); ok {
 		t.Error("the value of a hole is read as a break")
 	}
+	// The value of an accepted gap is that of a hole, with the first record of the key of the gap.
+	gapKey := ChainGapKey(LogActivity, 4)
+	if _, first, ok := ParseChainGapKey(gapKey); !ok || first != 4 {
+		t.Fatalf("ParseChainGapKey(%q) = %d, %v", gapKey, first, ok)
+	}
+	gap := ChainHole{First: 4, Last: 6, Hash: hash, At: at}
+	if got, ok := ParseChainHole(4, AppendChainHole(nil, gap)); !ok || got != (ChainHole{First: 4, Last: 6, Hash: hash, At: got.At}) || !got.At.Equal(at) {
+		t.Errorf("the value of a gap is read as %+v, %v, want %+v", got, ok, gap)
+	}
 }
 
 func TestChainKeys(t *testing.T) {
@@ -422,6 +432,58 @@ func TestChainKeys(t *testing.T) {
 			t.Errorf("ParseChainHoleKey(a break) = %q, %d", log, first)
 		}
 	}
+	if got, want := ChainGapKey(LogActivity, 0x0102030405060708), []byte("activity\x02\x01\x02\x03\x04\x05\x06\x07\x08"); !bytes.Equal(got, want) {
+		t.Errorf("ChainGapKey = %q, want %q", got, want)
+	}
+	if got, want := ChainGapKey(LogLogin, 3), []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x03"); !bytes.Equal(got, want) {
+		t.Errorf("ChainGapKey = %q, want %q", got, want)
+	}
+	if got := ChainGapPrefix(LogLogin); string(got) != "login\x02" {
+		t.Errorf("ChainGapPrefix = %q", got)
+	}
+	for _, c := range []struct {
+		log   string
+		first uint64
+	}{{LogLogin, 1}, {LogActivity, math.MaxUint64}, {"x", 7}} {
+		key := ChainGapKey(c.log, c.first)
+		// The prefix of the gaps is none of those of the holes and of the breaks, and the key of a start is no prefix of it.
+		if !bytes.HasPrefix(key, ChainGapPrefix(c.log)) || bytes.HasPrefix(key, ChainHolePrefix(c.log)) || bytes.HasPrefix(key, ChainBreakPrefix(c.log)) ||
+			bytes.HasPrefix(ChainHoleKey(c.log, c.first), ChainGapPrefix(c.log)) || bytes.HasPrefix(ChainBreakKey(c.log, c.first), ChainGapPrefix(c.log)) ||
+			bytes.HasPrefix(ChainStartKey(c.log), ChainGapPrefix(c.log)) {
+			t.Errorf("%q: the key %q and the prefixes", c.log, key)
+		}
+		if log, first, ok := ParseChainGapKey(key); !ok || log != c.log || first != c.first {
+			t.Errorf("ParseChainGapKey(%q) = %q, %d, %v", key, log, first, ok)
+		}
+		// A key of a gap is no key of a hole or of a break, and theirs are no key of a gap.
+		if log, first, ok := ParseChainHoleKey(key); ok {
+			t.Errorf("ParseChainHoleKey(a gap) = %q, %d", log, first)
+		}
+		if log, n, ok := ParseChainBreakKey(key); ok {
+			t.Errorf("ParseChainBreakKey(a gap) = %q, %d", log, n)
+		}
+		if log, first, ok := ParseChainGapKey(ChainHoleKey(c.log, c.first)); ok {
+			t.Errorf("ParseChainGapKey(a hole) = %q, %d", log, first)
+		}
+		if log, first, ok := ParseChainGapKey(ChainBreakKey(c.log, c.first)); ok {
+			t.Errorf("ParseChainGapKey(a break) = %q, %d", log, first)
+		}
+	}
+	for name, key := range map[string][]byte{
+		"nil":                      nil,
+		"a log":                    []byte("login"),
+		"a log and the byte":       []byte("login\x02"),
+		"nine bytes":               []byte("\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the number 0":             []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the byte of a hole":       []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a break":      []byte("login\x00\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte 3":               []byte("login\x03\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"a log and a short number": []byte("login\x02\x00\x00\x00\x00\x00\x00\x01"),
+	} {
+		if log, first, ok := ParseChainGapKey(key); ok {
+			t.Errorf("%s: ParseChainGapKey = %q, %d", name, log, first)
+		}
+	}
 	for name, key := range map[string][]byte{
 		"nil":                      nil,
 		"a log":                    []byte("login"),
@@ -429,6 +491,7 @@ func TestChainKeys(t *testing.T) {
 		"nine bytes":               []byte("\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"the number 0":             []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"the byte of a break":      []byte("login\x00\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a gap":        []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x01"),
 		"a log and a short number": []byte("login\x01\x00\x00\x00\x00\x00\x00\x01"),
 	} {
 		if log, first, ok := ParseChainHoleKey(key); ok {
@@ -441,6 +504,7 @@ func TestChainKeys(t *testing.T) {
 		"a log and the byte":       []byte("login\x00"),
 		"nine bytes":               []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"no byte before a number":  []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a gap":        []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x01"),
 		"a log and a short number": []byte("login\x00\x00\x00\x00\x00\x00\x00\x01"),
 	} {
 		if log, n, ok := ParseChainBreakKey(key); ok {
@@ -456,9 +520,10 @@ func TestDaemonEvents(t *testing.T) {
 	}
 	cutoff := time.Date(2025, 11, 23, 10, 20, 30, 123456789, time.UTC)
 
-	if DeletedSize != 55 || AcceptedSize != 43 || HoleSize != 51 || DeletedKind != 2 || AcceptedKind != 3 || HoleKind != 4 {
-		t.Errorf("the sizes are %d, %d and %d, the kinds %d, %d and %d", DeletedSize, AcceptedSize, HoleSize, DeletedKind,
-			AcceptedKind, HoleKind)
+	if DeletedSize != 55 || AcceptedSize != 43 || HoleSize != 51 || GapSize != 51 || DeletedKind != 2 || AcceptedKind != 3 ||
+		HoleKind != 4 || GapKind != 5 {
+		t.Errorf("the sizes are %d, %d, %d and %d, the kinds %d, %d, %d and %d", DeletedSize, AcceptedSize, HoleSize, GapSize,
+			DeletedKind, AcceptedKind, HoleKind, GapKind)
 	}
 	for log, code := range map[string]byte{LogLogin: 1, LogActivity: 2} {
 		d := Deleted{Log: log, First: 0x0102030405060708, Prev: prev, Cutoff: cutoff}
@@ -520,6 +585,43 @@ func TestDaemonEvents(t *testing.T) {
 		if got := AppendHole([]byte("xy"), h); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
 			t.Errorf("AppendHole does not keep dst: %x", got)
 		}
+
+		g := Hole{Log: log, First: 0x0102030405060708, Last: 0x1112131415161718, Hash: hash}
+		gb := AppendGap(nil, g)
+		want = append([]byte{0, 5, code, 1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18}, hash[:]...)
+		if !bytes.Equal(gb, want) || len(gb) != GapSize || !IsDaemonEvent(gb) || !ValidEvent(gb) {
+			t.Errorf("the gap event of %s is %x, want %x", log, gb, want)
+		}
+		if got, ok := ParseGap(gb); !ok || got != g {
+			t.Errorf("ParseGap = %+v, %v, want %+v", got, ok, g)
+		}
+		// A gap and a hole of the same fields differ in the kind alone, and no parser reads the other's.
+		if !bytes.Equal(gb[2:], b[2:]) || gb[1] != GapKind || b[1] != HoleKind {
+			t.Errorf("the gap event %x and the hole event %x differ in more than the kind", gb, b)
+		}
+		if got, ok := ParseHole(gb); ok {
+			t.Errorf("ParseHole(a gap event) = %+v", got)
+		}
+		if got, ok := ParseGap(b); ok {
+			t.Errorf("ParseGap(a hole event) = %+v", got)
+		}
+		if _, ok := ParseMark(gb); ok {
+			t.Error("a gap event is read as a mark")
+		}
+		if _, ok := ParseDeleted(gb); ok {
+			t.Error("a gap event is read as a deletion")
+		}
+		if _, ok := ParseAccepted(gb); ok {
+			t.Error("a gap event is read as an acceptance")
+		}
+		if got := AppendGap([]byte("xy"), g); string(got[:2]) != "xy" || !bytes.Equal(got[2:], gb) {
+			t.Errorf("AppendGap does not keep dst: %x", got)
+		}
+	}
+	const goldenGapEvent = "0005" + "01" + "0000000000000002" + "0000000000000009" +
+		"f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1"
+	if got := AppendGap(nil, Hole{Log: LogLogin, First: 2, Last: 9, Hash: hash}); hex.EncodeToString(got) != goldenGapEvent {
+		t.Errorf("the gap event is %x, want %s", got, goldenGapEvent)
 	}
 	const goldenHoleEvent = "0004" + "02" + "0000000000000003" + "0000000000000004" +
 		"f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1"
@@ -530,6 +632,7 @@ func TestDaemonEvents(t *testing.T) {
 	goodDeleted := AppendDeleted(nil, Deleted{Log: LogLogin, First: 2, Prev: prev, Cutoff: cutoff})
 	goodAccepted := AppendAccepted(nil, Accepted{Log: LogLogin, N: 1, Hash: hash})
 	goodHole := AppendHole(nil, Hole{Log: LogLogin, First: 2, Last: 2, Hash: hash})
+	goodGap := AppendGap(nil, Hole{Log: LogLogin, First: 2, Last: 2, Hash: hash})
 	goodMark := AppendMark(nil, cutoff)
 	with := func(b []byte, i int, v byte) []byte {
 		b = bytes.Clone(b)
@@ -550,23 +653,29 @@ func TestDaemonEvents(t *testing.T) {
 		}
 		return b
 	}
-	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, goodHole, nanos(goodDeleted, 999999999), number(goodDeleted, 2),
-		number(goodAccepted, math.MaxUint64), AppendHole(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64})} {
+	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, goodHole, goodGap, nanos(goodDeleted, 999999999), number(goodDeleted, 2),
+		number(goodAccepted, math.MaxUint64), AppendHole(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64}),
+		AppendGap(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64})} {
 		if !ValidEvent(b) {
 			t.Errorf("ValidEvent(%x) is false", b)
 		}
 	}
 
-	// What none of the three parsers reads, and ValidEvent refuses.
+	// What none of the four parsers reads, and ValidEvent refuses.
 	for name, b := range map[string][]byte{
 		"nil":                     nil,
 		"the byte of the daemon":  {0},
 		"a kind and nothing else": {0, 2},
-		"the kind 5":              {0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 6":              {0, 6, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 6 of a gap":     with(goodGap, 1, 6),
 		"the kind 4 of 11 bytes":  {0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 5 of 11 bytes":  {0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 2},
 		"a hole of 50 bytes":      goodHole[:50],
 		"a hole of 52 bytes":      append(bytes.Clone(goodHole), 0),
 		"a hole and a mark":       append(bytes.Clone(goodHole), goodMark...),
+		"a gap of 50 bytes":       goodGap[:50],
+		"a gap of 52 bytes":       append(bytes.Clone(goodGap), 0),
+		"a gap and a mark":        append(bytes.Clone(goodGap), goodMark...),
 		"the kind 0":              {0, 0},
 		"the kind 255":            {0, 255},
 		"a record":                []byte(`{"log":"login","n":1}`),
@@ -576,6 +685,7 @@ func TestDaemonEvents(t *testing.T) {
 		"a mark of 1e9 nanos":     nanos(goodMark, 1e9),
 		"a mark with the kind 4":  with(goodMark, 1, 4),
 		"a mark with the kind 5":  with(goodMark, 1, 5),
+		"a mark with the kind 6":  with(goodMark, 1, 6),
 	} {
 		if ValidEvent(b) {
 			t.Errorf("%s: ValidEvent is true for %x", name, b)
@@ -597,6 +707,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the kind of a mark":         with(goodDeleted, 1, MarkKind),
 		"the kind of an acceptance":  with(goodDeleted, 1, AcceptedKind),
 		"the kind of a hole":         with(goodDeleted, 1, HoleKind),
+		"the kind of a gap":          with(goodDeleted, 1, GapKind),
 		"the first byte 1":           with(goodDeleted, 0, 1),
 		"a mark of the size of one":  bytes.Repeat([]byte{'x'}, DeletedSize),
 		"an acceptance of this size": append(bytes.Clone(goodAccepted), make([]byte, DeletedSize-AcceptedSize)...),
@@ -618,6 +729,7 @@ func TestDaemonEvents(t *testing.T) {
 		"record 0":                  number(goodAccepted, 0),
 		"the kind of a deletion":    with(goodAccepted, 1, DeletedKind),
 		"the kind of a hole":        with(goodAccepted, 1, HoleKind),
+		"the kind of a gap":         with(goodAccepted, 1, GapKind),
 		"the kind of a mark":        with(goodAccepted, 1, MarkKind),
 		"the first byte 1":          with(goodAccepted, 0, 1),
 		"a deletion of this size":   goodDeleted[:AcceptedSize],
@@ -655,6 +767,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the kind of a deletion":      with(goodHole, 1, DeletedKind),
 		"the kind of an acceptance":   with(goodHole, 1, AcceptedKind),
 		"the kind of a mark":          with(goodHole, 1, MarkKind),
+		"the kind of a gap":           with(goodHole, 1, GapKind),
 		"the first byte 1":            with(goodHole, 0, 1),
 		"an acceptance of this size":  append(bytes.Clone(goodAccepted), make([]byte, HoleSize-AcceptedSize)...),
 		"a deletion of this size":     goodDeleted[:HoleSize],
@@ -782,14 +895,34 @@ func TestChainHoleFollows(t *testing.T) {
 	}
 }
 
-func TestHoleBefore(t *testing.T) {
-	var h3, h6 [32]byte
-	h3[0], h6[0] = 3, 6
+// passed is what ChainPass and ChainEndPass return, as a word: "hole N" or "gap N" for the row with the first record N, the rows
+// apart by a comma, and "" for none.
+func passed(rows []PassedRow) string {
+	var words []string
+	for _, row := range rows {
+		if row.Gap {
+			words = append(words, fmt.Sprintf("gap %d", row.First))
+		} else {
+			words = append(words, fmt.Sprintf("hole %d", row.First))
+		}
+	}
+	return strings.Join(words, ", ")
+}
+
+func TestChainPass(t *testing.T) {
+	var h3, h6, h9 [32]byte
+	h3[0], h6[0], h9[0] = 3, 6, 9
 	text := func(sum [32]byte) string { return "sha256:" + hex.EncodeToString(sum[:]) }
 	holes := map[uint64]ChainHole{
 		3: {First: 3, Last: 4, Hash: h3},
 		6: {First: 6, Last: 6, Hash: h6},
 		1: {First: 1, Last: 2, Hash: h3},
+	}
+	gaps := map[uint64]ChainHole{
+		8:  {First: 8, Last: 8, Hash: h9},
+		6:  {First: 6, Last: 7, Hash: h9},
+		3:  {First: 3, Last: 5, Hash: h9},
+		10: {First: 10, Last: 12, Hash: h3},
 	}
 	start := &ChainStart{First: 3}
 	for _, c := range []struct {
@@ -798,28 +931,49 @@ func TestHoleBefore(t *testing.T) {
 		last  uint64
 		n     uint64
 		prev  string
-		want  uint64 // the first record of the hole that is passed, 0 for none
+		want  string
 	}{
-		{"after the record before the hole", nil, 2, 5, text(h3), 3},
-		{"a hole of one record", nil, 5, 7, text(h6), 6},
-		{"before any record, from the record 1", nil, 0, 3, text(h3), 1},
-		{"before any record, with the chain start at 3", start, 0, 5, text(h3), 3},
-		{"before any record, with a chain start that is after the hole", &ChainStart{First: 5}, 0, 3, text(h3), 0},
-		{"the record that the walk expects", nil, 2, 3, text(h3), 0},
-		{"the record after the hole, with another hash", nil, 2, 5, text(h6), 0},
-		{"the record after the hole, with no hash", nil, 2, 5, "", 0},
-		{"two records after the hole", nil, 2, 6, text(h3), 0},
-		{"the last record of the hole", nil, 2, 4, text(h3), 0},
-		{"a walk that is not where a hole starts", nil, 3, 5, text(h3), 0},
-		{"the first record of the walk, with the chain start at 3, is the chain start's", start, 0, 3, text(h3), 0},
+		{"after the record before the hole", nil, 2, 5, text(h3), "hole 3"},
+		{"a hole of one record", nil, 5, 7, text(h6), "hole 6"},
+		{"before any record, from the record 1", nil, 0, 3, text(h3), "hole 1"},
+		{"before any record, with the chain start at 3", start, 0, 5, text(h3), "hole 3"},
+		{"before any record, with a chain start that is after the hole", &ChainStart{First: 5}, 0, 3, text(h3), ""},
+		{"the record that the walk expects", nil, 2, 3, text(h3), ""},
+		{"the record after the hole, with another hash", nil, 2, 5, text(h6), ""},
+		{"the record after the hole, with no hash", nil, 2, 5, "", ""},
+		{"two records after the hole", nil, 2, 6, text(h3), ""},
+		{"the last record of the hole", nil, 2, 4, text(h3), ""},
+		{"a walk that is not where a hole starts", nil, 3, 5, text(h3), ""},
+		{"the first record of the walk, with the chain start at 3, is the chain start's", start, 0, 3, text(h3), ""},
+
+		{"a gap of one record", nil, 7, 9, text(h9), "gap 8"},
+		{"a gap of three records", nil, 9, 13, text(h3), "gap 10"},
+		{"a gap before any record, at a chain start", &ChainStart{First: 10}, 0, 13, text(h3), "gap 10"},
+		{"a gap at the chain start", &ChainStart{First: 8}, 0, 9, text(h9), "gap 8"},
+		{"a gap after the record before it, which the hole at its first does not pass", nil, 2, 6, text(h9), "gap 3"},
+		{"the hole is passed before the gap that has the same first", nil, 2, 5, text(h3), "hole 3"},
+		{"the gap at the same first as a hole that does not pass", nil, 5, 8, text(h9), "gap 6"},
+		{"a gap with another hash", nil, 7, 9, text(h3), ""},
+		{"a gap with no hash", nil, 7, 9, "", ""},
+		{"a gap that is one record narrower", nil, 7, 10, text(h9), ""},
+		{"a gap that is one record wider", nil, 7, 8, text(h9), ""},
+		{"a gap that starts after the record that the walk expects", nil, 6, 9, text(h9), ""},
+		{"a gap that starts before the record that the walk expects", nil, 8, 9, text(h9), ""},
+		{"the record 0 after a gap", nil, 7, 0, text(h9), ""},
 	} {
-		got, ok := HoleBefore(holes, c.start, c.last, c.n, c.prev)
-		if want := c.want != 0; ok != want || ok && got.First != c.want {
-			t.Errorf("%s: HoleBefore(last %d, n %d) = %+v, %v, want the hole at %d", c.name, c.last, c.n, got, ok, c.want)
+		got := passed(ChainPass(holes, gaps, c.start, c.last, c.n, c.prev))
+		if got != c.want {
+			t.Errorf("%s: ChainPass(last %d, n %d) = %q, want %q", c.name, c.last, c.n, got, c.want)
 		}
 	}
-	if _, ok := HoleBefore(nil, nil, 0, 5, text(h3)); ok {
-		t.Error("a walk with no holes passes a record")
+	if got := passed(ChainPass(nil, nil, nil, 0, 5, text(h3))); got != "" {
+		t.Errorf("a walk with no rows passes a record: %q", got)
+	}
+	if got := passed(ChainPass(nil, gaps, nil, 7, 9, text(h9))); got != "gap 8" {
+		t.Errorf("a walk with gaps and no holes = %q, want gap 8", got)
+	}
+	if got := passed(ChainPass(holes, nil, nil, 7, 9, text(h9))); got != "" {
+		t.Errorf("a walk with holes and no gaps passes the gap: %q", got)
 	}
 	for _, c := range []struct {
 		start *ChainStart
@@ -829,5 +983,426 @@ func TestHoleBefore(t *testing.T) {
 		if got := ChainExpected(c.start, c.last); got != c.want {
 			t.Errorf("ChainExpected(%v, %d) = %d, want %d", c.start, c.last, got, c.want)
 		}
+	}
+}
+
+func TestBreakHonored(t *testing.T) {
+	start := &ChainStart{First: 4}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		last  uint64
+		n     uint64
+		want  bool
+	}{
+		{"the record after the last that was read", nil, 3, 4, true},
+		{"the record after the last that was read, with a chain start before it", start, 5, 6, true},
+		{"the record after the first that remains", start, 4, 5, true},
+		{"the first record, before any is read", nil, 0, 1, true},
+		{"the first that remains, before any is read", start, 0, 4, true},
+		{"the first that remains, after a record that a deletion left", start, 3, 4, false},
+		{"the first that remains, after a record that is not the one before it", start, 2, 4, false},
+		{"the first that remains, after a record above it", start, 6, 4, false},
+		{"record 1, before any is read, with a chain start", start, 0, 1, false},
+		{"a record above the first that remains, before any is read", start, 0, 5, false},
+		{"record 2, before any is read", nil, 0, 2, false},
+		{"a record above 1 after the records that a deletion left, with no chain start", nil, 0, 4, false},
+		{"the record that was read last", nil, 3, 3, false},
+		{"a record below the last that was read", nil, 3, 2, false},
+		{"a record that skips", nil, 3, 5, false},
+		{"a record that skips, with a chain start", start, 5, 7, false},
+		{"record 0 before any is read", nil, 0, 0, false},
+		{"record 0 after a record", nil, 3, 0, false},
+	} {
+		if got := BreakHonored(c.start, c.last, c.n); got != c.want {
+			t.Errorf("%s: BreakHonored(%v, last %d, n %d) = %v, want %v", c.name, c.start, c.last, c.n, got, c.want)
+		}
+	}
+	// The same, by the words of the rule: the record after the last that was read, or, before any, 1 or the first that remains,
+	// and not the first that remains after a record that was read.
+	for _, start := range []*ChainStart{nil, {First: 1}, {First: 3}, {First: 6}} {
+		for last := range uint64(9) {
+			for n := range uint64(10) {
+				var want bool
+				switch {
+				case last != 0:
+					want = n == last+1 && (start == nil || n != start.First)
+				case start != nil:
+					want = n == start.First
+				default:
+					want = n == 1
+				}
+				if got := BreakHonored(start, last, n); got != want {
+					t.Errorf("BreakHonored(%v, last %d, n %d) = %v, want %v", start, last, n, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestChainEndPass(t *testing.T) {
+	var h3, h6, h9 [32]byte
+	h3[0], h6[0], h9[0] = 3, 6, 9
+	holes := map[uint64]ChainHole{
+		3: {First: 3, Last: 4, Hash: h3},
+		1: {First: 1, Last: 2, Hash: h6},
+	}
+	gaps := map[uint64]ChainHole{
+		8: {First: 8, Last: 10, Hash: h9},
+		3: {First: 3, Last: 6, Hash: h9},
+		5: {First: 5, Last: 5, Hash: h3},
+	}
+	start := &ChainStart{First: 8}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		last  uint64
+		n     uint64
+		hash  [32]byte
+		want  string
+	}{
+		{"a hole that ends with the head", nil, 2, 4, h3, "hole 3"},
+		{"a gap that ends with the head", nil, 7, 10, h9, "gap 8"},
+		{"the gap at the same first as a hole that does not end with the head", nil, 2, 6, h9, "gap 3"},
+		{"a hole before any record", nil, 0, 2, h6, "hole 1"},
+		{"a gap before any record, at the chain start", start, 0, 10, h9, "gap 8"},
+		{"a gap of one record", nil, 4, 5, h3, "gap 5"},
+		{"a head with another hash", nil, 7, 10, h3, ""},
+		{"a head with the hash of no row", nil, 7, 10, [32]byte{}, ""},
+		{"a head that is one record before the end of the gap", nil, 7, 9, h9, ""},
+		{"a head that is one record after the end of the gap", nil, 7, 11, h9, ""},
+		{"a head after the last record that the gap does not start at", nil, 8, 10, h9, ""},
+		{"a head after a record before the gap", nil, 6, 10, h9, ""},
+		{"after the last record that was read, whatever the chain start says", start, 7, 10, h9, "gap 8"},
+	} {
+		got := passed(ChainEndPass(holes, gaps, c.start, c.last, c.n, c.hash))
+		if got != c.want {
+			t.Errorf("%s: ChainEndPass(last %d, head %d) = %q, want %q", c.name, c.last, c.n, got, c.want)
+		}
+	}
+	both := map[uint64]ChainHole{3: {First: 3, Last: 4, Hash: h3}}
+	if got := passed(ChainEndPass(both, both, nil, 2, 4, h3)); got != "hole 3" {
+		t.Errorf("a hole and a gap that both end with the head = %q, want the hole", got)
+	}
+	if got := passed(ChainEndPass(nil, nil, nil, 0, 5, h3)); got != "" {
+		t.Errorf("a walk with no rows passes a head: %q", got)
+	}
+	if got := passed(ChainEndPass(nil, gaps, nil, 7, 10, h9)); got != "gap 8" {
+		t.Errorf("a walk with gaps and no holes = %q, want gap 8", got)
+	}
+	if got := passed(ChainEndPass(holes, nil, nil, 7, 10, h9)); got != "" {
+		t.Errorf("a walk with holes and no gaps passes the gap: %q", got)
+	}
+}
+
+// rowSet makes the maps of the holes and of the gaps of a test: a row is "H3-4" (the hole of the records 3 to 4) or "G3-4" (the
+// gap), with the hash that hashOf says of its last record.
+func rowSet(t *testing.T, rows ...string) (holes, gaps map[uint64]ChainHole) {
+	t.Helper()
+	holes, gaps = map[uint64]ChainHole{}, map[uint64]ChainHole{}
+	for _, r := range rows {
+		var first, last uint64
+		if _, err := fmt.Sscanf(r[1:], "%d-%d", &first, &last); err != nil {
+			t.Fatalf("the row %q: %v", r, err)
+		}
+		row := ChainHole{First: first, Last: last, Hash: hashOf(last)}
+		if r[0] == 'G' {
+			gaps[first] = row
+		} else {
+			holes[first] = row
+		}
+	}
+	return holes, gaps
+}
+
+// hashOf is the hash of the stored bytes of the record n in these tests.
+func hashOf(n uint64) (h [32]byte) {
+	h[0], h[1] = byte(n), 0xa5
+	return h
+}
+
+func hashText(n uint64) string {
+	h := hashOf(n)
+	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+// TestChainPassRows checks the rows that follow one another, and the row that holds the first record that remains, K.
+func TestChainPassRows(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rows  []string
+		start uint64 // K, 0 if the log has no chain start
+		last  uint64
+		n     uint64
+		prev  uint64 // the record whose hash is the prev of n
+		want  string
+	}{
+		// Rows that follow one another.
+		{"two holes", []string{"H3-3", "H4-4"}, 0, 2, 5, 4, "hole 3, hole 4"},
+		{"two holes, with the record that the first leads to", []string{"H3-3", "H4-4"}, 0, 2, 4, 3, "hole 3"},
+		{"a hole and then a gap", []string{"H3-3", "G4-5"}, 0, 2, 6, 5, "hole 3, gap 4"},
+		{"a gap and then a hole", []string{"G3-4", "H5-5"}, 0, 2, 6, 5, "gap 3, hole 5"},
+		{"two gaps", []string{"G3-3", "G4-4"}, 0, 2, 5, 4, "gap 3, gap 4"},
+		{"three rows", []string{"H3-3", "G4-5", "H6-6"}, 0, 2, 7, 6, "hole 3, gap 4, hole 6"},
+		{"two holes, with the hash of the first", []string{"H3-3", "H4-4"}, 0, 2, 5, 3, ""},
+		{"a second row that is not the next", []string{"H3-3", "H5-5"}, 0, 2, 6, 5, ""},
+		{"a second row that is one record narrower", []string{"H3-3", "H4-4"}, 0, 2, 6, 4, ""},
+		{"a second row that is one record wider", []string{"H3-3", "H4-5"}, 0, 2, 5, 4, ""},
+		{"a record inside the second row", []string{"H3-3", "H4-6"}, 0, 2, 5, 4, ""},
+		{"the second row alone, after the record before it", []string{"H3-3", "H4-4"}, 0, 3, 5, 4, "hole 4"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-3", "G4-5"}, 0, 2, 6, 5, "hole 3, gap 4"},
+		{"a hole and a gap with one first, the gap leading on", []string{"H3-3", "G3-4", "H5-5"}, 0, 2, 6, 5, "gap 3, hole 5"},
+		{"a hole and a gap with one first, the gap passing the record", []string{"H3-3", "G3-4"}, 0, 2, 5, 4, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "H2-2"}, 0, 0, 3, 2, "hole 1, hole 2"},
+		{"rows at the chain start", []string{"H5-5", "G6-7"}, 5, 0, 8, 7, "hole 5, gap 6"},
+
+		// A walk that has read nothing of a log with a chain start K starts with a row that holds K.
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 7, 6, "hole 3"},
+		{"a gap that holds K", []string{"G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a row that holds K and ends there", []string{"H3-5"}, 5, 0, 6, 5, "hole 3"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 5, 4, ""},
+		{"a row that starts at K and a row that holds it: the first", []string{"H5-5", "H3-6"}, 5, 0, 6, 5, "hole 5"},
+		{"a row that starts at K and a row that holds it: the second", []string{"H5-5", "H3-6"}, 5, 0, 7, 6, "hole 3"},
+		{"a hole at K that passes nothing, and a gap that holds K", []string{"H5-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"two rows that hold K: the lowest first", []string{"H2-5", "G3-6"}, 5, 0, 6, 5, "hole 2"},
+		{"two rows that hold K: the other", []string{"H2-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a hole and a gap that hold K from one first: the hole first", []string{"H3-5", "G3-6"}, 5, 0, 6, 5, "hole 3"},
+		{"a hole and a gap that hold K from one first: the gap", []string{"H3-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 8, 7, "hole 3, gap 6"},
+		{"a row that holds K, and a row that is not the next", []string{"H3-5", "G7-7"}, 5, 0, 8, 7, ""},
+		{"a row that holds K, with a record inside it", []string{"H3-6"}, 5, 0, 6, 5, ""},
+		{"no chain start, no row that holds it", []string{"H3-6"}, 0, 0, 7, 6, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 7, 6, "hole 3"},
+		{"a row that holds K, but not from the record after the last that was read", []string{"H2-6"}, 5, 2, 7, 6, ""},
+		{"a row that holds K, from after the record after the last that was read", []string{"H4-6"}, 5, 2, 7, 6, ""},
+		{"a row that holds K, and the walk has read a record at K", []string{"H3-6"}, 5, 5, 7, 6, ""},
+		{"a row that holds K, and the walk has read a record above K", []string{"H3-9"}, 5, 7, 10, 9, ""},
+		{"rows after the leftovers, the second holding K", []string{"H3-4", "G5-6"}, 5, 2, 7, 6, "hole 3, gap 5"},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainPass(holes, gaps, start, c.last, c.n, hashText(c.prev))); got != c.want {
+			t.Errorf("%s: ChainPass(last %d, n %d) = %q, want %q", c.name, c.last, c.n, got, c.want)
+		}
+	}
+}
+
+// TestChainPassManyRows checks that the search through rows that have a hole and a gap at each first does not look at a number
+// twice: with sixty of them, it would not end.
+func TestChainPassManyRows(t *testing.T) {
+	var rows []string
+	for n := 3; n < 63; n++ {
+		rows = append(rows, fmt.Sprintf("H%d-%d", n, n), fmt.Sprintf("G%d-%d", n, n))
+	}
+	holes, gaps := rowSet(t, rows...)
+	if got := passed(ChainPass(holes, gaps, nil, 2, 100, hashText(99))); got != "" {
+		t.Errorf("ChainPass() = %q, want none", got)
+	}
+	if got := passed(ChainEndPass(holes, gaps, nil, 2, 100, hashOf(100))); got != "" {
+		t.Errorf("ChainEndPass() = %q, want none", got)
+	}
+	got := ChainPass(holes, gaps, nil, 2, 63, hashText(62))
+	if len(got) != 60 || got[0].First != 3 || got[59].First != 62 {
+		t.Errorf("ChainPass() through sixty rows = %d rows, want 60 from 3 to 62", len(got))
+	}
+}
+
+func TestChainPassNoRowsIsNoCost(t *testing.T) {
+	holes, gaps := rowSet(t, "H3-3")
+	prev, start := hashText(7), &ChainStart{First: 5}
+	if n := testing.AllocsPerRun(100, func() {
+		_ = ChainPass(holes, gaps, nil, 7, 8, prev)
+		_ = ChainPass(holes, gaps, start, 0, 8, prev)
+		_ = ChainPass(nil, nil, start, 0, 8, prev)
+		_ = ChainEndPass(holes, gaps, nil, 7, 8, hashOf(8))
+	}); n != 0 {
+		t.Errorf("a walk that no row passes allocates %v times", n)
+	}
+}
+
+// TestChainEndPassRows checks the rows that follow one another to the head, and the row that holds K.
+func TestChainEndPassRows(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rows  []string
+		start uint64
+		last  uint64
+		head  uint64
+		want  string
+	}{
+		{"two holes", []string{"H3-3", "H4-4"}, 0, 2, 4, "hole 3, hole 4"},
+		{"a hole and a gap", []string{"H3-3", "G4-6"}, 0, 2, 6, "hole 3, gap 4"},
+		{"three rows", []string{"G3-3", "H4-5", "G6-6"}, 0, 2, 6, "gap 3, hole 4, gap 6"},
+		{"rows that end before the head", []string{"H3-3", "H4-4"}, 0, 2, 5, ""},
+		{"rows that end after the head", []string{"H3-3", "H4-6"}, 0, 2, 5, ""},
+		{"a second row that is not the next", []string{"H3-3", "H5-5"}, 0, 2, 5, ""},
+		{"a hole and a gap with one first", []string{"H3-3", "G3-5"}, 0, 2, 5, "gap 3"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-5", "G4-6"}, 0, 2, 6, "hole 3, gap 4"},
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 6, "hole 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 7, "hole 3, gap 6"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 4, ""},
+		{"a row that holds K, with a head before its end", []string{"H3-6"}, 5, 0, 5, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 6, "hole 3"},
+		{"a row that holds K, but not from the record after the last that was read", []string{"H4-6"}, 5, 2, 6, ""},
+		{"a row that holds K, from before the record after the last that was read", []string{"H2-6"}, 5, 2, 6, ""},
+		{"two rows that hold K: the lowest first", []string{"H2-5", "G3-6"}, 5, 0, 5, "hole 2"},
+		{"two rows that hold K: the other", []string{"H2-5", "G3-6"}, 5, 0, 6, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "G2-3"}, 0, 0, 3, "hole 1, gap 2"},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainEndPass(holes, gaps, start, c.last, c.head, hashOf(c.head))); got != c.want {
+			t.Errorf("%s: ChainEndPass(last %d, head %d) = %q, want %q", c.name, c.last, c.head, got, c.want)
+		}
+	}
+	// The hash of the head is that of the last row alone.
+	holes, gaps := rowSet(t, "H3-3", "H4-4")
+	if got := passed(ChainEndPass(holes, gaps, nil, 2, 4, hashOf(3))); got != "" {
+		t.Errorf("a head with the hash of the first row = %q, want none", got)
+	}
+}
+
+// TestChainCross checks the hash of the record K-1 that a walk knows when it steps across K.
+func TestChainCross(t *testing.T) {
+	const k = 5
+	start := &ChainStart{First: k, Prev: hashOf(k - 1)}
+	row := func(first, last uint64, prev uint64) PassedRow {
+		return PassedRow{ChainHole: ChainHole{First: first, Last: last, Hash: hashOf(prev)}}
+	}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		lastN uint64
+		hash  uint64 // the record whose hash lastN has
+		rows  []PassedRow
+		want  string // "" if it passes, else the refused: "record" or the first of the row
+	}{
+		{"no chain start", nil, 4, 9, []PassedRow{row(5, 5, 5)}, ""},
+		{"no row", start, 4, 9, nil, ""},
+		{"K-1 read with the hash of the chain start, and a row at K", start, 4, 4, []PassedRow{row(5, 6, 6)}, ""},
+		{"K-1 read with another hash, and a row at K", start, 4, 9, []PassedRow{row(5, 6, 6)}, "record"},
+		{"K-1 read with another hash, and consecutive rows from K", start, 4, 9, []PassedRow{row(5, 5, 5), row(6, 6, 6)}, "record"},
+		{"nothing read, and a row at K", start, 0, 9, []PassedRow{row(5, 6, 6)}, ""},
+		{"a record above K read", start, 7, 9, []PassedRow{row(8, 8, 8)}, ""},
+		{"a row that ends with K-1 and the hash of the chain start", start, 2, 2, []PassedRow{row(3, 4, 4)}, ""},
+		{"a row that ends with K-1 and another hash", start, 2, 2, []PassedRow{row(3, 4, 9)}, "3"},
+		{"a row that ends with K-1 and another hash, and a row after it", start, 2, 2, []PassedRow{row(3, 4, 9), row(5, 6, 6)}, "3"},
+		{"a row that ends with K-1 and the hash of the chain start, and a row after it", start, 2, 2,
+			[]PassedRow{row(3, 4, 4), row(5, 6, 6)}, ""},
+		{"a row that holds K-1 and K", start, 2, 2, []PassedRow{row(3, 6, 9)}, ""},
+		{"a row that holds K-1 and K, and a row after it", start, 2, 2, []PassedRow{row(3, 6, 9), row(7, 7, 9)}, ""},
+		{"a row that starts at K-1 and holds K", start, 3, 9, []PassedRow{row(4, 5, 9)}, ""},
+		{"rows that end before K-1", start, 1, 9, []PassedRow{row(2, 2, 9), row(3, 3, 9)}, ""},
+	} {
+		ok, bad := ChainCross(c.start, c.lastN, hashOf(c.hash), c.rows)
+		got := ""
+		switch {
+		case ok && bad != nil:
+			t.Errorf("%s: ChainCross() = true, %v", c.name, bad)
+		case ok:
+		case bad == nil:
+			got = "record"
+		default:
+			got = fmt.Sprint(bad.First)
+		}
+		if got != c.want {
+			t.Errorf("%s: ChainCross() refuses %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestChainReach checks the rows that a walk goes through from the record that it expects, whether or not they pass a record:
+// they follow one another, every one ends below the target, and the longest way is the one that is taken.
+func TestChainReach(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		rows   []string
+		start  uint64 // K, 0 if the log has no chain start
+		last   uint64
+		target uint64
+		want   string
+	}{
+		{"no row", nil, 0, 2, 6, ""},
+		{"a row that does not start at the record that the walk expects", []string{"H4-4"}, 0, 2, 6, ""},
+		{"a row before the record that the walk expects", []string{"H2-2"}, 0, 2, 6, ""},
+		{"a hole", []string{"H3-3"}, 0, 2, 6, "hole 3"},
+		{"a gap", []string{"G3-3"}, 0, 2, 6, "gap 3"},
+		{"a row that ends right before the target", []string{"H3-4"}, 0, 2, 5, "hole 3"},
+		{"a row that ends at the target", []string{"H3-5"}, 0, 2, 5, ""},
+		{"a row that ends after the target", []string{"H3-7"}, 0, 2, 5, ""},
+		{"two rows", []string{"H3-3", "G4-4"}, 0, 2, 7, "hole 3, gap 4"},
+		{"three rows", []string{"G3-3", "H4-5", "G6-6"}, 0, 2, 8, "gap 3, hole 4, gap 6"},
+		{"the second row ends at the target", []string{"H3-3", "H4-4"}, 0, 2, 4, "hole 3"},
+		{"the third row ends at the target", []string{"H3-3", "H4-4", "H5-5"}, 0, 2, 5, "hole 3, hole 4"},
+		{"a second row that does not follow", []string{"H3-3", "H5-5"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first: the gap ends later", []string{"H3-3", "G3-4"}, 0, 2, 7, "gap 3"},
+		{"a hole and a gap with one first: the hole ends later", []string{"H3-4", "G3-3"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first, the same end: the hole", []string{"H3-4", "G3-4"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-3", "G4-5"}, 0, 2, 8, "hole 3, gap 4"},
+		{"a hole and a gap with one first, the gap leading on", []string{"H3-3", "G3-4", "H5-5"}, 0, 2, 8, "gap 3, hole 5"},
+		{"a way that goes on, and a row that ends later", []string{"H3-3", "H4-4", "G3-5"}, 0, 2, 8, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "G2-2"}, 0, 0, 5, "hole 1, gap 2"},
+		{"rows at the chain start", []string{"H5-5", "G6-7"}, 5, 0, 9, "hole 5, gap 6"},
+		{"after the record that the walk has read", []string{"H3-3", "H4-4"}, 0, 3, 9, "hole 4"},
+
+		// A walk that has read nothing of a log with a chain start K starts with a row that holds K too.
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 9, "hole 3"},
+		{"a gap that holds K", []string{"G3-6"}, 5, 0, 9, "gap 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 9, "hole 3, gap 6"},
+		{"a row that holds K and a row that starts at K: the longer", []string{"H5-5", "H3-6"}, 5, 0, 9, "hole 3"},
+		{"a row that holds K and a row that starts at K: the longer, the other", []string{"H5-8", "H3-6"}, 5, 0, 9, "hole 5"},
+		{"a row that holds K, and one that starts at K and goes on", []string{"H5-5", "G6-6", "H3-5"}, 5, 0, 9, "hole 5, gap 6"},
+		{"a row that holds K and ends at the target", []string{"H3-6"}, 5, 0, 6, ""},
+		{"a row that holds K, with another that ends later", []string{"H3-6", "H2-5"}, 5, 0, 8, "hole 3"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 9, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 9, "hole 3"},
+		{"a row that holds K, and the walk has read a record at K", []string{"H3-6"}, 5, 5, 9, ""},
+		{"no chain start, no row that holds it", []string{"H3-6"}, 0, 0, 9, ""},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainReach(holes, gaps, start, c.last, c.target)); got != c.want {
+			t.Errorf("%s: ChainReach(last %d, target %d) = %q, want %q", c.name, c.last, c.target, got, c.want)
+		}
+	}
+}
+
+// TestChainReachManyRows checks that the search through rows that have a hole and a gap at each first does not look at a number
+// twice: with sixty of them, it would not end.
+func TestChainReachManyRows(t *testing.T) {
+	var rows []string
+	for n := 3; n < 63; n++ {
+		rows = append(rows, fmt.Sprintf("H%d-%d", n, n), fmt.Sprintf("G%d-%d", n, n))
+	}
+	holes, gaps := rowSet(t, rows...)
+	got := ChainReach(holes, gaps, nil, 2, 100)
+	if len(got) != 60 || got[0].First != 3 || got[59].First != 62 {
+		t.Errorf("ChainReach() through sixty rows = %d rows, want 60 from 3 to 62", len(got))
+	}
+	if got := ChainReach(holes, gaps, nil, 2, 40); len(got) != 37 || got[36].First != 39 {
+		t.Errorf("ChainReach() to the target 40 = %d rows, want 37, the last starting at 39", len(got))
+	}
+}
+
+func TestChainReachNoRowsIsNoCost(t *testing.T) {
+	holes, gaps := rowSet(t, "H3-3")
+	start := &ChainStart{First: 5}
+	if n := testing.AllocsPerRun(100, func() {
+		_ = ChainReach(nil, nil, start, 0, 8)
+		_ = ChainReach(nil, nil, nil, 7, 8)
+	}); n != 0 {
+		t.Errorf("a walk that has no rows allocates %v times", n)
+	}
+	if got := ChainReach(holes, gaps, nil, 7, 9); got != nil {
+		t.Errorf("ChainReach() from a record that no row starts at = %v, want none", got)
 	}
 }

@@ -34,8 +34,8 @@ const usage = `Usage:
         and change nothing; the daemon must be stopped
   whiteroom-db accept-break [flags]
         accept the break at record -record N of the audit log -log LOG (login or
-        activity) that "whiteroom doctor" reports, and change no record; the daemon
-        must be stopped
+        activity), or the gap before it, that "whiteroom doctor" reports, and change
+        no record; the daemon must be stopped
   whiteroom-db repair [flags]
         show what a repair of a damaged data directory would drop and lose, and
         change nothing; with -apply -keep DIR, copy logdb/ to DIR and repair the

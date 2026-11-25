@@ -425,6 +425,10 @@ func (t *modelTx) exportReady() (bool, error) {
 	return true, nil
 }
 
+func (t *modelTx) currentSchema() (bool, error) {
+	return true, nil
+}
+
 func (t *modelTx) chainRow(key []byte) ([]byte, bool, error) {
 	v, ok := t.st.chains[string(key)]
 	return v, ok, nil

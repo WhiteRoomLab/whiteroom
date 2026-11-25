@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io/fs"
@@ -23,6 +24,12 @@ import (
 // has audit records writes them: the commit i has the activity record i, the login record i/2 if i is even, the lines of the
 // heads, and a mark; each commit has a segment of the log of its own, and the last has the checkpoint that Close writes.
 func repairStore(t *testing.T, data string, n int) {
+	t.Helper()
+	repairStoreOf(t, data, n, dbwire.TableVersion)
+}
+
+// repairStoreOf is repairStore for a store of the table schema schema.
+func repairStoreOf(t *testing.T, data string, n int, schema uint64) {
 	t.Helper()
 	o := storeOptions()
 	o.Log.SegmentBytes = 1
@@ -47,7 +54,7 @@ func repairStore(t *testing.T, data string, n int) {
 	for i := 1; i <= n; i++ {
 		if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
 			if i == 1 {
-				if err := tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, dbwire.TableVersion)); err != nil {
+				if err := tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, schema)); err != nil {
 					return err
 				}
 			}
@@ -270,6 +277,55 @@ func TestRepair(t *testing.T) {
 	}
 }
 
+// TestRepairRaisesSchema checks that a repair that records holes in a store of the table schema 8 or 9 raises it to the
+// schema 10, tells so, and that a store of the schema 10 is left as it is.
+func TestRepairRaisesSchema(t *testing.T) {
+	schemaOf := func(t *testing.T, data string) uint64 {
+		t.Helper()
+		var version uint64
+		err := dbserver.Maintain(t.Context(), data, storeOptions(), func(m *logdb.Maintenance) error {
+			return m.View(t.Context(), func(tx *logdb.Tx) error {
+				v, _ := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema))
+				version, _ = binary.Uvarint(v)
+				return nil
+			})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	for _, from := range []uint64{8, 9, 10} {
+		t.Run(fmt.Sprintf("schema %d", from), func(t *testing.T) {
+			d := newDirs(t)
+			repairStoreOf(t, d.data, 4, from)
+			editFile(t, segmentFile(d.data, 4), flipByte(100))
+			lines := []string{
+				"kept the files of " + filepath.Join(d.data, "logdb") + " in " + filepath.Join(d.root, "keep", "logdb"),
+				"drop: engine: " + segmentFile(d.data, 4) + " at offset 64: bad record CRC (sequence 4, events 8 to 10)",
+				`hole: audit log "login": record 2; recorded in the table chains`,
+				`hole: audit log "activity": record 4; recorded in the table chains`,
+			}
+			if from < dbwire.TableVersion {
+				lines = append(lines, fmt.Sprintf("schema: the table schema %d is raised to %d, which has the rows of the holes", from,
+					dbwire.TableVersion))
+			}
+			lines = append(lines, fmt.Sprintf("repaired %s: generation 2, sequence 4", d.data))
+			want := text(lines...)
+			code, stdout, stderr := runCmd(t, "repair", "-data", d.data, "-apply", "-keep", filepath.Join(d.root, "keep"))
+			if code != 0 || stdout != want || stderr != "" {
+				t.Fatalf("whiteroom-db repair -apply = %d, with stdout:\n%s\nand stderr %q\nwant 0, with stdout:\n%s", code, stdout, stderr, want)
+			}
+			if got := schemaOf(t, d.data); got != dbwire.TableVersion {
+				t.Errorf("the table schema after the repair is %d, want %d", got, dbwire.TableVersion)
+			}
+			if rows, _ := holesOf(t, d.data); strings.Join(rows, ",") != "login 2-2,activity 4-4" {
+				t.Errorf("the rows of the holes are %v", rows)
+			}
+		})
+	}
+}
+
 func TestRepairTruncate(t *testing.T) {
 	d := newDirs(t)
 	repairStore(t, d.data, 8)
@@ -483,6 +539,96 @@ func TestRepairLines(t *testing.T) {
 		}
 		if code, stdout, _ = runCmd(t, "check", "-data", d.data); code != 0 {
 			t.Errorf("whiteroom-db check after the repair = %d, with stdout %q", code, stdout)
+		}
+	})
+
+	// A record that was lost before the repair is a gap that it does not make: the line names the command that accepts it, with the
+	// number of the record after the gap, or, for a gap at the end of the log, the number of its head.
+	t.Run("a gap in the middle", func(t *testing.T) {
+		d := newDirs(t)
+		repairStore(t, d.data, 4)
+		// The records 1 to 4 of the activity log are there, and the record 6 names a record 5 that is not.
+		lost := sha256.Sum256([]byte("the record 5"))
+		rec := fmt.Appendf(nil, `{"log":"activity","n":6,"prev":"sha256:%x","at":"2026-01-01T00:00:00Z","action":"x"}`, lost)
+		writeEvents(t, d.data, rec)
+		code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+		want := `gap: audit log "activity": record 5, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+			"with whiteroom-db accept-break -log activity -record 6\n" + "nothing to repair in " + d.data + "\n"
+		if code != 0 || stderr != "" || stdout != want {
+			t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+		}
+		// whiteroom-db accept-break accepts it, and the repair has no gap to tell.
+		if code, _, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "6"); code != 0 || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stderr %q", code, stderr)
+		}
+		if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+			t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
+		}
+	})
+	t.Run("a gap at the end", func(t *testing.T) {
+		d := newDirs(t)
+		repairStore(t, d.data, 4)
+		// The head of the activity log names the record 6, and the log has the records 1 to 4.
+		hash := sha256.Sum256([]byte("the record 6"))
+		putHeads(t, d.data, map[string]uint64{"activity": 6}, map[string][sha256.Size]byte{"activity": hash})
+		code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+		want := `gap: audit log "activity": records 5 to 6, which this repair does not make: whiteroom doctor reports it until it is ` +
+			"accepted with whiteroom-db accept-break -log activity -record 6\n" + "nothing to repair in " + d.data + "\n"
+		if code != 0 || stderr != "" || stdout != want {
+			t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+		}
+		if code, _, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "6"); code != 0 || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stderr %q", code, stderr)
+		}
+		if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+			t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
+		}
+	})
+
+	// A gap that accept-break refuses is told without the command, which would send the operator to a refusal.
+	t.Run("a gap that accept-break refuses", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Second)
+		recs := loginChain(5)
+		for _, tc := range []struct {
+			name  string
+			build func(t *testing.T, data string)
+			line  string
+		}{
+			{"a gap among the records that a deletion left", func(t *testing.T, data string) {
+				// The records 1, 3 and 4 are there, the chain starts at the record 5, and the record 2 is lost.
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[2], recs[3]}})
+				writeStart(t, data, 5, sha256.Sum256(recs[3]), now)
+			}, `gap: audit log "login": record 2, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a record whose prev is no hash", func(t *testing.T, data string) {
+				odd := fmt.Appendf(nil, `{"log":"login","n":4,"prev":"nonsense","at":"2026-01-01T00:00:00Z","action":"x"}`)
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[1], odd}})
+			}, `gap: audit log "login": record 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap across the chain start from a record with another hash", func(t *testing.T, data string) {
+				// The record 2 is the one before the chain start, and the chain start has the hash of another record.
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[1], recs[3]}})
+				writeStart(t, data, 3, sha256.Sum256([]byte("another record")), now)
+			}, `gap: audit log "login": record 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap at the end of an activity log that has no record", func(t *testing.T, data string) {
+				writeCommits(t, data, commitAt{now, nil}) // the schema of the store
+				hash := sha256.Sum256([]byte("the record 3"))
+				putHeads(t, data, map[string]uint64{"activity": 3}, map[string][sha256.Size]byte{"activity": hash})
+			}, `gap: audit log "activity": records 1 to 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap at the end of a login history that has no record", func(t *testing.T, data string) {
+				writeCommits(t, data, commitAt{now, nil}) // the schema of the store
+				hash := sha256.Sum256([]byte("the record 3"))
+				putHeads(t, data, map[string]uint64{"login": 3}, map[string][sha256.Size]byte{"login": hash})
+			}, `gap: audit log "login": records 1 to 3, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+				"with whiteroom-db accept-break -log login -record 3"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := newDirs(t)
+				tc.build(t, d.data)
+				code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+				want := tc.line + "\n" + "nothing to repair in " + d.data + "\n"
+				if code != 0 || stderr != "" || stdout != want {
+					t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+				}
+			})
 		}
 	})
 

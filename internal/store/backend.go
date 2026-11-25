@@ -75,10 +75,12 @@ type backendTx interface {
 	headLine(log audit.Log) (line string, ok bool, err error)
 	auditReady() (bool, error)
 	exportReady() (bool, error)
+	// currentSchema returns false for a store of a table schema before the current one (logSchemaVersion), which a writer upgrades.
+	currentSchema() (bool, error)
 	// chainRow returns the value of key in the table chains, and chainRows calls fn with the rows whose keys start with
-	// prefix, in order, until fn returns false (dbwire.TableChains): the chain starts, the accepted breaks and the holes
-	// of the audit logs, which only the maintenance of the daemon writes, and which a store of a table schema before 8 has
-	// none of (before 9, no holes). The backend writes none of them.
+	// prefix, in order, until fn returns false (dbwire.TableChains): the chain starts, the accepted breaks, the holes and
+	// the accepted gaps of the audit logs, which only the maintenance of the daemon writes, and which a store of a table
+	// schema before 8 has none of (before 9, no holes, and before 10, no gaps). The backend writes none of them.
 	chainRow(key []byte) ([]byte, bool, error)
 	chainRows(prefix []byte, fn func(key, value []byte) bool) error
 	changed() bool // whether the transaction has written anything but audit events and heads

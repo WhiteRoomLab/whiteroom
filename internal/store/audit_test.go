@@ -129,7 +129,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("the events after Create() = %+v, want the record %s", events, createRecordJSON)
 	}
 	if got, want := rawTable(t, s, tableMeta), [][2]string{{"activityLog", "\x01" + string(createRecordSum())},
-		{"schema", "\x09"}}; !slices.Equal(got, want) {
+		{"schema", "\x0a"}}; !slices.Equal(got, want) {
 		t.Errorf("meta after Create() = %q, want %q", got, want)
 	}
 	if got, want := rawTable(t, s, tableHeads), [][2]string{{"activity", fmt.Sprintf("audit head activity 1 sha256:%x",
@@ -150,7 +150,7 @@ func TestCreateRecord(t *testing.T) {
 		t.Errorf("VerifyAudit() after Create() = %v", err)
 	}
 
-	// Open adds nothing to a store that is of the schema 9 already.
+	// Open adds nothing to a store that is of the schema 10 already.
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -959,7 +959,7 @@ func TestUpgradeTrialEvent(t *testing.T) {
 	w := reopenLog(t, dir, logdb.Options{})
 	events := rawEvents(t, w)
 	const upgrade = `{"log":"activity","n":1,"at":"2026-11-03T08:00:00.12Z","actor":"system","action":"store.upgrade",` +
-		`"detail":{"from":"5","to":"9"}}`
+		`"detail":{"from":"5","to":"10"}}`
 	if len(events) != 2 || string(events[0].Data) != "pair 1" || string(events[1].Data) != upgrade {
 		t.Fatalf("the events after the upgrade = %d, want the trial event and the record store.upgrade", len(events))
 	}
@@ -2166,10 +2166,19 @@ func TestAuditCompactLoginInterrupted(t *testing.T) {
 // acceptBreakOf runs AcceptBreak at chainTime in a maintenance of the data directory dir, which no process has open.
 func acceptBreakOf(t *testing.T, dir string, log audit.Log, n uint64) error {
 	t.Helper()
-	return dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
-		func(m *logdb.Maintenance) error {
-			return dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+	_, err := acceptOf(t, dir, log, n)
+	return err
+}
+
+// acceptOf is acceptBreakOf that also returns what it accepted.
+func acceptOf(t *testing.T, dir string, log audit.Log, n uint64) (acc dbserver.Acceptance, err error) {
+	t.Helper()
+	err = dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
+		func(m *logdb.Maintenance) (err error) {
+			acc, err = dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+			return err
 		})
+	return acc, err
 }
 
 // closeAcceptReopen closes s, accepts the break at record n of log in its data directory dir, and opens the store again.
@@ -2326,7 +2335,7 @@ func TestAuditAcceptBreakThenCompact(t *testing.T) {
 }
 
 // TestAuditCompactLoginOlderSchema checks that a compact of a store of the table schema 7 drops no login record, and that
-// once its writer has opened it, which upgrades it to the schema 9, the next compact drops them and VerifyAudit passes.
+// once its writer has opened it, which upgrades it to the schema 10, the next compact drops them and VerifyAudit passes.
 func TestAuditCompactLoginOlderSchema(t *testing.T) {
 	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
 	login := []bool{true, false, true, false, true, true, true, true, false}
@@ -2365,4 +2374,113 @@ func TestAuditCompactLoginOlderSchema(t *testing.T) {
 		t.Errorf("the login records are %v, want %v", got, want)
 	}
 	checkNoProblem(t, s)
+}
+
+// TestAuditCompactLoginInterruptedLostEvent checks the store after a deletion that stopped before its compaction when the event of
+// the deletion is lost too, as damage to the engine leaves it: VerifyAudit passes and tells that the records before the start are
+// still there, and the next call drops them, with the chain start as it is, and says that the store has no event of the deletion.
+func TestAuditCompactLoginInterruptedLostEvent(t *testing.T) {
+	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
+	login := []bool{true, false, true, false, true, true, true, true, false}
+	s, dir, _ := agedStore(t, months, login)
+	loginBefore, activityBefore := recordsOf(t, s, audit.LoginLog), recordsOf(t, s, audit.ActivityLog)
+	wantHeads := headsOf(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hookErr := errors.New("hook failed")
+	if _, err := compactLoginOf(t, dir, chainTime, func(point string) error {
+		if point == "compact:base" {
+			return hookErr
+		}
+		return nil
+	}); !errors.Is(err, hookErr) {
+		t.Fatalf("CompactLogin() = %v, want the error of the hook", err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	var lost []uint64
+	for _, e := range allEvents(t, s) {
+		if _, ok := dbwire.ParseDeleted(e.Data); ok {
+			lost = append(lost, e.Number)
+		}
+	}
+	if len(lost) != 1 {
+		t.Fatalf("the events of the deletion are %v, want one", lost)
+	}
+	s = closeAndRewrite(t, s, dir, rewriteEvents(nil, lost, nil))
+	checkVerify(t, s, dir, nil, nil, "", startNote(5), leftNote("the records 1 to 4 are", 5))
+	checkVerify(t, s, dir, nil, wantHeads, "", startNote(5), leftNote("the records 1 to 4 are", 5))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime.AddDate(1, 0, 0), nil)
+	if err != nil || d.First != 1 || d.Last != 4 || d.Stopped != "" || d.LeftBefore != 5 || d.LeftLast != 4 || !d.LeftBy.Equal(chainTime) {
+		t.Fatalf("the second CompactLogin() = %+v, %v, want the records 1 to 4 that the deletion of chainTime left, with no stop", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(5))
+	checkVerify(t, s, dir, nil, wantHeads, "", startNote(5))
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[4:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	if got := recordsOf(t, s, audit.ActivityLog); !slices.Equal(got, activityBefore) {
+		t.Errorf("the activity records are %v, want %v", got, activityBefore)
+	}
+	checkNoProblem(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := compactLoginOf(t, dir, chainTime, nil); err != nil || again.First != 0 || again.Stopped != "" {
+		t.Errorf("a third CompactLogin() = %+v, %v, want nothing to do", again, err)
+	}
+}
+
+// TestAuditCompactLoginLostMark checks the login records of a commit whose mark is lost, as damage to the engine leaves them:
+// they have the time of the next mark, which makes them old, or not. Without a mark they were never dropped, nor the records
+// after them, however old, and VerifyAudit and whiteroom doctor said nothing.
+func TestAuditCompactLoginLostMark(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		months []int // the age of the marks of the five commits, the last of which has no login record
+		last   uint64
+	}{
+		{"the next mark is old", []int{40, 39, 38, 37, 0}, 4},
+		{"the next mark is not", []int{40, 39, 5, 4, 0}, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, dir, _ := agedStore(t, tt.months, []bool{true, true, true, true, false})
+			loginBefore := recordsOf(t, s, audit.LoginLog)
+			// The mark of the commit of the record 2 is lost.
+			ev := eventOf(t, s, audit.LoginLog, 2)
+			var seq uint64
+			var drop []uint64
+			for _, e := range allEvents(t, s) {
+				if e.Number == ev {
+					seq = e.Seq
+				}
+				if _, ok := dbwire.ParseMark(e.Data); ok && seq != 0 && e.Seq == seq && e.Number > ev {
+					drop = append(drop, e.Number)
+				}
+			}
+			if len(drop) != 1 {
+				t.Fatalf("the marks of the commit of the record 2 are %v, want one", drop)
+			}
+			s = closeAndRewrite(t, s, dir, rewriteEvents(nil, drop, nil))
+			checkVerify(t, s, dir, nil, nil, "")
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			d, err := compactLoginOf(t, dir, chainTime, nil)
+			if err != nil || d.First != 1 || d.Last != tt.last || d.Stopped != "" {
+				t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to %d, with no stop", d, err, tt.last)
+			}
+			s = reopenLog(t, dir, logdb.Options{})
+			checkVerify(t, s, dir, nil, nil, "", startNote(tt.last+1))
+			if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[tt.last:]; !slices.Equal(got, want) {
+				t.Errorf("the login records are %v, want %v", got, want)
+			}
+			checkNoProblem(t, s)
+		})
+	}
 }

@@ -13,17 +13,19 @@ const (
 	MarkSize         = 14
 
 	// DeletedKind is the event of the deletion of the oldest records of a log, AcceptedKind that of the acceptance of a
-	// break in a log, and HoleKind that of a hole that a repair has made in a log, which the maintenance of the daemon adds
-	// with the rows of TableChains that it writes.
+	// break in a log, HoleKind that of a hole that a repair has made in a log, and GapKind that of the acceptance of a gap
+	// in a log, which the maintenance of the daemon adds with the rows of TableChains that it writes.
 	DeletedKind  byte = 0x02
 	AcceptedKind byte = 0x03
 	HoleKind     byte = 0x04
+	GapKind      byte = 0x05
 	DeletedSize       = 3 + 8 + 32 + 12
 	AcceptedSize      = 3 + 8 + 32
 	HoleSize          = 3 + 8 + 8 + 32
+	GapSize           = HoleSize
 )
 
-// The byte that names a log in the events DeletedKind, AcceptedKind and HoleKind.
+// The byte that names a log in the events DeletedKind, AcceptedKind, HoleKind and GapKind.
 const (
 	logLoginByte    byte = 1
 	logActivityByte byte = 2
@@ -64,7 +66,7 @@ type Accepted struct {
 }
 
 // Hole is the event of the hole of the records First to Last of the log named Log, whose last, the record Last, has the
-// SHA-256 Hash of its stored bytes, which a repair has dropped.
+// SHA-256 Hash of its stored bytes, which a repair has dropped. The event of an accepted gap (AppendGap) has the same fields.
 type Hole struct {
 	Log         string
 	First, Last uint64
@@ -126,16 +128,26 @@ func ParseAccepted(b []byte) (Accepted, bool) {
 
 // AppendHole appends the event h to dst: DaemonEvent, HoleKind, the log as AppendDeleted has it, First and Last as uint64s
 // and Hash.
-func AppendHole(dst []byte, h Hole) []byte {
-	dst = append(dst, DaemonEvent, HoleKind, logByte(h.Log))
+func AppendHole(dst []byte, h Hole) []byte { return appendRange(dst, HoleKind, h) }
+
+// ParseHole returns the event that b is. It refuses a First of 0 and a Last under First.
+func ParseHole(b []byte) (Hole, bool) { return parseRange(b, HoleKind) }
+
+// AppendGap appends the event of the acceptance of the gap h to dst: as AppendHole, with GapKind.
+func AppendGap(dst []byte, h Hole) []byte { return appendRange(dst, GapKind, h) }
+
+// ParseGap returns the event that b is. It refuses what ParseHole refuses and any other kind.
+func ParseGap(b []byte) (Hole, bool) { return parseRange(b, GapKind) }
+
+func appendRange(dst []byte, kind byte, h Hole) []byte {
+	dst = append(dst, DaemonEvent, kind, logByte(h.Log))
 	dst = binary.BigEndian.AppendUint64(dst, h.First)
 	dst = binary.BigEndian.AppendUint64(dst, h.Last)
 	return append(dst, h.Hash[:]...)
 }
 
-// ParseHole returns the event that b is. It refuses a First of 0 and a Last under First.
-func ParseHole(b []byte) (Hole, bool) {
-	if len(b) != HoleSize || b[0] != DaemonEvent || b[1] != HoleKind {
+func parseRange(b []byte, kind byte) (Hole, bool) {
+	if len(b) != HoleSize || b[0] != DaemonEvent || b[1] != kind {
 		return Hole{}, false
 	}
 	log, ok := logName(b[2])
@@ -150,8 +162,8 @@ func ParseHole(b []byte) (Hole, bool) {
 	return h, true
 }
 
-// ValidEvent reports whether b is an event that the daemon adds: a mark, or a DeletedKind, AcceptedKind or HoleKind event
-// whose fields are valid.
+// ValidEvent reports whether b is an event that the daemon adds: a mark, or a DeletedKind, AcceptedKind, HoleKind or
+// GapKind event whose fields are valid.
 func ValidEvent(b []byte) bool {
 	if len(b) < 2 || b[0] != DaemonEvent {
 		return false
@@ -168,6 +180,9 @@ func ValidEvent(b []byte) bool {
 		return ok
 	case HoleKind:
 		_, ok := ParseHole(b)
+		return ok
+	case GapKind:
+		_, ok := ParseGap(b)
 		return ok
 	}
 	return false

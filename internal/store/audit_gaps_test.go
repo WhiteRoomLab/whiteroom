@@ -12,6 +12,7 @@ import (
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 )
@@ -102,9 +103,10 @@ func TestAuditUndecodableRecordIsEvidence(t *testing.T) {
 	}
 }
 
-// TestAuditGapIsNoBreak checks that a record that a gap leaves, where the record before it is lost, is not accepted as a
-// break: whiteroom-db accept-break refuses it, and writes nothing, so that VerifyAudit goes on reporting it.
-func TestAuditGapIsNoBreak(t *testing.T) {
+// TestAuditGapIsAccepted checks that a record that a gap leaves, where the record before it is lost, is no break, and that
+// whiteroom-db accept-break accepts the gap before it as what it is: it writes the row of a gap, the event of the acceptance and a
+// mark, and nothing else, and VerifyAudit passes the record and tells the gap in a note.
+func TestAuditGapIsAccepted(t *testing.T) {
 	s, dir, heads := auditFixture(t)
 	// Position 6 is login record 2.
 	s = closeAndRewrite(t, s, dir, rewriteRecords(nil, []uint64{6}, nil))
@@ -113,19 +115,47 @@ func TestAuditGapIsNoBreak(t *testing.T) {
 		t.Fatalf("VerifyAudit() with login record 2 lost = %v", verr)
 	}
 	before, rows := allEvents(t, s), rawTable(t, s, tableChains)
+	// The record 3 names the hash of the record 2, which is lost.
+	r3, err := audit.Decode(recordEvent(t, s, audit.LoginLog, 3).Data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := "record 3 does not follow record 1 in number: a gap, which a lost record leaves, is not a break that can be accepted: " +
-		"whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem"
-	if err := acceptBreakOf(t, dir, audit.LoginLog, 3); err == nil || err.Error() != want {
-		t.Fatalf("AcceptBreak(login, 3) = %v, want %q", err, want)
+	acc, err := acceptOf(t, dir, audit.LoginLog, 3)
+	if want := (dbserver.Acceptance{Gap: true, First: 2, Last: 2}); err != nil || acc != want {
+		t.Fatalf("AcceptBreak(login, 3) = %+v, %v, want %+v", acc, err, want)
 	}
 	s = reopenLog(t, dir, logdb.Options{})
-	if got := s.VerifyAudit(t.Context(), heads); got == nil || got.Error() != verr.Error() {
-		t.Errorf("VerifyAudit() after the refusal = %v, want %v", got, verr)
+	checkVerify(t, s, dir, nil, heads, "", missingNote("login", 2, 2, againFrom(3)))
+	checkNoProblem(t, s)
+
+	// The acceptance added the event of the gap and a mark, and the row of the gap.
+	after := allEvents(t, s)
+	if len(after) != len(before)+2 || !eventsSame(before, after[:len(before)]) {
+		t.Fatalf("the store has %d events, want the %d that it had, the event of the gap and a mark", len(after), len(before))
 	}
-	if !eventsSame(before, allEvents(t, s)) || len(rawTable(t, s, tableChains)) != len(rows) {
+	if got, ok := dbwire.ParseGap(after[len(after)-2].Data); !ok || got.Log != "login" || got.First != 2 || got.Last != 2 ||
+		hashText(got.Hash[:]) != r3.Prev {
+		t.Errorf("the event of the acceptance is %+v (%v), want the gap of the record 2 with the hash that the record 3 names", got, ok)
+	}
+	if at, ok := dbwire.ParseMark(after[len(after)-1].Data); !ok || at.IsZero() {
+		t.Errorf("the last event is %q, want a mark", after[len(after)-1].Data)
+	}
+	if got := rawTable(t, s, tableChains); len(got) != len(rows)+1 {
+		t.Errorf("the table chains has %d rows, want the %d that it had and the row of the gap", len(got), len(rows))
+	}
+	// A second acceptance is refused, and writes nothing.
+	again := allEvents(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptBreakOf(t, dir, audit.LoginLog, 3); err == nil || err.Error() != "record 3 comes after the record 2 whose gap is accepted already" {
+		t.Errorf("a second AcceptBreak(login, 3) = %v", err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	if !eventsSame(again, allEvents(t, s)) {
 		t.Error("the refusal changed the store")
 	}
 }

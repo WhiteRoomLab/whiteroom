@@ -25,6 +25,11 @@ func holeEvents(log string, first, last uint64, hash [sha256.Size]byte) [][]byte
 	return [][]byte{dbwire.AppendHole(nil, dbwire.Hole{Log: log, First: first, Last: last, Hash: hash}), dbwire.AppendMark(nil, chainTime)}
 }
 
+// gapEvents are the events that whiteroom-db accept-break adds for a gap: the event of the acceptance and a mark.
+func gapEvents(log string, first, last uint64, hash [sha256.Size]byte) [][]byte {
+	return [][]byte{dbwire.AppendGap(nil, dbwire.Hole{Log: log, First: first, Last: last, Hash: hash}), dbwire.AppendMark(nil, chainTime)}
+}
+
 // lostNote is the note of a hole of the records first to last of log, which says after it what follows.
 func lostNote(log string, first, last uint64, after string) string {
 	lost := fmt.Sprintf("the records %d to %d were", first, last)
@@ -35,6 +40,11 @@ func lostNote(log string, first, last uint64, after string) string {
 }
 
 func againFrom(n uint64) string { return fmt.Sprintf("the log is checked again from record %d", n) }
+
+// nextRow is what a note says that follows a row that another row follows at once.
+func nextRow(n uint64) string {
+	return fmt.Sprintf("the next row, which starts with record %d, follows it at once", n)
+}
 
 func endsWith(n uint64) string { return fmt.Sprintf("the log ends with record %d", n) }
 
@@ -58,6 +68,11 @@ const (
 	unreadableHole = `audit log "login": a row of the table chains for a hole cannot be read`
 	noActivity     = `audit log "activity": the log has no record, but every store of the table schema 6 or later has store.create or ` +
 		`store.upgrade as its first`
+	// The problem of the activity log that has no record, when a hole or an accepted gap of the records 1 to 6 passes its head.
+	noActivityHole = noActivity + `; the records 1 to 6 were lost (a hole that whiteroom-db repair recorded at 2026-11-20T10:20:30Z), ` +
+		`and the next record that the writer adds ends this problem`
+	noActivityGap = noActivity + `; the records 1 to 6 were lost (a gap that whiteroom-db accept-break accepted at 2026-11-20T10:20:30Z), ` +
+		`and the next record that the writer adds ends this problem`
 )
 
 // TestVerifyAuditHoles checks that VerifyAudit and VerifyAuditNotes pass the records that a hole of the table chains
@@ -156,6 +171,69 @@ func TestVerifyAuditHoles(t *testing.T) {
 			return c
 		}, "", func() []string { return []string{lostNote(A, 2, 2, againFrom(3))} }},
 
+		// Rows that follow one another pass the record after the last of them, and are told one by one, in the order of the reads.
+		{"two holes that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{4, 5}, A, 3, 3, f.activity(3), holeRow(A, 4, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, holeEvents(A, 4, 4, f.activity(4)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 3, 3, nextRow(4)), lostNote(A, 4, 4, againFrom(5))} }},
+		{"a hole and then a gap that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{4, 5}, A, 3, 3, f.activity(3), gapRow(A, 4, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, gapEvents(A, 4, 4, f.activity(4)))
+			return c
+		}, "", func() []string {
+			return []string{lostNote(A, 3, 3, nextRow(4)), missingNote(A, 4, 4, againFrom(5))}
+		}},
+		{"a gap and then a hole that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := holeChange{rows: []chainRow{gapRow(A, 3, 3, f.activity(3)), holeRow(A, 4, 4, f.activity(4))},
+				events: slices.Concat(gapEvents(A, 3, 3, f.activity(3)), holeEvents(A, 4, 4, f.activity(4))), drop: []uint64{4, 5}}
+			return c
+		}, "", func() []string {
+			return []string{missingNote(A, 3, 3, nextRow(4)), lostNote(A, 4, 4, againFrom(5))}
+		}},
+		{"two rows that follow one another, the second of two records", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{2, 4, 5}, A, 2, 2, f.activity(2), holeRow(A, 3, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, holeEvents(A, 3, 4, f.activity(4)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 2, 2, nextRow(3)), lostNote(A, 3, 4, againFrom(5))} }},
+		{"two holes that follow one another at the end", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{7, 8}, A, 5, 5, f.activity(5), holeRow(A, 6, 6, f.activity(6)))
+			c.events = slices.Concat(c.events, holeEvents(A, 6, 6, f.activity(6)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 5, 5, nextRow(6)), lostNote(A, 6, 6, endsWith(4))} }},
+		{"a hole and then a gap that follow one another at the end of the login history", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{6, 9}, L, 2, 2, f.login(2), gapRow(L, 3, 3, f.login(3)))
+			c.events = slices.Concat(c.events, gapEvents(L, 3, 3, f.login(3)))
+			return c
+		}, "", func() []string { return []string{lostNote(L, 2, 2, nextRow(3)), missingNote(L, 3, 3, endsWith(1))} }},
+		{"a hole that holds the chain start, from before it", func(t *testing.T, f chainFixture) holeChange {
+			// The chain starts at the record 2, and the hole says that the records 1 to 2 are lost: the first record that is read is
+			// the record 3, which has the hash of the record 2 as its prev.
+			c := lose([]uint64{3, 6}, L, 1, 2, f.login(2), startRow(2, f.login(1)))
+			c.events = slices.Concat(deletedEvents(2, f.login(1)), c.events)
+			return c
+		}, "", func() []string { return []string{startNote(2), lostNote(L, 1, 2, againFrom(3))} }},
+		{"a gap that holds the chain start, from before it", func(t *testing.T, f chainFixture) holeChange {
+			c := holeChange{rows: []chainRow{gapRow(L, 1, 2, f.login(2)), startRow(2, f.login(1))},
+				events: slices.Concat(deletedEvents(2, f.login(1)), gapEvents(L, 1, 2, f.login(2))), drop: []uint64{3, 6}}
+			return c
+		}, "", func() []string { return []string{startNote(2), missingNote(L, 1, 2, againFrom(3))} }},
+		{"a hole that holds the chain start, and no record after it", func(t *testing.T, f chainFixture) holeChange {
+			// The records 1 to 3 are all lost, and the chain starts at the record 2: the head is the end of the hole.
+			c := lose([]uint64{3, 6, 9}, L, 1, 3, f.login(3), startRow(2, f.login(1)))
+			c.events = slices.Concat(deletedEvents(2, f.login(1)), c.events)
+			return c
+		}, "", func() []string { return []string{startNote(2), lostNote(L, 1, 3, noRecordLeft)} }},
+		{"a hole that holds the chain start, which the records that a deletion left are before", func(t *testing.T, f chainFixture) holeChange {
+			// The chain starts at the record 3 and the record 1 is left; the hole starts at the record 2, which is lost, and ends with
+			// the record 3, so that no record follows it, and the log ends with the record 1.
+			c := lose([]uint64{6, 9}, L, 2, 3, f.login(3), startRow(3, f.login(2)))
+			c.events = slices.Concat(deletedEvents(3, f.login(2)), c.events)
+			return c
+		}, "", func() []string {
+			return []string{startNote(3), lostNote(L, 2, 3, endsWith(1)), leftNote("record 1 is", 3)}
+		}},
+
 		// What it does not pass.
 		{"a row that is one record wider", func(t *testing.T, f chainFixture) holeChange {
 			return lose([]uint64{4}, A, 3, 4, f.activity(4))
@@ -218,7 +296,7 @@ func TestVerifyAuditHoles(t *testing.T) {
 		}, `audit log "login": the head in the table is record 3, but the last record is record 2 (event 6)`, nil},
 		{"every record of the activity log, which a hole does not excuse", func(t *testing.T, f chainFixture) holeChange {
 			return lose([]uint64{1, 2, 4, 5, 7, 8}, A, 1, 6, f.activity(6))
-		}, noActivity, func() []string { return nil }},
+		}, noActivityHole, func() []string { return nil }},
 		{"every record of the login history, with a hole that does not cover the head", func(t *testing.T, f chainFixture) holeChange {
 			return lose([]uint64{3, 6, 9}, L, 1, 2, f.login(2))
 		}, `audit log "login": the table has the head of record 3, but the log has no record`, nil},
@@ -425,7 +503,52 @@ func TestHoleEventsAreSkipped(t *testing.T) {
 		{"a hole of a log that does not exist", append([]byte{0, 4, 9}, hole[3:]...)},
 		{"a hole that has no first record", append(append([]byte{0, 4, 1}, make([]byte, 8)...), hole[11:]...)},
 		{"a hole that ends before it starts", append(append(slices.Clone(hole[:11]), make([]byte, 8)...), hole[19:]...)},
-		{"a hole of the kind that is not there", append([]byte{0, 5}, hole[2:]...)},
+		{"a hole of the kind that is not there", append([]byte{0, 6}, hole[2:]...)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newChainFixture(t)
+			appendRawEvents(t, g.s, tt.data)
+			bad := fmt.Sprintf("audit event %d: not a record of the audit log", nextEvent(t, g.s)-1)
+			if err := g.s.VerifyAudit(t.Context(), nil); !errors.Is(err, audit.ErrBroken) || err == nil || err.Error() != bad {
+				t.Errorf("VerifyAudit() = %v, want %q that wraps audit.ErrBroken", err, bad)
+			}
+			err := g.s.ReadAudit(t.Context(), audit.Filter{}, func(audit.Record) bool { return true })
+			if !errors.Is(err, audit.ErrBroken) || err == nil || err.Error() != bad {
+				t.Errorf("ReadAudit() = %v, want %q that wraps audit.ErrBroken", err, bad)
+			}
+		})
+	}
+}
+
+// TestGapEventsAreSkipped checks that ReadAudit and VerifyAudit skip the event of the daemon for an accepted gap when it is
+// valid, as they skip that of a hole, and find the ones that are not.
+func TestGapEventsAreSkipped(t *testing.T) {
+	for _, log := range []string{dbwire.LogLogin, dbwire.LogActivity} {
+		good := gapEvents(log, 2, 2, wrong)
+		f := newChainFixture(t)
+		want := recordLines(allRecords(t, f.s))
+		appendRawEvents(t, f.s, good...)
+		for who, st := range map[string]*Store{"the writer": f.s, "a reader": openReaderOf(t, f.dir)} {
+			if got := recordLines(allRecords(t, st)); !slices.Equal(got, want) {
+				t.Errorf("the records read by %s = %q, want %q", who, got, want)
+			}
+		}
+		checkVerify(t, f.s, f.dir, f.events, nil, "")
+	}
+
+	gap := gapEvents(dbwire.LogLogin, 2, 2, wrong)[0]
+	for _, tt := range []struct {
+		name string
+		data []byte
+	}{
+		{"a gap cut short", gap[:len(gap)-1]},
+		{"a gap with a byte more", append(slices.Clone(gap), 0)},
+		{"a gap of no log", append([]byte{0, 5, 0}, gap[3:]...)},
+		{"a gap of a log that does not exist", append([]byte{0, 5, 9}, gap[3:]...)},
+		{"a gap that has no first record", append(append([]byte{0, 5, 1}, make([]byte, 8)...), gap[11:]...)},
+		{"a gap that ends before it starts", append(append(slices.Clone(gap[:11]), make([]byte, 8)...), gap[19:]...)},
+		{"the kind 5 of the size of a mark", append([]byte{0, 5}, make([]byte, dbwire.MarkSize-2)...)},
+		{"the kind 6 of the size of a gap", append([]byte{0, 6}, gap[2:]...)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			g := newChainFixture(t)
