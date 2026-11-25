@@ -828,3 +828,353 @@ func TestRepairActivityLogWithNoRecordLeft(t *testing.T) {
 		t.Errorf("the notes are %q, want %q among them", notes, want)
 	}
 }
+
+// loseLogin makes the event of the login record n of the store s, which is open, a record that cannot be read, and closes the
+// store.
+func loseLogin(t *testing.T, s *Store, dir string, n uint64) {
+	t.Helper()
+	e := recordEvent(t, s, audit.LoginLog, n)
+	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{e.Number: []byte("not a record")}, nil, nil))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// repairDropping repairs dir, dropping the events that cannot be read, and returns the report. The time of the rows is chainTime.
+func repairDropping(t *testing.T, dir string) dbserver.RepairReport {
+	t.Helper()
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{Apply: true, Keep: filepath.Join(t.TempDir(), "keep"),
+		DropUnreadable: true, Now: chainTime})
+	if err != nil || !rep.Applied {
+		t.Fatalf("Repair() = %+v, %v, want it applied", rep, err)
+	}
+	return rep
+}
+
+// checkNothingToRepair checks that a repair of dir has nothing to do and nothing to tell.
+func checkNothingToRepair(t *testing.T, dir string) {
+	t.Helper()
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{DropUnreadable: true, Now: chainTime})
+	if err != nil || rep.Things() != 0 || len(rep.Holes) != 0 || len(rep.Gaps) != 0 {
+		t.Errorf("the repair that follows = %+v, %v, want nothing to repair and no gap to tell", rep, err)
+	}
+}
+
+// TestRepairAfterRow checks the records that a repair loses after one that was lost before and recorded, as a hole of an earlier
+// repair, or as a gap that whiteroom-db accept-break accepted: the repair records the hole of the records that it drops itself, from
+// the record after that row, and not a gap that starts with the row's first record, so that whiteroom doctor finds nothing, tells
+// both rows in order, and a third repair has nothing to do.
+func TestRepairAfterRow(t *testing.T) {
+	for _, viaHole := range []bool{true, false} {
+		name := "a gap that accept-break accepted"
+		firstNote := missingNote("login", 3, 3, nextRow(4))
+		if viaHole {
+			name = "a hole of an earlier repair"
+			firstNote = lostNote("login", 3, 3, nextRow(4))
+		}
+		t.Run(name, func(t *testing.T) {
+			// The login records 1 to 6: the record 3 is lost, and recorded, and then the record 4 cannot be read.
+			s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+			if viaHole {
+				loseLogin(t, s, dir, 3)
+				if rep := repairDropping(t, dir); len(rep.Holes) != 1 || rep.Holes[0].First != 3 || rep.Holes[0].Last != 3 || !rep.Holes[0].Row {
+					t.Fatalf("the first repair made the holes %+v, want the record 3, recorded", rep.Holes)
+				}
+				s = reopenLog(t, dir, logdb.Options{})
+			} else {
+				s = dropRecords(t, s, dir, audit.LoginLog, 3)
+				s = closeAcceptReopen(t, s, dir, audit.LoginLog, 4)
+			}
+			if err := s.VerifyAudit(t.Context(), nil); err != nil {
+				t.Fatalf("VerifyAudit() after the first row = %v", err)
+			}
+			loseLogin(t, s, dir, 4)
+
+			rep := repairDropping(t, dir)
+			if len(rep.Holes) != 1 || rep.Holes[0].Log != dbwire.LogLogin || rep.Holes[0].First != 4 || rep.Holes[0].Last != 4 || !rep.Holes[0].Row ||
+				len(rep.Gaps) != 0 {
+				t.Fatalf("the second repair made the holes %+v and told the gaps %+v, want the hole of the record 4, recorded, and no gap", rep.Holes, rep.Gaps)
+			}
+			s = reopenLog(t, dir, logdb.Options{})
+			problems, notes := doctorOf(t, s, dir, nil)
+			if len(problems) != 0 {
+				t.Errorf("whiteroom doctor finds %q after the second repair, want nothing", problems)
+			}
+			if want := []string{firstNote, lostNote("login", 4, 4, againFrom(5))}; !slices.Equal(notes, want) {
+				t.Errorf("the notes are %q, want %q: both rows, in order", notes, want)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkNothingToRepair(t, dir)
+		})
+	}
+}
+
+// TestRepairTwoHolesAtTheEnd checks a hole at the end of a log that the writer has followed with a record, which a second repair
+// loses too, as the last record of the commit that comes after it: the hole of the second starts with the record after the hole
+// of the first, whose row stays, and the two rows pass the head of the log.
+func TestRepairTwoHolesAtTheEnd(t *testing.T) {
+	s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+	loseLogin(t, s, dir, 6)
+	if rep := repairDropping(t, dir); len(rep.Holes) != 1 || rep.Holes[0].First != 6 || rep.Holes[0].Last != 6 || !rep.Holes[0].Row {
+		t.Fatalf("the first repair made the holes %+v, want the record 6, the last, recorded", rep.Holes)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	if err := s.VerifyAudit(t.Context(), nil); err != nil {
+		t.Fatalf("VerifyAudit() after the first hole = %v", err)
+	}
+	update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, "next")) })
+	loseLogin(t, s, dir, 7)
+
+	rep := repairDropping(t, dir)
+	if len(rep.Holes) != 1 || rep.Holes[0].Log != dbwire.LogLogin || rep.Holes[0].First != 7 || rep.Holes[0].Last != 7 || !rep.Holes[0].Row ||
+		len(rep.Gaps) != 0 {
+		t.Fatalf("the second repair made the holes %+v and told the gaps %+v, want the record 7, the last, recorded, and no gap", rep.Holes, rep.Gaps)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	problems, notes := doctorOf(t, s, dir, nil)
+	if len(problems) != 0 {
+		t.Errorf("whiteroom doctor finds %q after the second repair, want nothing", problems)
+	}
+	if want := []string{lostNote("login", 6, 6, nextRow(7)), lostNote("login", 7, 7, endsWith(5))}; !slices.Equal(notes, want) {
+		t.Errorf("the notes are %q, want %q: both rows, in order, the log ending with the record 5", notes, want)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkNothingToRepair(t, dir)
+}
+
+// TestAcceptGapAfterRow checks the gap that whiteroom-db accept-break writes for a record that is missing after a record that was
+// lost before and recorded, as a hole of an earlier repair or as a gap that it accepted: it starts with the record after that row,
+// the row stays as it is, and whiteroom doctor passes, with the notes of both rows in order. The repair tells the same gap, with
+// the command that accepts it.
+func TestAcceptGapAfterRow(t *testing.T) {
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	// The repair tells the gap that is there: the records first to last, at the end of the log if end.
+	told := func(t *testing.T, dir string, first, last uint64, end bool) {
+		t.Helper()
+		rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{})
+		if err != nil || len(rep.Gaps) != 1 || rep.Gaps[0] != (dbserver.RepairGap{Log: dbwire.LogLogin, First: first, Last: last, End: end, Acceptable: true}) {
+			t.Fatalf("Repair() = gaps %+v, %v, want the gap of the records %d to %d, with the command that accepts it", rep.Gaps, err, first, last)
+		}
+	}
+	for _, viaHole := range []bool{true, false} {
+		name := "a gap that accept-break accepted"
+		firstNote := missingNote("login", 3, 3, nextRow(4))
+		if viaHole {
+			name = "a hole of an earlier repair"
+			firstNote = lostNote("login", 3, 3, nextRow(4))
+		}
+		t.Run(name, func(t *testing.T) {
+			// The login record 3 is lost and recorded, and then the record 4 is lost with no row.
+			s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+			if viaHole {
+				loseLogin(t, s, dir, 3)
+				repairDropping(t, dir)
+				s = reopenLog(t, dir, logdb.Options{})
+			} else {
+				s = dropRecords(t, s, dir, audit.LoginLog, 3)
+				s = closeAcceptReopen(t, s, dir, audit.LoginLog, 4)
+			}
+			s = dropRecords(t, s, dir, audit.LoginLog, 4)
+			if err := s.VerifyAudit(t.Context(), nil); err == nil {
+				t.Fatal("VerifyAudit() = nil, want the gap of the record 4")
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			told(t, dir, 4, 4, false)
+
+			acc, err := acceptOf(t, dir, audit.LoginLog, 5)
+			if want := (dbserver.Acceptance{Gap: true, First: 4, Last: 4}); err != nil || acc != want {
+				t.Fatalf("AcceptBreak(login, 5) = %+v, %v, want %+v: the gap starts after the row", acc, err, want)
+			}
+			s = reopenLog(t, dir, logdb.Options{})
+			problems, notes := doctorOf(t, s, dir, nil)
+			if len(problems) != 0 {
+				t.Errorf("whiteroom doctor finds %q after the acceptance, want nothing", problems)
+			}
+			if want := []string{firstNote, missingNote("login", 4, 4, againFrom(5))}; !slices.Equal(notes, want) {
+				t.Errorf("the notes are %q, want %q: both rows, in order", notes, want)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkNothingToRepair(t, dir)
+		})
+	}
+
+	t.Run("at the end of the log", func(t *testing.T) {
+		// The login record 6, the last, is lost and recorded as a hole, and the record 7, which the writer adds, is lost with no row.
+		s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+		loseLogin(t, s, dir, 6)
+		repairDropping(t, dir)
+		s = reopenLog(t, dir, logdb.Options{})
+		update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, "next")) })
+		s = dropRecords(t, s, dir, audit.LoginLog, 7)
+		if err := s.VerifyAudit(t.Context(), nil); err == nil {
+			t.Fatal("VerifyAudit() = nil, want the gap of the record 7")
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		told(t, dir, 7, 7, true)
+
+		acc, err := acceptOf(t, dir, audit.LoginLog, 7)
+		if want := (dbserver.Acceptance{Gap: true, End: true, First: 7, Last: 7}); err != nil || acc != want {
+			t.Fatalf("AcceptBreak(login, 7) = %+v, %v, want %+v: the gap starts after the row", acc, err, want)
+		}
+		s = reopenLog(t, dir, logdb.Options{})
+		problems, notes := doctorOf(t, s, dir, nil)
+		if len(problems) != 0 {
+			t.Errorf("whiteroom doctor finds %q after the acceptance, want nothing", problems)
+		}
+		if want := []string{lostNote("login", 6, 6, nextRow(7)), missingNote("login", 7, 7, endsWith(5))}; !slices.Equal(notes, want) {
+			t.Errorf("the notes are %q, want %q: both rows, in order", notes, want)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		checkNothingToRepair(t, dir)
+	})
+}
+
+// toldGap checks that the repair of dir, as it is shown, tells the one gap of the login history that there is: the records first to
+// last, at the end of the log if end, with the command that accepts it.
+func toldGap(t *testing.T, dir string, first, last uint64, end bool) {
+	t.Helper()
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{})
+	if err != nil || len(rep.Gaps) != 1 || rep.Gaps[0] != (dbserver.RepairGap{Log: dbwire.LogLogin, First: first, Last: last, End: end, Acceptable: true}) {
+		t.Fatalf("Repair() = gaps %+v, %v, want the gap of the records %d to %d, with the command that accepts it", rep.Gaps, err, first, last)
+	}
+}
+
+// gapEventsOf returns how many events of the acceptance of a gap the store s has for the records first to last of the login history.
+func gapEventsOf(t *testing.T, s *Store, first, last uint64) int {
+	t.Helper()
+	n := 0
+	for _, e := range allEvents(t, s) {
+		if g, ok := dbwire.ParseGap(e.Data); ok && g.Log == dbwire.LogLogin && g.First == first && g.Last == last {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAcceptGapAgain checks the acceptance again of a row that ends where the record that follows it begins, whose hash is no
+// longer that of the record after it (the record has been rewritten, or the head has): a row of a gap is replaced, and the event
+// of the acceptance is added once more, and a row of a hole stays, with the row of the gap beside it. VerifyAudit then passes, in
+// the middle of the log and at its end, and the repair told that gap, with the command that accepts it, before.
+func TestAcceptGapAgain(t *testing.T) {
+	for _, viaHole := range []bool{false, true} {
+		kind, events, rows := "a gap that accept-break accepted", 2, 1
+		if viaHole {
+			kind, events, rows = "a hole of an earlier repair", 1, 2
+		}
+		first := func(t *testing.T, n uint64) (*Store, string) {
+			s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+			if viaHole {
+				loseLogin(t, s, dir, n)
+				repairDropping(t, dir)
+				s = reopenLog(t, dir, logdb.Options{})
+			} else {
+				at := n + 1 // the record after the gap, or the head, if the gap is at the end of the log
+				if n == 6 {
+					at = n
+				}
+				s = dropRecords(t, s, dir, audit.LoginLog, n)
+				s = closeAcceptReopen(t, s, dir, audit.LoginLog, at)
+			}
+			if err := s.VerifyAudit(t.Context(), nil); err != nil {
+				t.Fatalf("VerifyAudit() after the first row = %v", err)
+			}
+			return s, dir
+		}
+		t.Run(kind+", in the middle of the log", func(t *testing.T) {
+			s, dir := first(t, 3)
+			// The record 4 is rewritten: the row does not have its prev, and the record 5 names the record as it was.
+			s = rewriteRecord(t, s, dir, audit.LoginLog, 4, func(r *audit.Record) { r.Prev = hashText(wrong[:]) })
+			if err := s.VerifyAudit(t.Context(), nil); err == nil {
+				t.Fatal("VerifyAudit() = nil after the record 4 was rewritten")
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			toldGap(t, dir, 3, 3, false)
+			acc, err := acceptOf(t, dir, audit.LoginLog, 4)
+			if want := (dbserver.Acceptance{Gap: true, First: 3, Last: 3}); err != nil || acc != want {
+				t.Fatalf("AcceptBreak(login, 4) = %+v, %v, want %+v", acc, err, want)
+			}
+			// The record 5 is a break now, which is accepted too.
+			if err := acceptBreakOf(t, dir, audit.LoginLog, 5); err != nil {
+				t.Fatalf("AcceptBreak(login, 5) = %v", err)
+			}
+			s = reopenLog(t, dir, logdb.Options{})
+			problems, _ := doctorOf(t, s, dir, nil)
+			if len(problems) != 0 {
+				t.Errorf("whiteroom doctor finds %q after the acceptance again, want nothing", problems)
+			}
+			if got := gapEventsOf(t, s, 3, 3); got != events {
+				t.Errorf("the store has %d events of the acceptance of the gap of the record 3, want %d", got, events)
+			}
+			if got := len(rawTable(t, s, tableChains)); got != rows+1 {
+				t.Errorf("the table chains has %d rows, want %d: the row of the record 3, the row of the gap if it is not that, and the break", got, rows+1)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkNothingToRepair(t, dir)
+		})
+		t.Run(kind+", at the end of the log", func(t *testing.T) {
+			s, dir := first(t, 6)
+			// The head is another one: the row does not have its hash.
+			head := audit.Head{Log: audit.LoginLog, N: 6, Hash: wrong}
+			s = closeAndRewrite(t, s, dir, rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head}))
+			if err := s.VerifyAudit(t.Context(), nil); err == nil {
+				t.Fatal("VerifyAudit() = nil after the head was rewritten")
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			toldGap(t, dir, 6, 6, true)
+			acc, err := acceptOf(t, dir, audit.LoginLog, 6)
+			if want := (dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6}); err != nil || acc != want {
+				t.Fatalf("AcceptBreak(login, 6) = %+v, %v, want %+v", acc, err, want)
+			}
+			s = reopenLog(t, dir, logdb.Options{})
+			problems, _ := doctorOf(t, s, dir, nil)
+			if len(problems) != 0 {
+				t.Errorf("whiteroom doctor finds %q after the acceptance again, want nothing", problems)
+			}
+			if got := gapEventsOf(t, s, 6, 6); got != events {
+				t.Errorf("the store has %d events of the acceptance of the gap of the record 6, want %d", got, events)
+			}
+			if got := len(rawTable(t, s, tableChains)); got != rows {
+				t.Errorf("the table chains has %d rows, want %d", got, rows)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			checkNothingToRepair(t, dir)
+		})
+	}
+
+	// A row of the gap that still passes is not accepted again, and a row that lies in the way is not replaced.
+	t.Run("a gap that passes", func(t *testing.T) {
+		s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+		s = dropRecords(t, s, dir, audit.LoginLog, 3)
+		s = closeAcceptReopen(t, s, dir, audit.LoginLog, 4)
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		want := "record 4 comes after the record 3 whose gap is accepted already"
+		if _, err := acceptOf(t, dir, audit.LoginLog, 4); err == nil || err.Error() != want {
+			t.Errorf("AcceptBreak(login, 4) = %v, want %q", err, want)
+		}
+	})
+}

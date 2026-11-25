@@ -514,6 +514,24 @@ func TestCompactDropsLeftovers(t *testing.T) {
 			t.Errorf("a second whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
 		}
 	})
+	t.Run("the store has no event of the deletion, and new records go with them", func(t *testing.T) {
+		// The record 3 is old too, and goes as a new record: the line says which of the records that went are the leftovers.
+		d := newDirs(t)
+		writeCommits(t, d.data, commitAt{months(40), [][]byte{[]byte(`{"log":"activity","n":1,"at":"2026-01-01T00:00:00Z","action":"x"}`), recs[0]}},
+			commitAt{months(30), [][]byte{recs[1]}}, commitAt{months(20), [][]byte{recs[2]}}, commitAt{months(2), [][]byte{recs[3]}})
+		writeStart(t, d.data, 3, sha256.Sum256(recs[1]), months(22))
+		want := "compacted " + d.data + "\ndeleted the login records 1 to 3, from before " + months(2).AddDate(-1, 0, 0).Format(time.RFC3339) + "\n" + // the newest mark is that of the record 4
+			"the records 1 to 2 among them were left by the deletion of the records before record 3 at " + months(22).Format(time.RFC3339) +
+			"; the store has no event of that deletion\n"
+		code, stdout, stderr := runCmd(t, "compact", "-data", d.data)
+		if code != 0 || stdout != want || stderr != "" {
+			t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+		code, stdout, stderr = runCmd(t, "compact", "-data", d.data)
+		if want := "compacted " + d.data + "\n"; code != 0 || stdout != want || stderr != "" {
+			t.Errorf("a second whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+	})
 	t.Run("the first record that remains does not follow", func(t *testing.T) {
 		// The record 3 has another prev than the hash that the chain start has, and no break is accepted for it.
 		three := loginRecord(3, recordHash(recs[0]))

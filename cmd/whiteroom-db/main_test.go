@@ -160,9 +160,14 @@ func TestUsage(t *testing.T) {
 		"but for what a deletion adds (the new start of the chain, the event of the deletion and a mark)",
 		"A compaction that stops before its end leaves the login records that it was to drop",
 		"drops them, whatever their age, if they are exactly the records before the chain start",
-		"a hole that \"whiteroom-db repair\" recorded, or a gap that \"whiteroom-db accept-break\" accepted, passes",
+		"holes that \"whiteroom-db repair\" recorded and gaps that \"whiteroom-db accept-break\" accepted pass, one after another",
+		"with the record before it, which has the hash that the chain start has of it",
+		"or at holes and gaps that go on to the first record that remains, or, if none is left, to the head of the login history",
+		"a hole or a gap that holds the chain start passes, and one that ends with the record before it has that hash",
 		"The event of that deletion is not needed; TIME is then the cutoff of that earlier run",
 		"deleted the login records A to B, which the deletion of the records before record K at TIME left; the store has no event of that deletion",
+		"if it dropped new records too, the usual line is followed by \"the records A to M among them were left by the deletion of the " +
+			"records before record K at TIME; the store has no event of that deletion\"",
 		"They go also when the command then stops at the first record that remains",
 		"If they are not exactly that, it keeps them, and says where it stopped"} {
 		if !strings.Contains(compactWords, text) {
@@ -193,11 +198,17 @@ func TestUsage(t *testing.T) {
 		"A gap that holds both K-1 and K leaves no hash to check",
 		"whether it is a record or the head of the log",
 		"a gap across the start of the chain whose record K-1 has not the hash that the start of the chain has, which the problem would stay for",
+		"and the gap that it writes is the one that the line tells: the holes and gaps that are there lead on from the record that the log expects, and the gap starts with the record after the last of them",
+		"a hole or a gap before it that ends with record K-1",
+		"a gap that would lie over a hole or a gap that is there (one that is wider, or starts inside it, but for the row that it accepts again)",
+		"the gap is that row again: a gap row is replaced, and the event of the acceptance is added once more; a hole row stays, and the gap row is put beside it",
+		"which has been rewritten since, or the head, for a gap at the end",
 		"after a gap at the end of an activity log that has none", "goes on reporting the empty log until the writer has added the next record",
 		"accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
 		"accepted the gap of the records A to B before record N of the audit log LOG in DATA; whiteroom doctor checks the log again from record N",
 		`("the gap of record A" if it is one record)`, "at the end of the audit log LOG in DATA; whiteroom doctor checks that the log ends with record A-1",
-		`(or "that the log has no record")`,
+		`(or "that the log has no record", for the login history;`,
+		`for an activity log that has none, "whiteroom doctor goes on reporting that the log has no record until the writer adds its next record")`,
 		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
 		if !strings.Contains(acceptWords, text) {
 			t.Errorf("the usage of whiteroom-db accept-break does not say %q:\n%s", text, help["accept-break"])
@@ -249,6 +260,13 @@ func TestUsage(t *testing.T) {
 		"A store of the table schema 8 or 9 gets the schema 10 for that; one of an older schema is refused",
 		"A gap that is no hole of this repair is told in a \"gap:\" line, and stays what it was",
 		`until an operator who has looked into it accepts it with "whiteroom-db accept-break"`, "A gap that was accepted so is recorded already",
+		"A gap that accept-break would refuse (one among the login records that a deletion left",
+		"one at the end of an activity log that has no record) is told without the command",
+		`and "whiteroom doctor" goes on reporting it`,
+		"The records that a repair drops after a hole or an accepted gap that the log has already are a hole of their own, which starts with the record after it",
+		"one that would lie over a hole or a gap that is there, and one at the end of an activity log that has no record) is told without the command",
+		"and a gap that it tells there is the one that accept-break then writes",
+		"with the command that accepts it, if there is one",
 		"is kept, and its number is told, unless -drop-unreadable-records is given",
 		"-apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and makes them durable, and then repairs",
 		"DIR must be missing, in a directory that exists, or empty, and must not be the data directory or in it",

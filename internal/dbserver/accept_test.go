@@ -122,6 +122,15 @@ func acceptedText(n, first, last int) string {
 	return fmt.Sprintf("record %d comes after %s whose gap is accepted already", n, lostRecords(first, last))
 }
 
+// stepsOf is the step of a store that does each of steps, in order.
+func stepsOf(steps ...func(t *testing.T, f *fixture)) func(t *testing.T, f *fixture) {
+	return func(t *testing.T, f *fixture) {
+		for _, step := range steps {
+			step(t, f)
+		}
+	}
+}
+
 // belowText is the refusal of the record n, which comes after the record before, whose number is above it.
 func belowText(n, before int) string {
 	return fmt.Sprintf("record %d does not follow record %d in number: it is below that record, which is neither a break nor a gap "+
@@ -312,16 +321,28 @@ func TestAcceptGap(t *testing.T) {
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
 		{"a record when a hole of another place is there", login(1, 2, 4), holeAt(L, 7, 7, chain.sum(7)), L, 4,
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
-		{"a record that a hole that is wider does not pass", login(1, 2, 4), holeAt(L, 3, 4, chain.sum(4)), L, 4,
+		{"a record that a hole that is narrower does not pass: the gap starts after it", login(1, 2, 5), holeAt(L, 3, 3, chain.sum(3)), L, 5,
+			Acceptance{Gap: true, First: 4, Last: 4}, chain.sum(4), 2},
+		{"a record that a gap that is narrower does not pass: the gap starts after it", login(1, 2, 5), gapAt(L, 3, 3, chain.sum(3)), L, 5,
+			Acceptance{Gap: true, First: 4, Last: 4}, chain.sum(4), 2},
+		{"a record that a hole with another hash does not pass: accepted again, beside the hole", login(1, 2, 4), holeAt(L, 3, 3, wrong32), L, 4,
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
-		{"a record that a hole that is narrower does not pass", login(1, 2, 5), holeAt(L, 3, 3, chain.sum(3)), L, 5,
-			Acceptance{Gap: true, First: 3, Last: 4}, chain.sum(4), 2},
-		{"a record that a hole with another hash does not pass", login(1, 2, 4), holeAt(L, 3, 3, wrong32), L, 4,
-			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
-		{"a record that a gap that is wider does not pass, whose row is replaced", login(1, 2, 4), gapAt(L, 3, 4, chain.sum(4)), L, 4,
+		{"a record that a gap with another hash does not pass: accepted again, replacing the row", login(1, 2, 4), gapAt(L, 3, 3, wrong32), L, 4,
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 1},
-		{"a record that a gap with another hash does not pass, whose row is replaced", login(1, 2, 4), gapAt(L, 3, 3, wrong32), L, 4,
-			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 1},
+		{"a record that a hole and a gap with another hash do not pass: the gap is replaced", login(1, 2, 4),
+			both(holeAt(L, 3, 3, wrong32), gapAt(L, 3, 3, wrong32)), L, 4, Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
+		{"a record that a gap of two records with another hash does not pass", login(1, 2, 5), gapAt(L, 3, 4, wrong32), L, 5,
+			Acceptance{Gap: true, First: 3, Last: 4}, chain.sum(4), 1},
+		{"a record that two rows do not pass, the second a gap with another hash: it is accepted again", login(1, 2, 5),
+			both(holeAt(L, 3, 3, chain.sum(3)), gapAt(L, 4, 4, wrong32)), L, 5, Acceptance{Gap: true, First: 4, Last: 4}, chain.sum(4), 2},
+		{"a record that two rows do not pass, the second a hole with another hash: the gap is added", login(1, 2, 5),
+			both(gapAt(L, 3, 3, chain.sum(3)), holeAt(L, 4, 4, wrong32)), L, 5, Acceptance{Gap: true, First: 4, Last: 4}, chain.sum(4), 3},
+		{"the first records of a log, when a gap with another hash is there", login(3, 4), gapAt(L, 1, 2, wrong32), L, 3,
+			Acceptance{Gap: true, First: 1, Last: 2}, chain.sum(2), 1},
+		{"a record that two rows that are narrower do not pass", login(1, 2, 7), both(holeAt(L, 3, 3, chain.sum(3)), gapAt(L, 4, 5, chain.sum(5))),
+			L, 7, Acceptance{Gap: true, First: 6, Last: 6}, chain.sum(6), 3},
+		{"a record that a hole that is narrower does not pass, and a gap that has the same first", login(1, 2, 6),
+			both(holeAt(L, 3, 3, chain.sum(3)), gapAt(L, 3, 4, chain.sum(4))), L, 6, Acceptance{Gap: true, First: 5, Last: 5}, chain.sum(5), 3},
 		{"a record that a gap of the other log does not pass", login(1, 2, 4), gapAt(A, 3, 3, chain.sum(3)), L, 4,
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
 		{"a record after a gap that is accepted for the records before it", login(1, 2, 4, 6), gapAt(L, 3, 3, chain.sum(3)), L, 6,
@@ -354,7 +375,18 @@ func TestAcceptGap(t *testing.T) {
 		{"the records at the end, when a hole is in the middle", login(1, 2, 4), both(holeAt(L, 3, 3, chain.sum(3)),
 			headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 5, Last: 5}, chain.sum(5), 2},
 		{"the records at the end, when a hole that does not end with the head is there", login(1, 2, 3), both(holeAt(L, 4, 4, chain.sum(4)),
-			headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 4, Last: 5}, chain.sum(5), 2},
+			headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 5, Last: 5}, chain.sum(5), 2},
+		{"the records at the end, when a gap that does not end with the head is there", login(1, 2, 3), both(gapAt(L, 4, 4, chain.sum(4)),
+			headAt(L, 6, chain.sum(6))), L, 6, Acceptance{Gap: true, End: true, First: 5, Last: 6}, chain.sum(6), 2},
+		{"the records at the end, when a hole that ends with the head has another hash: accepted again, beside the hole", login(1, 2, 3),
+			both(holeAt(L, 4, 5, wrong32), headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 4, Last: 5}, chain.sum(5), 2},
+		{"the records at the end, when a gap that ends with the head has another hash: accepted again, replacing the row", login(1, 2, 3),
+			both(gapAt(L, 4, 5, wrong32), headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 4, Last: 5}, chain.sum(5), 1},
+		{"the records at the end, when the second of two rows ends with the head and has another hash", login(1, 2),
+			both(holeAt(L, 3, 3, chain.sum(3)), gapAt(L, 4, 5, wrong32), headAt(L, 5, chain.sum(5))), L, 5,
+			Acceptance{Gap: true, End: true, First: 4, Last: 5}, chain.sum(5), 2},
+		{"the records at the end, when two rows that do not end with the head are there", login(1, 2), both(holeAt(L, 3, 3, chain.sum(3)),
+			gapAt(L, 4, 4, chain.sum(4)), headAt(L, 6, chain.sum(6))), L, 6, Acceptance{Gap: true, End: true, First: 5, Last: 6}, chain.sum(6), 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var steps []func(t *testing.T, f *fixture)
@@ -492,7 +524,7 @@ func TestAcceptBreakFirst(t *testing.T) {
 
 // TestAcceptBreakRefused checks that each refusal says why, in the words of the command, and writes nothing.
 func TestAcceptBreakRefused(t *testing.T) {
-	chain, activity := newChain(dbwire.LogLogin, 6), newChain(dbwire.LogActivity, 6)
+	chain, activity := newChain(dbwire.LogLogin, 8), newChain(dbwire.LogActivity, 6)
 	good := [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), chain.rec(5), chain.rec(6)}
 	withBreak := slices.Clone(good)
 	withBreak[3] = changedRecord(dbwire.LogLogin, 4, chain) // the record 5 is the break
@@ -617,6 +649,43 @@ func TestAcceptBreakRefused(t *testing.T) {
 				"accept the gap with -record 6"},
 		{"a record that a hole leaves out", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)}, holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)),
 			dbwire.LogLogin, 3, "record 3 of the audit log login is not in the store"},
+		{"a record that a hole leaves out, before a gap", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)}, holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)),
+			dbwire.LogLogin, 3, "record 3 of the audit log login is not in the store"},
+		{"a record that the gap after a hole leaves out", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)}, holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)),
+			dbwire.LogLogin, 4, "record 4 of the audit log login is not in the store: it is in the gap of record 4 before record 5; accept the gap " +
+				"with -record 5"},
+		{"a record after a hole that is wider", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)}, holeAt(dbwire.LogLogin, 3, 4, chain.sum(4)),
+			dbwire.LogLogin, 4, "the gap of record 3 before record 4 would lie over the hole of the records 3 to 4: no gap is accepted over a " +
+				"row that is there"},
+		{"a record after a gap that is wider", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)}, gapAt(dbwire.LogLogin, 3, 4, chain.sum(4)),
+			dbwire.LogLogin, 4, "the gap of record 3 before record 4 would lie over the accepted gap of the records 3 to 4: no gap is accepted " +
+				"over a row that is there"},
+		{"a record after a hole, when another hole lies in the gap", [][]byte{chain.rec(1), chain.rec(2),
+			chain.rec(6)}, stepsOf(holeAt(dbwire.LogLogin, 3, 3, chain.sum(3)), holeAt(dbwire.LogLogin, 5, 5, chain.sum(5))), dbwire.LogLogin, 6,
+			"the gap of the records 4 to 5 before record 6 would lie over the hole of record 5: no gap is accepted over a row that is there"},
+		{"a record after a hole with another hash, across the chain start with another hash", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			stepsOf(startAt(4, wrong32), holeAt(dbwire.LogLogin, 3, 3, wrong32)), dbwire.LogLogin, 4,
+			"the gap of record 3 before record 4 is not accepted: record 4 does not have as its prev the hash that the chain start has of " +
+				"record 3"},
+		{"a record after a hole with another hash, and a gap at the same place that is wider", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
+			stepsOf(holeAt(dbwire.LogLogin, 3, 3, wrong32), gapAt(dbwire.LogLogin, 3, 4, chain.sum(4))), dbwire.LogLogin, 4,
+			"the gap of record 3 before record 4 would lie over the accepted gap of the records 3 to 4: no gap is accepted over a row that is " +
+				"there"},
+		{"a record after a gap with another hash, and a hole inside the gap's end", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)},
+			stepsOf(gapAt(dbwire.LogLogin, 3, 4, wrong32), holeAt(dbwire.LogLogin, 4, 4, chain.sum(4))), dbwire.LogLogin, 5,
+			"the gap of the records 3 to 4 before record 5 would lie over the hole of record 4: no gap is accepted over a row that is there"},
+		{"a gap at the end that a row that is wider lies over", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3)},
+			stepsOf(headAt(dbwire.LogLogin, 5, chain.sum(5)), gapAt(dbwire.LogLogin, 4, 6, chain.sum(6))), dbwire.LogLogin, 5,
+			"the gap of the records 4 to 5 at the end of the audit log login would lie over the accepted gap of the records 4 to 6: no gap is " +
+				"accepted over a row that is there"},
+		{"a gap after a row that ends with the record before the chain start, with another hash", [][]byte{chain.rec(1), chain.rec(2),
+			chain.rec(7)}, stepsOf(startAt(5, chain.sum(4)), holeAt(dbwire.LogLogin, 3, 4, wrong32)), dbwire.LogLogin, 7,
+			"the gap of the records 5 to 6 before record 7 is not accepted: the hole of the records 3 to 4 does not have the hash that the " +
+				"chain start has of record 4"},
+		{"a gap at the end after a row that ends with the record before the chain start, with another hash", [][]byte{chain.rec(1), chain.rec(2)},
+			stepsOf(startAt(5, chain.sum(4)), holeAt(dbwire.LogLogin, 3, 4, wrong32), headAt(dbwire.LogLogin, 7, chain.sum(7))), dbwire.LogLogin, 7,
+			"the gap at the end of the audit log login is not accepted: the hole of the records 3 to 4 does not have the hash that the chain " +
+				"start has of record 4"},
 		{"a record that a gap that is accepted leaves out", [][]byte{chain.rec(1), chain.rec(2), chain.rec(4)},
 			gapAt(dbwire.LogLogin, 3, 3, chain.sum(3)), dbwire.LogLogin, 3, "record 3 of the audit log login is not in the store"},
 		{"a record that a gap leaves out, before the record that follows another", [][]byte{chain.rec(1), chain.rec(2), chain.rec(5),
@@ -986,13 +1055,13 @@ func TestAcceptBreakAcrossChainStart(t *testing.T) {
 		refused(t, f, 7, acceptedText(7, 3, 6))
 	})
 	t.Run("a gap before a record that a row that holds the chain start does not pass", func(t *testing.T) {
-		// The row ends with the record 6, and the record 8 has the hash of the record 7: the gap is the record 7.
+		// The row ends with the record 6, and the record 8 has the hash of the record 7: the gap is the record 7, after the row.
 		f := recordsFixture(t, [][]byte{chain.rec(8), chain.rec(9)}, both(startAt(5, chain.sum(4)), holeAt(L, 3, 6, chain.sum(6))))
 		before := viewOf(t, f)
-		if acc, err := accept(t, f, L, 8); err != nil || acc != (Acceptance{Gap: true, First: 5, Last: 7}) {
-			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the records 5 to 7", acc, err)
+		if acc, err := accept(t, f, L, 8); err != nil || acc != (Acceptance{Gap: true, First: 7, Last: 7}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the record 7", acc, err)
 		}
-		checkGapAccepted(t, f, before, L, 5, 7, chain.sum(7))
+		checkGapAccepted(t, f, before, L, 7, 7, chain.sum(7))
 	})
 	t.Run("a head behind a record that is absent", func(t *testing.T) {
 		// The records 1, 2, 4, 5 and 6 are there and the head names the record 3, which a writer that has been broken into can set:

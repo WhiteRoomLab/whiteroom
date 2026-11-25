@@ -3,6 +3,7 @@ package dbserver
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -66,6 +67,12 @@ type RepairGap struct {
 	First, Last uint64
 	// End says that the gap is at the end of the log: the head of the log names the record Last, which the log does not have.
 	End bool
+	// Acceptable says that whiteroom-db accept-break accepts the gap, at the record after it (at the end of the log, the head's), and
+	// writes the row for exactly the records First to Last (a row that reaches the gap's end without passing the record after it is
+	// the gap, which accept-break accepts again): the walk of the repair knows what AcceptBreak checks. A gap among the records that a
+	// deletion left, a record whose prev is no hash, a row that the gap would lie over, a step across the chain start with another
+	// hash of the record before it, and the end of an activity log that has no record, are not.
+	Acceptable bool
 }
 
 // RepairReport is what Repair found and did. Nothing in it is a key or a value of a row, or the data of an object.
@@ -649,8 +656,9 @@ type auditLog struct {
 	bad   string                      // why a row of the table chains cannot be read, "" if every row can
 	head  *auditHead
 
-	last, lastEvent uint64 // the last record that was read, and its event; 0: none
-	dropped         uint64 // the unreadable events that the repair drops, met after the last record
+	last, lastEvent uint64            // the last record that was read, and its event; 0: none
+	lastSum         [sha256.Size]byte // the hash of the stored bytes of the last record
+	dropped         uint64            // the unreadable events that the repair drops, met after the last record
 }
 
 type auditHead struct {
@@ -761,36 +769,68 @@ func (w *auditWalk) event(e logdb.Event) bool {
 			}
 		}
 	case c.record:
-		w.record(w.logs[c.log], c, e.Number)
+		w.record(w.logs[c.log], c, e.Number, sha256.Sum256(e.Data))
 	}
 	return w.err == nil
 }
 
-func (w *auditWalk) record(l *auditLog, c classified, number uint64) {
+func (w *auditWalk) record(l *auditLog, c classified, number uint64, sum [sha256.Size]byte) {
 	expected := dbwire.ChainExpected(l.start, l.last)
 	if c.n > expected {
 		w.skip(l, c, number, expected)
 	}
-	l.last, l.lastEvent, l.dropped = c.n, number, 0
+	l.last, l.lastEvent, l.lastSum, l.dropped = c.n, number, sum, 0
 }
 
-// skip finds what the record c, which has the event number number, skips: the log expected the record expected. The records
-// that it skips are a hole of the repair only if the repair drops at least as many events between the two records as there
-// are records missing: one audit record is one event, so with fewer, a gap that was there before the repair is part of them.
+// skip finds what the record c, which has the event number number, skips: the log expected the record expected. The rows that the
+// walk goes through from there (dbwire.ChainReach) account for the records up to their end; the records after it, up to c, are
+// missing, and are a hole of the repair only if the repair drops at least as many events between the two records as there are
+// records missing: one audit record is one event, so with fewer, a gap that was there before the repair is part of them. Rows
+// that reach the record before c without passing c have nothing missing after them: nothing is made, and the gap that is told is
+// the last of them.
 func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 	if l.bad != "" {
 		w.err = fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		return
 	}
-	switch recorded := dbwire.ChainPass(l.holes, l.gaps, l.start, l.last, c.n, c.prev) != nil; {
-	case recorded:
-	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-expected:
-		h := RepairHole{Log: l.name, First: expected, Last: c.n - 1}
-		h.Hash, h.Row = parseHash(c.prev)
-		w.rep.Holes = append(w.rep.Holes, h)
-	default:
-		w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: l.name, First: expected, Last: c.n - 1})
+	if dbwire.ChainPass(l.holes, l.gaps, l.start, l.last, c.n, c.prev) != nil {
+		return
 	}
+	rows := dbwire.ChainReach(l.holes, l.gaps, l.start, l.last, c.n)
+	first := reachedTo(rows, expected)
+	hash, isHash := parseHash(c.prev)
+	switch {
+	case first == c.n:
+		// The last row reaches the record before c without passing c: nothing is missing after it, and the gap that is told is that row
+		// (accept-break accepts it again).
+		first = rows[len(rows)-1].First
+	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-first:
+		w.rep.Holes = append(w.rep.Holes, RepairHole{Log: l.name, First: first, Last: c.n - 1, Hash: hash, Row: isHash})
+		return
+	}
+	gap := RepairGap{Log: l.name, First: first, Last: c.n - 1}
+	gap.Acceptable = isHash && w.acceptable(l, c.n, hash, false)
+	w.rep.Gaps = append(w.rep.Gaps, gap)
+}
+
+// reachedTo returns the first record that the rows of a walk that expected the record expected do not account for: the one after
+// the last row, or expected if there is none.
+func reachedTo(rows []dbwire.PassedRow, expected uint64) uint64 {
+	if len(rows) == 0 {
+		return expected
+	}
+	return rows[len(rows)-1].Last + 1
+}
+
+// acceptable reports whether whiteroom-db accept-break accepts the gap before the record n (at the end of the log, the head n) of
+// the log l, whose last record that was read is the one before the gap: the gap that it writes (planGap) is the one that the repair
+// tells, and it refuses a record that a deletion left, a gap that would lie over a row, and a step across the chain start with
+// another hash of the record before it. The record after the gap, or the head, has the hash hash.
+func (w *auditWalk) acceptable(l *auditLog, n uint64, hash [sha256.Size]byte, end bool) bool {
+	if l.start != nil && n < l.start.First {
+		return false
+	}
+	return planGap(l.holes, l.gaps, l.start, l.last, l.lastSum, n, hash, end).why == gapOK
 }
 
 // finish finds the records that the head of each log names after its last record, which the repair loses, and puts the holes
@@ -811,13 +851,19 @@ func (w *auditWalk) finish() error {
 		if l.bad != "" {
 			return fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		}
-		// The records that the head names after the last one that was read, against the events dropped after it: the records were
-		// written in the commits of the kept state, so the events of the commits after it are none of them.
-		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-expected+1 {
-			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: expected, Last: l.head.n, Hash: l.head.hash, Row: true})
-		} else {
-			w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: name, First: expected, Last: l.head.n, End: true})
+		// The records that the head names after the rows that go through (dbwire.ChainReach: a row that ends with the head does not,
+		// since it does not pass it, and the hole of the repair takes its place), against the events dropped after the last record
+		// that was read: the records were written in the commits of the kept state, so the events of the commits after it are none of
+		// them.
+		first := reachedTo(dbwire.ChainReach(l.holes, l.gaps, l.start, l.last, l.head.n), expected)
+		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-first+1 {
+			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: first, Last: l.head.n, Hash: l.head.hash, Row: true})
+			continue
 		}
+		gap := RepairGap{Log: name, First: first, Last: l.head.n, End: true}
+		// An activity log that has no record left is not whole with the gap: the log always has a record.
+		gap.Acceptable = (name != dbwire.LogActivity || l.last != 0) && w.acceptable(l, l.head.n, l.head.hash, true)
+		w.rep.Gaps = append(w.rep.Gaps, gap)
 	}
 	order := func(a, b string) int {
 		return cmp.Compare(slices.Index(repairLogs[:], a), slices.Index(repairLogs[:], b))

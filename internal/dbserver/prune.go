@@ -24,11 +24,13 @@ type Deleted struct {
 	// Schema is the table schema of the store if it is older than dbwire.TableVersion and records were kept for that
 	// reason, which is why First and Last are 0; else 0.
 	Schema uint64
-	// LeftBefore and LeftBy are set when the records that the call dropped are only those that an earlier deletion left, and
-	// the store has no event of that deletion: the first record that the deletion kept, which the chain start names, and the
-	// time of the chain start. Else they are 0 and the zero time.
+	// LeftBefore, LeftBy and LeftLast are set when the call dropped records that an earlier deletion left, and the store has no
+	// event of that deletion: the first record that the deletion kept, which the chain start names, the time of the chain start, and
+	// the last of the records that it left that were dropped (the first is First). Last is LeftLast if those are all that the call
+	// dropped, and above it if it dropped new records too. Else they are 0 and the zero time.
 	LeftBefore uint64
 	LeftBy     time.Time
+	LeftLast   uint64
 }
 
 // CompactLogin is m.Compact that also drops the oldest records of the login history: those whose commit the daemon marked
@@ -84,7 +86,7 @@ func CompactLogin(ctx context.Context, m *logdb.Maintenance, now time.Time) (Del
 	if p.schema != 0 && (d.cut > 0 || d.limit > 0) {
 		schema = p.schema
 		d.cut, d.limit, d.dropFirst, d.dropLast = 0, 0, 0, 0
-		d.leftBefore, d.leftBy = 0, time.Time{}
+		d.leftBefore, d.leftBy, d.leftLast = 0, time.Time{}, 0
 	}
 	if d.cut > 0 {
 		last := p.recs[d.cut-1]
@@ -118,7 +120,7 @@ func CompactLogin(ctx context.Context, m *logdb.Maintenance, now time.Time) (Del
 		return Deleted{}, err
 	}
 	return Deleted{First: d.dropFirst, Last: d.dropLast, Cutoff: d.cutoff, Stopped: d.stopped, Schema: schema,
-		LeftBefore: d.leftBefore, LeftBy: d.leftBy}, nil
+		LeftBefore: d.leftBefore, LeftBy: d.leftBy, LeftLast: d.leftLast}, nil
 }
 
 // loginRecord is a login record that the walk has accepted.
@@ -514,9 +516,10 @@ type deletion struct {
 	limit               uint64
 	dropFirst, dropLast uint64
 	stopped             string
-	// leftBefore and leftBy are those of Deleted.
+	// leftBefore, leftBy and leftLast are those of Deleted.
 	leftBefore uint64
 	leftBy     time.Time
+	leftLast   uint64
 }
 
 func (p *loginPass) plan(now time.Time) deletion {
@@ -570,8 +573,8 @@ func (p *loginPass) plan(now time.Time) deletion {
 			d.dropFirst = p.recs[0].n
 		}
 	}
-	if left && d.cut == 0 && p.deleted == nil {
-		d.leftBefore, d.leftBy = p.start.First, p.start.At
+	if left && p.deleted == nil {
+		d.leftBefore, d.leftBy, d.leftLast = p.start.First, p.start.At, p.left[len(p.left)-1].n
 	}
 	if p.stop != "" && (p.stopLogin || (len(p.left) > 0 && len(p.recs) == 0)) && old == len(p.recs) {
 		d.stopped = p.stop

@@ -252,7 +252,7 @@ func (v view) newEvents(before view) []uint64 {
 func checkDeleted(t *testing.T, got, want Deleted) {
 	t.Helper()
 	if got.First != want.First || got.Last != want.Last || got.Stopped != want.Stopped || got.Schema != want.Schema ||
-		got.LeftBefore != want.LeftBefore || !got.LeftBy.Equal(want.LeftBy) || !want.Cutoff.IsZero() && !got.Cutoff.Equal(want.Cutoff) {
+		got.LeftBefore != want.LeftBefore || got.LeftLast != want.LeftLast || !got.LeftBy.Equal(want.LeftBy) || !want.Cutoff.IsZero() && !got.Cutoff.Equal(want.Cutoff) {
 		t.Errorf("CompactLogin() = %+v, want %+v", got, want)
 	}
 }
@@ -984,7 +984,7 @@ func TestCompactLoginBreaks(t *testing.T) {
 		four := auditRecord("login", 4, hashText(sha256.Sum256(first)))
 		f := build(t, [][]byte{chain.rec(1), chain.rec(2), first, four}, old(4), 3, sha256.Sum256(first), startAt(3, chain.sum(2)))
 		before := viewOf(t, f)
-		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff, LeftBefore: 3, LeftBy: pruneNow,
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff, LeftBefore: 3, LeftBy: pruneNow, LeftLast: 2,
 			Stopped: "record 3: prev is not the hash that the chain start has of record 2"})
 		after := viewOf(t, f)
 		kept(t, before, after, "L1", "L2")
@@ -1288,7 +1288,7 @@ func checkCompactLoginLeftover(t *testing.T, r ranges) {
 			t.Fatal(err)
 		}
 		before := viewOf(t, f)
-		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: cutoff, LeftBefore: 5, LeftBy: monthsAgo(25)})
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: cutoff, LeftBefore: 5, LeftBy: monthsAgo(25), LeftLast: 3})
 		kept(t, before, viewOf(t, f), "L1", "L2", "L3")
 	})
 	t.Run("a row between them and the chain start, with the walk that goes on", func(t *testing.T) {
@@ -2143,7 +2143,8 @@ func TestCompactLoginMaintenanceMark(t *testing.T) {
 // TestCompactLoginLeftoverLostEvent checks the records before the chain start when the store has no event of the deletion that
 // left them, because it is lost or is of another deletion: the chain start says what the deletion left, so they go if they are
 // exactly that, whatever their age, and the call says that the event is not there. A new deletion goes on from the start as it
-// does with the event, and the call then says nothing of the event.
+// does with the event, and the call says that the event is not there too: the records that the deletion left, and, above them,
+// the new ones.
 func TestCompactLoginLeftoverLostEvent(t *testing.T) {
 	chain := newLoginChain(6)
 	cutoff := pruneNow.AddDate(-1, 0, 0)
@@ -2175,7 +2176,7 @@ func TestCompactLoginLeftoverLostEvent(t *testing.T) {
 		t.Run(tt.name+", nothing new to delete", func(t *testing.T) {
 			f := mk(t, []time.Time{monthsAgo(40), monthsAgo(39), monthsAgo(5), monthsAgo(4)})
 			before := viewOf(t, f)
-			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff, LeftBefore: 3, LeftBy: startTime})
+			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff, LeftBefore: 3, LeftBy: startTime, LeftLast: 2})
 			after := viewOf(t, f)
 			kept(t, before, after, "L1", "L2")
 			checkStart(t, after, 3, chain.sum(2), startTime)
@@ -2188,7 +2189,9 @@ func TestCompactLoginLeftoverLostEvent(t *testing.T) {
 		t.Run(tt.name+", a new deletion goes on from the start", func(t *testing.T) {
 			f := mk(t, []time.Time{monthsAgo(40), monthsAgo(39), monthsAgo(38), monthsAgo(37)})
 			before := viewOf(t, f)
-			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 4, Cutoff: cutoff})
+			// The records 1 and 2 are what the deletion left, and its event is not there: the call says so, and that the records 3 and
+			// 4 are new.
+			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 4, Cutoff: cutoff, LeftBefore: 3, LeftBy: startTime, LeftLast: 2})
 			after := viewOf(t, f)
 			kept(t, before, after, "L1", "L2", "L3", "L4")
 			checkStart(t, after, 5, chain.sum(4), pruneNow)
@@ -2241,7 +2244,7 @@ func TestCompactLoginLeftoverStopAtK(t *testing.T) {
 			want := Deleted{First: 1, Last: 2, Cutoff: deletedCutoff, Stopped: tt.stopped}
 			if !event {
 				name = tt.name + ", without the event of the deletion"
-				want = Deleted{First: 1, Last: 2, Cutoff: cutoff, Stopped: tt.stopped, LeftBefore: 3, LeftBy: startTime}
+				want = Deleted{First: 1, Last: 2, Cutoff: cutoff, Stopped: tt.stopped, LeftBefore: 3, LeftBy: startTime, LeftLast: 2}
 			}
 			t.Run(name, func(t *testing.T) {
 				f := build(t, tt.records, 3, chain.sum(2), event)

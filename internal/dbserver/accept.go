@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,7 +22,8 @@ type Acceptance struct {
 	// First and Last are the first and the last record of the gap.
 	First, Last uint64
 	// NoRecord says that the log has no record that was read before the gap, so that it is the whole of what the log goes on
-	// with: a gap at the end of an empty log.
+	// with: a gap at the end of an empty log. The activity log always has a record, so for it VerifyAudit goes on reporting the log
+	// as empty until the writer has added one.
 	NoRecord bool
 }
 
@@ -41,16 +43,22 @@ type Acceptance struct {
 //
 // A gap is a record whose number is above the one that the walk expects after the last record that it has read (the record
 // after it, counting the records that a deletion left before the chain start, or the first that remains, or 1), and that no hole
-// of a repair and no gap that is accepted already passes. The records E to N-1 are missing, and the record N has a prev that
-// names the hash of N-1: the row has the first E as its key, N-1 and that hash, which is the rule of a hole, and no more is
-// passed than the row says. A gap at the end of the log is accepted at the number N of the head of the log (the table heads),
-// when the log has no record N and none above the last that was read: the records E to N are missing, and the row has the hash
-// of the head. Whether the record N is the first that the walk reads is no reason to refuse a gap before it, and a first record
+// of a repair and no gap that is accepted already passes. The holes and the gaps that lead on from the record that the walk
+// expects (dbwire.ChainReach) account for the records up to their end, R: the records E to N-1, with E = R+1, are missing, and the
+// record N has a prev that names the hash of N-1: the row has the first E as its key, N-1 and that hash, which is the rule of a
+// hole, and no more is passed than the row says. It is the gap that whiteroom-db repair tells in its "gap:" line. A gap at the end
+// of the log is accepted at the number N of the head of the log (the table heads), when the log has no record N and none above the
+// last that was read: the records E to N are missing, E counted in the same way, and the row has the hash of the head. If the last
+// of the rows reaches the record before N (at the end, the head) without passing it, because the prev of N (the hash of the head)
+// is not its hash, which a rewrite of N (or a change of the head) leaves, the acceptance is of that row again: the gap is the
+// range of that row, with the new hash. A gap row at that place is replaced by it, and the event of the acceptance is added once
+// more; a hole row stays, and the gap row is put beside it, at its own key. The gap is refused if it would lie over another row
+// that is there, which is wider, or starts inside it. Whether the record N is the first that the walk reads is no reason to refuse a gap before it, and a first record
 // that is not the one that the log starts with is a gap, not a break. A gap that goes across the first record that remains after a
 // deletion (K), from the records that the deletion left or from none, is accepted if what the walk knows of the record K-1 has the
 // hash that the chain start has (dbwire.ChainCross, as VerifyAudit and the walk of compact step across K): the last record that
-// was read, if it is K-1, or the prev of the record after the gap, if the gap ends with K-1; a gap that holds K-1 and K leaves
-// none to check.
+// was read, if it is K-1, a row before the gap that ends with K-1, or the prev of the record after the gap, if the gap ends with
+// K-1; a gap that holds K-1 and K leaves none to check.
 //
 // It refuses, and writes nothing, a record that is not in the store (also one before the chain start, which is not looked at,
 // and one whose number the log has twice), a record that follows a hole that a repair has recorded (the table chains has it,
@@ -58,7 +66,9 @@ type Acceptance struct {
 // a break, and the records that it lost are not there to be named) or a gap that is accepted already, or rows of them that
 // follow one another, which the refusal names, a record whose number is below that of a record before it, the gap before a
 // record whose prev is not the hash of a record, a gap across K whose hash of K-1 is not the chain start's (the problem would
-// stay, since VerifyAudit fails at it), record 1 with no prev and K whose prev is the hash that the chain start has (no break is
+// stay, since VerifyAudit fails at it), a gap that would lie over a hole or a gap that is there, or that no records are missing
+// for (the rows lead on to the record before the one that is named, which has not their hash as its prev: planGap; a row is never
+// replaced), record 1 with no prev and K whose prev is the hash that the chain start has (no break is
 // there), K while records before it that a deletion left are in the store (whiteroom-db compact drops them if they are what the
 // deletion left), a record that follows the one before it, a break that is accepted already for the record as it is, a chain
 // whose rows cannot be read, and a store of an older table schema than dbwire.TableVersion, for the reason of CompactLogin. An event that is no record has no number to be named by, and is not
@@ -142,6 +152,84 @@ func gapValue(first, last uint64, hash [sha256.Size]byte, at time.Time) ([]byte,
 	return value, nil
 }
 
+// gapWhy is why a gap is not accepted.
+type gapWhy int
+
+const (
+	gapOK gapWhy = iota
+	// gapOverlaps: a row that is there lies over the records of the gap.
+	gapOverlaps
+	// gapCrosses: the hash of the record K-1 that is known is not the chain start's.
+	gapCrosses
+)
+
+// gapPlan is the gap that accept-break writes before the record n, or at the end of the log, and the rows before it.
+type gapPlan struct {
+	why  gapWhy
+	rows []dbwire.PassedRow // the holes and the gaps that lead on from the record that the walk expects, before the gap
+	gap  dbwire.PassedRow   // the gap: from the record after the rows, with the hash of the record after it (of the head)
+	// again is the last row, which the gap is the acceptance of again: it reaches the record before the gap's end, and does not pass
+	// the record after it. The gap has its range, and is not one of rows. nil if the gap is new.
+	again *dbwire.PassedRow
+	// row is the row that the gap would lie over (gapOverlaps), or the row with another hash than the chain start's (gapCrosses);
+	// nil for the last record that was read.
+	row *dbwire.PassedRow
+}
+
+// planGap returns the gap before the record n of a log with the rows holes and gaps and the chain start start (nil if none), whose
+// prev names the hash hash, for a walk whose last record read is last (0 if none; lastSum is its hash), or, if end, the gap at the
+// end of the log, whose head is n and has the hash hash. The gap starts after the rows that lead on from the record that the walk
+// expects (dbwire.ChainReach), and ends with the record before n (with n, at the end); if the last of them ends there, it is the
+// range of that row, which is accepted again. It is the gap that whiteroom-db repair tells, and it is refused where accept-break
+// refuses it.
+func planGap(holes, gaps map[uint64]dbwire.ChainHole, start *dbwire.ChainStart, last uint64, lastSum [sha256.Size]byte, n uint64, hash [sha256.Size]byte,
+	end bool) gapPlan {
+	lastMissing := n - 1
+	if end {
+		lastMissing = n
+	}
+	p := gapPlan{rows: dbwire.ChainReach(holes, gaps, start, last, lastMissing+1)}
+	first := dbwire.ChainExpected(start, last)
+	if k := len(p.rows); k > 0 {
+		if row := p.rows[k-1]; row.Last == lastMissing {
+			p.again, first, p.rows = &row, row.First, p.rows[:k-1]
+		} else {
+			first = row.Last + 1
+		}
+	}
+	p.gap = dbwire.PassedRow{ChainHole: dbwire.ChainHole{First: first, Last: lastMissing, Hash: hash}, Gap: true}
+	if row := overlapping(holes, gaps, first, lastMissing, p.again != nil); row != nil {
+		p.why, p.row = gapOverlaps, row
+		return p
+	}
+	all := append(slices.Clone(p.rows), p.gap)
+	if ok, bad := dbwire.ChainCross(start, last, lastSum, all); !ok {
+		p.why, p.row = gapCrosses, bad
+	}
+	return p
+}
+
+// overlapping returns a row, the one with the lowest first record, a hole before a gap, that holds a record from first to last, nil
+// if none does. If again, a row that starts with first and ends with last is the row that the gap is the acceptance of again, and is
+// not one.
+func overlapping(holes, gaps map[uint64]dbwire.ChainHole, first, last uint64, again bool) *dbwire.PassedRow {
+	var found *dbwire.PassedRow
+	look := func(rows map[uint64]dbwire.ChainHole, gap bool) {
+		for key, row := range rows {
+			if again && key == first && row.Last == last {
+				continue
+			}
+			if key <= last && row.Last >= first && (found == nil || key < found.First) {
+				row.First = key
+				found = &dbwire.PassedRow{ChainHole: row, Gap: gap}
+			}
+		}
+	}
+	look(holes, false)
+	look(gaps, true)
+	return found
+}
+
 // accepted reports whether the break at record n is accepted for the record whose stored bytes have the SHA-256 sum.
 func (r chainRows) accepted(n uint64, sum [sha256.Size]byte) bool {
 	h, ok := r.breaks[n]
@@ -208,9 +296,8 @@ func (p *breakPass) event(e logdb.Event) bool {
 		p.inside, p.insideFirst = n, expected
 		p.insidePassed = dbwire.ChainPass(p.holes, p.gaps, p.start, p.reach, n, prev) != nil
 		if hash, ok := parseHash(prev); ok {
-			gap := dbwire.PassedRow{ChainHole: dbwire.ChainHole{First: expected, Last: n - 1, Hash: hash}, Gap: true}
-			crossed, _ := dbwire.ChainCross(p.start, p.reach, p.reachSum, []dbwire.PassedRow{gap})
-			p.insideRefused = !crossed
+			plan := planGap(p.holes, p.gaps, p.start, p.reach, p.reachSum, n, hash, false)
+			p.insideFirst, p.insideRefused = plan.gap.First, plan.why != gapOK
 		}
 	}
 	p.last, p.reach, p.reachSum = chainLast{n: n, sum: sum, ok: true}, n, sum
@@ -241,18 +328,25 @@ func (p *breakPass) decide(rows chainRows, head *auditHead, schema uint64) (Acce
 			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d does not follow record %d in number, and its prev is not the hash of a record "+
 				"(sha256: and 64 lower case hexadecimal digits), so the gap before it cannot be accepted", n, p.before)
 		}
-		gap := dbwire.PassedRow{ChainHole: dbwire.ChainHole{First: p.expected, Last: n - 1, Hash: hash}, Gap: true}
-		switch ok, bad := dbwire.ChainCross(p.start, p.before, p.beforeSum, []dbwire.PassedRow{gap}); {
-		case !ok && bad == nil:
+		plan := planGap(p.holes, p.gaps, p.start, p.before, p.beforeSum, n, hash, false)
+		gap := plan.gap
+		switch {
+		case plan.why == gapOverlaps:
+			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap of %s before record %d would lie over %s: no gap is accepted over a row "+
+				"that is there", recordsWords(gap.First, gap.Last), n, rowWords(*plan.row))
+		case plan.why == gapCrosses && plan.row == nil:
 			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d comes after records before it that an earlier deletion left, the last "+
 				"of which, record %d, does not have the hash that the chain start has of it: the gap before record %d is not accepted", n, p.before, n)
-		case !ok:
+		case plan.why == gapCrosses && plan.row.First == gap.First:
 			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap of %s before record %d is not accepted: record %d does not have as its "+
 				"prev the hash that the chain start has of record %d", recordsWords(gap.First, gap.Last), n, n, gap.Last)
+		case plan.why == gapCrosses:
+			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap of %s before record %d is not accepted: %s does not have the hash that the "+
+				"chain start has of record %d", recordsWords(gap.First, gap.Last), n, rowWords(*plan.row), plan.row.Last)
 		case schema != 0:
 			return Acceptance{}, [sha256.Size]byte{}, olderSchemaRefusal(schema, "gap")
 		}
-		return Acceptance{Gap: true, First: p.expected, Last: n - 1}, hash, nil
+		return Acceptance{Gap: true, First: gap.First, Last: gap.Last}, hash, nil
 	case p.first && p.why == "" && p.start == nil:
 		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d has no prev, as the first record of a log has none: there is no break to accept", n)
 	case p.first && p.why == "":
@@ -277,25 +371,32 @@ func (p *breakPass) absent(rows chainRows, head *auditHead, schema uint64) (Acce
 	notThere := fmt.Errorf("record %d of the audit log %s is not in the store", n, log)
 	if head != nil && head.n == n && n >= expected {
 		passedRows := dbwire.ChainEndPass(rows.holes, rows.gaps, p.start, p.reach, head.n, head.hash)
-		gap := dbwire.PassedRow{ChainHole: dbwire.ChainHole{First: expected, Last: n, Hash: head.hash}, Gap: true}
-		switch ok, _ := dbwire.ChainCross(p.start, p.reach, p.reachSum, []dbwire.PassedRow{gap}); {
+		plan := planGap(rows.holes, rows.gaps, p.start, p.reach, p.reachSum, n, head.hash, true)
+		gap := plan.gap
+		switch {
 		case passedRows != nil && passedRows[len(passedRows)-1].Gap:
 			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap of %s at the end of the audit log %s is accepted already",
 				lostWords(passedRows[len(passedRows)-1].ChainHole), log)
 		case passedRows != nil:
 			return Acceptance{}, [sha256.Size]byte{}, notThere
-		case !ok:
+		case plan.why == gapOverlaps:
+			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap of %s at the end of the audit log %s would lie over %s: no gap is accepted "+
+				"over a row that is there", recordsWords(gap.First, gap.Last), log, rowWords(*plan.row))
+		case plan.why == gapCrosses && plan.row == nil:
 			// The head n is at or after the chain start (a record before it is refused first), so the gap does not end with K-1: only the
 			// record that was read before it can have the hash that is not the chain start's.
 			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap at the end of the audit log %s comes after records before it that an "+
 				"earlier deletion left, the last of which, record %d, does not have the hash that the chain start has of it: the gap is not accepted",
 				log, p.reach)
+		case plan.why == gapCrosses:
+			return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("the gap at the end of the audit log %s is not accepted: %s does not have the hash "+
+				"that the chain start has of record %d", log, rowWords(*plan.row), plan.row.Last)
 		case schema != 0:
 			return Acceptance{}, [sha256.Size]byte{}, olderSchemaRefusal(schema, "gap")
 		}
-		return Acceptance{Gap: true, End: true, First: expected, Last: n, NoRecord: p.reach == 0}, head.hash, nil
+		return Acceptance{Gap: true, End: true, First: gap.First, Last: n, NoRecord: p.reach == 0}, head.hash, nil
 	}
-	if p.inside != 0 && !p.insidePassed && !p.insideRefused {
+	if p.inside != 0 && !p.insidePassed && !p.insideRefused && p.insideFirst <= n {
 		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("%w: it is in the gap of %s before record %d; accept the gap with -record %d", notThere,
 			recordsWords(p.insideFirst, p.inside-1), p.inside, p.inside)
 	}

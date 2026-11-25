@@ -30,13 +30,20 @@ both. Take LOG and N from its report:
 
 N is 7 for the break, 9 for the gap in the middle of the log (the record after it),
 and 12 for the gap at the end (the number of the head). A gap that "whiteroom-db
-repair" tells in a "gap:" line is accepted the same way. A gap may go across the
+repair" tells in a "gap:" line is accepted the same way, and the gap that it writes is the
+one that the line tells: the holes and gaps that are there lead on from the record that
+the log expects, and the gap starts with the record after the last of them. If the last
+of them ends with the record before the one that is named, without its hash as the prev
+of that record (which has been rewritten since, or the head, for a gap at the end), the
+gap is that row again: a gap row is replaced, and the event of the acceptance is added
+once more; a hole row stays, and the gap row is put beside it. A gap may go across the
 first record that remains after the deletion of old login records, K: from the
 records that the deletion left, or from none, to a record at or after K, or to the
 head. It is accepted if the hash of record K-1 that the command knows is the one
 that the start of the chain has: that of the last record that the deletion left, if
-that is record K-1, and the prev of the record after the gap, if the gap ends with
-record K-1. A gap that holds both K-1 and K leaves no hash to check.
+that is record K-1, a hole or a gap before it that ends with record K-1, and the prev
+of the record after the gap, if the gap ends with record K-1. A gap that holds both
+K-1 and K leaves no hash to check.
 
 The command changes no record and drops none. It leaves three traces: a row of the
 table chains (for a break, it ties the acceptance to the hash of record N and to
@@ -62,7 +69,10 @@ that the deletion left are still in the store ("whiteroom-db compact" drops them
 they are what the deletion left: accept the break then), a gap across the start of
 the chain whose record K-1 has not the hash that the start of the chain has, which the
 problem would stay for (the last record that the deletion left, or the end of the
-gap), a record that follows the one before it, a break that is accepted already, a chain whose rows cannot be read, and a
+gap, or a hole or a gap before it that ends with it), a gap that would lie over a hole
+or a gap that is there (one that is wider, or starts inside it, but for the row that it
+accepts again), a record that follows the one before it, a break that is accepted
+already, a chain whose rows cannot be read, and a
 data directory of an older table schema than this program's: the first writer that
 connects through "whiteroom-db serve" (such as "whiteroom serve admin") upgrades it.
 
@@ -82,7 +92,9 @@ to B before record N of the audit log LOG in DATA; whiteroom doctor checks the l
 again from record N" ("the gap of record A" if it is one record), and for a gap at
 the end "accepted the gap of the records A to B at the end of the audit log LOG in
 DATA; whiteroom doctor checks that the log ends with record A-1" (or "that the log
-has no record"). A refusal is a line on the standard error that starts with
+has no record", for the login history; for an activity log that has none, "whiteroom
+doctor goes on reporting that the log has no record until the writer adds its next
+record"). A refusal is a line on the standard error that starts with
 "whiteroom-db accept-break:", and the exit code 1.
 
 No daemon may have the data directory open: stop "whiteroom-db serve" on it first.
@@ -144,6 +156,9 @@ func runAcceptBreak(ctx context.Context, args []string, e env) int {
 	case !acc.Gap:
 		printf(e.stdout, "accepted the break at record %d of the audit log %s in %s; whiteroom doctor checks the log again from it\n",
 			record, log, data)
+	case acc.End && acc.NoRecord && log == dbwire.LogActivity:
+		printf(e.stdout, "accepted %s at the end of the audit log %s in %s; whiteroom doctor goes on reporting that the log has no "+
+			"record until the writer adds its next record\n", gap, log, data)
 	case acc.End && acc.NoRecord:
 		printf(e.stdout, "accepted %s at the end of the audit log %s in %s; whiteroom doctor checks that the log has no record\n",
 			gap, log, data)

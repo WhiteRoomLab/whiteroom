@@ -1316,3 +1316,93 @@ func TestChainCross(t *testing.T) {
 		}
 	}
 }
+
+// TestChainReach checks the rows that a walk goes through from the record that it expects, whether or not they pass a record:
+// they follow one another, every one ends below the target, and the longest way is the one that is taken.
+func TestChainReach(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		rows   []string
+		start  uint64 // K, 0 if the log has no chain start
+		last   uint64
+		target uint64
+		want   string
+	}{
+		{"no row", nil, 0, 2, 6, ""},
+		{"a row that does not start at the record that the walk expects", []string{"H4-4"}, 0, 2, 6, ""},
+		{"a row before the record that the walk expects", []string{"H2-2"}, 0, 2, 6, ""},
+		{"a hole", []string{"H3-3"}, 0, 2, 6, "hole 3"},
+		{"a gap", []string{"G3-3"}, 0, 2, 6, "gap 3"},
+		{"a row that ends right before the target", []string{"H3-4"}, 0, 2, 5, "hole 3"},
+		{"a row that ends at the target", []string{"H3-5"}, 0, 2, 5, ""},
+		{"a row that ends after the target", []string{"H3-7"}, 0, 2, 5, ""},
+		{"two rows", []string{"H3-3", "G4-4"}, 0, 2, 7, "hole 3, gap 4"},
+		{"three rows", []string{"G3-3", "H4-5", "G6-6"}, 0, 2, 8, "gap 3, hole 4, gap 6"},
+		{"the second row ends at the target", []string{"H3-3", "H4-4"}, 0, 2, 4, "hole 3"},
+		{"the third row ends at the target", []string{"H3-3", "H4-4", "H5-5"}, 0, 2, 5, "hole 3, hole 4"},
+		{"a second row that does not follow", []string{"H3-3", "H5-5"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first: the gap ends later", []string{"H3-3", "G3-4"}, 0, 2, 7, "gap 3"},
+		{"a hole and a gap with one first: the hole ends later", []string{"H3-4", "G3-3"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first, the same end: the hole", []string{"H3-4", "G3-4"}, 0, 2, 7, "hole 3"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-3", "G4-5"}, 0, 2, 8, "hole 3, gap 4"},
+		{"a hole and a gap with one first, the gap leading on", []string{"H3-3", "G3-4", "H5-5"}, 0, 2, 8, "gap 3, hole 5"},
+		{"a way that goes on, and a row that ends later", []string{"H3-3", "H4-4", "G3-5"}, 0, 2, 8, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "G2-2"}, 0, 0, 5, "hole 1, gap 2"},
+		{"rows at the chain start", []string{"H5-5", "G6-7"}, 5, 0, 9, "hole 5, gap 6"},
+		{"after the record that the walk has read", []string{"H3-3", "H4-4"}, 0, 3, 9, "hole 4"},
+
+		// A walk that has read nothing of a log with a chain start K starts with a row that holds K too.
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 9, "hole 3"},
+		{"a gap that holds K", []string{"G3-6"}, 5, 0, 9, "gap 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 9, "hole 3, gap 6"},
+		{"a row that holds K and a row that starts at K: the longer", []string{"H5-5", "H3-6"}, 5, 0, 9, "hole 3"},
+		{"a row that holds K and a row that starts at K: the longer, the other", []string{"H5-8", "H3-6"}, 5, 0, 9, "hole 5"},
+		{"a row that holds K, and one that starts at K and goes on", []string{"H5-5", "G6-6", "H3-5"}, 5, 0, 9, "hole 5, gap 6"},
+		{"a row that holds K and ends at the target", []string{"H3-6"}, 5, 0, 6, ""},
+		{"a row that holds K, with another that ends later", []string{"H3-6", "H2-5"}, 5, 0, 8, "hole 3"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 9, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 9, "hole 3"},
+		{"a row that holds K, and the walk has read a record at K", []string{"H3-6"}, 5, 5, 9, ""},
+		{"no chain start, no row that holds it", []string{"H3-6"}, 0, 0, 9, ""},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainReach(holes, gaps, start, c.last, c.target)); got != c.want {
+			t.Errorf("%s: ChainReach(last %d, target %d) = %q, want %q", c.name, c.last, c.target, got, c.want)
+		}
+	}
+}
+
+// TestChainReachManyRows checks that the search through rows that have a hole and a gap at each first does not look at a number
+// twice: with sixty of them, it would not end.
+func TestChainReachManyRows(t *testing.T) {
+	var rows []string
+	for n := 3; n < 63; n++ {
+		rows = append(rows, fmt.Sprintf("H%d-%d", n, n), fmt.Sprintf("G%d-%d", n, n))
+	}
+	holes, gaps := rowSet(t, rows...)
+	got := ChainReach(holes, gaps, nil, 2, 100)
+	if len(got) != 60 || got[0].First != 3 || got[59].First != 62 {
+		t.Errorf("ChainReach() through sixty rows = %d rows, want 60 from 3 to 62", len(got))
+	}
+	if got := ChainReach(holes, gaps, nil, 2, 40); len(got) != 37 || got[36].First != 39 {
+		t.Errorf("ChainReach() to the target 40 = %d rows, want 37, the last starting at 39", len(got))
+	}
+}
+
+func TestChainReachNoRowsIsNoCost(t *testing.T) {
+	holes, gaps := rowSet(t, "H3-3")
+	start := &ChainStart{First: 5}
+	if n := testing.AllocsPerRun(100, func() {
+		_ = ChainReach(nil, nil, start, 0, 8)
+		_ = ChainReach(nil, nil, nil, 7, 8)
+	}); n != 0 {
+		t.Errorf("a walk that has no rows allocates %v times", n)
+	}
+	if got := ChainReach(holes, gaps, nil, 7, 9); got != nil {
+		t.Errorf("ChainReach() from a record that no row starts at = %v, want none", got)
+	}
+}

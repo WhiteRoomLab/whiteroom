@@ -2415,7 +2415,7 @@ func TestAuditCompactLoginInterruptedLostEvent(t *testing.T) {
 	}
 
 	d, err := compactLoginOf(t, dir, chainTime.AddDate(1, 0, 0), nil)
-	if err != nil || d.First != 1 || d.Last != 4 || d.Stopped != "" || d.LeftBefore != 5 || !d.LeftBy.Equal(chainTime) {
+	if err != nil || d.First != 1 || d.Last != 4 || d.Stopped != "" || d.LeftBefore != 5 || d.LeftLast != 4 || !d.LeftBy.Equal(chainTime) {
 		t.Fatalf("the second CompactLogin() = %+v, %v, want the records 1 to 4 that the deletion of chainTime left, with no stop", d, err)
 	}
 	s = reopenLog(t, dir, logdb.Options{})

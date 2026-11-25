@@ -585,6 +585,53 @@ func TestRepairLines(t *testing.T) {
 		}
 	})
 
+	// A gap that accept-break refuses is told without the command, which would send the operator to a refusal.
+	t.Run("a gap that accept-break refuses", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Second)
+		recs := loginChain(5)
+		for _, tc := range []struct {
+			name  string
+			build func(t *testing.T, data string)
+			line  string
+		}{
+			{"a gap among the records that a deletion left", func(t *testing.T, data string) {
+				// The records 1, 3 and 4 are there, the chain starts at the record 5, and the record 2 is lost.
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[2], recs[3]}})
+				writeStart(t, data, 5, sha256.Sum256(recs[3]), now)
+			}, `gap: audit log "login": record 2, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a record whose prev is no hash", func(t *testing.T, data string) {
+				odd := fmt.Appendf(nil, `{"log":"login","n":4,"prev":"nonsense","at":"2026-01-01T00:00:00Z","action":"x"}`)
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[1], odd}})
+			}, `gap: audit log "login": record 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap across the chain start from a record with another hash", func(t *testing.T, data string) {
+				// The record 2 is the one before the chain start, and the chain start has the hash of another record.
+				writeCommits(t, data, commitAt{now, [][]byte{recs[0], recs[1], recs[3]}})
+				writeStart(t, data, 3, sha256.Sum256([]byte("another record")), now)
+			}, `gap: audit log "login": record 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap at the end of an activity log that has no record", func(t *testing.T, data string) {
+				writeCommits(t, data, commitAt{now, nil}) // the schema of the store
+				hash := sha256.Sum256([]byte("the record 3"))
+				putHeads(t, data, map[string]uint64{"activity": 3}, map[string][sha256.Size]byte{"activity": hash})
+			}, `gap: audit log "activity": records 1 to 3, which this repair does not make: whiteroom doctor goes on reporting it`},
+			{"a gap at the end of a login history that has no record", func(t *testing.T, data string) {
+				writeCommits(t, data, commitAt{now, nil}) // the schema of the store
+				hash := sha256.Sum256([]byte("the record 3"))
+				putHeads(t, data, map[string]uint64{"login": 3}, map[string][sha256.Size]byte{"login": hash})
+			}, `gap: audit log "login": records 1 to 3, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+				"with whiteroom-db accept-break -log login -record 3"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := newDirs(t)
+				tc.build(t, d.data)
+				code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+				want := tc.line + "\n" + "nothing to repair in " + d.data + "\n"
+				if code != 0 || stderr != "" || stdout != want {
+					t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+				}
+			})
+		}
+	})
+
 	t.Run("an object", func(t *testing.T) {
 		d := newDirs(t)
 		repairStore(t, d.data, 3)

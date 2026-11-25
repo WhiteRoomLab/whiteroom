@@ -48,11 +48,14 @@ where on the standard output, and exits 0. "whiteroom doctor" tells what is wron
 
 A compaction that stops before its end leaves the login records that it was to drop.
 The next compact drops them, whatever their age, if they are exactly the records
-before the chain start: each follows the one before it (a hole that "whiteroom-db
-repair" recorded, or a gap that "whiteroom-db accept-break" accepted, passes), and the
-last has the hash that the chain start has, or ends at a hole or an accepted gap that
-ends with the record before the chain start. The event of that deletion is not
-needed; TIME is then the cutoff of that earlier run, or, if the store has lost the
+before the chain start: each follows the one before it (holes that "whiteroom-db
+repair" recorded and gaps that "whiteroom-db accept-break" accepted pass, one after
+another), and they end where the chain start says: with the record before it, which
+has the hash that the chain start has of it, or at holes and gaps that go on to the
+first record that remains, or, if none is left, to the head of the login history, as
+"whiteroom doctor" passes them (a hole or a gap that holds the chain start passes, and
+one that ends with the record before it has that hash). The event of that deletion is
+not needed; TIME is then the cutoff of that earlier run, or, if the store has lost the
 event, the line says so. They go also when the command then stops at the first record
 that remains (a break at it that is not accepted), which it keeps; the record before
 it goes with them, since the chain start has its hash. If they are not exactly that,
@@ -62,7 +65,10 @@ On the standard output it prints "compacted DATA", and, if it dropped login
 records, "deleted the login records A to B, from before TIME" on a line of its own;
 if it dropped only the records that an earlier deletion left, and the store has no
 event of that deletion, "deleted the login records A to B, which the deletion of the
-records before record K at TIME left; the store has no event of that deletion".
+records before record K at TIME left; the store has no event of that deletion"; if it
+dropped new records too, the usual line is followed by "the records A to M among them
+were left by the deletion of the records before record K at TIME; the store has no
+event of that deletion".
 
 A data directory of an older table schema than this program's is compacted, and
 no login record is dropped from it: the command says so on the standard output.
@@ -203,13 +209,18 @@ func runCompact(ctx context.Context, args []string, e env) int {
 			"connects through whiteroom-db serve (whiteroom serve admin, for one) upgrades it to %d\n", deleted.Schema, dbwire.TableVersion)
 	}
 	switch {
-	case deleted.First != 0 && !deleted.LeftBy.IsZero():
+	case deleted.First != 0 && !deleted.LeftBy.IsZero() && deleted.LeftLast == deleted.Last:
 		printf(e.stdout, "deleted the login records %d to %d, which the deletion of the records before record %d at %s left; "+
 			"the store has no event of that deletion\n", deleted.First, deleted.Last, deleted.LeftBefore,
 			deleted.LeftBy.UTC().Format(time.RFC3339))
 	case deleted.First != 0:
 		printf(e.stdout, "deleted the login records %d to %d, from before %s\n", deleted.First, deleted.Last,
 			deleted.Cutoff.UTC().Format(time.RFC3339))
+		if !deleted.LeftBy.IsZero() {
+			printf(e.stdout, "the records %d to %d among them were left by the deletion of the records before record %d at %s; "+
+				"the store has no event of that deletion\n", deleted.First, deleted.LeftLast, deleted.LeftBefore,
+				deleted.LeftBy.UTC().Format(time.RFC3339))
+		}
 	}
 	if deleted.Stopped != "" {
 		printf(e.stdout, "the deletion of login records stopped at %s; check the store with whiteroom doctor\n", deleted.Stopped)

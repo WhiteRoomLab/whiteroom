@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,6 +397,94 @@ func TestAcceptGap(t *testing.T) {
 	refused(accept("login", "7"), "the gap of the records 6 to 7 at the end of the audit log login is accepted already")
 }
 
+// putChainRow puts the row of the table chains with the key and the value into the data directory data, which no process has open.
+func putChainRow(t *testing.T, data string, key, value []byte) {
+	t.Helper()
+	srv, err := dbserver.OpenDir(data, storeOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error { return tx.Put(dbwire.TableChains, key, value) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAcceptGapAfterRow checks that the gap that whiteroom-db repair tells for a record that is missing after a hole that it
+// recorded is the gap that whiteroom-db accept-break writes: it starts after the hole, and lies over no row.
+func TestAcceptGapAfterRow(t *testing.T) {
+	d := newDirs(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	recs := loginChain(5)
+	// The records 3 and 4 of the login history are lost, and the row of a hole records the record 3.
+	writeCommits(t, d.data, commitAt{now, [][]byte{recs[0], recs[1], recs[4]}})
+	putChainRow(t, d.data, dbwire.ChainHoleKey("login", 3),
+		dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 3, Hash: sha256.Sum256(recs[2]), At: now}))
+
+	code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+	want := `gap: audit log "login": record 4, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+		"with whiteroom-db accept-break -log login -record 5\n" + "nothing to repair in " + d.data + "\n"
+	if code != 0 || stderr != "" || stdout != want {
+		t.Fatalf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+	}
+	code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "5")
+	line := "accepted the gap of record 4 before record 5 of the audit log login in " + d.data +
+		"; whiteroom doctor checks the log again from record 5\n"
+	if code != 0 || stdout != line || stderr != "" {
+		t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
+	}
+	if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+		t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "5")
+	refusal := "whiteroom-db accept-break: record 5 comes after the record 3 that whiteroom-db repair dropped and the record 4 whose gap is " +
+		"accepted already: there is no break to accept\n"
+	if code != 1 || stdout != "" || stderr != refusal {
+		t.Errorf("a second whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, refusal)
+	}
+}
+
+// TestAcceptGapAgain checks that a gap row whose hash is no longer that of the record after it (the record has been rewritten) is
+// accepted again, and that whiteroom-db repair tells that gap with the command: the row is replaced, and a hole row is not.
+func TestAcceptGapAgain(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	recs := loginChain(4)
+	for _, kind := range []string{"gap", "hole"} {
+		t.Run(kind, func(t *testing.T) {
+			d := newDirs(t)
+			// The record 3 is lost and recorded, with a hash that is not the one that the record 4 has as its prev.
+			writeCommits(t, d.data, commitAt{now, [][]byte{recs[0], recs[1], recs[3]}})
+			key := dbwire.ChainGapKey("login", 3)
+			if kind == "hole" {
+				key = dbwire.ChainHoleKey("login", 3)
+			}
+			putChainRow(t, d.data, key, dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 3, Hash: sha256.Sum256([]byte("another record")), At: now}))
+
+			code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+			want := `gap: audit log "login": record 3, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+				"with whiteroom-db accept-break -log login -record 4\n" + "nothing to repair in " + d.data + "\n"
+			if code != 0 || stderr != "" || stdout != want {
+				t.Fatalf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+			}
+			code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "4")
+			line := "accepted the gap of record 3 before record 4 of the audit log login in " + d.data +
+				"; whiteroom doctor checks the log again from record 4\n"
+			if code != 0 || stdout != line || stderr != "" {
+				t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
+			}
+			if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+				t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
+			}
+			if code, _, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "4"); code != 1 ||
+				!strings.Contains(stderr, "is no break to accept") && !strings.Contains(stderr, "accepted already") {
+				t.Errorf("a second whiteroom-db accept-break = %d, with stderr %q, want a refusal", code, stderr)
+			}
+		})
+	}
+}
+
 // TestAcceptGapOfEmptyLog checks the gap at the end of a log that has no record, and the refusal of a record that is a gap with
 // no hash of the record before it.
 func TestAcceptGapOfEmptyLog(t *testing.T) {
@@ -415,8 +504,20 @@ func TestAcceptGapOfEmptyLog(t *testing.T) {
 	if code != 1 || stdout != "" || stderr != want {
 		t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
 	}
+	// The activity log always has a record: whiteroom doctor goes on reporting the empty log until the writer adds one.
 	code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "3")
 	line := "accepted the gap of the records 1 to 3 at the end of the audit log activity in " + d.data +
+		"; whiteroom doctor goes on reporting that the log has no record until the writer adds its next record\n"
+	if code != 0 || stdout != line || stderr != "" {
+		t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
+	}
+
+	// The login history may have none: whiteroom doctor then checks that it has none.
+	d = newDirs(t)
+	writeCommits(t, d.data, commitAt{now, nil})
+	putHeads(t, d.data, map[string]uint64{"login": 3}, map[string][sha256.Size]byte{"login": hash})
+	code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "3")
+	line = "accepted the gap of the records 1 to 3 at the end of the audit log login in " + d.data +
 		"; whiteroom doctor checks that the log has no record\n"
 	if code != 0 || stdout != line || stderr != "" {
 		t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
