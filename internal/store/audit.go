@@ -306,6 +306,7 @@ func passNote(log audit.Log, row dbwire.ChainHole, gap bool, after string) strin
 type chainEnd struct {
 	chainInfo
 	n, event, first uint64 // the number of the last record, the number of its event, and the number of the first one
+	left            uint64 // the number of the last record before the chain start that was read, 0 if none
 	hash            [sha256.Size]byte
 }
 
@@ -319,6 +320,9 @@ func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte, 
 	}
 	if c.first == 0 {
 		c.first = r.N
+	}
+	if c.start != nil && r.N < c.start.First {
+		c.left = r.N
 	}
 	c.n, c.event, c.hash = r.N, number, sum
 	return nil
@@ -394,8 +398,9 @@ func (c *chainEnd) check(r audit.Record, number uint64) error {
 // record B, and the log goes on from it. A hole at the end of a log is passed in the same way by the head in the table: it
 // names record B, with the hash H, after the last record that was read (or none). A hole is passed exactly as it is recorded: a
 // row that is wider or narrower, has another hash, or is for another log passes nothing. The activity log that has no record
-// left fails still. A head kept outside the store that names a record of a hole is a problem, as one that names a record that
-// the log does not have.
+// left fails still, and says, when a hole passes its head, that the next record that the writer adds ends the problem. The note
+// of the records that a deletion left names the last of them that was read, which is before K when a hole is between. A head
+// kept outside the store that names a record of a hole is a problem, as one that names a record that the log does not have.
 //
 // An accepted gap (the schema 10) is passed by the same rule: the records A to B of a log are missing, and whiteroom-db
 // accept-break accepted that, once an operator had looked into it, with a row of its own (the key that has A, the same value as
@@ -507,8 +512,8 @@ func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note
 		}
 		for _, log := range auditLogs {
 			if end := ends[log]; end != nil && end.start != nil && end.first < end.start.First {
-				left := fmt.Sprintf("the records %d to %d are", end.first, end.start.First-1)
-				if end.first == end.start.First-1 {
+				left := fmt.Sprintf("the records %d to %d are", end.first, end.left)
+				if end.first == end.left {
 					left = fmt.Sprintf("record %d is", end.first)
 				}
 				notes = append(notes, fmt.Sprintf("audit log %q: %s still in the store after the deletion of the records before "+
@@ -561,6 +566,25 @@ func (t *Tx) checkHeadLines(heads []audit.Head) error {
 	return nil
 }
 
+// noRecordText tells the problem of the activity log that has no record: if a hole or an accepted gap (row, gap) passes its head,
+// it tells the records that were lost and that the next record that the writer adds ends the problem.
+func noRecordText(log audit.Log, holed bool, row dbwire.ChainHole, gap bool) string {
+	text := fmt.Sprintf("audit log %q: the log has no record, but every store of the table schema 6 or later has store.create or "+
+		"store.upgrade as its first", log)
+	if !holed {
+		return text
+	}
+	lost := fmt.Sprintf("the records %d to %d were", row.First, row.Last)
+	if row.First == row.Last {
+		lost = fmt.Sprintf("record %d was", row.First)
+	}
+	by := fmt.Sprintf("a hole that whiteroom-db repair recorded at %s", noteTime(row.At))
+	if gap {
+		by = fmt.Sprintf("a gap that whiteroom-db accept-break accepted at %s", noteTime(row.At))
+	}
+	return fmt.Sprintf("%s; %s lost (%s), and the next record that the writer adds ends this problem", text, lost, by)
+}
+
 // checkEnds checks the last record of each log, ends, against its head in the table, in heads, against the chain start
 // of the log, in chains, and against anchors, of which matched has those whose records the read of the log has met. It
 // returns how many of the anchors name a record before the chain start, which the log does not have, and that no check of
@@ -604,8 +628,7 @@ func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, hea
 					"that the chain start has", log, head.N))
 			}
 		case end == nil && log == audit.ActivityLog && (!hasHead || holed):
-			return 0, brokenError(fmt.Sprintf("audit log %q: the log has no record, but every store of the table schema 6 or "+
-				"later has store.create or store.upgrade as its first", log))
+			return 0, brokenError(noRecordText(log, holed, row, gap))
 		case end == nil && !hasHead:
 		case end == nil && holed:
 		case end == nil:

@@ -758,3 +758,31 @@ func TestAuditReadRecordIDAgrees(t *testing.T) {
 		t.Errorf("%d records were read, want 11", n)
 	}
 }
+
+// TestVerifyAuditHoleBeforeChainStart checks the records that a deletion left when a hole is between the last of them and the
+// chain start, as a repair makes it when the record before the chain start is lost: VerifyAudit passes it, and its note names the
+// last of them that was read, which is not the record before the chain start; the next compact drops them, and the store passes.
+func TestVerifyAuditHoleBeforeChainStart(t *testing.T) {
+	const L = string(audit.LoginLog)
+	f := newChainFixture(t)
+	for i := range 3 {
+		update(t, f.s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, fmt.Sprint("more", i))) })
+	}
+	// The chain starts at the record 5, the records 1 to 3 are still there, and the record 4 is lost.
+	sum4 := sha256.Sum256(recordEvent(t, f.s, audit.LoginLog, 4).Data)
+	injectChains(t, f.s, []chainRow{startRow(5, sum4), holeRow(L, 4, 4, sum4)}, slices.Concat(deletedEvents(5, sum4), holeEvents(L, 4, 4, sum4))...)
+	s := dropRecords(t, f.s, f.dir, audit.LoginLog, 4)
+	checkVerify(t, s, f.dir, nil, nil, "", startNote(5), lostNote(L, 4, 4, againFrom(5)), leftNote("the records 1 to 3 are", 5))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := compactLoginOf(t, f.dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 3 || d.Stopped != "" || d.LeftBefore != 0 {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 3", d, err)
+	}
+	s = reopenLog(t, f.dir, logdb.Options{})
+	checkVerify(t, s, f.dir, nil, nil, "", startNote(5))
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 2 || !strings.HasPrefix(got[0], "login 5 ") {
+		t.Errorf("the login records are %v, want 5 and 6", got)
+	}
+}

@@ -210,7 +210,7 @@ func TestAcceptBreakFirst(t *testing.T) {
 			t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line(d, "3"))
 		}
 	})
-	t.Run("the first record that remains, with the records before it still there", func(t *testing.T) {
+	t.Run("the first record that remains, with the records before it still there, which are not what the deletion left", func(t *testing.T) {
 		d := newDirs(t)
 		chain := loginChain(4)
 		writeCommits(t, d.data, commitAt{now, chain})
@@ -224,6 +224,35 @@ func TestAcceptBreakFirst(t *testing.T) {
 		}
 		if got := withoutHead(t, d.data); !maps.Equal(got, before) {
 			t.Error("the refusal changed the files")
+		}
+	})
+	t.Run("the first record that remains, with the records before it still there, which compact drops", func(t *testing.T) {
+		// The records 1 and 2 are exactly what the deletion left, and the record 3 does not have the hash that the chain start has
+		// of the record 2: accept-break sends the operator to compact, which drops them and stops at the record 3, and then
+		// accept-break accepts the break.
+		d := newDirs(t)
+		chain := loginChain(4)
+		three := loginRecord(3, recordHash(chain[0]))
+		cutoff := now.AddDate(-1, 0, 0)
+		writeCommits(t, d.data, commitAt{now, [][]byte{chain[0], chain[1], three}})
+		writeDeletion(t, d.data, 3, sha256.Sum256(chain[1]), cutoff, now)
+		refusal := "whiteroom-db accept-break: record 3 comes after records before it that an earlier deletion left, which are still " +
+			"in the store: whiteroom-db compact drops them if they are what the deletion left; accept the break at record 3 then\n"
+		if code, stdout, stderr := runCmd(t, accept(d, "3")...); code != 1 || stdout != "" || stderr != refusal {
+			t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, refusal)
+		}
+		want := "compacted " + d.data + "\ndeleted the login records 1 to 2, from before " + cutoff.Format(time.RFC3339) + "\n" +
+			"the deletion of login records stopped at record 3: prev is not the hash that the chain start has of record 2; " +
+			"check the store with whiteroom doctor\n"
+		if code, stdout, stderr := runCmd(t, "compact", "-data", d.data); code != 0 || stdout != want || stderr != "" {
+			t.Fatalf("whiteroom-db compact = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, want)
+		}
+		code, stdout, stderr := runCmd(t, accept(d, "3")...)
+		if code != 0 || stdout != line(d, "3") || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line(d, "3"))
+		}
+		if code, stdout, stderr := runCmd(t, "check", "-data", d.data); code != 0 || stdout != "no problems found in "+d.data+"\n" || stderr != "" {
+			t.Errorf("whiteroom-db check = %d, with stdout %q and stderr %q", code, stdout, stderr)
 		}
 	})
 	t.Run("the first record that remains, with the hash of the chain start", func(t *testing.T) {

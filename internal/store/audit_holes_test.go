@@ -63,6 +63,11 @@ const (
 	unreadableHole = `audit log "login": a row of the table chains for a hole cannot be read`
 	noActivity     = `audit log "activity": the log has no record, but every store of the table schema 6 or later has store.create or ` +
 		`store.upgrade as its first`
+	// The problem of the activity log that has no record, when a hole or an accepted gap of the records 1 to 6 passes its head.
+	noActivityHole = noActivity + `; the records 1 to 6 were lost (a hole that whiteroom-db repair recorded at 2026-11-20T10:20:30Z), ` +
+		`and the next record that the writer adds ends this problem`
+	noActivityGap = noActivity + `; the records 1 to 6 were lost (a gap that whiteroom-db accept-break accepted at 2026-11-20T10:20:30Z), ` +
+		`and the next record that the writer adds ends this problem`
 )
 
 // TestVerifyAuditHoles checks that VerifyAudit and VerifyAuditNotes pass the records that a hole of the table chains
@@ -223,7 +228,7 @@ func TestVerifyAuditHoles(t *testing.T) {
 		}, `audit log "login": the head in the table is record 3, but the last record is record 2 (event 6)`, nil},
 		{"every record of the activity log, which a hole does not excuse", func(t *testing.T, f chainFixture) holeChange {
 			return lose([]uint64{1, 2, 4, 5, 7, 8}, A, 1, 6, f.activity(6))
-		}, noActivity, func() []string { return nil }},
+		}, noActivityHole, func() []string { return nil }},
 		{"every record of the login history, with a hole that does not cover the head", func(t *testing.T, f chainFixture) holeChange {
 			return lose([]uint64{3, 6, 9}, L, 1, 2, f.login(2))
 		}, `audit log "login": the table has the head of record 3, but the log has no record`, nil},

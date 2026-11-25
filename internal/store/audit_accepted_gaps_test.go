@@ -219,7 +219,7 @@ func TestVerifyAuditAcceptedGaps(t *testing.T) {
 		}, `audit log "login": the head in the table is record 3, but the last record is record 2 (event 6)`, nil},
 		{"every record of the activity log, which a gap does not excuse", func(t *testing.T, f chainFixture) holeChange {
 			return miss([]uint64{1, 2, 4, 5, 7, 8}, A, 1, 6, f.activity(6))
-		}, noActivity, func() []string { return nil }},
+		}, noActivityGap, func() []string { return nil }},
 		{"every record of the login history, with a gap that does not cover the head", func(t *testing.T, f chainFixture) holeChange {
 			return miss([]uint64{3, 6, 9}, L, 1, 2, f.login(2))
 		}, `audit log "login": the table has the head of record 3, but the log has no record`, nil},
@@ -315,9 +315,9 @@ func TestVerifyAuditGapBeforeChainStart(t *testing.T) {
 	f := build(t, false)
 	checkVerify(t, f.s, f.dir, f.events, nil, `audit log "login": record 3 (event 9): the number does not follow that of record 1`, startNote(3))
 	f = build(t, true)
-	// The note of the records that the deletion left counts the record 2, which is missing, among them: the walk of VerifyAudit
-	// takes the records from the first that it read to the one before the chain start for what the deletion left.
-	checkVerify(t, f.s, f.dir, f.events, nil, "", startNote(3), missingNote(L, 2, 2, againFrom(3)), leftNote("the records 1 to 2 are", 3))
+	// The note of the records that the deletion left ends with the last of them that was read, not with the record before the chain
+	// start, which is missing.
+	checkVerify(t, f.s, f.dir, f.events, nil, "", startNote(3), missingNote(L, 2, 2, againFrom(3)), leftNote("record 1 is", 3))
 }
 
 // TestVerifyAuditGapAnchors checks that a head kept outside the store that names a record that an accepted gap stands for is a
@@ -440,7 +440,7 @@ func TestVerifyAuditGapAtTheEndOfAnEmptyLog(t *testing.T) {
 	events := slices.Concat(gapEvents(L, 1, 3, f.login(3)), gapEvents(A, 1, 6, f.activity(6)))
 	injectChains(t, f.s, []chainRow{gapRow(L, 1, 3, f.login(3)), gapRow(A, 1, 6, f.activity(6))}, events...)
 	s := closeAndRewrite(t, f.s, f.dir, rewriteRecords(nil, []uint64{1, 2, 3, 4, 5, 6, 7, 8, 9}, nil))
-	checkVerify(t, s, f.dir, f.events, nil, noActivity, missingNote(L, 1, 3, noRecordLeft))
+	checkVerify(t, s, f.dir, f.events, nil, noActivityGap, missingNote(L, 1, 3, noRecordLeft))
 	// The writer's next record is the record 7 of the activity log, and the record 4 of the login history.
 	update(t, s, func(tx *Tx) error {
 		if err := tx.Record(eventRecord("after")); err != nil {

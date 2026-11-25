@@ -24,27 +24,39 @@ type Deleted struct {
 	// Schema is the table schema of the store if it is older than dbwire.TableVersion and records were kept for that
 	// reason, which is why First and Last are 0; else 0.
 	Schema uint64
+	// LeftBefore and LeftBy are set when the records that the call dropped are only those that an earlier deletion left, and
+	// the store has no event of that deletion: the first record that the deletion kept, which the chain start names, and the
+	// time of the chain start. Else they are 0 and the zero time.
+	LeftBefore uint64
+	LeftBy     time.Time
 }
 
 // CompactLogin is m.Compact that also drops the oldest records of the login history: those whose commit the daemon marked
 // more than one calendar year before the earlier of now and the newest mark of the store. The activity log, and every
 // event that is not a login record, are kept.
 //
-// The records go as a prefix in the order of their events, and only while their chain is whole. The walk stops at a record
-// that is not old enough or has no mark, and at evidence: a record that does not follow the one before it (unless a break
-// is accepted for it, by the rule of dbwire.BreakHonored, which also lets the first record that is walked go, record 1 or the
-// first that remains after a deletion when no record is left before it; or it follows a hole that a repair recorded or a gap that
-// is accepted, as VerifyAudit has it), an event that is no record, a chain start or a row of a break, of a hole or of an accepted
-// gap that cannot be read. At evidence it also keeps the record before, so that the pair stays for a repair. A record that the
-// walk takes through a break, a hole or an accepted gap is never the first that remains: the cut moves back before it, and the
-// rows of the breaks, of the holes and of the gaps stay.
+// The records go as a prefix in the order of their events, and only while their chain is whole. A commit that has no mark
+// (one that a loss of events has left without it) gives its records the time of the first mark after them in the log, of any
+// commit, which they are no younger than. The walk stops at a record that is not old enough or has no mark after it, and at
+// evidence: a record that does not follow the one before it (unless a break is accepted for it, by the rule of
+// dbwire.BreakHonored, which also lets the first record that is walked go, record 1 or the first that remains after a deletion
+// when no record is left before it; or it follows a hole that a repair recorded or a gap that is accepted, as VerifyAudit has
+// it), an event that is no record, a chain start or a row of a break, of a hole or of an accepted gap that cannot be read. At
+// evidence it also keeps the record before, so that the pair stays for a repair. A record that the walk takes through a break, a
+// hole or an accepted gap is never the first that remains: the cut moves back before it, and the rows of the breaks, of the
+// holes and of the gaps stay.
 //
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
-// leaves records. The next call drops them, whatever their age and without a new chain start, only if they are exactly the
-// records before the chain start (they follow each other, the last is the record before it, with the hash that the chain
-// start has) and the store has the event of that deletion. Otherwise they are evidence, and the call keeps them and
-// says where it stopped. The cutoff of a call that drops only them is that of the event of the deletion.
+// leaves records. The next call drops them, whatever their age and without a new chain start, if they are exactly the
+// records before the chain start: they follow each other (a hole that a repair recorded or a gap that is accepted passes, as
+// for VerifyAudit), and they end with the record before the chain start, which has the hash that the chain start has, or at a
+// hole or a gap that ends there with that hash. The event of the deletion is not needed: the chain start says what the
+// deletion left, and a store that has lost the event has it in Deleted.LeftBy. They go also when the walk then stops at the
+// first record that remains, which the chain start names (K): a break at it that no row accepts, or a first record that is
+// above it. The record before K goes with them: its hash is the one that the chain start (and the event of the deletion, if
+// the store has it) keeps. Otherwise they are evidence, and the call keeps them and says where it stopped. The cutoff of a
+// call that drops only them is that of the event of the deletion, if the store has it.
 //
 // The mark that the commit of a deletion or of an acceptance of a break appends is the time of that trace, and not the
 // newest mark: a store that has had no commit since is not cut further by the compactions that follow.
@@ -70,6 +82,7 @@ func CompactLogin(ctx context.Context, m *logdb.Maintenance, now time.Time) (Del
 	if p.schema != 0 && (d.cut > 0 || d.limit > 0) {
 		schema = p.schema
 		d.cut, d.limit, d.dropFirst, d.dropLast = 0, 0, 0, 0
+		d.leftBefore, d.leftBy = 0, time.Time{}
 	}
 	if d.cut > 0 {
 		last := p.recs[d.cut-1]
@@ -102,7 +115,8 @@ func CompactLogin(ctx context.Context, m *logdb.Maintenance, now time.Time) (Del
 	if err := m.Compact(ctx, r); err != nil {
 		return Deleted{}, err
 	}
-	return Deleted{First: d.dropFirst, Last: d.dropLast, Cutoff: d.cutoff, Stopped: d.stopped, Schema: schema}, nil
+	return Deleted{First: d.dropFirst, Last: d.dropLast, Cutoff: d.cutoff, Stopped: d.stopped, Schema: schema,
+		LeftBefore: d.leftBefore, LeftBy: d.leftBy}, nil
 }
 
 // loginRecord is a login record that the walk has accepted.
@@ -123,13 +137,15 @@ type loginPass struct {
 	schema uint64                       // the table schema of the store if it is older than dbwire.TableVersion, else 0
 
 	recs    []loginRecord // the walked records, in the order of their events
-	group   int           // recs[group:] are the records of the commit seq, whose mark has not been read
-	seq     uint64
-	blocked bool // the last commit has no mark or is not older than upper: the walk goes no further
+	group   int           // recs[group:] are the records of the commits whose mark has not been read: the next mark gives them its time
+	blocked bool          // the last commit has no mark after it or is not older than upper: the walk goes no further
 	// stop is what ended the walk at evidence, and stopLogin is whether a login record was at or after it.
 	stop      string
 	stopLogin bool
 	left      []leftover // the login records before the chain start that come before the first walked record
+	// leftEnded is whether the first walked record has shown that the records before the chain start (if there are any) end where
+	// a deletion leaves them: a walk that stops at that record no longer keeps them.
+	leftEnded bool
 	deleted   *dbwire.Deleted
 	newest    time.Time
 	haveMark  bool
@@ -233,9 +249,6 @@ func olderSchema(tx *logdb.Tx) uint64 {
 }
 
 func (p *loginPass) event(e logdb.Event) bool {
-	if p.group < len(p.recs) && e.Seq != p.seq {
-		p.settle(time.Time{})
-	}
 	if dbwire.IsDaemonEvent(e.Data) {
 		switch t, ok := dbwire.ParseMark(e.Data); {
 		case ok:
@@ -275,7 +288,7 @@ func (p *loginPass) fail(what string) {
 	}
 }
 
-// settle gives the records of the commit that ends the mark at, which is zero if it has none.
+// settle gives the records that wait for a mark the time at of the mark that has been read, which is zero if none follows them.
 func (p *loginPass) settle(at time.Time) {
 	for i := p.group; i < len(p.recs); i++ {
 		p.recs[i].at = at
@@ -286,14 +299,14 @@ func (p *loginPass) settle(at time.Time) {
 	p.group = len(p.recs)
 }
 
-// end gives the records of the last commit, which has no mark if none has followed, and ends the records before the chain
-// start if no walked record has.
+// end ends the records that no mark has followed, which stop the walk, and the records before the chain start if no walked
+// record has.
 func (p *loginPass) end() {
 	if p.group < len(p.recs) {
 		p.settle(time.Time{})
 	}
 	if len(p.recs) == 0 && p.stop == "" && p.start != nil {
-		if why := p.leftEnd(0); why != "" {
+		if why := p.leftEnd(0, ""); why != "" {
 			p.stop, p.stopLogin = why, true
 		}
 	}
@@ -317,10 +330,11 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 			p.left = append(p.left, leftover{n: n, event: e.Number, sum: sum})
 			return
 		}
-		if why := p.leftEnd(n); why != "" {
+		if why := p.leftEnd(n, prev); why != "" {
 			p.stop, p.stopLogin = why, true
 			return
 		}
+		p.leftEnded = true
 	}
 	why := p.follow(n, prev)
 	// A record that follows a hole or an accepted gap is taken through it: the cut of a deletion does not land on it, since
@@ -329,9 +343,6 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 	if why != "" && !honored {
 		p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
 		return
-	}
-	if p.group == len(p.recs) {
-		p.seq = e.Seq
 	}
 	p.recs = append(p.recs, loginRecord{n: n, event: e.Number, sum: sum, honored: honored})
 }
@@ -369,24 +380,43 @@ func (p *loginPass) passedAfter(last, n uint64, prev string) bool {
 	return ok
 }
 
-// passed reports whether the record n with prev follows a hole or an accepted gap, after the walked records.
-func (p *loginPass) passed(n uint64, prev string) bool {
-	var last uint64
-	if len(p.recs) > 0 {
-		last = p.recs[len(p.recs)-1].n
+// lastRead returns the number of the last record that the walk has read, as VerifyAudit counts it: the last that it has walked,
+// or, if none, the last of those before the chain start; 0 if none.
+func (p *loginPass) lastRead() uint64 {
+	switch {
+	case len(p.recs) > 0:
+		return p.recs[len(p.recs)-1].n
+	case len(p.left) > 0:
+		return p.left[len(p.left)-1].n
 	}
-	return p.passedAfter(last, n, prev)
+	return 0
+}
+
+// passed reports whether the record n with prev follows a hole or an accepted gap, after the last record that the walk has read.
+func (p *loginPass) passed(n uint64, prev string) bool {
+	return p.passedAfter(p.lastRead(), n, prev)
+}
+
+// leftPassed reports whether the first walked record n with prev follows the last record before the chain start through a
+// hole or an accepted gap that ends where the deletion left off: with the record before n (K-1), whose hash the chain start
+// has.
+func (p *loginPass) leftPassed(n uint64, prev string) bool {
+	row, _, ok := dbwire.ChainPass(p.holes, p.gaps, p.start, p.lastRead(), n, prev)
+	return ok && row.Last+1 == p.start.First && row.Hash == p.start.Prev
 }
 
 // leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is
-// the end of the records before the chain start, "" if they are or there are none. next is the number of the record that
-// comes after them, 0 if none does.
-func (p *loginPass) leftEnd(next uint64) string {
+// the end of the records before the chain start, "" if they are or there are none: they end with the record before it, which
+// has the hash that the chain start has, or, as VerifyAudit passes it, at a hole or an accepted gap that ends there with that
+// hash. next is the number of the record that comes after them, with the text prev, 0 if none does.
+func (p *loginPass) leftEnd(next uint64, prev string) string {
 	if len(p.left) == 0 {
 		return ""
 	}
 	last := p.left[len(p.left)-1]
 	switch {
+	case last.n+1 != p.start.First && next != 0 && p.leftPassed(next, prev):
+		return ""
 	case last.n+1 != p.start.First && next != 0:
 		return fmt.Sprintf("record %d: the number does not follow that of record %d", next, last.n)
 	case last.n+1 != p.start.First:
@@ -442,17 +472,9 @@ func followText(start *dbwire.ChainStart, last chainLast, n uint64, prev string)
 }
 
 // accepted reports whether a break is accepted for the record n whose stored bytes have the hash sum, and honored in the walk by
-// the rule of dbwire.BreakHonored, as VerifyAudit has it: the last record that the walk has read is the last of those that it has
-// walked, or, if none, the last of those before the chain start that a deletion left.
+// the rule of dbwire.BreakHonored, as VerifyAudit has it, with the last record that the walk has read (lastRead).
 func (p *loginPass) accepted(n uint64, sum [sha256.Size]byte) bool {
-	var last uint64
-	switch {
-	case len(p.recs) > 0:
-		last = p.recs[len(p.recs)-1].n
-	case len(p.left) > 0:
-		last = p.left[len(p.left)-1].n
-	}
-	return p.breakFor(n, sum) && dbwire.BreakHonored(p.start, last, n)
+	return p.breakFor(n, sum) && dbwire.BreakHonored(p.start, p.lastRead(), n)
 }
 
 // breakFor reports whether a break is accepted for the record n whose stored bytes have the hash sum.
@@ -475,6 +497,9 @@ type deletion struct {
 	limit               uint64
 	dropFirst, dropLast uint64
 	stopped             string
+	// leftBefore and leftBy are those of Deleted.
+	leftBefore uint64
+	leftBy     time.Time
 }
 
 func (p *loginPass) plan(now time.Time) deletion {
@@ -487,18 +512,17 @@ func (p *loginPass) plan(now time.Time) deletion {
 	if p.start != nil {
 		d.first = p.start.First
 	}
-	// The records before the chain start go if the walk has not stopped before its first record, which would make them the
-	// record before the stop: they are exactly the end of the records before the chain start, and the store has the event
-	// of that deletion.
-	left := len(p.left) > 0 && (p.stop == "" || len(p.recs) > 0)
-	if left && p.deleted == nil {
-		d.stopped = fmt.Sprintf("record %d: the store has no event of a deletion that left the records before record %d", p.left[0].n,
-			p.start.First)
-		return d
-	}
+	// The records before the chain start go if they are exactly what the deletion left: the walk has not stopped before its first
+	// record (a record before it that does not follow, an event that is no record, a row that cannot be read), and they end where
+	// the chain start says, which the first walked record has shown. The walk that stops at that record, K, which no break
+	// accepts or which is not the chain start, leaves them to go: the record before K is the pair of that stop, and its hash
+	// stays as the chain start has it (and in the event of the deletion, if the store has it). The store need not have the event.
+	left := len(p.left) > 0 && (p.stop == "" || len(p.recs) > 0 || p.leftEnded)
 	if left {
 		d.limit, d.dropFirst, d.dropLast = p.left[len(p.left)-1].event, p.left[0].n, p.left[len(p.left)-1].n
-		d.cutoff = p.deleted.Cutoff
+		if p.deleted != nil {
+			d.cutoff = p.deleted.Cutoff
+		}
 	}
 	old := 0
 	for old < len(p.recs) && !p.recs[old].at.IsZero() && p.recs[old].at.Before(cutoff) {
@@ -528,6 +552,9 @@ func (p *loginPass) plan(now time.Time) deletion {
 		if !left {
 			d.dropFirst = p.recs[0].n
 		}
+	}
+	if left && d.cut == 0 && p.deleted == nil {
+		d.leftBefore, d.leftBy = p.start.First, p.start.At
 	}
 	if p.stop != "" && (p.stopLogin || (len(p.left) > 0 && len(p.recs) == 0)) && old == len(p.recs) {
 		d.stopped = p.stop

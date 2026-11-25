@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
@@ -55,7 +56,8 @@ func dropRecords(t *testing.T, s *Store, dir string, log audit.Log, ns ...uint64
 // hash as its prev, which it refuses. Each case is run through all three, and they must agree: a record that accept-break
 // accepts is gone by VerifyAudit and passed by the walk of compact; one that it refuses is not, if its row is put in all the same,
 // as one that the record had before it was changed or its log was, unless a hole or a gap passes it, and compact never turns a
-// store that VerifyAudit fails into one that it passes.
+// store that VerifyAudit fails into one that it passes, but for the break at the first record that remains when records before it
+// are still there: compact drops them, and the break is honored.
 func TestAuditBreakRule(t *testing.T) {
 	loginChange := func(r *audit.Record) { r.Login = "forged" }
 	activityChange := func(r *audit.Record) { r.Detail = map[string]string{"event": "X"} }
@@ -229,6 +231,9 @@ func TestAuditBreakRule(t *testing.T) {
 		// last is the last record that compact drops if the walk does not stop (6 if 0), and remains the first login record that
 		// is left then (0: not looked at). A deletion does not leave a break at the start of the chain, which is not honored.
 		last, remains uint64
+		// mends is that compact makes VerifyAudit pass, which fails before it, as the break at the first record that remains is
+		// honored once the records before it are gone.
+		mends bool
 		// holed is whether VerifyAudit passes the store before any acceptance, which a hole that is right does. from is the first
 		// record that compact drops (1 if 0), and nothing is that it drops none and does not stop. gone is that the record n is
 		// not in the store, so that there is no row to put in for it.
@@ -291,8 +296,11 @@ func TestAuditBreakRule(t *testing.T) {
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, leaveThree(t, s, dir), dir, audit.LoginLog, 4, withPrev)
 			},
+			// whiteroom-db compact drops the records before it, which are what the deletion left, and stops at it: the row that is put
+			// in is then honored, as no record is before it, and VerifyAudit passes.
+			after:  alsoAccept(audit.LoginLog, 5),
 			verify: "prev is not the hash of record 3", stop: "record 4: prev is not the hash that the chain start has of record 3",
-			remains: 1},
+			remains: 4, mends: true},
 		{name: "the first record that remains has the hash of the chain start, with the records before it still there", log: audit.LoginLog,
 			build: threeOld, n: 4, refused: startHashText(4), holed: true, last: 3, remains: 4, prepare: leaveThree},
 		{name: "a break at record 1", log: audit.LoginLog, build: allOld, n: 1,
@@ -349,9 +357,8 @@ func TestAuditBreakRule(t *testing.T) {
 				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 3)
 			},
 			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3},
-			// whiteroom-db compact stops at the record that the chain starts at, which VerifyAudit passes: the walk of compact does
-			// not look at a gap before the chain start yet.
-			stop: "record 4: the number does not follow that of record 2"},
+			// whiteroom-db compact passes the gap as VerifyAudit does: the records before it are what the deletion left, and go.
+			last: 2, remains: 4},
 		{name: "a gap, and then a break", log: audit.LoginLog, build: allOld, n: 5,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, drop(audit.LoginLog, 3)(t, s, dir), dir, audit.LoginLog, 4, loginChange)
@@ -583,7 +590,11 @@ func TestAuditBreakRule(t *testing.T) {
 				t.Errorf("CompactLogin() = %+v, want the stop %q", d, tt.stop)
 			}
 			s = reopenLog(t, dir, logdb.Options{})
-			if again := s.VerifyAudit(t.Context(), nil); (verr == nil) != (again == nil) {
+			again := s.VerifyAudit(t.Context(), nil)
+			switch {
+			case tt.mends && (verr == nil || again != nil):
+				t.Errorf("VerifyAudit() = %v before whiteroom-db compact and %v after it, want it to fail before and pass after", verr, again)
+			case !tt.mends && (verr == nil) != (again == nil):
 				t.Errorf("VerifyAudit() = %v before whiteroom-db compact and %v after it", verr, again)
 			}
 			if got := recordsOf(t, s, audit.LoginLog); tt.remains != 0 && (len(got) == 0 || !strings.HasPrefix(got[0], fmt.Sprintf("login %d ", tt.remains))) {
@@ -622,4 +633,84 @@ func TestAuditCompactLoginInterruptedAcrossBreak(t *testing.T) {
 	}
 	s = reopenLog(t, dir, logdb.Options{})
 	checkVerify(t, s, dir, nil, nil, "", startNote(7))
+}
+
+// TestAuditCompactThenAcceptBreakAtFirstRemaining checks the way out of a break at the first record that remains (K) while the
+// records that a deletion left are before it: whiteroom-db accept-break refuses it, and says that whiteroom-db compact drops
+// those records; compact drops them and stops at K, which it keeps; accept-break then accepts the break, VerifyAudit passes and
+// tells it, and the next compact goes through K with the records after it, as it does through any accepted break.
+func TestAuditCompactThenAcceptBreakAtFirstRemaining(t *testing.T) {
+	s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 0}, []bool{true, true, true, true, true, true, false})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A deletion at a time when only the records 1 to 3 are old stops before its compaction: the chain starts at the record 4.
+	hookErr := errors.New("hook failed")
+	if _, err := compactLoginOf(t, dir, chainTime.AddDate(0, -25, 0), func(point string) error {
+		if point == "compact:base" {
+			return hookErr
+		}
+		return nil
+	}); !errors.Is(err, hookErr) {
+		t.Fatalf("CompactLogin() = %v, want the error of the hook", err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	s = rewriteRecord(t, s, dir, audit.LoginLog, 4, func(r *audit.Record) { r.Prev = hashText(wrong[:]) })
+	// The chain start has the time of that deletion.
+	start4 := strings.Replace(startNote(4), "2026-11-20T10:20:30Z", chainTime.AddDate(0, -25, 0).Format(time.RFC3339), 1)
+	failure := func(n uint64, why string) string {
+		return fmt.Sprintf(`audit log "login": record %d (event %d): %s`, n, eventOf(t, s, audit.LoginLog, n), why)
+	}
+	checkVerify(t, s, dir, nil, nil, failure(4, "prev is not the hash of record 3"), start4)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The break at the record 4 is refused while the records 1 to 3 are there.
+	want := "record 4 comes after records before it that an earlier deletion left, which are still in the store: whiteroom-db compact " +
+		"drops them if they are what the deletion left; accept the break at record 4 then"
+	if err := acceptBreakOf(t, dir, audit.LoginLog, 4); err == nil || err.Error() != want {
+		t.Fatalf("AcceptBreak(login, 4) = %v, want %q", err, want)
+	}
+
+	// Compact drops them, and stops at the record 4, which stays.
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 3 || d.LeftBefore != 0 ||
+		d.Stopped != "record 4: prev is not the hash that the chain start has of record 3" {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 3, and the stop at the record 4", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 3 || !strings.HasPrefix(got[0], "login 4 ") {
+		t.Errorf("the login records are %v, want 4 to 6", got)
+	}
+	checkVerify(t, s, dir, nil, nil, failure(4, "prev is not the hash that the chain start has of record 3"), start4)
+	// A second call finds the same stop and nothing to drop.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := compactLoginOf(t, dir, chainTime, nil); err != nil || again.First != 0 || again.Stopped != d.Stopped {
+		t.Fatalf("the second CompactLogin() = %+v, %v, want the stop and nothing dropped", again, err)
+	}
+
+	// Accept-break accepts it now, and the record 5, which has the hash of the record 4 as it was.
+	s = reopenLog(t, dir, logdb.Options{})
+	s = closeAcceptReopen(t, s, dir, audit.LoginLog, 4)
+	checkVerify(t, s, dir, nil, nil, failure(5, "prev is not the hash of record 4"), start4, breakNote("login", 4))
+	s = closeAcceptReopen(t, s, dir, audit.LoginLog, 5)
+	checkVerify(t, s, dir, nil, nil, "", start4, breakNote("login", 4), breakNote("login", 5))
+	checkNoProblem(t, s)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next compact goes through the records 4 and 5, with the old record 6, and drops them.
+	d, err = compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 4 || d.Last != 6 || d.Stopped != "" {
+		t.Fatalf("the third CompactLogin() = %+v, %v, want the records 4 to 6, with no stop", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	checkVerify(t, s, dir, nil, nil, "", startNote(7))
+	if got := recordsOf(t, s, audit.LoginLog); len(got) != 0 {
+		t.Errorf("the login records are %v, want none", got)
+	}
 }

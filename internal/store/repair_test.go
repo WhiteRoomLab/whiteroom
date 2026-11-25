@@ -725,3 +725,106 @@ func TestRepairHoleAtTheEnd(t *testing.T) {
 	}
 	checkKept(t, dir, keep)
 }
+
+// TestRepairHoleBetweenLeftoversAndChainStart checks a repair of a deletion that stopped before its compaction when the record
+// before the chain start is unreadable: the hole is recorded, whiteroom doctor finds nothing, the note of the records that are
+// still there names the last that is, and the next compact drops them, as VerifyAudit passes them. It could not before, and
+// stopped at the record after the hole for ever.
+func TestRepairHoleBetweenLeftoversAndChainStart(t *testing.T) {
+	months := []int{40, 40, 30, 30, 14, 13, 11, 2, 0}
+	login := []bool{true, false, true, false, true, true, true, true, false}
+	s, dir, _ := agedStore(t, months, login)
+	loginBefore := recordsOf(t, s, audit.LoginLog)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hookErr := errors.New("hook failed")
+	if _, err := compactLoginOf(t, dir, chainTime, func(point string) error {
+		if point == "compact:base" {
+			return hookErr
+		}
+		return nil
+	}); !errors.Is(err, hookErr) {
+		t.Fatalf("CompactLogin() = %v, want the error of the hook", err)
+	}
+	// The records 1 to 4 are left, the chain starts at the record 5, and the record 4 is unreadable.
+	s = reopenLog(t, dir, logdb.Options{})
+	e4 := recordEvent(t, s, audit.LoginLog, 4)
+	s = closeAndRewrite(t, s, dir, rewriteEvents(map[uint64][]byte{e4.Number: []byte("not a record")}, nil, nil))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{Apply: true, Keep: filepath.Join(t.TempDir(), "keep"),
+		DropUnreadable: true, Now: chainTime})
+	if err != nil || !rep.Applied || len(rep.Holes) != 1 || rep.Holes[0].Log != dbwire.LogLogin || rep.Holes[0].First != 4 ||
+		rep.Holes[0].Last != 4 || !rep.Holes[0].Row {
+		t.Fatalf("Repair() = %+v, %v, want the hole of the record 4, recorded", rep, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	problems, notes := doctorOf(t, s, dir, nil)
+	wantNotes := []string{startNote(5), lostNote("login", 4, 4, againFrom(5)), leftNote("the records 1 to 3 are", 5)}
+	if len(problems) != 0 || !slices.Equal(notes, wantNotes) {
+		t.Errorf("whiteroom doctor finds %q with the notes %q, want nothing, with the notes %q", problems, notes, wantNotes)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := compactLoginOf(t, dir, chainTime, nil)
+	if err != nil || d.First != 1 || d.Last != 3 || d.Stopped != "" || d.LeftBefore != 0 {
+		t.Fatalf("CompactLogin() = %+v, %v, want the records 1 to 3, with no stop", d, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	problems, notes = doctorOf(t, s, dir, nil)
+	if len(problems) != 0 || !slices.Equal(notes, []string{startNote(5)}) {
+		t.Errorf("whiteroom doctor finds %q with the notes %q after the compact, want nothing, with the start of the chain", problems, notes)
+	}
+	// The record 4 is gone, with the records 1 to 3, as the record 4 is lost; the records 5 and 6 are there.
+	if got, want := recordsOf(t, s, audit.LoginLog), loginBefore[4:]; !slices.Equal(got, want) {
+		t.Errorf("the login records are %v, want %v", got, want)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := compactLoginOf(t, dir, chainTime, nil); err != nil || again.First != 0 || again.Stopped != "" {
+		t.Errorf("the second CompactLogin() = %+v, %v, want nothing to do", again, err)
+	}
+}
+
+// TestRepairActivityLogWithNoRecordLeft checks the repair of an activity log whose every record is unreadable: the hole is
+// recorded, whiteroom doctor reports the log, which always has a record, and says that the next record that the writer adds ends
+// the problem, which it does.
+func TestRepairActivityLogWithNoRecordLeft(t *testing.T) {
+	s, dir, _ := auditFixture(t)
+	replace := map[uint64][]byte{}
+	for _, e := range rawEvents(t, s) {
+		if log, _, _, ok := dbwire.ReadRecordID(e.Data); ok && log == dbwire.LogActivity {
+			replace[e.Number] = []byte("not a record")
+		}
+	}
+	s = closeAndRewrite(t, s, dir, rewriteEvents(replace, nil, nil))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts := dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}}
+	rep, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{Apply: true, Keep: filepath.Join(t.TempDir(), "keep"),
+		DropUnreadable: true, Now: chainTime})
+	if err != nil || !rep.Applied || len(rep.Holes) != 1 || rep.Holes[0].Log != dbwire.LogActivity || rep.Holes[0].First != 1 ||
+		rep.Holes[0].Last != 6 || !rep.Holes[0].Row {
+		t.Fatalf("Repair() = %+v, %v, want the hole of the records 1 to 6, recorded", rep, err)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	problems, _ := doctorOf(t, s, dir, nil)
+	if want := "audit: " + noActivityHole; !slices.Equal(problems, []string{want}) {
+		t.Errorf("whiteroom doctor finds %q, want %q", problems, want)
+	}
+	update(t, s, func(tx *Tx) error { return tx.Record(eventRecord("next")) })
+	problems, notes := doctorOf(t, s, dir, nil)
+	if len(problems) != 0 {
+		t.Errorf("whiteroom doctor finds %q after the writer's next record, want nothing", problems)
+	}
+	if want := lostNote("activity", 1, 6, againFrom(7)); !slices.Contains(notes, want) {
+		t.Errorf("the notes are %q, want %q among them", notes, want)
+	}
+}
