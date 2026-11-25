@@ -1362,6 +1362,96 @@ func TestRepairAfterRows(t *testing.T) {
 			return s
 		}, dbwire.LogActivity, result{nil, []string{"activity 4-6"}, nil}},
 
+		// Records that the repair drops on both sides of a row, or between two rows: the hole goes from the first of them to the end of
+		// the range, over every row inside it.
+		{"a hole, and a record before it and one after it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity) // the record 3, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 4
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity) // the record 5, which the repair drops
+			s.junk()
+			s.commit() // the record 6
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 3-5"}, nil, []string{"3-5"}}},
+		{"a gap, and a record before it and one after it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, true, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 3-5"}, nil, []string{"3-5"}}},
+		{"a hole, and a record before it dropped and one after it lost before the repair", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity) // the record 5, which the repair does not drop
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 3-5"}, nil}},
+		{"two rows with a record dropped between them and one after them", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity) // the record 3
+			s.rowFor(dbwire.LogActivity, false, 3, 3, s.act[2].sum)
+			s.lose(dbwire.LogActivity) // the record 4, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 5
+			s.rowFor(dbwire.LogActivity, true, 5, 5, s.act[4].sum)
+			s.lose(dbwire.LogActivity) // the record 6, which the repair drops
+			s.junk()
+			s.commit() // the record 7
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 4-6"}, nil, []string{"3-3", "4-6"}}},
+		{"a hole at the end, and a record before it and one after it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity) // the record 3, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 4
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity) // the record 5, the last: the head names it
+			s.junk()
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 3-5"}, nil, []string{"3-5"}}},
+		{"a hole at the end, and a record before it dropped and the last lost before the repair", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity)
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 3-5 end"}, nil}},
+		{"a row in the middle, and one that ends the range with another hash", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[3].sum) // the hash of the record 4: it does not pass the record 6
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 3-5"}, nil}},
+		{"a row in the middle, one that ends the range with another hash, and a record dropped for each", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 4, 4, s.act[3].sum)
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[3].sum)
+			s.junk()
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 3-5"}, nil, []string{"3-5"}}},
+
 		// The login history after a deletion, whose first record that remains is K.
 		{"rows at the chain start, and the record after them dropped", func(t *testing.T) *auditStore {
 			s := newFixtureStore(t)
@@ -1436,9 +1526,9 @@ func TestRepairAfterRows(t *testing.T) {
 	}
 }
 
-// TestCredited checks the records that rows account for in the range of a hole that the repair makes: the rows that chain back from
-// one that ends with the last record of the range and has the hash that the record after it names, each ending where the next
-// starts, and no row that lies before the range or has another hash at its end.
+// TestCredited checks the records that rows account for in the range of a hole that the repair makes: the records that the rows
+// inside the range hold, once each, and no row that lies before the range or ends after it, or ends with its last record and has
+// another hash than the one that the record after the range names.
 func TestCredited(t *testing.T) {
 	h := func(b byte) [sha256.Size]byte { return [sha256.Size]byte{b} }
 	row := func(last uint64, hash byte) dbwire.ChainHole { return dbwire.ChainHole{Last: last, Hash: h(hash)} }
@@ -1456,11 +1546,25 @@ func TestCredited(t *testing.T) {
 		{"one row that ends the range", rows{8: row(9, 1)}, nil, 4, 9, 1, 2, false},
 		{"one row with another hash", rows{8: row(9, 2)}, nil, 4, 9, 1, 0, false},
 		{"one gap", nil, rows{8: row(9, 1)}, 4, 9, 1, 2, false},
-		{"a row that ends before the range does", rows{6: row(7, 1)}, nil, 4, 9, 1, 0, false},
+		{"a row in the middle of the range", rows{6: row(7, 1)}, nil, 4, 9, 1, 2, false},
+		{"a row in the middle of the range, with another hash", rows{6: row(7, 2)}, nil, 4, 9, 1, 2, false},
+		{"a row that ends before it starts", rows{7: row(5, 7)}, nil, 4, 9, 1, 0, false},
+		{"a row that lies after the range", rows{10: row(11, 1)}, nil, 4, 9, 1, 0, false},
+		{"a row that starts with the first record of the range", rows{4: row(5, 7)}, nil, 4, 9, 1, 2, false},
+		{"a row that ends with the record before the last", rows{4: row(8, 7)}, nil, 4, 9, 1, 5, false},
+		{"a row in the middle, and one that ends the range with another hash", rows{6: row(7, 7), 8: row(9, 2)}, nil, 4, 9, 1, 2, false},
+		{"a row in the middle, and one that ends the range", rows{6: row(7, 7), 8: row(9, 1)}, nil, 4, 9, 1, 4, false},
+		{"a row in the middle, and a longer gap that ends the range with another hash", rows{6: row(7, 7)}, rows{5: row(9, 2)}, 4, 9, 1, 2, false},
+		{"a row in the middle and a gap that ends before the last record, with another hash", rows{6: row(7, 7)}, rows{8: row(8, 2)}, 4, 9, 1, 3, false},
+		{"rows that overlap", rows{5: row(7, 7)}, rows{6: row(8, 7)}, 4, 9, 1, 4, false},
+		{"a row inside another", rows{5: row(8, 7)}, rows{6: row(7, 7)}, 4, 9, 1, 4, false},
+		{"rows that follow one another with none after them", rows{5: row(6, 7)}, rows{7: row(8, 7)}, 4, 9, 1, 4, false},
+		{"rows that are apart", rows{4: row(4, 7)}, rows{6: row(6, 7), 8: row(8, 7)}, 4, 9, 1, 3, false},
+		{"the record after the range has no hash, and a row in the middle", rows{6: row(7, 7)}, nil, 4, 9, 1, 0, true},
 		{"a row that ends after the range does", rows{8: row(10, 1)}, nil, 4, 9, 1, 0, false},
 		{"a row that starts before the range", rows{3: row(9, 1)}, nil, 4, 9, 1, 0, false},
 		{"rows that follow one another, the inner ones with other hashes", rows{5: row(6, 7), 7: row(9, 1)}, rows{4: row(4, 8)}, 4, 9, 1, 6, false},
-		{"rows that do not follow one another", rows{4: row(5, 7), 7: row(9, 1)}, nil, 4, 9, 1, 3, false},
+		{"rows that do not follow one another", rows{4: row(5, 7), 7: row(9, 1)}, nil, 4, 9, 1, 5, false},
 		{"an inner row that starts before the range", rows{3: row(6, 7), 7: row(9, 1)}, nil, 4, 9, 1, 3, false},
 		{"a gap that is longer than the hole", rows{8: row(9, 1)}, rows{6: row(9, 1)}, 4, 9, 1, 4, false},
 		{"a hole that is longer than the gap", rows{6: row(9, 1)}, rows{8: row(9, 1)}, 4, 9, 1, 4, false},
