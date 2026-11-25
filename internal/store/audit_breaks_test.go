@@ -45,7 +45,9 @@ func dropRecords(t *testing.T, s *Store, dir string, log audit.Log, ns ...uint64
 // TestAuditBreakRule pins together the three places that decide whether a break that is accepted for a record is honored, and
 // whether a hole that a repair recorded, or a gap that is accepted, passes the record after it: whiteroom-db accept-break,
 // VerifyAudit and whiteroom-db compact. A break is a record whose number is that of the one before it plus one and whose prev is
-// not its hash, and which is neither the first record that is read nor the first that remains after a deletion. A hole passes the
+// not its hash, and the first record that is read when it is the one that the log starts with (record 1 with a prev, or the first
+// that remains after a deletion, whose prev is not what the chain start has), unless records before it that the deletion left
+// are still there. A hole passes the
 // record that comes after the records that its row says are lost, with the hash of the last of them as its prev, where the log is
 // expected to go on; so does a gap that accept-break accepted, which any record whose number is above that and that no row passes
 // can have: the number gaps (in the middle of a log, at its start, at the chain start, at its end, of two records), the rows
@@ -134,8 +136,22 @@ func TestAuditBreakRule(t *testing.T) {
 		}
 		return holeOf(log, log, ns, first, last, last)
 	}
-	first := func(log string, n int) string {
-		return fmt.Sprintf("record %d is the first record that the audit log %s is checked from: a break there is not accepted", n, log)
+	leftText := func(n int) string {
+		return fmt.Sprintf("record %d comes after records before it that an earlier deletion left, which are still in the store: "+
+			"whiteroom-db compact drops them if they are what the deletion left; accept the break at record %d then", n, n)
+	}
+	startHashText := func(n int) string {
+		return fmt.Sprintf("record %d has as its prev the hash that the chain start has of record %d: there is no break to accept", n, n-1)
+	}
+	// alsoAccept is an after that accepts the records ns of log, whose prev the rewrite of the one before them has made another.
+	alsoAccept := func(log audit.Log, ns ...uint64) func(t *testing.T, s *Store, dir string) *Store {
+		return func(t *testing.T, s *Store, dir string) *Store {
+			t.Helper()
+			for _, n := range ns {
+				s = closeAcceptReopen(t, s, dir, log, n)
+			}
+			return s
+		}
 	}
 	// Six login records, 40 to 35 months old, and the activity records that go with them, in a store that is of today.
 	allOld := func(t *testing.T) (*Store, string) {
@@ -263,29 +279,46 @@ func TestAuditBreakRule(t *testing.T) {
 				return dropRecords(t, s, dir, audit.ActivityLog, 1, 2, 3)
 			},
 			verify: "the first record of a log is number 1"},
-		{name: "a break at the first record that remains", log: audit.LoginLog, build: threeOld, n: 4, refused: first("login", 4),
+		// A break at the first record that is read: record 1 with a prev, or the first that remains after a deletion. The record
+		// after it has the hash of the record as it was, so that it is a break as well.
+		{name: "a break at the first record that remains", log: audit.LoginLog, build: threeOld, n: 4, nothing: true,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, deleteThree(t, s, dir), dir, audit.LoginLog, 4, withPrev)
 			},
-			verify: "prev is not the hash that the chain start has of record 3",
-			stop:   "record 4: prev is not the hash that the chain start has of record 3"},
+			after: alsoAccept(audit.LoginLog, 5)},
 		{name: "a break at the first record that remains, with the records before it still there", log: audit.LoginLog, build: threeOld,
-			n: 4, refused: first("login", 4),
+			n: 4, refused: leftText(4),
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, leaveThree(t, s, dir), dir, audit.LoginLog, 4, withPrev)
 			},
-			verify: "prev is not the hash of record 3", stop: "record 4: prev is not the hash that the chain start has of record 3"},
-		{name: "a break at record 1", log: audit.LoginLog, build: allOld, n: 1, refused: first("login", 1),
+			verify: "prev is not the hash of record 3", stop: "record 4: prev is not the hash that the chain start has of record 3",
+			remains: 1},
+		{name: "the first record that remains has the hash of the chain start, with the records before it still there", log: audit.LoginLog,
+			build: threeOld, n: 4, refused: startHashText(4), holed: true, last: 3, remains: 4, prepare: leaveThree},
+		{name: "a break at record 1", log: audit.LoginLog, build: allOld, n: 1,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, s, dir, audit.LoginLog, 1, withPrev)
 			},
-			verify: "the first record has the hash of one before it", stop: "record 1: the first record has the hash of one before it"},
-		{name: "a break at record 1, in the activity log", log: audit.ActivityLog, build: allOld, n: 1, refused: first("activity", 1),
-			stop: none,
+			after: alsoAccept(audit.LoginLog, 2)},
+		{name: "a break at record 1, in the activity log", log: audit.ActivityLog, build: allOld, n: 1, stop: none,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, s, dir, audit.ActivityLog, 1, withPrev)
 			},
-			verify: "the first record has the hash of one before it"},
+			after: alsoAccept(audit.ActivityLog, 2)},
+		{name: "a break at record 1 that is rewritten again", log: audit.LoginLog, build: allOld, n: 1,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return closeAcceptReopen(t, rewriteRecord(t, s, dir, audit.LoginLog, 1, withPrev), dir, audit.LoginLog, 2)
+			},
+			after: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, s, dir, audit.LoginLog, 1, func(r *audit.Record) { r.Prev, r.Login = hashText(wrong[:]), "again" })
+			},
+			verify: "the first record has the hash of one before it", stop: "record 1: the first record has the hash of one before it"},
+		{name: "a record 1 that has no prev", log: audit.LoginLog, build: allOld, n: 1, holed: true,
+			refused: "record 1 has no prev, as the first record of a log has none: there is no break to accept",
+			prepare: func(t *testing.T, s *Store, dir string) *Store { return s }},
+		{name: "a record 1 that has no prev, in the activity log", log: audit.ActivityLog, build: allOld, n: 1, holed: true, stop: none,
+			refused: "record 1 has no prev, as the first record of a log has none: there is no break to accept",
+			prepare: func(t *testing.T, s *Store, dir string) *Store { return s }},
 
 		// A gap that is accepted passes the record after it, as a hole does.
 		{name: "a number gap", log: audit.LoginLog, build: allOld, n: 4, prepare: drop(audit.LoginLog, 3),

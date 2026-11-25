@@ -96,7 +96,7 @@ func TestAcceptBreak(t *testing.T) {
 
 	for _, log := range []string{"login", "activity"} {
 		refused(accept(log, "3"), "record 3 follows record 2: there is no break to accept")
-		refused(accept(log, "1"), fmt.Sprintf("record 1 is the first record that the audit log %s is checked from: a break there is not accepted", log))
+		refused(accept(log, "1"), "record 1 has no prev, as the first record of a log has none: there is no break to accept")
 		refused(accept(log, "9"), fmt.Sprintf("record 9 of the audit log %s is not in the store", log))
 	}
 
@@ -169,6 +169,74 @@ func TestAcceptBreak(t *testing.T) {
 		refused(accept(log, "4"), fmt.Sprintf("the break at record 4 of the audit log %s is already accepted", log))
 		refused(accept(log, "5"), "record 5 follows record 4: there is no break to accept")
 	}
+}
+
+// TestAcceptBreakFirst checks accept-break on a break at the first record that is read: record 1 with a prev, and the first
+// record that remains after a deletion, whose prev is not the hash that the chain start has. The first is accepted like any break,
+// and the second is refused while the records that the deletion left are before it, and accepted without them.
+func TestAcceptBreakFirst(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	wrong := sha256.Sum256([]byte("another record"))
+	accept := func(d dirs, n string) []string {
+		return []string{"accept-break", "-data", d.data, "-log", "login", "-record", n}
+	}
+	line := func(d dirs, n string) string {
+		return "accepted the break at record " + n + " of the audit log login in " + d.data + "; whiteroom doctor checks the log again from it\n"
+	}
+
+	t.Run("record 1", func(t *testing.T) {
+		d := newDirs(t)
+		one := loginRecord(1, recordHash([]byte("a record that was before it")))
+		writeCommits(t, d.data, commitAt{now, [][]byte{one, loginRecord(2, recordHash(one))}})
+		code, stdout, stderr := runCmd(t, accept(d, "1")...)
+		if code != 0 || stdout != line(d, "1") || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line(d, "1"))
+		}
+		code, stdout, stderr = runCmd(t, accept(d, "1")...)
+		if want := "whiteroom-db accept-break: the break at record 1 of the audit log login is already accepted\n"; code != 1 || stdout != "" || stderr != want {
+			t.Errorf("a second whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
+		}
+		if code, stdout, stderr := runCmd(t, "check", "-data", d.data); code != 0 || stdout != "no problems found in "+d.data+"\n" || stderr != "" {
+			t.Errorf("whiteroom-db check = %d, with stdout %q and stderr %q", code, stdout, stderr)
+		}
+	})
+	t.Run("the first record that remains", func(t *testing.T) {
+		d := newDirs(t)
+		chain := loginChain(4)
+		writeCommits(t, d.data, commitAt{now, [][]byte{chain[2], chain[3]}})
+		writeDeletion(t, d.data, 3, wrong, now.AddDate(-1, 0, 0), now)
+		code, stdout, stderr := runCmd(t, accept(d, "3")...)
+		if code != 0 || stdout != line(d, "3") || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line(d, "3"))
+		}
+	})
+	t.Run("the first record that remains, with the records before it still there", func(t *testing.T) {
+		d := newDirs(t)
+		chain := loginChain(4)
+		writeCommits(t, d.data, commitAt{now, chain})
+		writeDeletion(t, d.data, 3, wrong, now.AddDate(-1, 0, 0), now)
+		before := withoutHead(t, d.data)
+		code, stdout, stderr := runCmd(t, accept(d, "3")...)
+		want := "whiteroom-db accept-break: record 3 comes after records before it that an earlier deletion left, which are still in the " +
+			"store: whiteroom-db compact drops them if they are what the deletion left; accept the break at record 3 then\n"
+		if code != 1 || stdout != "" || stderr != want {
+			t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
+		}
+		if got := withoutHead(t, d.data); !maps.Equal(got, before) {
+			t.Error("the refusal changed the files")
+		}
+	})
+	t.Run("the first record that remains, with the hash of the chain start", func(t *testing.T) {
+		d := newDirs(t)
+		chain := loginChain(4)
+		writeCommits(t, d.data, commitAt{now, chain[2:]})
+		writeDeletion(t, d.data, 3, sha256.Sum256(chain[1]), now.AddDate(-1, 0, 0), now)
+		code, stdout, stderr := runCmd(t, accept(d, "3")...)
+		want := "whiteroom-db accept-break: record 3 has as its prev the hash that the chain start has of record 2: there is no break to accept\n"
+		if code != 1 || stdout != "" || stderr != want {
+			t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
+		}
+	})
 }
 
 // putHeads puts the heads of the audit logs, by their names, in the table heads of the data directory data, which no process has

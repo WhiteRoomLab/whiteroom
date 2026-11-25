@@ -452,8 +452,21 @@ func TestVerifyAuditBreaks(t *testing.T) {
 	activity3 := func(t *testing.T, f chainFixture) map[uint64][]byte {
 		return map[uint64][]byte{4: changedRecord(t, f.events[3].Data, func(r *audit.Record) { r.Detail = map[string]string{"event": "X"} })}
 	}
+	// Login record 1 is given a prev, which the first record of a log has not: record 2 does not have its hash either. The same
+	// for activity record 1.
+	login1 := func(t *testing.T, f chainFixture) map[uint64][]byte {
+		return map[uint64][]byte{3: changedRecord(t, f.events[2].Data, func(r *audit.Record) { r.Prev = hashText(wrong[:]) })}
+	}
+	activity1 := func(t *testing.T, f chainFixture) map[uint64][]byte {
+		return map[uint64][]byte{1: changedRecord(t, f.events[0].Data, func(r *audit.Record) { r.Prev = hashText(wrong[:]) })}
+	}
 	const login3 = `audit log "login": record 3 (event 9): prev is not the hash of record 2`
 	const activity4 = `audit log "activity": record 4 (event 5): prev is not the hash of record 3`
+	const login1Prev = `audit log "login": record 1 (event 3): the first record has the hash of one before it`
+	// The records 1 and 2 are dropped, and the chain starts at the record 3, whose prev is not the hash that it has.
+	chainStart3 := func(f chainFixture) ([]chainRow, [][]byte) {
+		return []chainRow{startRow(3, wrong)}, deletedEvents(3, wrong)
+	}
 	for _, tt := range []struct {
 		name   string
 		change func(t *testing.T, f chainFixture) change
@@ -507,6 +520,54 @@ func TestVerifyAuditBreaks(t *testing.T) {
 		{"a break that the chain does not need", func(t *testing.T, f chainFixture) change {
 			return change{rows: []chainRow{breakRow(dbwire.LogLogin, 2, f.login(2))}}
 		}, "", []string{breakNote("login", 2)}},
+		{"a break at record 1", func(t *testing.T, f chainFixture) change {
+			replace := login1(t, f)
+			return change{replace: replace, rows: []chainRow{breakRow(dbwire.LogLogin, 1, sha256.Sum256(replace[3])),
+				breakRow(dbwire.LogLogin, 2, f.login(2))}, events: append(acceptedEvents(dbwire.LogLogin, 1, sha256.Sum256(replace[3])),
+				acceptedEvents(dbwire.LogLogin, 2, f.login(2))...)}
+		}, "", []string{breakNote("login", 1), breakNote("login", 2)}},
+		{"a break at record 1 of the activity log", func(t *testing.T, f chainFixture) change {
+			replace := activity1(t, f)
+			return change{replace: replace, rows: []chainRow{breakRow(dbwire.LogActivity, 1, sha256.Sum256(replace[1])),
+				breakRow(dbwire.LogActivity, 2, f.activity(2))}}
+		}, "", []string{breakNote("activity", 1), breakNote("activity", 2)}},
+		{"a break at record 1 that is not accepted", func(t *testing.T, f chainFixture) change {
+			return change{replace: login1(t, f)}
+		}, login1Prev, nil},
+		{"a break at record 1, and none at record 2", func(t *testing.T, f chainFixture) change {
+			replace := login1(t, f)
+			return change{replace: replace, rows: []chainRow{breakRow(dbwire.LogLogin, 1, sha256.Sum256(replace[3]))}}
+		}, `audit log "login": record 2 (event 6): prev is not the hash of record 1`, []string{breakNote("login", 1)}},
+		{"a break at record 1 with the hash of another record", func(t *testing.T, f chainFixture) change {
+			return change{replace: login1(t, f), rows: []chainRow{breakRow(dbwire.LogLogin, 1, f.login(1))}}
+		}, login1Prev, nil},
+		{"a break at record 1 of the other log", func(t *testing.T, f chainFixture) change {
+			replace := login1(t, f)
+			return change{replace: replace, rows: []chainRow{breakRow(dbwire.LogActivity, 1, sha256.Sum256(replace[3]))}}
+		}, login1Prev, nil},
+		{"a break at record 2, with record 1 missing", func(t *testing.T, f chainFixture) change {
+			return change{drop: []uint64{3}, rows: []chainRow{breakRow(dbwire.LogLogin, 2, f.login(2))}}
+		}, `audit log "login": record 2 (event 6): the first record of a log is number 1`, nil},
+		{"a break at record 3, with records 1 and 2 missing", func(t *testing.T, f chainFixture) change {
+			return change{drop: []uint64{3, 6}, rows: []chainRow{breakRow(dbwire.LogLogin, 3, f.login(3))}}
+		}, `audit log "login": record 3 (event 9): the first record of a log is number 1`, nil},
+		{"a break at the first record that remains", func(t *testing.T, f chainFixture) change {
+			rows, events := chainStart3(f)
+			return change{drop: []uint64{3, 6}, rows: append(rows, breakRow(dbwire.LogLogin, 3, f.login(3))),
+				events: append(events, acceptedEvents(dbwire.LogLogin, 3, f.login(3))...)}
+		}, "", []string{startNote(3), breakNote("login", 3)}},
+		{"a break at the first record that remains, which is not accepted", func(t *testing.T, f chainFixture) change {
+			rows, events := chainStart3(f)
+			return change{drop: []uint64{3, 6}, rows: rows, events: events}
+		}, `audit log "login": record 3 (event 9): prev is not the hash that the chain start has of record 2`, []string{startNote(3)}},
+		{"a break at the first record that remains with the hash of another record", func(t *testing.T, f chainFixture) change {
+			rows, events := chainStart3(f)
+			return change{drop: []uint64{3, 6}, rows: append(rows, breakRow(dbwire.LogLogin, 3, f.login(2))), events: events}
+		}, `audit log "login": record 3 (event 9): prev is not the hash that the chain start has of record 2`, []string{startNote(3)}},
+		{"a break at the first record that remains, with the records before it still there", func(t *testing.T, f chainFixture) change {
+			rows, events := chainStart3(f)
+			return change{rows: append(rows, breakRow(dbwire.LogLogin, 3, f.login(3))), events: events}
+		}, `audit log "login": record 3 (event 9): prev is not the hash that the chain start has of record 2`, []string{startNote(3)}},
 		{"a record that is missing, and an acceptance", func(t *testing.T, f chainFixture) change {
 			return change{drop: []uint64{6}, rows: []chainRow{breakRow(dbwire.LogLogin, 3, f.login(3))}}
 		}, `audit log "login": record 3 (event 9): the number does not follow that of record 1`, nil},

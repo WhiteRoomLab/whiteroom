@@ -32,11 +32,12 @@ type Deleted struct {
 //
 // The records go as a prefix in the order of their events, and only while their chain is whole. The walk stops at a record
 // that is not old enough or has no mark, and at evidence: a record that does not follow the one before it (unless a break
-// is accepted for it, or it follows a hole that a repair recorded or a gap that is accepted, as VerifyAudit has it), an event
-// that is no record, a chain start or a row of a break, of a hole or of an accepted gap that cannot be read. At evidence it also
-// keeps the record before, so that the pair stays for a repair. A record that the walk takes through a break, a hole or an
-// accepted gap is never the first that remains: the cut moves back before it, and the rows of the breaks, of the holes and of
-// the gaps stay.
+// is accepted for it, by the rule of dbwire.BreakHonored, which also lets the first record that is walked go, record 1 or the
+// first that remains after a deletion when no record is left before it; or it follows a hole that a repair recorded or a gap that
+// is accepted, as VerifyAudit has it), an event that is no record, a chain start or a row of a break, of a hole or of an accepted
+// gap that cannot be read. At evidence it also keeps the record before, so that the pair stays for a repair. A record that the
+// walk takes through a break, a hole or an accepted gap is never the first that remains: the cut moves back before it, and the
+// rows of the breaks, of the holes and of the gaps stay.
 //
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
@@ -440,10 +441,18 @@ func followText(start *dbwire.ChainStart, last chainLast, n uint64, prev string)
 	return ""
 }
 
-// accepted reports whether a break is accepted for the record n whose stored bytes have the hash sum: it is not the first
-// record that was walked, and its number follows that of the record before it, as VerifyAudit has it.
+// accepted reports whether a break is accepted for the record n whose stored bytes have the hash sum, and honored in the walk by
+// the rule of dbwire.BreakHonored, as VerifyAudit has it: the last record that the walk has read is the last of those that it has
+// walked, or, if none, the last of those before the chain start that a deletion left.
 func (p *loginPass) accepted(n uint64, sum [sha256.Size]byte) bool {
-	return p.breakFor(n, sum) && len(p.recs) > 0 && n == p.recs[len(p.recs)-1].n+1
+	var last uint64
+	switch {
+	case len(p.recs) > 0:
+		last = p.recs[len(p.recs)-1].n
+	case len(p.left) > 0:
+		last = p.left[len(p.left)-1].n
+	}
+	return p.breakFor(n, sum) && dbwire.BreakHonored(p.start, last, n)
 }
 
 // breakFor reports whether a break is accepted for the record n whose stored bytes have the hash sum.
@@ -502,7 +511,8 @@ func (p *loginPass) plan(now time.Time) deletion {
 	}
 	cut := min(old, eligible)
 	// A record that the walk took through a break, a hole or an accepted gap cannot be the first that remains, as VerifyAudit
-	// does not honor a break at the chain start: the record before it stays, as at evidence.
+	// does not honor a break at the chain start while the records before it are still there, which is how the deletion leaves
+	// them until it is compacted: the record before it stays, as at evidence.
 	for cut > 0 && cut < len(p.recs) && p.recs[cut].honored {
 		cut--
 	}

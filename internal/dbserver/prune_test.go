@@ -797,8 +797,10 @@ func TestCompactLoginOlderSchema(t *testing.T) {
 }
 
 // TestCompactLoginBreaks checks the accepted breaks of the table chains: the walk goes on across a record that has one
-// for its hash and whose number follows that of the record before it, and not across one whose hash differs, or for
-// another record, or whose number goes back or skips, or the first that is walked.
+// for its hash and whose number follows that of the record before it, or that is the first that is walked and is the one that
+// the log starts with (record 1, or the first that remains after a deletion, with no record before it in the store), and not
+// across one whose hash differs, or for another record, or whose number goes back or skips, or the first that is walked when it
+// is not the one that the log starts with or when records that a deletion left come before it.
 func TestCompactLoginBreaks(t *testing.T) {
 	chain := newLoginChain(6)
 	broken := auditRecord("login", 4, hashText(chain.sum(1)))         // does not follow record 3
@@ -878,7 +880,54 @@ func TestCompactLoginBreaks(t *testing.T) {
 		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 2, Cutoff: cutoff,
 			Stopped: "record 5: the number does not follow that of record 3"})
 	})
-	t.Run("a break at the first record that is walked is not accepted", func(t *testing.T) {
+	t.Run("a break at record 1 lets the walk go on", func(t *testing.T) {
+		// The record 1 has a prev, which the first record of a log has not, and the records after it follow it.
+		one := auditRecord("login", 1, hashText(wrong32))
+		two := auditRecord("login", 2, hashText(sha256.Sum256(one)))
+		three := auditRecord("login", 3, hashText(sha256.Sum256(two)))
+		f := build(t, [][]byte{one, two, three}, old(3), 1, sha256.Sum256(one))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 3, Cutoff: cutoff})
+		v := viewOf(t, f)
+		checkStart(t, v, 4, sha256.Sum256(three), pruneNow)
+		if v.breaks != 1 || !strings.Contains(v.shape, "B1") {
+			t.Errorf("the store is %q with %d breaks, want the acceptance of the break at 1 to stay", v.shape, v.breaks)
+		}
+	})
+	t.Run("a break at record 1 for another hash does not", func(t *testing.T) {
+		one := auditRecord("login", 1, hashText(wrong32))
+		f := build(t, [][]byte{one, auditRecord("login", 2, hashText(sha256.Sum256(one)))}, old(2), 1, wrong32)
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "record 1: the first record has the hash of one before it"})
+		kept(t, before, viewOf(t, f))
+	})
+	t.Run("a break at the first record that remains lets the walk go on", func(t *testing.T) {
+		// The chain starts at the record 3, which does not have the hash that the chain start has of the record 2, and the
+		// records before it are gone.
+		f := build(t, [][]byte{chain.rec(3), chain.rec(4), chain.rec(5)}, old(3), 3, chain.sum(3), startAt(3, wrong32))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 3, Last: 5, Cutoff: cutoff})
+		v := viewOf(t, f)
+		checkStart(t, v, 6, chain.sum(5), pruneNow)
+		if v.breaks != 1 || !strings.Contains(v.shape, "B3") {
+			t.Errorf("the store is %q with %d breaks, want the acceptance of the break at 3 to stay", v.shape, v.breaks)
+		}
+	})
+	t.Run("the first record that remains, with a break accepted at it, can be dropped", func(t *testing.T) {
+		f := build(t, [][]byte{chain.rec(3), chain.rec(4), chain.rec(5)}, append(old(1), monthsAgo(2), monthsAgo(1)), 3, chain.sum(3),
+			startAt(3, wrong32))
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 3, Last: 3, Cutoff: cutoff})
+		after := viewOf(t, f)
+		checkStart(t, after, 4, chain.sum(3), pruneNow)
+		kept(t, before, after, "L3")
+	})
+	t.Run("a break at the first record that remains for another hash does not", func(t *testing.T) {
+		f := build(t, [][]byte{chain.rec(3), chain.rec(4)}, old(2), 3, chain.sum(4), startAt(3, wrong32))
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff,
+			Stopped: "record 3: prev is not the hash that the chain start has of record 2"})
+		kept(t, before, viewOf(t, f))
+	})
+	t.Run("a break at a first record that is not the one that the log starts with is not accepted", func(t *testing.T) {
 		f := build(t, [][]byte{chain.rec(2), chain.rec(3)}, old(2), 2, chain.sum(2))
 		before := viewOf(t, f)
 		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "record 2: the first record of a log is number 1"})
@@ -922,7 +971,7 @@ func TestCompactLoginBreaks(t *testing.T) {
 			})
 		}
 	})
-	t.Run("a break at the first record that remains is not accepted", func(t *testing.T) {
+	t.Run("a break at the first record that remains, with the records before it still there, is not accepted", func(t *testing.T) {
 		// The chain starts at the record 3, and the records 1 and 2 are still there; the record 3 does not have the hash that
 		// the chain start has of the record 2, and a break at it is accepted.
 		first := auditRecord("login", 3, hashText(wrong32))

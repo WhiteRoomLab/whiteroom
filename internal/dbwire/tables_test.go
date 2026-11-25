@@ -984,6 +984,60 @@ func TestChainPass(t *testing.T) {
 	}
 }
 
+func TestBreakHonored(t *testing.T) {
+	start := &ChainStart{First: 4}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		last  uint64
+		n     uint64
+		want  bool
+	}{
+		{"the record after the last that was read", nil, 3, 4, true},
+		{"the record after the last that was read, with a chain start before it", start, 5, 6, true},
+		{"the record after the first that remains", start, 4, 5, true},
+		{"the first record, before any is read", nil, 0, 1, true},
+		{"the first that remains, before any is read", start, 0, 4, true},
+		{"the first that remains, after a record that a deletion left", start, 3, 4, false},
+		{"the first that remains, after a record that is not the one before it", start, 2, 4, false},
+		{"the first that remains, after a record above it", start, 6, 4, false},
+		{"record 1, before any is read, with a chain start", start, 0, 1, false},
+		{"a record above the first that remains, before any is read", start, 0, 5, false},
+		{"record 2, before any is read", nil, 0, 2, false},
+		{"a record above 1 after the records that a deletion left, with no chain start", nil, 0, 4, false},
+		{"the record that was read last", nil, 3, 3, false},
+		{"a record below the last that was read", nil, 3, 2, false},
+		{"a record that skips", nil, 3, 5, false},
+		{"a record that skips, with a chain start", start, 5, 7, false},
+		{"record 0 before any is read", nil, 0, 0, false},
+		{"record 0 after a record", nil, 3, 0, false},
+	} {
+		if got := BreakHonored(c.start, c.last, c.n); got != c.want {
+			t.Errorf("%s: BreakHonored(%v, last %d, n %d) = %v, want %v", c.name, c.start, c.last, c.n, got, c.want)
+		}
+	}
+	// The same, by the words of the rule: the record after the last that was read, or, before any, 1 or the first that remains,
+	// and not the first that remains after a record that was read.
+	for _, start := range []*ChainStart{nil, {First: 1}, {First: 3}, {First: 6}} {
+		for last := range uint64(9) {
+			for n := range uint64(10) {
+				var want bool
+				switch {
+				case last != 0:
+					want = n == last+1 && (start == nil || n != start.First)
+				case start != nil:
+					want = n == start.First
+				default:
+					want = n == 1
+				}
+				if got := BreakHonored(start, last, n); got != want {
+					t.Errorf("BreakHonored(%v, last %d, n %d) = %v, want %v", start, last, n, got, want)
+				}
+			}
+		}
+	}
+}
+
 func TestChainEndPass(t *testing.T) {
 	var h3, h6, h9 [32]byte
 	h3[0], h6[0], h9[0] = 3, 6, 9

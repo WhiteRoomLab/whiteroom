@@ -330,11 +330,11 @@ func (c *chainEnd) pass(h dbwire.ChainHole) {
 	c.n, c.hash = h.Last, h.Hash
 }
 
-// honors reports whether the break that is accepted for the record n, whose hash is that of the break, is honored: the
-// record is not the first that is read, and not the first that remains after a deletion, and its number is that of the one
-// before it plus one. A break is for a record whose prev is not the hash of the one before it, and no more.
+// honors reports whether the break that is accepted for the record n, whose hash is that of the break, is honored, by the rule
+// of dbwire.BreakHonored: the record is the one that the log is expected to go on with, and not the first that remains after a
+// deletion when a record before it has been read.
 func (c *chainEnd) honors(n uint64) bool {
-	return c.n != 0 && n == c.n+1 && (c.start == nil || n != c.start.First)
+	return dbwire.BreakHonored(c.start, c.n, n)
 }
 
 // check returns the error of a record that does not follow the end of its log. The first record of a log is number 1,
@@ -380,8 +380,11 @@ func (c *chainEnd) check(r audit.Record, number uint64) error {
 // it, and a log that has no record left has the head (K-1, P). The records before K, which a deletion that stopped
 // before its compaction has left, are checked as ever. A break that is accepted for a record, with the hash that the
 // record has, lets the record go unchecked against the one before it: the log is checked again from it. It does so if the
-// number of the record is that of the one before it plus one, and the record is neither the first that is read nor the
-// record K; a gap is no break. An anchor of a record before K that the store no longer has is not checked, unless it is
+// record is the one that the log is expected to go on with (the one after the last that was read, which counts the records
+// before K, or, before any, 1 or K), and it is not K when a record before K was read, which a deletion left (dbwire.BreakHonored).
+// A break at the first record that is read is honored, then: at record 1, which has a prev, or at K, whose prev is not the hash
+// that the chain start has. A gap is no break, and neither is a record that does not follow the last that was read in number.
+// An anchor of a record before K that the store no longer has is not checked, unless it is
 // that of record K-1, whose hash is P. A store of a table schema before 8 has no such row.
 //
 // A hole (the schema 9) is a gap that it passes: the records A to B of a log were lost, and whiteroom-db repair dropped what

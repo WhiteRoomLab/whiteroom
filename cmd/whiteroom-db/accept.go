@@ -15,10 +15,14 @@ const acceptUsage = `Usage: whiteroom-db accept-break [flags] -log LOG -record N
 
 Accept the break at record N of the audit log LOG (login or activity), or the gap
 before it, once you have looked into it. A break is a record whose number is that
-of the one before it plus one and whose prev is not the hash of that record. A gap
-is records that are missing: record N has a number above that of the one before it
-plus one, or the head of the log names records that the log does not have.
-"whiteroom doctor" reports both. Take LOG and N from its report:
+of the one before it plus one and whose prev is not the hash of that record. The
+first record that is read is a break too, if it is the one that the log starts with
+and no record before it is in the store: record 1 with a prev (the first record of a
+log has none), or the first that remains after the deletion of old login records,
+whose prev is not the hash that the start of the chain has. A gap is records that
+are missing: record N has a number above that of the one before it plus one, or the
+head of the log names records that the log does not have. "whiteroom doctor" reports
+both. Take LOG and N from its report:
 
   audit log "login": record 7 (event 31): prev is not the hash of record 6
   audit log "login": record 9 (event 33): the number does not follow that of record 6
@@ -44,12 +48,14 @@ one before the start of the chain, which the deletion of old login records made,
 one that a gap leaves out, for which it names the record to accept the gap with),
 a record that follows a hole that "whiteroom-db repair" recorded or a gap that is
 accepted already, a record whose number is below that of a record before it, the gap
-before a record whose prev is not the hash of a record, the first record that the log
-is checked from (record 1, or the first that remains after such a deletion), a record
-that follows the one before it, a break that is accepted already, a chain whose rows
-cannot be read, and a data directory of an older table schema than this program's:
-the first writer that connects through "whiteroom-db serve" (such as "whiteroom serve
-admin") upgrades it.
+before a record whose prev is not the hash of a record, record 1 with no prev, the first
+that remains after such a deletion with the hash that the start of the chain has (no
+break is there), the first that remains after such a deletion while records before it
+that the deletion left are still in the store ("whiteroom-db compact" drops them if
+they are what the deletion left: accept the break then), a record that follows the one
+before it, a break that is accepted already, a chain whose rows cannot be read, and a
+data directory of an older table schema than this program's: the first writer that
+connects through "whiteroom-db serve" (such as "whiteroom serve admin") upgrades it.
 
 It accepts a break or a gap at a record that can be read, and no more. An event that
 is no record, which damage to the engine leaves, has no record number to name it by,

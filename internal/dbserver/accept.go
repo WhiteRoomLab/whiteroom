@@ -31,8 +31,12 @@ type Acceptance struct {
 // reads the records as audit.Decode does (dbwire.ReadRecordID), uses only their log, number and prev, and changes and drops
 // none.
 //
-// A break is a record whose number is that of the one before it plus one and whose prev is not its hash. The row ties the
-// acceptance to the SHA-256 of the stored bytes of the record, and any change to the record undoes it.
+// A break is a record whose number is that of the one before it plus one and whose prev is not its hash. The first record that the
+// walk reads is one too, if it is the record that the log starts with (1, or the first that remains after a deletion, K) and no
+// record before K is in the store: record 1 with a prev, which the first record of a log has not, and K whose prev is not the hash
+// that the chain start has of the record before it. The row ties the acceptance to the SHA-256 of the stored bytes of the record,
+// and any change to the record undoes it. dbwire.BreakHonored decides whether it is honored, as it does for VerifyAudit of the
+// store and the walk of compact.
 //
 // A gap is a record whose number is above the one that the walk expects after the last record that it has read (the record
 // after it, counting the records that a deletion left before the chain start, or the first that remains, or 1), and that no hole
@@ -40,15 +44,17 @@ type Acceptance struct {
 // names the hash of N-1: the row has the first E as its key, N-1 and that hash, which is the rule of a hole, and no more is
 // passed than the row says. A gap at the end of the log is accepted at the number N of the head of the log (the table heads),
 // when the log has no record N and none above the last that was read: the records E to N are missing, and the row has the hash
-// of the head. Whether the record N is the first that the walk reads is no reason to refuse a gap before it.
+// of the head. Whether the record N is the first that the walk reads is no reason to refuse a gap before it, and a first record
+// that is not the one that the log starts with is a gap, not a break.
 //
 // It refuses, and writes nothing, a record that is not in the store (also one before the chain start, which is not looked at,
 // and one whose number the log has twice), a record that follows a hole that a repair has recorded (the table chains has it,
 // with the hash that the record has as its prev: VerifyAudit passes the record, so there is nothing to accept; the hole is not
 // a break, and the records that it lost are not there to be named) or a gap that is accepted already, a record whose number is
-// below that of a record before it, the gap before a record whose prev is not the hash of a record, the first record that the
-// log is checked from, which has no record before it to break from, a record that follows the one before it, a break that is
-// accepted already for the record as it is, a chain whose rows cannot be read, and a store of an older table schema than
+// below that of a record before it, the gap before a record whose prev is not the hash of a record, record 1 with no prev and K
+// whose prev is the hash that the chain start has (no break is there), K while records before it that a deletion left are in the
+// store (whiteroom-db compact drops them if they are what the deletion left), a record that follows the one before it, a break
+// that is accepted already for the record as it is, a chain whose rows cannot be read, and a store of an older table schema than
 // dbwire.TableVersion, for the reason of CompactLogin. An event that is no record has no number to be named by, and is not
 // looked at.
 func AcceptBreak(ctx context.Context, m *logdb.Maintenance, log string, n uint64, now time.Time) (Acceptance, error) {
@@ -139,7 +145,7 @@ type breakPass struct {
 	prev   string // the prev of the first of them
 	why    string // why the first of them does not follow the walk before it, "" if it does
 	first  bool   // it is the first record of the walk
-	before uint64 // the number of the record before it, 0 if none
+	before uint64 // the number of the last record read before it, counting those that a deletion left; 0 if none
 	// expected is the number that the walk expects at the first of them: the record after the one before it.
 	expected uint64
 	// row is the hole, or the accepted gap if rowGap, that it follows, as VerifyAudit passes it; passed is whether there is one.
@@ -212,8 +218,13 @@ func (p *breakPass) decide(rows chainRows, head *auditHead, schema uint64) (Acce
 			return Acceptance{}, [sha256.Size]byte{}, olderSchemaRefusal(schema, "gap")
 		}
 		return Acceptance{Gap: true, First: p.expected, Last: n - 1}, hash, nil
-	case p.first:
-		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d is the first record that the audit log %s is checked from: a break there is not accepted", n, log)
+	case p.first && p.why == "" && p.start == nil:
+		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d has no prev, as the first record of a log has none: there is no break to accept", n)
+	case p.first && p.why == "":
+		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d has as its prev the hash that the chain start has of record %d: there is no break to accept", n, n-1)
+	case !dbwire.BreakHonored(p.start, p.before, n):
+		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d comes after records before it that an earlier deletion left, which are still in the store: "+
+			"whiteroom-db compact drops them if they are what the deletion left; accept the break at record %d then", n, n)
 	case p.why == "":
 		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("record %d follows record %d: there is no break to accept", n, n-1)
 	case rows.accepted(n, p.sum):

@@ -134,6 +134,22 @@ func noHashText(n, before int) string {
 		"case hexadecimal digits), so the gap before it cannot be accepted", n, before)
 }
 
+// leftoversText is the refusal of the record n, the first that remains after a deletion, while records before it that the deletion
+// left are in the store.
+func leftoversText(n int) string {
+	return fmt.Sprintf("record %d comes after records before it that an earlier deletion left, which are still in the store: "+
+		"whiteroom-db compact drops them if they are what the deletion left; accept the break at record %d then", n, n)
+}
+
+// startHashText is the refusal of the record n, the first that remains after a deletion, which has the hash that the chain
+// start has of the record before it as its prev.
+func startHashText(n int) string {
+	return fmt.Sprintf("record %d has as its prev the hash that the chain start has of record %d: there is no break to accept", n, n-1)
+}
+
+// noPrevText is the refusal of the record 1, which has no prev, as the first record of a log has none.
+const noPrevText = "record 1 has no prev, as the first record of a log has none: there is no break to accept"
+
 // storeFiles returns every file of the world of f with what it holds, except the head of the engine, which each open of the
 // engine writes again.
 func storeFiles(f *fixture) map[string]string {
@@ -409,15 +425,69 @@ func TestAcceptBreak(t *testing.T) {
 	}
 }
 
+// TestAcceptBreakFirst checks the acceptance of a break at the first record that is read, when it is the one that the log starts
+// with: record 1 with a prev, which the first record of a log has not, and the first record that remains after a deletion (K),
+// whose prev is not the hash that the chain start has, with no record before it in the store. The row, the event and the mark are
+// those of any break, and a second acceptance is refused.
+func TestAcceptBreakFirst(t *testing.T) {
+	chain, activity := newChain(dbwire.LogLogin, 5), newChain(dbwire.LogActivity, 5)
+	loginFirst := auditRecord("login", 1, hashText(wrong32))
+	activityFirst := auditRecord("activity", 1, hashText(wrong32))
+	for _, tt := range []struct {
+		name   string
+		events [][]byte
+		step   func(t *testing.T, f *fixture)
+		log    string
+		n      uint64
+		sum    [sha256.Size]byte
+	}{
+		{"record 1", [][]byte{loginFirst, chain.rec(2), chain.rec(3)}, nil, dbwire.LogLogin, 1, sha256.Sum256(loginFirst)},
+		{"record 1 of the activity log", [][]byte{activityFirst, activity.rec(2)}, nil, dbwire.LogActivity, 1, sha256.Sum256(activityFirst)},
+		{"record 1, among the records of the other log", [][]byte{activity.rec(1), loginFirst, activity.rec(2), chain.rec(2)}, nil,
+			dbwire.LogLogin, 1, sha256.Sum256(loginFirst)},
+		{"the first record that remains", [][]byte{chain.rec(3), chain.rec(4)}, startAt(3, wrong32), dbwire.LogLogin, 3, chain.sum(3)},
+		{"the first record that remains, whose prev is not a hash", [][]byte{auditRecord("login", 3, "nonsense"), chain.rec(4)},
+			startAt(3, chain.sum(2)), dbwire.LogLogin, 3, sha256.Sum256(auditRecord("login", 3, "nonsense"))},
+		{"the first record that remains, with no prev", [][]byte{auditRecord("login", 3, ""), chain.rec(4)}, startAt(3, chain.sum(2)),
+			dbwire.LogLogin, 3, sha256.Sum256(auditRecord("login", 3, ""))},
+		{"the first record that remains, among the records of the other log", [][]byte{activity.rec(1), chain.rec(3), activity.rec(2),
+			chain.rec(4)}, startAt(3, wrong32), dbwire.LogLogin, 3, chain.sum(3)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var steps []func(t *testing.T, f *fixture)
+			if tt.step != nil {
+				steps = append(steps, tt.step)
+			}
+			f := recordsFixture(t, tt.events, steps...)
+			before := viewOf(t, f)
+			acc, err := accept(t, f, tt.log, tt.n)
+			if err != nil || acc != (Acceptance{}) {
+				t.Fatalf("AcceptBreak() = %+v, %v, want the break", acc, err)
+			}
+			checkAccepted(t, f, before, tt.log, tt.n, tt.sum)
+
+			// The commit is durable.
+			image := f.fs.Crash(loseAll)
+			checkAccepted(t, &fixture{t: t, fs: image, opts: f.opts, logs: f.logs, clock: f.clock}, before, tt.log, tt.n, tt.sum)
+
+			files := storeFiles(f)
+			want := fmt.Sprintf("the break at record %d of the audit log %s is already accepted", tt.n, tt.log)
+			if err := acceptBreak(t, f, tt.log, tt.n); err == nil || err.Error() != want {
+				t.Errorf("a second AcceptBreak() = %v, want %q", err, want)
+			}
+			if got := storeFiles(f); !maps.Equal(got, files) {
+				t.Error("the second acceptance changed the files of the store")
+			}
+		})
+	}
+}
+
 // TestAcceptBreakRefused checks that each refusal says why, in the words of the command, and writes nothing.
 func TestAcceptBreakRefused(t *testing.T) {
 	chain, activity := newChain(dbwire.LogLogin, 6), newChain(dbwire.LogActivity, 6)
 	good := [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), chain.rec(5), chain.rec(6)}
 	withBreak := slices.Clone(good)
 	withBreak[3] = changedRecord(dbwire.LogLogin, 4, chain) // the record 5 is the break
-	firstText := func(n int) string {
-		return fmt.Sprintf("record %d is the first record that the audit log login is checked from: a break there is not accepted", n)
-	}
 	unreadable := func(log, why string) string {
 		return fmt.Sprintf("the chain of the audit log %s cannot be read, so no break of it is accepted (the table chains: %s)", log, why)
 	}
@@ -437,12 +507,20 @@ func TestAcceptBreakRefused(t *testing.T) {
 			"record 2 of the audit log login is not in the store: the records before record 3 were deleted"},
 		{"a record that the deletion has dropped", good[2:], startAt(3, chain.sum(2)), dbwire.LogLogin, 1,
 			"record 1 of the audit log login is not in the store: the records before record 3 were deleted"},
-		{"the first record", good, nil, dbwire.LogLogin, 1, firstText(1)},
-		{"a first record with the hash of one before it", [][]byte{auditRecord("login", 1, hashText(wrong32)), chain.rec(2)}, nil,
-			dbwire.LogLogin, 1, firstText(1)},
-		{"the first record that remains", good[2:], startAt(3, wrong32), dbwire.LogLogin, 3, firstText(3)},
-		{"the first record that remains, with the records that a deletion left before it", good, startAt(3, wrong32),
-			dbwire.LogLogin, 3, firstText(3)},
+		{"the first record", good, nil, dbwire.LogLogin, 1, noPrevText},
+		{"the first record of the activity log", [][]byte{activity.rec(1), activity.rec(2)}, nil, dbwire.LogActivity, 1, noPrevText},
+		{"the first record that remains, with the hash of the chain start", good[2:], startAt(3, chain.sum(2)), dbwire.LogLogin, 3,
+			startHashText(3)},
+		{"the first record that remains, with the hash of the chain start and the records that a deletion left before it", good,
+			startAt(3, chain.sum(2)), dbwire.LogLogin, 3, startHashText(3)},
+		{"the first record that remains, with the records that a deletion left before it", good, startAt(3, wrong32), dbwire.LogLogin, 3,
+			leftoversText(3)},
+		{"the first record that remains, with the records that a deletion left before it, and a break that is accepted already", good,
+			func(t *testing.T, f *fixture) {
+				startAt(3, wrong32)(t, f)
+				putRow(dbwire.TableChains, dbwire.ChainBreakKey(dbwire.LogLogin, 3),
+					dbwire.AppendChainBreak(nil, dbwire.ChainBreak{Hash: chain.sum(3), At: pruneNow}))(t, f)
+			}, dbwire.LogLogin, 3, leftoversText(3)},
 		{"a record that follows", good, nil, dbwire.LogLogin, 3, "record 3 follows record 2: there is no break to accept"},
 		{"a record whose number goes back", [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(4)}, nil,
 			dbwire.LogLogin, 4, belowText(4, 5)},
@@ -746,10 +824,33 @@ func TestAcceptBreakWalk(t *testing.T) {
 		refused(t, f, 2, "record 2 of the audit log login is not in the store: the records before record 5 were deleted")
 	})
 	t.Run("the first record that remains, after the records that a deletion left", func(t *testing.T) {
-		// The records 1 to 4 are there, and the chain starts at the record 5: nothing is missing, and the record 5 is checked
-		// against the chain start, so that no break is accepted at it.
+		// The records 1 to 4 are there, and the chain starts at the record 5: nothing is missing, and the record 5 has the hash
+		// that the chain start has of the record 4, so that there is no break at it.
 		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), chain.rec(5)}, startAt(5, chain.sum(4)))
-		refused(t, f, 5, "record 5 is the first record that the audit log login is checked from: a break there is not accepted")
+		refused(t, f, 5, startHashText(5))
+	})
+	t.Run("the first record that remains, which is a break, after the records that a deletion left", func(t *testing.T) {
+		// The record 5 does not have the hash that the chain start has of the record 4, and the records 1 to 4 are still there:
+		// the record 5 is checked against them and against the chain start, and no break is accepted at it until they are gone.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(4), chain.rec(5)}, startAt(5, wrong32))
+		refused(t, f, 5, leftoversText(5))
+		// The same store with the records gone, which the compaction of the deletion does: the break is accepted.
+		f = recordsFixture(t, [][]byte{chain.rec(5), chain.rec(6)}, startAt(5, wrong32))
+		before := viewOf(t, f)
+		if err := acceptBreak(t, f, dbwire.LogLogin, 5); err != nil {
+			t.Fatalf("AcceptBreak() = %v", err)
+		}
+		checkAccepted(t, f, before, dbwire.LogLogin, 5, chain.sum(5))
+	})
+	t.Run("the first record that remains, after records that a deletion left that end before it", func(t *testing.T) {
+		// The records 1 and 2 are there, the record 3 is lost, and the chain starts at the record 4: the record 4 is a gap after
+		// the record 2, whatever its prev is, and not a break.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5)}, startAt(4, wrong32))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, dbwire.LogLogin, 4); err != nil || acc != (Acceptance{Gap: true, First: 3, Last: 3}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the record 3", acc, err)
+		}
+		checkGapAccepted(t, f, before, dbwire.LogLogin, 3, 3, chain.sum(3))
 	})
 }
 

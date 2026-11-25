@@ -173,7 +173,9 @@ func TestUsage(t *testing.T) {
 	acceptWords := strings.Join(strings.Fields(help["accept-break"]), " ")
 	for _, text := range []string{"changes no record and drops none", "leaves three traces", "a row of the table chains",
 		"an event of the daemon in the log", "checks the log again from record N", "tells the break or the gap in a note, not as a problem",
-		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
+		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "record 1 with no prev",
+		"while records before it that the deletion left are still in the store", "accept the break then",
+		"The first record that is read is a break too, if it is the one that the log starts with and no record before it is in the store",
 		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
 		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
 		"records as a hole a gap that it makes itself", "and tells a gap that it did not make",

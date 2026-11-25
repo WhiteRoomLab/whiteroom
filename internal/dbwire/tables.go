@@ -113,6 +113,16 @@ func ChainExpected(start *ChainStart, last uint64) uint64 {
 	return 1
 }
 
+// BreakHonored reports whether the break that is accepted for the record n is honored in a walk of a log that has the chain start
+// start (nil if none) and has read the record numbered last (0 if none; the records that a deletion left before the chain start
+// count). n must be the record that the walk expects (ChainExpected): the one after last, or, before any, 1 or the first that
+// remains after a deletion (K). K is not honored when a record before it has been read, which a deletion left: those are checked
+// against each other, and K against the chain start. The row must also have the hash of the stored bytes of the record, which the
+// caller checks. VerifyAudit of the store, whiteroom-db compact and accept-break all decide by this rule.
+func BreakHonored(start *ChainStart, last, n uint64) bool {
+	return n == ChainExpected(start, last) && (last == 0 || start == nil || n != start.First)
+}
+
 // ChainPass returns the row that passes the record n with the prev text prev in a walk of a log that has read the record
 // numbered last (0 if none) and has the chain start start (nil if none): a hole of holes, by their first records, or else an
 // accepted gap of gaps, which has the record that the walk expects as its first and which ChainHole.Follows says n follows. gap
