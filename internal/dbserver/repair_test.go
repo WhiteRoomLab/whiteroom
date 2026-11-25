@@ -510,11 +510,12 @@ func TestRepairRefusals(t *testing.T) {
 			err     string
 			raised  uint64
 		}{
-			{name: "the schema 9", schema: 9, damaged: true},
+			{name: "the schema 10", schema: 10, damaged: true},
+			{name: "the schema 9 is raised", schema: 9, damaged: true, raised: 9},
 			{name: "the schema 8 is raised", schema: 8, damaged: true, raised: 8},
 			{name: "the schema 7 has no table for the holes", schema: 7, damaged: true,
 				err: "data/logdb: the repair drops audit records, and the store has the table schema 7, which has no table chains to " +
-					"record the holes in: a writer that opens the store (whiteroom-db serve) upgrades it to 9, or restore the store " +
+					"record the holes in: a writer that opens the store (whiteroom-db serve) upgrades it to 10, or restore the store " +
 					"from a copy"},
 			{name: "the schema 7 loses nothing that a hole is for", schema: 7},
 			{name: "a newer schema", schema: dbwire.TableVersion + 1, damaged: true,

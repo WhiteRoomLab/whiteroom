@@ -115,8 +115,8 @@ const checkpointForeign = "not this log's"
 // this boot, and one that cannot be read, are refused before and after the locks, a mark of an earlier boot is left where it
 // is, and the directory need not be writable. With it, it is Maintain, but that the first thing that it changes is the copy of
 // logdb/ in r.Keep, which comes after every refusal: a plan that needs a truncation without r.Truncate, a store that has no
-// commit that a repair can keep, and a table schema that cannot hold the holes (the schema 8 is raised to 9 with them; a
-// schema below 8 is refused if there is a hole to record in it). A plan with nothing in it changes nothing, and copies nothing.
+// commit that a repair can keep, and a table schema that cannot hold the holes (the schema 8 or 9 is raised to 10 with
+// them; a schema below 8 is refused if there is a hole to record in it). A plan with nothing in it changes nothing, and copies nothing.
 //
 // The report is as far as Repair got, also with an error. It waits for the processes that have the directory open for up to
 // two seconds, and then fails with an error that wraps ErrInUse.

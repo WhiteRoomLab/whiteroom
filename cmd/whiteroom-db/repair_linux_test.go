@@ -24,6 +24,12 @@ import (
 // heads, and a mark; each commit has a segment of the log of its own, and the last has the checkpoint that Close writes.
 func repairStore(t *testing.T, data string, n int) {
 	t.Helper()
+	repairStoreOf(t, data, n, dbwire.TableVersion)
+}
+
+// repairStoreOf is repairStore for a store of the table schema schema.
+func repairStoreOf(t *testing.T, data string, n int, schema uint64) {
+	t.Helper()
 	o := storeOptions()
 	o.Log.SegmentBytes = 1
 	o.Log.CheckpointBytes = -1
@@ -47,7 +53,7 @@ func repairStore(t *testing.T, data string, n int) {
 	for i := 1; i <= n; i++ {
 		if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
 			if i == 1 {
-				if err := tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, dbwire.TableVersion)); err != nil {
+				if err := tx.Put(dbwire.TableMeta, []byte(dbwire.MetaSchema), binary.AppendUvarint(nil, schema)); err != nil {
 					return err
 				}
 			}
@@ -267,6 +273,55 @@ func TestRepair(t *testing.T) {
 	}
 	if code, stdout, stderr = runCmd(t, "check", "-data", d.data); code != 0 {
 		t.Errorf("whiteroom-db check after the daemon has run = %d, with stdout %q and stderr %q", code, stdout, stderr)
+	}
+}
+
+// TestRepairRaisesSchema checks that a repair that records holes in a store of the table schema 8 or 9 raises it to the
+// schema 10, tells so, and that a store of the schema 10 is left as it is.
+func TestRepairRaisesSchema(t *testing.T) {
+	schemaOf := func(t *testing.T, data string) uint64 {
+		t.Helper()
+		var version uint64
+		err := dbserver.Maintain(t.Context(), data, storeOptions(), func(m *logdb.Maintenance) error {
+			return m.View(t.Context(), func(tx *logdb.Tx) error {
+				v, _ := tx.Get(dbwire.TableMeta, []byte(dbwire.MetaSchema))
+				version, _ = binary.Uvarint(v)
+				return nil
+			})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	for _, from := range []uint64{8, 9, 10} {
+		t.Run(fmt.Sprintf("schema %d", from), func(t *testing.T) {
+			d := newDirs(t)
+			repairStoreOf(t, d.data, 4, from)
+			editFile(t, segmentFile(d.data, 4), flipByte(100))
+			lines := []string{
+				"kept the files of " + filepath.Join(d.data, "logdb") + " in " + filepath.Join(d.root, "keep", "logdb"),
+				"drop: engine: " + segmentFile(d.data, 4) + " at offset 64: bad record CRC (sequence 4, events 8 to 10)",
+				`hole: audit log "login": record 2; recorded in the table chains`,
+				`hole: audit log "activity": record 4; recorded in the table chains`,
+			}
+			if from < dbwire.TableVersion {
+				lines = append(lines, fmt.Sprintf("schema: the table schema %d is raised to %d, which has the rows of the holes", from,
+					dbwire.TableVersion))
+			}
+			lines = append(lines, fmt.Sprintf("repaired %s: generation 2, sequence 4", d.data))
+			want := text(lines...)
+			code, stdout, stderr := runCmd(t, "repair", "-data", d.data, "-apply", "-keep", filepath.Join(d.root, "keep"))
+			if code != 0 || stdout != want || stderr != "" {
+				t.Fatalf("whiteroom-db repair -apply = %d, with stdout:\n%s\nand stderr %q\nwant 0, with stdout:\n%s", code, stdout, stderr, want)
+			}
+			if got := schemaOf(t, d.data); got != dbwire.TableVersion {
+				t.Errorf("the table schema after the repair is %d, want %d", got, dbwire.TableVersion)
+			}
+			if rows, _ := holesOf(t, d.data); strings.Join(rows, ",") != "login 2-2,activity 4-4" {
+				t.Errorf("the rows of the holes are %v", rows)
+			}
+		})
 	}
 }
 

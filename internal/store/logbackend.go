@@ -45,8 +45,10 @@ import (
 //	                    of a record (8 bytes, big-endian) -> the break at that record that is accepted (dbwire.ChainBreak),
 //	                    for as long as the record has its hash; the name, 0x01 and the number of the first record of a hole
 //	                    (8 bytes, big-endian) -> the hole that a repair made in the log: the number of its last record, and the
-//	                    hash of that record (dbwire.ChainHole). Only the maintenance of the daemon writes them, and a store
-//	                    of a schema before 8 has none (of a schema before 9, no hole)
+//	                    hash of that record (dbwire.ChainHole); the name, 0x02 and the number of the first record of a gap
+//	                    (8 bytes, big-endian) -> the gap that whiteroom-db accept-break accepted, with the value of a hole.
+//	                    Only the maintenance of the daemon writes them, and a store of a schema before 8 has none (of a
+//	                    schema before 9, no hole, and of a schema before 10, no gap)
 //
 // A version is its seq in a uvarint, then the SHA-256 of its JSON (no bytes for a deletion), saved_at and the ID of the
 // user, each after its length in a uvarint. A revision is its seq in a uvarint, then the entry ID after its length, the
@@ -61,10 +63,11 @@ import (
 // of the audit log skip (audit.go). The schema 8 adds the table chains, and the events of the daemon for the deletion
 // of records and the acceptance of a break (dbwire.DeletedKind, dbwire.AcceptedKind), which the reads skip too. The
 // schema 9 adds the holes of the table chains and the event of the daemon for a hole (dbwire.HoleKind), which the reads
-// skip as well; no data moves. Open sets the schema 9 in a store of the schema 1 to 8 together with the record
-// store.upgrade (the first of the activity log, with its head, for one of the schema 1 to 5) and the rows of heads of the
-// logs that have a head; one of the schema 2 to 8 gets nothing else and has no document read, and the index of one of the
-// schema 1 is built as before.
+// skip as well. The schema 10 adds the accepted gaps of the table chains and the event of the daemon for one
+// (dbwire.GapKind), which the reads skip too; no data moves. Open sets the schema 10 in a store of the schema 1 to 9
+// together with the record store.upgrade (the first of the activity log, with its head, for one of the schema 1 to 5) and
+// the rows of heads of the logs that have a head; one of the schema 2 to 9 gets nothing else and has no document read, and
+// the index of one of the schema 1 is built as before.
 const logSchemaVersion = dbwire.TableVersion
 
 // indexSchema is the first schema that has the index tables, auditSchema the first that has the audit log, and
@@ -173,8 +176,8 @@ func checkSchema(ctx context.Context, c *dbclient.Client, name string) error {
 }
 
 // upgradeLog brings the store of c, which its writer has just opened, to the schema logSchemaVersion in one Update, so
-// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 9 and the record
-// store.upgrade. One of the schema 2 to 8 has the index of the schema 9 already: it gets only the schema 9, the record
+// that a failure leaves the store as it was. A store of the schema 1 gets its index, the schema 10 and the record
+// store.upgrade. One of the schema 2 to 9 has the index of the schema 10 already: it gets only the schema 10, the record
 // and the rows of heads, and no document, revision or object is read, so a damaged one does not stop Open, and only the
 // reads that use it fail. name is that of the daemon in errors, and the record has the time of now.
 func upgradeLog(ctx context.Context, c *dbclient.Client, name string, now func() time.Time) error {
@@ -197,7 +200,7 @@ func upgradeLog(ctx context.Context, c *dbclient.Client, name string, now func()
 		if err := tx.Put(tableMeta, schemaKey, binary.AppendUvarint(nil, logSchemaVersion)); err != nil {
 			return err
 		}
-		// The index of the schema 2 to 8 is that of the schema 9, and making it again would read every document.
+		// The index of the schema 2 to 9 is that of the schema 10, and making it again would read every document.
 		if version < indexSchema {
 			if err := (&Tx{b: &logTx{tx: tx}}).run(func(t *Tx) error { return t.RebuildIndex() }); err != nil {
 				return err

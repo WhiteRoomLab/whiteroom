@@ -64,7 +64,7 @@ func TestTables(t *testing.T) {
 	if AppendOnly(math.MaxUint32) {
 		t.Error("the table 2^32-1 is append only")
 	}
-	if TableVersion != 9 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
+	if TableVersion != 10 || TableMeta != 1 || MetaSchema != "schema" || TableHistory != 3 || TableRevisions != 4 ||
 		TableEntryRevisions != 5 || TableHeads != 11 || TableChains != 12 || MaxHeadKey != 64 || MaxHeadLine != 255 {
 		t.Error("a fact about the tables is not the one of the plan")
 	}
@@ -370,6 +370,15 @@ func TestChainRows(t *testing.T) {
 	if _, ok := ParseChainBreak(goodHole); ok {
 		t.Error("the value of a hole is read as a break")
 	}
+	// The value of an accepted gap is that of a hole, with the first record of the key of the gap.
+	gapKey := ChainGapKey(LogActivity, 4)
+	if _, first, ok := ParseChainGapKey(gapKey); !ok || first != 4 {
+		t.Fatalf("ParseChainGapKey(%q) = %d, %v", gapKey, first, ok)
+	}
+	gap := ChainHole{First: 4, Last: 6, Hash: hash, At: at}
+	if got, ok := ParseChainHole(4, AppendChainHole(nil, gap)); !ok || got != (ChainHole{First: 4, Last: 6, Hash: hash, At: got.At}) || !got.At.Equal(at) {
+		t.Errorf("the value of a gap is read as %+v, %v, want %+v", got, ok, gap)
+	}
 }
 
 func TestChainKeys(t *testing.T) {
@@ -422,6 +431,58 @@ func TestChainKeys(t *testing.T) {
 			t.Errorf("ParseChainHoleKey(a break) = %q, %d", log, first)
 		}
 	}
+	if got, want := ChainGapKey(LogActivity, 0x0102030405060708), []byte("activity\x02\x01\x02\x03\x04\x05\x06\x07\x08"); !bytes.Equal(got, want) {
+		t.Errorf("ChainGapKey = %q, want %q", got, want)
+	}
+	if got, want := ChainGapKey(LogLogin, 3), []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x03"); !bytes.Equal(got, want) {
+		t.Errorf("ChainGapKey = %q, want %q", got, want)
+	}
+	if got := ChainGapPrefix(LogLogin); string(got) != "login\x02" {
+		t.Errorf("ChainGapPrefix = %q", got)
+	}
+	for _, c := range []struct {
+		log   string
+		first uint64
+	}{{LogLogin, 1}, {LogActivity, math.MaxUint64}, {"x", 7}} {
+		key := ChainGapKey(c.log, c.first)
+		// The prefix of the gaps is none of those of the holes and of the breaks, and the key of a start is no prefix of it.
+		if !bytes.HasPrefix(key, ChainGapPrefix(c.log)) || bytes.HasPrefix(key, ChainHolePrefix(c.log)) || bytes.HasPrefix(key, ChainBreakPrefix(c.log)) ||
+			bytes.HasPrefix(ChainHoleKey(c.log, c.first), ChainGapPrefix(c.log)) || bytes.HasPrefix(ChainBreakKey(c.log, c.first), ChainGapPrefix(c.log)) ||
+			bytes.HasPrefix(ChainStartKey(c.log), ChainGapPrefix(c.log)) {
+			t.Errorf("%q: the key %q and the prefixes", c.log, key)
+		}
+		if log, first, ok := ParseChainGapKey(key); !ok || log != c.log || first != c.first {
+			t.Errorf("ParseChainGapKey(%q) = %q, %d, %v", key, log, first, ok)
+		}
+		// A key of a gap is no key of a hole or of a break, and theirs are no key of a gap.
+		if log, first, ok := ParseChainHoleKey(key); ok {
+			t.Errorf("ParseChainHoleKey(a gap) = %q, %d", log, first)
+		}
+		if log, n, ok := ParseChainBreakKey(key); ok {
+			t.Errorf("ParseChainBreakKey(a gap) = %q, %d", log, n)
+		}
+		if log, first, ok := ParseChainGapKey(ChainHoleKey(c.log, c.first)); ok {
+			t.Errorf("ParseChainGapKey(a hole) = %q, %d", log, first)
+		}
+		if log, first, ok := ParseChainGapKey(ChainBreakKey(c.log, c.first)); ok {
+			t.Errorf("ParseChainGapKey(a break) = %q, %d", log, first)
+		}
+	}
+	for name, key := range map[string][]byte{
+		"nil":                      nil,
+		"a log":                    []byte("login"),
+		"a log and the byte":       []byte("login\x02"),
+		"nine bytes":               []byte("\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the number 0":             []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"the byte of a hole":       []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a break":      []byte("login\x00\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte 3":               []byte("login\x03\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"a log and a short number": []byte("login\x02\x00\x00\x00\x00\x00\x00\x01"),
+	} {
+		if log, first, ok := ParseChainGapKey(key); ok {
+			t.Errorf("%s: ParseChainGapKey = %q, %d", name, log, first)
+		}
+	}
 	for name, key := range map[string][]byte{
 		"nil":                      nil,
 		"a log":                    []byte("login"),
@@ -429,6 +490,7 @@ func TestChainKeys(t *testing.T) {
 		"nine bytes":               []byte("\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"the number 0":             []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"the byte of a break":      []byte("login\x00\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a gap":        []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x01"),
 		"a log and a short number": []byte("login\x01\x00\x00\x00\x00\x00\x00\x01"),
 	} {
 		if log, first, ok := ParseChainHoleKey(key); ok {
@@ -441,6 +503,7 @@ func TestChainKeys(t *testing.T) {
 		"a log and the byte":       []byte("login\x00"),
 		"nine bytes":               []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
 		"no byte before a number":  []byte("login\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+		"the byte of a gap":        []byte("login\x02\x00\x00\x00\x00\x00\x00\x00\x01"),
 		"a log and a short number": []byte("login\x00\x00\x00\x00\x00\x00\x00\x01"),
 	} {
 		if log, n, ok := ParseChainBreakKey(key); ok {
@@ -456,9 +519,10 @@ func TestDaemonEvents(t *testing.T) {
 	}
 	cutoff := time.Date(2025, 11, 23, 10, 20, 30, 123456789, time.UTC)
 
-	if DeletedSize != 55 || AcceptedSize != 43 || HoleSize != 51 || DeletedKind != 2 || AcceptedKind != 3 || HoleKind != 4 {
-		t.Errorf("the sizes are %d, %d and %d, the kinds %d, %d and %d", DeletedSize, AcceptedSize, HoleSize, DeletedKind,
-			AcceptedKind, HoleKind)
+	if DeletedSize != 55 || AcceptedSize != 43 || HoleSize != 51 || GapSize != 51 || DeletedKind != 2 || AcceptedKind != 3 ||
+		HoleKind != 4 || GapKind != 5 {
+		t.Errorf("the sizes are %d, %d, %d and %d, the kinds %d, %d, %d and %d", DeletedSize, AcceptedSize, HoleSize, GapSize,
+			DeletedKind, AcceptedKind, HoleKind, GapKind)
 	}
 	for log, code := range map[string]byte{LogLogin: 1, LogActivity: 2} {
 		d := Deleted{Log: log, First: 0x0102030405060708, Prev: prev, Cutoff: cutoff}
@@ -520,6 +584,43 @@ func TestDaemonEvents(t *testing.T) {
 		if got := AppendHole([]byte("xy"), h); string(got[:2]) != "xy" || !bytes.Equal(got[2:], b) {
 			t.Errorf("AppendHole does not keep dst: %x", got)
 		}
+
+		g := Hole{Log: log, First: 0x0102030405060708, Last: 0x1112131415161718, Hash: hash}
+		gb := AppendGap(nil, g)
+		want = append([]byte{0, 5, code, 1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18}, hash[:]...)
+		if !bytes.Equal(gb, want) || len(gb) != GapSize || !IsDaemonEvent(gb) || !ValidEvent(gb) {
+			t.Errorf("the gap event of %s is %x, want %x", log, gb, want)
+		}
+		if got, ok := ParseGap(gb); !ok || got != g {
+			t.Errorf("ParseGap = %+v, %v, want %+v", got, ok, g)
+		}
+		// A gap and a hole of the same fields differ in the kind alone, and no parser reads the other's.
+		if !bytes.Equal(gb[2:], b[2:]) || gb[1] != GapKind || b[1] != HoleKind {
+			t.Errorf("the gap event %x and the hole event %x differ in more than the kind", gb, b)
+		}
+		if got, ok := ParseHole(gb); ok {
+			t.Errorf("ParseHole(a gap event) = %+v", got)
+		}
+		if got, ok := ParseGap(b); ok {
+			t.Errorf("ParseGap(a hole event) = %+v", got)
+		}
+		if _, ok := ParseMark(gb); ok {
+			t.Error("a gap event is read as a mark")
+		}
+		if _, ok := ParseDeleted(gb); ok {
+			t.Error("a gap event is read as a deletion")
+		}
+		if _, ok := ParseAccepted(gb); ok {
+			t.Error("a gap event is read as an acceptance")
+		}
+		if got := AppendGap([]byte("xy"), g); string(got[:2]) != "xy" || !bytes.Equal(got[2:], gb) {
+			t.Errorf("AppendGap does not keep dst: %x", got)
+		}
+	}
+	const goldenGapEvent = "0005" + "01" + "0000000000000002" + "0000000000000009" +
+		"f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1"
+	if got := AppendGap(nil, Hole{Log: LogLogin, First: 2, Last: 9, Hash: hash}); hex.EncodeToString(got) != goldenGapEvent {
+		t.Errorf("the gap event is %x, want %s", got, goldenGapEvent)
 	}
 	const goldenHoleEvent = "0004" + "02" + "0000000000000003" + "0000000000000004" +
 		"f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1"
@@ -530,6 +631,7 @@ func TestDaemonEvents(t *testing.T) {
 	goodDeleted := AppendDeleted(nil, Deleted{Log: LogLogin, First: 2, Prev: prev, Cutoff: cutoff})
 	goodAccepted := AppendAccepted(nil, Accepted{Log: LogLogin, N: 1, Hash: hash})
 	goodHole := AppendHole(nil, Hole{Log: LogLogin, First: 2, Last: 2, Hash: hash})
+	goodGap := AppendGap(nil, Hole{Log: LogLogin, First: 2, Last: 2, Hash: hash})
 	goodMark := AppendMark(nil, cutoff)
 	with := func(b []byte, i int, v byte) []byte {
 		b = bytes.Clone(b)
@@ -550,23 +652,29 @@ func TestDaemonEvents(t *testing.T) {
 		}
 		return b
 	}
-	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, goodHole, nanos(goodDeleted, 999999999), number(goodDeleted, 2),
-		number(goodAccepted, math.MaxUint64), AppendHole(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64})} {
+	for _, b := range [][]byte{goodMark, goodDeleted, goodAccepted, goodHole, goodGap, nanos(goodDeleted, 999999999), number(goodDeleted, 2),
+		number(goodAccepted, math.MaxUint64), AppendHole(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64}),
+		AppendGap(nil, Hole{Log: LogActivity, First: 1, Last: math.MaxUint64})} {
 		if !ValidEvent(b) {
 			t.Errorf("ValidEvent(%x) is false", b)
 		}
 	}
 
-	// What none of the three parsers reads, and ValidEvent refuses.
+	// What none of the four parsers reads, and ValidEvent refuses.
 	for name, b := range map[string][]byte{
 		"nil":                     nil,
 		"the byte of the daemon":  {0},
 		"a kind and nothing else": {0, 2},
-		"the kind 5":              {0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 6":              {0, 6, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 6 of a gap":     with(goodGap, 1, 6),
 		"the kind 4 of 11 bytes":  {0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2},
+		"the kind 5 of 11 bytes":  {0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 2},
 		"a hole of 50 bytes":      goodHole[:50],
 		"a hole of 52 bytes":      append(bytes.Clone(goodHole), 0),
 		"a hole and a mark":       append(bytes.Clone(goodHole), goodMark...),
+		"a gap of 50 bytes":       goodGap[:50],
+		"a gap of 52 bytes":       append(bytes.Clone(goodGap), 0),
+		"a gap and a mark":        append(bytes.Clone(goodGap), goodMark...),
 		"the kind 0":              {0, 0},
 		"the kind 255":            {0, 255},
 		"a record":                []byte(`{"log":"login","n":1}`),
@@ -576,6 +684,7 @@ func TestDaemonEvents(t *testing.T) {
 		"a mark of 1e9 nanos":     nanos(goodMark, 1e9),
 		"a mark with the kind 4":  with(goodMark, 1, 4),
 		"a mark with the kind 5":  with(goodMark, 1, 5),
+		"a mark with the kind 6":  with(goodMark, 1, 6),
 	} {
 		if ValidEvent(b) {
 			t.Errorf("%s: ValidEvent is true for %x", name, b)
@@ -597,6 +706,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the kind of a mark":         with(goodDeleted, 1, MarkKind),
 		"the kind of an acceptance":  with(goodDeleted, 1, AcceptedKind),
 		"the kind of a hole":         with(goodDeleted, 1, HoleKind),
+		"the kind of a gap":          with(goodDeleted, 1, GapKind),
 		"the first byte 1":           with(goodDeleted, 0, 1),
 		"a mark of the size of one":  bytes.Repeat([]byte{'x'}, DeletedSize),
 		"an acceptance of this size": append(bytes.Clone(goodAccepted), make([]byte, DeletedSize-AcceptedSize)...),
@@ -618,6 +728,7 @@ func TestDaemonEvents(t *testing.T) {
 		"record 0":                  number(goodAccepted, 0),
 		"the kind of a deletion":    with(goodAccepted, 1, DeletedKind),
 		"the kind of a hole":        with(goodAccepted, 1, HoleKind),
+		"the kind of a gap":         with(goodAccepted, 1, GapKind),
 		"the kind of a mark":        with(goodAccepted, 1, MarkKind),
 		"the first byte 1":          with(goodAccepted, 0, 1),
 		"a deletion of this size":   goodDeleted[:AcceptedSize],
@@ -655,6 +766,7 @@ func TestDaemonEvents(t *testing.T) {
 		"the kind of a deletion":      with(goodHole, 1, DeletedKind),
 		"the kind of an acceptance":   with(goodHole, 1, AcceptedKind),
 		"the kind of a mark":          with(goodHole, 1, MarkKind),
+		"the kind of a gap":           with(goodHole, 1, GapKind),
 		"the first byte 1":            with(goodHole, 0, 1),
 		"an acceptance of this size":  append(bytes.Clone(goodAccepted), make([]byte, HoleSize-AcceptedSize)...),
 		"a deletion of this size":     goodDeleted[:HoleSize],

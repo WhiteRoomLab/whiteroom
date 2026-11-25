@@ -40,8 +40,8 @@ repair that drops events that were audit records leaves a hole in a log: the rec
 A to B are lost. It records each hole, in the same generation, in the table chains
 and with an event of the daemon, so that "whiteroom doctor" checks the log again
 from the record after the hole, and tells the hole in a note. A store of the table
-schema 8 gets the schema 9 for that; one of an older schema is refused if a hole is to
-be recorded in it. A gap that
+schema 8 or 9 gets the schema 10 for that; one of an older schema is refused if a hole
+is to be recorded in it. A gap that
 is no hole of this repair stays what it was, and "whiteroom doctor" goes on
 reporting it. The heads of the logs that were kept outside the store are no part of
 it: one that names a record that a repair dropped is a problem still.

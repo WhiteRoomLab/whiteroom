@@ -228,7 +228,7 @@ func TestUsage(t *testing.T) {
 		"drops them only with -truncate: it refuses, and changes nothing, if it must drop them and -truncate is not given",
 		"refuses a store that it would leave without a commit: restore that store from a copy",
 		"records each hole, in the same generation, in the table chains and with an event of the daemon",
-		"A store of the table schema 8 gets the schema 9 for that; one of an older schema is refused",
+		"A store of the table schema 8 or 9 gets the schema 10 for that; one of an older schema is refused",
 		"A gap that is no hole of this repair stays what it was", "is kept, and its number is told, unless -drop-unreadable-records is given",
 		"-apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and makes them durable, and then repairs",
 		"DIR must be missing, in a directory that exists, or empty, and must not be the data directory or in it",

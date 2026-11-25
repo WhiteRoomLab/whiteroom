@@ -25,6 +25,11 @@ func holeEvents(log string, first, last uint64, hash [sha256.Size]byte) [][]byte
 	return [][]byte{dbwire.AppendHole(nil, dbwire.Hole{Log: log, First: first, Last: last, Hash: hash}), dbwire.AppendMark(nil, chainTime)}
 }
 
+// gapEvents are the events that whiteroom-db accept-break adds for a gap: the event of the acceptance and a mark.
+func gapEvents(log string, first, last uint64, hash [sha256.Size]byte) [][]byte {
+	return [][]byte{dbwire.AppendGap(nil, dbwire.Hole{Log: log, First: first, Last: last, Hash: hash}), dbwire.AppendMark(nil, chainTime)}
+}
+
 // lostNote is the note of a hole of the records first to last of log, which says after it what follows.
 func lostNote(log string, first, last uint64, after string) string {
 	lost := fmt.Sprintf("the records %d to %d were", first, last)
@@ -425,7 +430,52 @@ func TestHoleEventsAreSkipped(t *testing.T) {
 		{"a hole of a log that does not exist", append([]byte{0, 4, 9}, hole[3:]...)},
 		{"a hole that has no first record", append(append([]byte{0, 4, 1}, make([]byte, 8)...), hole[11:]...)},
 		{"a hole that ends before it starts", append(append(slices.Clone(hole[:11]), make([]byte, 8)...), hole[19:]...)},
-		{"a hole of the kind that is not there", append([]byte{0, 5}, hole[2:]...)},
+		{"a hole of the kind that is not there", append([]byte{0, 6}, hole[2:]...)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newChainFixture(t)
+			appendRawEvents(t, g.s, tt.data)
+			bad := fmt.Sprintf("audit event %d: not a record of the audit log", nextEvent(t, g.s)-1)
+			if err := g.s.VerifyAudit(t.Context(), nil); !errors.Is(err, audit.ErrBroken) || err == nil || err.Error() != bad {
+				t.Errorf("VerifyAudit() = %v, want %q that wraps audit.ErrBroken", err, bad)
+			}
+			err := g.s.ReadAudit(t.Context(), audit.Filter{}, func(audit.Record) bool { return true })
+			if !errors.Is(err, audit.ErrBroken) || err == nil || err.Error() != bad {
+				t.Errorf("ReadAudit() = %v, want %q that wraps audit.ErrBroken", err, bad)
+			}
+		})
+	}
+}
+
+// TestGapEventsAreSkipped checks that ReadAudit and VerifyAudit skip the event of the daemon for an accepted gap when it is
+// valid, as they skip that of a hole, and find the ones that are not.
+func TestGapEventsAreSkipped(t *testing.T) {
+	for _, log := range []string{dbwire.LogLogin, dbwire.LogActivity} {
+		good := gapEvents(log, 2, 2, wrong)
+		f := newChainFixture(t)
+		want := recordLines(allRecords(t, f.s))
+		appendRawEvents(t, f.s, good...)
+		for who, st := range map[string]*Store{"the writer": f.s, "a reader": openReaderOf(t, f.dir)} {
+			if got := recordLines(allRecords(t, st)); !slices.Equal(got, want) {
+				t.Errorf("the records read by %s = %q, want %q", who, got, want)
+			}
+		}
+		checkVerify(t, f.s, f.dir, f.events, nil, "")
+	}
+
+	gap := gapEvents(dbwire.LogLogin, 2, 2, wrong)[0]
+	for _, tt := range []struct {
+		name string
+		data []byte
+	}{
+		{"a gap cut short", gap[:len(gap)-1]},
+		{"a gap with a byte more", append(slices.Clone(gap), 0)},
+		{"a gap of no log", append([]byte{0, 5, 0}, gap[3:]...)},
+		{"a gap of a log that does not exist", append([]byte{0, 5, 9}, gap[3:]...)},
+		{"a gap that has no first record", append(append([]byte{0, 5, 1}, make([]byte, 8)...), gap[11:]...)},
+		{"a gap that ends before it starts", append(append(slices.Clone(gap[:11]), make([]byte, 8)...), gap[19:]...)},
+		{"the kind 5 of the size of a mark", append([]byte{0, 5}, make([]byte, dbwire.MarkSize-2)...)},
+		{"the kind 6 of the size of a gap", append([]byte{0, 6}, gap[2:]...)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			g := newChainFixture(t)

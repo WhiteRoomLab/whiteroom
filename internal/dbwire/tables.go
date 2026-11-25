@@ -9,7 +9,7 @@ import (
 )
 
 // TableVersion is the table schema that this protocol version works with.
-const TableVersion = 9
+const TableVersion = 10
 
 // The tables of internal/store that the daemon acts on without reading rows.
 const (
@@ -22,9 +22,9 @@ const (
 	// writes out as it is.
 	TableHeads uint32 = 11
 
-	// TableChains has the chain starts, the accepted breaks and the holes of the audit logs (ChainStart, ChainBreak,
-	// ChainHole), which only the maintenance of the daemon writes: the daemon refuses a Commit that puts or deletes one of
-	// its rows.
+	// TableChains has the chain starts, the accepted breaks, the holes and the accepted gaps of the audit logs (ChainStart,
+	// ChainBreak, and ChainHole, which a hole and a gap both use), which only the maintenance of the daemon writes: the daemon
+	// refuses a Commit that puts or deletes one of its rows.
 	TableChains uint32 = 12
 )
 
@@ -140,7 +140,7 @@ type ChainBreak struct {
 // ChainHole is a row of TableChains, with ChainHoleKey as its key: the records of a log from First, the number in the key,
 // to Last were lost and dropped by a repair. Hash is the SHA-256 of the stored bytes of the record Last, which is the prev of
 // the record after the hole, or, for a hole at the end of the log, the hash of its head. The record after it follows the hole
-// as if it were the record Last.
+// as if it were the record Last. The row of an accepted gap (ChainGapKey) has the same value.
 type ChainHole struct {
 	First, Last uint64
 	Hash        [32]byte
@@ -185,7 +185,29 @@ func ChainHolePrefix(log string) []byte { return append([]byte(log), 1) }
 
 // ParseChainHoleKey returns the log and the first record of the key of a hole. It refuses a first of 0.
 func ParseChainHoleKey(key []byte) (log string, first uint64, ok bool) {
-	if len(key) < 10 || key[len(key)-9] != 1 {
+	return parseChainRangeKey(key, 1)
+}
+
+// ChainGapKey returns the key of the gap of the log named log that starts at record first, which whiteroom-db accept-break
+// accepts: the name, 0x02 and first as 8 bytes, big-endian. The keys of the gaps of a log start with ChainGapPrefix. The
+// value is that of a hole (AppendChainHole, ParseChainHole): First, the number in the key, is the first record that is
+// missing, Last the last one, and Hash the SHA-256 of the stored bytes of the record Last, which is the prev that the record
+// after the gap has, or, for a gap at the end of the log, the hash of its head.
+func ChainGapKey(log string, first uint64) []byte {
+	return binary.BigEndian.AppendUint64(ChainGapPrefix(log), first)
+}
+
+// ChainGapPrefix returns what the keys of the accepted gaps of the log named log start with.
+func ChainGapPrefix(log string) []byte { return append([]byte(log), 2) }
+
+// ParseChainGapKey returns the log and the first record of the key of an accepted gap. It refuses a first of 0.
+func ParseChainGapKey(key []byte) (log string, first uint64, ok bool) {
+	return parseChainRangeKey(key, 2)
+}
+
+// parseChainRangeKey reads the key of a row that has a first record in it: the name, the byte kind and first.
+func parseChainRangeKey(key []byte, kind byte) (log string, first uint64, ok bool) {
+	if len(key) < 10 || key[len(key)-9] != kind {
 		return "", 0, false
 	}
 	first = binary.BigEndian.Uint64(key[len(key)-8:])
