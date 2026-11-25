@@ -47,10 +47,11 @@ operator who has looked into it accepts it with "whiteroom-db accept-break". A g
 that was accepted so is recorded already, and no gap of the repair. A gap that
 accept-break would refuse (one among the login records that a deletion left, one before
 a record whose prev is not the hash of a record, one across the start of the chain
-whose record before it has not the hash that the start of the chain has, one that
-would lie over a hole or a gap that is there, and one at the end of an activity log
-that has no record) is told without the command, and "whiteroom doctor"
-goes on reporting it. The records that a repair drops after a hole or an accepted gap
+whose record before it has not the hash that the start of the chain has, and one that
+would lie over a hole or a gap that is there) is told without the command, and
+"whiteroom doctor" goes on reporting it. So is one at the end of an activity log that
+has no record, which accept-break accepts, but which does not end the report: the log
+has no record until the writer adds one. The records that a repair drops after a hole or an accepted gap
 that the log has already are a hole of their own, which starts with the record after
 it, and a gap that it tells there is the one that accept-break then writes. The heads of the logs that were kept outside the store are no
 part of it: one that names a record that a repair dropped is a problem still.

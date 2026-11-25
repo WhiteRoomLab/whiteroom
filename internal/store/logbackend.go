@@ -754,6 +754,18 @@ func (t *logTx) exportReady() (bool, error) {
 	return version >= exportSchema, nil
 }
 
+func (t *logTx) currentSchema() (bool, error) {
+	v, ok, err := t.tx.Get(tableMeta, schemaKey)
+	if err != nil {
+		return false, err
+	}
+	version, valid := decodeUint(v)
+	if !ok || !valid {
+		return false, invalidValue(tableMeta, schemaKey)
+	}
+	return version >= logSchemaVersion, nil
+}
+
 func (t *logTx) chainRow(key []byte) ([]byte, bool, error) {
 	return t.tx.Get(tableChains, key)
 }

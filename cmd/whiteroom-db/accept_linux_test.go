@@ -446,6 +446,39 @@ func TestAcceptGapAfterRow(t *testing.T) {
 	}
 }
 
+// TestAcceptEndGapAfterRow checks the line for a gap at the end of a log that comes after a hole or an accepted gap: it names the last
+// record that the log has, which the row follows, and not the end of the row, which is no record.
+func TestAcceptEndGapAfterRow(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	recs := loginChain(5)
+	for _, kind := range []string{"hole", "gap"} {
+		t.Run(kind, func(t *testing.T) {
+			d := newDirs(t)
+			// The login history has the records 1 to 3 and a row for the record 4, and its head names the record 6.
+			writeCommits(t, d.data, commitAt{now, [][]byte{recs[0], recs[1], recs[2]}})
+			key := dbwire.ChainHoleKey("login", 4)
+			if kind == "gap" {
+				key = dbwire.ChainGapKey("login", 4)
+			}
+			putChainRow(t, d.data, key, dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 4, Hash: sha256.Sum256(recs[3]), At: now}))
+			putHeads(t, d.data, map[string]uint64{"login": 6}, map[string][sha256.Size]byte{"login": sha256.Sum256([]byte("the record 6"))})
+
+			code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+			want := `gap: audit log "login": records 5 to 6, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+				"with whiteroom-db accept-break -log login -record 6\n" + "nothing to repair in " + d.data + "\n"
+			if code != 0 || stderr != "" || stdout != want {
+				t.Fatalf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+			}
+			code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "6")
+			line := "accepted the gap of the records 5 to 6 at the end of the audit log login in " + d.data +
+				"; whiteroom doctor checks that the log ends with record 3\n"
+			if code != 0 || stdout != line || stderr != "" {
+				t.Fatalf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
+			}
+		})
+	}
+}
+
 // TestAcceptGapAgain checks that a gap row whose hash is no longer that of the record after it (the record has been rewritten) is
 // accepted again, and that whiteroom-db repair tells that gap with the command: the row is replaced, and a hole row is not.
 func TestAcceptGapAgain(t *testing.T) {

@@ -25,6 +25,9 @@ type Acceptance struct {
 	// with: a gap at the end of an empty log. The activity log always has a record, so for it VerifyAudit goes on reporting the log
 	// as empty until the writer has added one.
 	NoRecord bool
+	// LastRead is, for a gap at the end of the log, the last record that was read, which the log ends with: a hole or a gap may lie
+	// between it and the gap. 0 if none was read.
+	LastRead uint64
 }
 
 // AcceptBreak accepts the break at record n of the audit log named log (dbwire.LogLogin or dbwire.LogActivity), or the gap
@@ -394,7 +397,7 @@ func (p *breakPass) absent(rows chainRows, head *auditHead, schema uint64) (Acce
 		case schema != 0:
 			return Acceptance{}, [sha256.Size]byte{}, olderSchemaRefusal(schema, "gap")
 		}
-		return Acceptance{Gap: true, End: true, First: gap.First, Last: n, NoRecord: p.reach == 0}, head.hash, nil
+		return Acceptance{Gap: true, End: true, First: gap.First, Last: n, NoRecord: p.reach == 0, LastRead: p.reach}, head.hash, nil
 	}
 	if p.inside != 0 && !p.insidePassed && !p.insideRefused && p.insideFirst <= n {
 		return Acceptance{}, [sha256.Size]byte{}, fmt.Errorf("%w: it is in the gap of %s before record %d; accept the gap with -record %d", notThere,

@@ -1269,6 +1269,99 @@ func TestRepairAfterRows(t *testing.T) {
 			return s
 		}, dbwire.LogActivity, result{[]string{"activity 4-4"}, nil, []string{"3-3", "4-4"}}},
 
+		// A record that the repair drops before a row, which the walk reaches only through it: the row is credited if the record after
+		// it follows it, and the hole of the repair goes over it.
+		{"a hole, and the record before it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()                 // the record 3
+			s.lose(dbwire.LogActivity) // the record 4, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 5
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[4].sum)
+			s.commit() // the record 6
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 4-5"}, nil, []string{"4-5"}}},
+		{"a gap, and the record before it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, true, 5, 5, s.act[4].sum)
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 4-5"}, nil, []string{"4-5"}}},
+		{"two rows that follow one another, and the record before them dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity) // the record 4, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[4].sum)
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, true, 6, 6, s.act[5].sum)
+			s.commit() // the record 7
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 4-6"}, nil, []string{"4-6"}}},
+		{"a hole at the end, and the record before it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 5, the last: the head names it
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[4].sum)
+			return s
+		}, dbwire.LogActivity, result{[]string{"activity 4-5"}, nil, []string{"4-5"}}},
+		{"a hole with another hash, and the record before it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[3].sum) // the hash of the record 4, not that of the record 5
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 4-5"}, nil}},
+		{"a hole with another hash at the end, and the record before it dropped", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[3].sum)
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 4-5 end"}, nil}},
+		{"a row with no hash, and a record after it that has no hash as its prev", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity)
+			s.junk()
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, [sha256.Size]byte{}) // the hash that a prev that is no hash has here
+			s.write(dbwire.LogActivity, "nonsense")
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 4-5"}, nil}},
+		{"a hole, and the record before it lost before the repair", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity) // the record 4, which the repair does not drop
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 5, 5, s.act[4].sum)
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 4-5"}, nil}},
+		{"a hole, and a record before it dropped and one lost before the repair", func(t *testing.T) *auditStore {
+			s := two(t)
+			s.commit()
+			s.lose(dbwire.LogActivity) // the record 4, which the repair drops
+			s.junk()
+			s.lose(dbwire.LogActivity) // the record 5, which the repair does not
+			s.lose(dbwire.LogActivity)
+			s.rowFor(dbwire.LogActivity, false, 6, 6, s.act[5].sum)
+			s.commit()
+			return s
+		}, dbwire.LogActivity, result{nil, []string{"activity 4-6"}, nil}},
+
 		// The login history after a deletion, whose first record that remains is K.
 		{"rows at the chain start, and the record after them dropped", func(t *testing.T) *auditStore {
 			s := newFixtureStore(t)
@@ -1338,6 +1431,46 @@ func TestRepairAfterRows(t *testing.T) {
 			again, _, err := s.repair(RepairOptions{DropUnreadable: true})
 			if err != nil || len(again.Holes) != 0 || !slices.Equal(gapsOf(again), tc.result.gaps) || again.Things() != 0 {
 				t.Errorf("the second repair = %+v, %v, want nothing to repair, and the same gaps %q", again, err, tc.result.gaps)
+			}
+		})
+	}
+}
+
+// TestCredited checks the records that rows account for in the range of a hole that the repair makes: the rows that chain back from
+// one that ends with the last record of the range and has the hash that the record after it names, each ending where the next
+// starts, and no row that lies before the range or has another hash at its end.
+func TestCredited(t *testing.T) {
+	h := func(b byte) [sha256.Size]byte { return [sha256.Size]byte{b} }
+	row := func(last uint64, hash byte) dbwire.ChainHole { return dbwire.ChainHole{Last: last, Hash: h(hash)} }
+	type rows map[uint64]dbwire.ChainHole
+	for _, tc := range []struct {
+		name        string
+		holes, gaps rows
+		first, last uint64
+		hash        byte
+		want        uint64
+		notHash     bool
+	}{
+		{"no rows", nil, nil, 4, 9, 1, 0, false},
+		{"the record after has no hash", rows{8: row(9, 1)}, nil, 4, 9, 1, 0, true},
+		{"one row that ends the range", rows{8: row(9, 1)}, nil, 4, 9, 1, 2, false},
+		{"one row with another hash", rows{8: row(9, 2)}, nil, 4, 9, 1, 0, false},
+		{"one gap", nil, rows{8: row(9, 1)}, 4, 9, 1, 2, false},
+		{"a row that ends before the range does", rows{6: row(7, 1)}, nil, 4, 9, 1, 0, false},
+		{"a row that ends after the range does", rows{8: row(10, 1)}, nil, 4, 9, 1, 0, false},
+		{"a row that starts before the range", rows{3: row(9, 1)}, nil, 4, 9, 1, 0, false},
+		{"rows that follow one another, the inner ones with other hashes", rows{5: row(6, 7), 7: row(9, 1)}, rows{4: row(4, 8)}, 4, 9, 1, 6, false},
+		{"rows that do not follow one another", rows{4: row(5, 7), 7: row(9, 1)}, nil, 4, 9, 1, 3, false},
+		{"an inner row that starts before the range", rows{3: row(6, 7), 7: row(9, 1)}, nil, 4, 9, 1, 3, false},
+		{"a gap that is longer than the hole", rows{8: row(9, 1)}, rows{6: row(9, 1)}, 4, 9, 1, 4, false},
+		{"a hole that is longer than the gap", rows{6: row(9, 1)}, rows{8: row(9, 1)}, 4, 9, 1, 4, false},
+		{"the longer of a hole and a gap has another hash", rows{8: row(9, 1)}, rows{6: row(9, 2)}, 4, 9, 1, 2, false},
+		{"the longer of two inner rows", rows{7: row(9, 1), 5: row(6, 7), 4: row(6, 7)}, rows{6: row(6, 7)}, 4, 9, 1, 6, false},
+		{"the longer of two inner rows, the longer one second", rows{7: row(9, 1), 6: row(6, 7)}, rows{4: row(6, 7)}, 4, 9, 1, 6, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := credited(tc.holes, tc.gaps, tc.first, tc.last, h(tc.hash), !tc.notHash); got != tc.want {
+				t.Errorf("credited(%v, %v, %d, %d) = %d, want %d", tc.holes, tc.gaps, tc.first, tc.last, got, tc.want)
 			}
 		})
 	}
@@ -1587,6 +1720,7 @@ func TestRepairGapIsWhatAcceptBreakWrites(t *testing.T) {
 			}
 			before := s.auditView()
 			acc, err := accept(t, s.fixture, g.Log, n)
+			acc.LastRead = 0 // what the repair does not tell: the record that the log ends with, before the rows
 			if want := (Acceptance{Gap: true, End: g.End, First: g.First, Last: g.Last}); err != nil || acc != want {
 				t.Fatalf("AcceptBreak(%s, %d) = %+v, %v, want the gap that the repair told, %+v", g.Log, n, acc, err, want)
 			}

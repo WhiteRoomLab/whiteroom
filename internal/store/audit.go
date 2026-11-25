@@ -469,7 +469,8 @@ func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 // of the anchors it could not check. The notes have nothing but the names of the logs, numbers, and times. They are passed
 // after the reads, also when it fails, but the last two only if it finds nothing wrong. The note that the records that a deletion
 // left are still in the store, and that the next whiteroom-db compact removes them, is one that compact keeps: it drops them where
-// VerifyAudit passes the log.
+// VerifyAudit passes the log. In a store of an older table schema than the current one, which compact leaves as it is, the note
+// says that it removes them after a writer has upgraded the store.
 func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note func(string)) error {
 	byRecord := map[anchorKey][][sha256.Size]byte{}
 	for i, a := range anchors {
@@ -575,8 +576,14 @@ func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note
 				if end.first == end.left {
 					left = fmt.Sprintf("record %d is", end.first)
 				}
+				removes := "the next whiteroom-db compact removes them"
+				if current, err := t.b.currentSchema(); err != nil {
+					return err
+				} else if !current {
+					removes = "whiteroom-db compact removes them after a writer has upgraded the store"
+				}
 				notes = append(notes, fmt.Sprintf("audit log %q: %s still in the store after the deletion of the records before "+
-					"record %d; the next whiteroom-db compact removes them", log, left, end.start.First))
+					"record %d; %s", log, left, end.start.First, removes))
 			}
 		}
 		if unchecked > 0 {

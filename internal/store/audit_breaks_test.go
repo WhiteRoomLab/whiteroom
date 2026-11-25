@@ -387,12 +387,12 @@ func TestAuditBreakRule(t *testing.T) {
 			prepare:  drop(audit.ActivityLog, 1, 2),
 			accepted: dbserver.Acceptance{Gap: true, First: 1, Last: 2}},
 		{name: "a gap at the end of the login history", log: audit.LoginLog, build: allOld, n: 6, last: 5, prepare: drop(audit.LoginLog, 6),
-			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6}},
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6, LastRead: 5}},
 		{name: "a gap at the end of the activity log", log: audit.ActivityLog, build: allOld, n: 8, stop: none, prepare: drop(audit.ActivityLog, 8),
-			accepted: dbserver.Acceptance{Gap: true, End: true, First: 8, Last: 8}},
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 8, Last: 8, LastRead: 7}},
 		{name: "a gap at the end of the login history, and then the writer's next record", log: audit.LoginLog, build: allOld, n: 6, last: 4,
 			prepare:  drop(audit.LoginLog, 6),
-			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6}, after: writes},
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6, LastRead: 5}, after: writes},
 		{name: "a gap at the chain start", log: audit.LoginLog, build: threeOld, n: 5, nothing: true,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return dropRecords(t, deleteThree(t, s, dir), dir, audit.LoginLog, 4)
@@ -660,7 +660,7 @@ func TestAuditBreakRule(t *testing.T) {
 		{name: "a hole at the end that holds K", log: audit.LoginLog, build: eightOld, n: 8, holed: true, gone: true, last: 5, refused: absent("login", 8),
 			prepare: across(false, []uint64{6, 7, 8}, rowSpec{6, 8, 8})},
 		{name: "a gap at the end that holds K, which accept-break accepts", log: audit.LoginLog, build: eightOld, n: 8, gone: true, last: 5,
-			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 8},
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 8, LastRead: 5},
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 6, 7, 8)
 			}},

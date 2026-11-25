@@ -784,10 +784,10 @@ func (w *auditWalk) record(l *auditLog, c classified, number uint64, sum [sha256
 
 // skip finds what the record c, which has the event number number, skips: the log expected the record expected. The rows that the
 // walk goes through from there (dbwire.ChainReach) account for the records up to their end; the records after it, up to c, are
-// missing, and are a hole of the repair only if the repair drops at least as many events between the two records as there are
-// records missing: one audit record is one event, so with fewer, a gap that was there before the repair is part of them. Rows
-// that reach the record before c without passing c have nothing missing after them: nothing is made, and the gap that is told is
-// the last of them.
+// missing, except those that rows later in that range account for (credited), and are a hole of the repair only if the repair
+// drops at least as many events between the two records as there are records missing: one audit record is one event, so with
+// fewer, a gap that was there before the repair is part of them. Rows that reach the record before c without passing c have
+// nothing missing after them: nothing is made, and the gap that is told is the last of them.
 func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 	if l.bad != "" {
 		w.err = fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
@@ -804,13 +804,60 @@ func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 		// The last row reaches the record before c without passing c: nothing is missing after it, and the gap that is told is that row
 		// (accept-break accepts it again).
 		first = rows[len(rows)-1].First
-	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-first:
+	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-first-credited(l.holes, l.gaps, first, c.n-1, hash, isHash):
 		w.rep.Holes = append(w.rep.Holes, RepairHole{Log: l.name, First: first, Last: c.n - 1, Hash: hash, Row: isHash})
 		return
 	}
 	gap := RepairGap{Log: l.name, First: first, Last: c.n - 1}
 	gap.Acceptable = isHash && w.acceptable(l, c.n, hash, false)
 	w.rep.Gaps = append(w.rep.Gaps, gap)
+}
+
+// credited returns how many of the records first to last, the range of a hole that the repair makes, rows that are there account
+// for: the rows that chain back from one that ends with last and has the hash hash, which the record after the range (or the head)
+// names, each ending where the next starts, inside the range. An earlier repair or accept-break recorded them, so they are no loss
+// of this repair: its hole goes over them, and they stay as they are. ok is false if the record after the range has no hash that
+// can be read.
+func credited(holes, gaps map[uint64]dbwire.ChainHole, first, last uint64, hash [sha256.Size]byte, ok bool) uint64 {
+	if !ok || len(holes) == 0 && len(gaps) == 0 {
+		return 0
+	}
+	type span struct {
+		first uint64
+		hash  [sha256.Size]byte
+	}
+	ending := map[uint64][]span{}
+	for _, rows := range [...]map[uint64]dbwire.ChainHole{holes, gaps} {
+		for key, row := range rows {
+			if key >= first && key <= row.Last && row.Last <= last {
+				ending[row.Last] = append(ending[row.Last], span{key, row.Hash})
+			}
+		}
+	}
+	memo := map[uint64]uint64{}
+	var back func(end uint64) uint64
+	back = func(end uint64) uint64 {
+		if v, seen := memo[end]; seen {
+			return v
+		}
+		var most uint64
+		for _, s := range ending[end] {
+			if n := end - s.first + 1 + back(s.first-1); n > most {
+				most = n
+			}
+		}
+		memo[end] = most
+		return most
+	}
+	var most uint64
+	for _, s := range ending[last] {
+		if s.hash == hash {
+			if n := last - s.first + 1 + back(s.first-1); n > most {
+				most = n
+			}
+		}
+	}
+	return most
 }
 
 // reachedTo returns the first record that the rows of a walk that expected the record expected do not account for: the one after
@@ -852,11 +899,11 @@ func (w *auditWalk) finish() error {
 			return fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		}
 		// The records that the head names after the rows that go through (dbwire.ChainReach: a row that ends with the head does not,
-		// since it does not pass it, and the hole of the repair takes its place), against the events dropped after the last record
-		// that was read: the records were written in the commits of the kept state, so the events of the commits after it are none of
-		// them.
+		// since it does not pass it, and the hole of the repair takes its place), except those that rows later in that range account
+		// for (credited), against the events dropped after the last record that was read: the records were written in the commits of
+		// the kept state, so the events of the commits after it are none of them.
 		first := reachedTo(dbwire.ChainReach(l.holes, l.gaps, l.start, l.last, l.head.n), expected)
-		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-first+1 {
+		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-first+1-credited(l.holes, l.gaps, first, l.head.n, l.head.hash, true) {
 			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: first, Last: l.head.n, Hash: l.head.hash, Row: true})
 			continue
 		}

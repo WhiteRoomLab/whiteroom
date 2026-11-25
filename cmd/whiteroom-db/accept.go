@@ -51,7 +51,7 @@ the time of the command; for a gap, it says which records are missing, which has
 the record after them has as its prev, and the time of the command), an event of the
 daemon in the log, and the line on the standard output below. From then on
 "whiteroom doctor" checks the log again from record N (after a gap at the end, it
-checks that the log ends with the record before the gap), and tells the break or the
+checks that the log ends with the last record that it has), and tells the break or the
 gap in a note, not as a problem. A later change to record N undoes the acceptance of
 a break, and a later change to its prev that of a gap; a break or a gap at another
 record is still reported.
@@ -91,10 +91,11 @@ it". For a gap in the middle of the log it prints "accepted the gap of the recor
 to B before record N of the audit log LOG in DATA; whiteroom doctor checks the log
 again from record N" ("the gap of record A" if it is one record), and for a gap at
 the end "accepted the gap of the records A to B at the end of the audit log LOG in
-DATA; whiteroom doctor checks that the log ends with record A-1" (or "that the log
+DATA; whiteroom doctor checks that the log ends with record M" (or "that the log
 has no record", for the login history; for an activity log that has none, "whiteroom
 doctor goes on reporting that the log has no record until the writer adds its next
-record"). A refusal is a line on the standard error that starts with
+record"). M is the last record that the log has, which holes or gaps before the gap
+may follow. A refusal is a line on the standard error that starts with
 "whiteroom-db accept-break:", and the exit code 1.
 
 No daemon may have the data directory open: stop "whiteroom-db serve" on it first.
@@ -164,7 +165,7 @@ func runAcceptBreak(ctx context.Context, args []string, e env) int {
 			gap, log, data)
 	case acc.End:
 		printf(e.stdout, "accepted %s at the end of the audit log %s in %s; whiteroom doctor checks that the log ends with record %d\n",
-			gap, log, data, acc.First-1)
+			gap, log, data, acc.LastRead)
 	default:
 		printf(e.stdout, "accepted %s before record %d of the audit log %s in %s; whiteroom doctor checks the log again from record %d\n",
 			gap, record, log, data, record)

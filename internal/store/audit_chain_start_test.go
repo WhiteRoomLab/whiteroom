@@ -781,3 +781,42 @@ func TestAuditLeftoverNoteMatchesCompact(t *testing.T) {
 		}
 	}
 }
+
+// TestAuditLeftoverNoteOnOlderSchema checks that the note of the records that a deletion left promises that the next compact removes
+// them only in a store of the current table schema, which is where compact drops them: in an older one, which compact leaves as it
+// is, the note says that it removes them after a writer has upgraded the store, and then it does.
+func TestAuditLeftoverNoteOnOlderSchema(t *testing.T) {
+	s, dir := threeOldLeft(t)
+	rawUpdate(t, s, func(tx *logdb.Tx) error { return tx.Put(tableMeta, []byte(metaSchema), []byte{9}) })
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openLogReader(dir, logOpts(logdb.Options{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes, verr := verifyOf(t, r)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const left = `audit log "login": the records 1 to 3 are still in the store after the deletion of the records before record 4; `
+	if want := []string{startNote(4), left + "whiteroom-db compact removes them after a writer has upgraded the store"}; verr != nil ||
+		!slices.Equal(notes, want) {
+		t.Errorf("VerifyAudit() of the older store = %v with the notes %q, want it to pass, with %q", verr, notes, want)
+	}
+	if d, err := compactLoginOf(t, dir, chainTime, nil); err != nil || d.Schema != 9 || d.First != 0 || d.Last != 0 {
+		t.Fatalf("CompactLogin() of the older store = %+v, %v, want nothing dropped, and the schema 9 told", d, err)
+	}
+
+	// The first writer that opens the store upgrades it: the note is the one that compact keeps, and compact drops the records.
+	s = reopenLog(t, dir, logdb.Options{})
+	notes, verr = verifyOf(t, s)
+	if want := []string{startNote(4), left + "the next whiteroom-db compact removes them"}; verr != nil || !slices.Equal(notes, want) {
+		t.Errorf("VerifyAudit() after the upgrade = %v with the notes %q, want it to pass, with %q", verr, notes, want)
+	}
+	s, d := compactClosed(t, s, dir)
+	wantDeleted(t, d, 1, 3, "")
+	if err := s.VerifyAudit(t.Context(), nil); err != nil {
+		t.Errorf("VerifyAudit() after compact = %v", err)
+	}
+}
