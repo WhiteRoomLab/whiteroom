@@ -254,7 +254,7 @@ func (a auditView) checkChains(t testing.TB) map[string][]string {
 			switch {
 			case last == 0 && startp != nil && n < startp.First:
 			case n != expected:
-				h, ok := dbwire.HoleBefore(a.holes[log], startp, last, n, prev)
+				h, _, ok := dbwire.ChainPass(a.holes[log], nil, startp, last, n, prev)
 				if !ok {
 					t.Errorf("audit log %q: record %d (event %d) does not follow the end of the log, record %d, and no hole is before it", log, n, e.Number, last)
 				} else {
@@ -763,8 +763,9 @@ func TestRepairGaps(t *testing.T) {
 		if want := []string{"login 3-3", "activity 6-6"}; !slices.Equal(holeWords(rep), want) {
 			t.Errorf("the holes are %q, want %q", holeWords(rep), want)
 		}
-		if want := []string{"activity 3-3"}; !slices.Equal(gapWords(rep), want) {
-			t.Errorf("the gaps are %q, want %q: the record 3 was lost before the repair", gapWords(rep), want)
+		if want := []string{"activity 3-3"}; !slices.Equal(gapWords(rep), want) || rep.Gaps[0].End {
+			t.Errorf("the gaps are %q (at the end: %v), want %q in the middle: the record 3 was lost before the repair", gapWords(rep),
+				rep.Gaps[0].End, want)
 		}
 		a := s.auditView()
 		if len(a.holes[dbwire.LogActivity]) != 1 || a.holes[dbwire.LogActivity][6].Last != 6 {
@@ -790,10 +791,157 @@ func TestRepairGaps(t *testing.T) {
 		if want := []string{"login 1-1", "activity 2-2"}; !slices.Equal(holeWords(rep), want) {
 			t.Errorf("the holes are %q, want %q", holeWords(rep), want)
 		}
-		if want := []string{"activity 4-4"}; !slices.Equal(gapWords(rep), want) {
-			t.Errorf("the gaps are %q, want %q: the last record was lost before the repair", gapWords(rep), want)
+		if want := []string{"activity 4-4"}; !slices.Equal(gapWords(rep), want) || !rep.Gaps[0].End {
+			t.Errorf("the gaps are %q (at the end: %v), want %q at the end: the last record was lost before the repair", gapWords(rep),
+				rep.Gaps[0].End, want)
 		}
 	})
+}
+
+// putChainRow is the step of a store that puts the row of the table chains with the key and the value, in a commit of its own.
+func (s *auditStore) putChainRow(key, value []byte) {
+	s.t.Helper()
+	s.update(func(tx *logdb.Tx) {
+		if err := tx.Put(dbwire.TableChains, key, value); err != nil {
+			s.t.Error(err)
+		}
+	})
+}
+
+// TestRepairAcceptedGap checks that a gap that whiteroom-db accept-break accepted is a record of the loss as a hole is: the repair
+// makes no hole for it and tells no gap, and a row that is not for the gap that the log has leaves it a gap.
+func TestRepairAcceptedGap(t *testing.T) {
+	// middle makes the store of the test of the gaps in the middle: the record 3 of the activity log is lost, and the commit 6 is
+	// damaged after it. gap is the row of the gap of the record 3 that is put, with the hash of the record 3 if it is nil.
+	middle := func(t *testing.T, row func(s *auditStore) (key, value []byte)) *auditStore {
+		s := newFixtureStore(t)
+		s.commit()
+		s.commit()
+		s.lose(dbwire.LogActivity) // the record 3
+		for range 5 {
+			s.commit()
+		}
+		if row != nil {
+			s.putChainRow(row(s))
+		}
+		if err := s.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s.damage(6)
+		return s
+	}
+	gapRow := func(first, last uint64, hashOf int) func(s *auditStore) (key, value []byte) {
+		return func(s *auditStore) (key, value []byte) {
+			hash := wrong32
+			if hashOf != 0 {
+				hash = s.act[hashOf-1].sum
+			}
+			return dbwire.ChainGapKey(dbwire.LogActivity, first), dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: last, Hash: hash, At: testBase})
+		}
+	}
+	t.Run("in the middle", func(t *testing.T) {
+		s := middle(t, gapRow(3, 3, 3))
+		rep, _ := s.apply(RepairOptions{})
+		if want := []string{"login 3-3", "activity 6-6"}; !slices.Equal(holeWords(rep), want) {
+			t.Errorf("the holes are %q, want %q", holeWords(rep), want)
+		}
+		if len(rep.Gaps) != 0 {
+			t.Errorf("the gaps are %q, want none: the gap of the record 3 is accepted", gapWords(rep))
+		}
+		a := s.auditView()
+		if len(a.holes[dbwire.LogActivity]) != 1 || a.holes[dbwire.LogActivity][6].Last != 6 {
+			t.Errorf("the rows of the holes are %v, want only the record 6: the gap has its own row", a.holes)
+		}
+		// There are no events of a hole for it either: only the two holes of the repair, and a mark.
+		if got := strings.Count(shapeOf(a), "H"); got != 2 {
+			t.Errorf("the events have %d holes, want the two of the repair: %s", got, shapeOf(a))
+		}
+		if again, _, err := s.repair(RepairOptions{}); err != nil || again.Things() != 0 || len(again.Holes) != 0 || len(again.Gaps) != 0 {
+			t.Errorf("the second repair = %+v, %v", again, err)
+		}
+	})
+	t.Run("at the end", func(t *testing.T) {
+		s := newFixtureStore(t)
+		for range 3 {
+			s.commit()
+		}
+		s.lose(dbwire.LogActivity) // the record 4, the last
+		s.putChainRow(dbwire.ChainGapKey(dbwire.LogActivity, 4), dbwire.AppendChainHole(nil,
+			dbwire.ChainHole{Last: 4, Hash: s.act[3].sum, At: testBase}))
+		if err := s.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s.damage(2)
+		rep, _ := s.apply(RepairOptions{})
+		if want := []string{"login 1-1", "activity 2-2"}; !slices.Equal(holeWords(rep), want) || len(rep.Gaps) != 0 {
+			t.Errorf("the holes are %q and the gaps %q, want %q and none: the gap of the record 4 is accepted", holeWords(rep),
+				gapWords(rep), want)
+		}
+	})
+	t.Run("a row that is wider", func(t *testing.T) {
+		s := middle(t, gapRow(3, 4, 4))
+		rep, _ := s.apply(RepairOptions{})
+		if want := []string{"activity 3-3"}; !slices.Equal(gapWords(rep), want) {
+			t.Errorf("the gaps are %q, want %q: the row is not for the gap that the log has", gapWords(rep), want)
+		}
+	})
+	t.Run("a row with the hash of another record", func(t *testing.T) {
+		s := middle(t, gapRow(3, 3, 2))
+		if rep, _ := s.apply(RepairOptions{}); !slices.Equal(gapWords(rep), []string{"activity 3-3"}) {
+			t.Errorf("the gaps are %q, want the gap that the row does not record", gapWords(rep))
+		}
+	})
+	t.Run("a row of the other log", func(t *testing.T) {
+		s := middle(t, func(s *auditStore) (key, value []byte) {
+			return dbwire.ChainGapKey(dbwire.LogLogin, 3), dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 3, Hash: s.act[2].sum, At: testBase})
+		})
+		if rep, _ := s.apply(RepairOptions{}); !slices.Equal(gapWords(rep), []string{"activity 3-3"}) {
+			t.Errorf("the gaps are %q, want the gap that no row of its log records", gapWords(rep))
+		}
+	})
+	t.Run("a row of a hole at the same place", func(t *testing.T) {
+		// The row of a hole of the record 3 with the hash of the record 3 records the loss too: it is the rule of the holes.
+		s := middle(t, func(s *auditStore) (key, value []byte) {
+			return dbwire.ChainHoleKey(dbwire.LogActivity, 3), dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 3, Hash: s.act[2].sum, At: testBase})
+		})
+		if rep, _ := s.apply(RepairOptions{}); len(rep.Gaps) != 0 {
+			t.Errorf("the gaps are %q, want none", gapWords(rep))
+		}
+	})
+	for _, kind := range []struct {
+		name string
+		key  []byte
+		why  string
+	}{
+		{"a gap", dbwire.ChainGapKey(dbwire.LogActivity, 2), "the table chains: a row of an accepted gap cannot be read"},
+		{"a hole", dbwire.ChainHoleKey(dbwire.LogActivity, 2), "the table chains: a row of a hole cannot be read"},
+	} {
+		t.Run("a row of "+kind.name+" that cannot be read", func(t *testing.T) {
+			// It is refused when the repair has to know which of the holes are recorded, and not otherwise.
+			want := `audit log "activity": ` + kind.why + ": the repair cannot tell which of its holes are recorded"
+			s := middle(t, func(*auditStore) (key, value []byte) { return kind.key, []byte("short") })
+			before := keptFiles(s.fs)
+			for _, apply := range []bool{false, true} {
+				r := RepairOptions{}
+				if apply {
+					r = RepairOptions{Apply: true, Keep: "keep"}
+				}
+				rep, keep, err := s.repair(r)
+				if err == nil || err.Error() != want || rep.Applied || keep.Counted() != 0 || !maps.Equal(keptFiles(s.fs), before) {
+					t.Errorf("Repair(%+v) = %+v, %v, want the refusal %q and nothing changed", r, rep, err, want)
+				}
+			}
+			sound := newAuditStore(t, 5)
+			sound.reopen()
+			sound.putChainRow(kind.key, []byte("short"))
+			if err := sound.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if rep, _, err := sound.repair(RepairOptions{}); err != nil || rep.Things() != 0 || len(rep.Holes) != 0 || len(rep.Gaps) != 0 {
+				t.Errorf("Repair() of a store with no gap = %+v, %v, want nothing to repair", rep, err)
+			}
+		})
+	}
 }
 
 // TestRepairRecorded checks that a hole that a row records already, with a repair of an earlier time, is no hole of this one:

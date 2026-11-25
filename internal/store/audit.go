@@ -17,12 +17,13 @@ import (
 // (the schema 7), which VerifyAudit checks. A record is added in the Update of the change that it tells of (an Update
 // that changes anything and adds none fails with ErrUnrecorded), and the store has no way to change or remove one. The
 // daemon adds events of its own, its marks (dbwire.AppendMark) and, in its maintenance, those of the deletion of the
-// oldest records of the login history, of the acceptance of a break and of a hole that a repair has made
-// (dbwire.AppendDeleted, dbwire.AppendAccepted, dbwire.AppendHole), between the records: the reads skip them, and an event
-// that starts as one of them does and is not one is broken, as is one that is not a record. That maintenance also writes
-// the rows of the table chains (the schema 8, with the holes in the schema 9), which VerifyAudit reads: the chain start of
-// a log, from which its records are checked after a deletion, the accepted breaks, at which it is checked again, and the
-// holes, which tell the records that a repair had to drop and at which the log is checked again as well.
+// oldest records of the login history, of the acceptance of a break, of a hole that a repair has made and of the acceptance
+// of a gap (dbwire.AppendDeleted, dbwire.AppendAccepted, dbwire.AppendHole, dbwire.AppendGap), between the records: the reads
+// skip them, and an event that starts as one of them does and is not one is broken, as is one that is not a record. That
+// maintenance also writes the rows of the table chains (the schema 8, with the holes in the schema 9 and the accepted gaps in
+// the schema 10), which VerifyAudit reads: the chain start of a log, from which its records are checked after a deletion, the
+// accepted breaks, at which it is checked again, and the holes and the accepted gaps, which tell the records that are lost and
+// at which the log is checked again as well.
 
 // ErrNoAuditLog is the error of the reads of the audit log in a store of the table schema before 6, which has none:
 // opening it as its writer once gives it one.
@@ -192,11 +193,13 @@ type anchorKey struct {
 }
 
 // chainInfo is what the table chains has of a log: its chain start, if records before it were deleted, the breaks that are
-// accepted, by the number of their records, and the holes that a repair has made, by the number of their first records.
+// accepted, by the number of their records, and the holes that a repair has made and the gaps that are accepted, by the number
+// of their first records.
 type chainInfo struct {
 	start  *dbwire.ChainStart
 	breaks map[uint64]dbwire.ChainBreak
 	holes  map[uint64]dbwire.ChainHole
+	gaps   map[uint64]dbwire.ChainHole
 }
 
 // chainInfoOf reads what the table chains has of log. A row that cannot be read, and a chain start of the activity log,
@@ -252,15 +255,25 @@ func (t *Tx) chainInfoOf(log audit.Log) (chainInfo, error) {
 	}); err != nil {
 		return ci, err
 	}
+	if bad != nil {
+		return ci, bad
+	}
+	if err := t.b.chainRows(dbwire.ChainGapPrefix(string(log)), func(key, value []byte) bool {
+		name, first, keyOK := dbwire.ParseChainGapKey(key)
+		g, valueOK := dbwire.ParseChainHole(first, value)
+		if !keyOK || !valueOK || name != string(log) {
+			bad = brokenError(fmt.Sprintf("audit log %q: a row of the table chains for an accepted gap cannot be read", log))
+			return false
+		}
+		if ci.gaps == nil {
+			ci.gaps = map[uint64]dbwire.ChainHole{}
+		}
+		ci.gaps[first] = g
+		return true
+	}); err != nil {
+		return ci, err
+	}
 	return ci, bad
-}
-
-// endHole returns the hole that the head of the log passes in a walk that has read the record numbered last (0 if none): the
-// hole has the number that the walk expects as its first, and ends with the record that the head names, with the hash of the
-// head.
-func (ci chainInfo) endHole(last uint64, head audit.Head) (dbwire.ChainHole, bool) {
-	h, ok := ci.holes[dbwire.ChainExpected(ci.start, last)]
-	return h, ok && h.Last == head.N && h.Hash == head.Hash
 }
 
 // holeNote tells the hole h of log: after is what follows it in the log.
@@ -270,6 +283,23 @@ func holeNote(log audit.Log, h dbwire.ChainHole, after string) string {
 		lost = fmt.Sprintf("record %d was", h.First)
 	}
 	return fmt.Sprintf("audit log %q: %s lost and dropped by whiteroom-db repair at %s; %s", log, lost, noteTime(h.At), after)
+}
+
+// gapNote tells the gap g of log, which whiteroom-db accept-break accepted: after is what follows it in the log.
+func gapNote(log audit.Log, g dbwire.ChainHole, after string) string {
+	missing := fmt.Sprintf("the records %d to %d are", g.First, g.Last)
+	if g.First == g.Last {
+		missing = fmt.Sprintf("record %d is", g.First)
+	}
+	return fmt.Sprintf("audit log %q: %s missing, and the gap was accepted at %s; %s", log, missing, noteTime(g.At), after)
+}
+
+// passNote tells the row that passes a record or the head of log: a hole or, if gap, an accepted gap.
+func passNote(log audit.Log, row dbwire.ChainHole, gap bool, after string) string {
+	if gap {
+		return gapNote(log, row, after)
+	}
+	return holeNote(log, row, after)
 }
 
 // chainEnd is the last record that VerifyAudit has read of a log, and what the table chains says of the log.
@@ -294,8 +324,8 @@ func (c *chainEnd) follow(r audit.Record, number uint64, sum [sha256.Size]byte, 
 	return nil
 }
 
-// pass makes the end of the log the last record of the hole h, which a record that follows it then follows as it would the
-// record Last that is lost. The first record that is read after a hole at the start is not the first of the log.
+// pass makes the end of the log the last record of the hole or gap h, which a record that follows it then follows as it would
+// the record Last that is lost. The first record that is read after a hole at the start is not the first of the log.
 func (c *chainEnd) pass(h dbwire.ChainHole) {
 	c.n, c.hash = h.Last, h.Hash
 }
@@ -354,24 +384,31 @@ func (c *chainEnd) check(r audit.Record, number uint64) error {
 // record K; a gap is no break. An anchor of a record before K that the store no longer has is not checked, unless it is
 // that of record K-1, whose hash is P. A store of a table schema before 8 has no such row.
 //
-// A hole (the schema 9) is the one gap that it passes: the records A to B of a log were lost, and whiteroom-db repair
-// dropped what remained of them, with the row that has A as its key, B, the hash H of the stored bytes of record B and
-// the time. The record that the log is expected to go on with is the one after the last record that was read (or K, or 1,
-// before any); if the hole has that number as its first, and the record read is B+1 and has H as its prev, the record follows
-// the hole as it would follow record B, and the log goes on from it. A hole at the end of a log is passed in the same way by the
-// head in the table: it names record B, with the hash H, after the last record that was read (or none). A hole is passed
-// exactly as it is recorded: a row that is wider or narrower, has another hash, or is for another log passes nothing. The
-// activity log that has no record left fails still. A head kept outside the store that names a record of a hole is a
-// problem, as one that names a record that the log does not have.
+// A hole (the schema 9) is a gap that it passes: the records A to B of a log were lost, and whiteroom-db repair dropped what
+// remained of them, with the row that has A as its key, B, the hash H of the stored bytes of record B and the time. The record
+// that the log is expected to go on with is the one after the last record that was read (or K, or 1, before any); if the hole
+// has that number as its first, and the record read is B+1 and has H as its prev, the record follows the hole as it would follow
+// record B, and the log goes on from it. A hole at the end of a log is passed in the same way by the head in the table: it
+// names record B, with the hash H, after the last record that was read (or none). A hole is passed exactly as it is recorded: a
+// row that is wider or narrower, has another hash, or is for another log passes nothing. The activity log that has no record
+// left fails still. A head kept outside the store that names a record of a hole is a problem, as one that names a record that
+// the log does not have.
+//
+// An accepted gap (the schema 10) is passed by the same rule: the records A to B of a log are missing, and whiteroom-db
+// accept-break accepted that, once an operator had looked into it, with a row of its own (the key that has A, the same value as
+// a hole) that is looked at after the holes. A record after the gap, or a head after the last record, is passed exactly as a
+// hole passes it: a row that is wider or narrower, has another hash, or is for another log passes nothing, the activity log
+// with no record left fails still, and a head kept outside the store that names a record of the gap is a problem. An accepted
+// gap is told as a note, as a hole is.
 func (s *Store) VerifyAudit(ctx context.Context, anchors []audit.Head) error {
 	return s.VerifyAuditNotes(ctx, anchors, nil)
 }
 
 // VerifyAuditNotes is VerifyAudit that also tells what it has found that is no problem, to note, a line of text each
 // and in the order in which it has found them, if note is not nil: the chain start of a log, the records before it that
-// a deletion has left, each break that is accepted, each hole that a repair has made, and how many of the anchors it could
-// not check. The notes have nothing but the names of the logs, numbers, and times. They are passed after the reads, also when
-// it fails, but the last two only if it finds nothing wrong.
+// a deletion has left, each break that is accepted, each hole that a repair has made, each gap that is accepted, and how many
+// of the anchors it could not check. The notes have nothing but the names of the logs, numbers, and times. They are passed
+// after the reads, also when it fails, but the last two only if it finds nothing wrong.
 func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note func(string)) error {
 	byRecord := map[anchorKey][][sha256.Size]byte{}
 	for i, a := range anchors {
@@ -433,10 +470,10 @@ func (s *Store) VerifyAuditNotes(ctx context.Context, anchors []audit.Head, note
 				notes = append(notes, fmt.Sprintf("audit log %q: the break at record %d was accepted at %s; the log is checked "+
 					"again from that record", r.Log, r.N, noteTime(b.At)))
 			}
-			// A record after a hole has not the number after the last that was read, so it is never honored as a break.
-			if hole, holed := dbwire.HoleBefore(end.holes, end.start, end.n, r.N, r.Prev); holed {
-				notes = append(notes, holeNote(r.Log, hole, fmt.Sprintf("the log is checked again from record %d", r.N)))
-				end.pass(hole)
+			// A record after a hole or a gap has not the number after the last that was read, so it is never honored as a break.
+			if row, gap, passed := dbwire.ChainPass(end.holes, end.gaps, end.start, end.n, r.N, r.Prev); passed {
+				notes = append(notes, passNote(r.Log, row, gap, fmt.Sprintf("the log is checked again from record %d", r.N)))
+				end.pass(row)
 			}
 			if broken = end.follow(r, number, sum, honored); broken != nil {
 				return false
@@ -524,9 +561,9 @@ func (t *Tx) checkHeadLines(heads []audit.Head) error {
 // checkEnds checks the last record of each log, ends, against its head in the table, in heads, against the chain start
 // of the log, in chains, and against anchors, of which matched has those whose records the read of the log has met. It
 // returns how many of the anchors name a record before the chain start, which the log does not have, and that no check of
-// the chain start covers; one that names a record after it that the log does not have is a problem, also when a hole of the
-// log records it as lost. A head that names the records that a hole at the end of its log has lost is passed, and tells the
-// hole to note.
+// the chain start covers; one that names a record after it that the log does not have is a problem, also when a hole or an
+// accepted gap of the log records it as lost. A head that names the records that a hole or an accepted gap at the end of its
+// log has lost is passed, and tells the hole or the gap to note.
 func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, heads, anchors []audit.Head,
 	matched map[anchorKey]bool, note func(string)) (unchecked int, err error) {
 	byLog := map[audit.Log]audit.Head{}
@@ -540,10 +577,10 @@ func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, hea
 		if end != nil {
 			last = end.n
 		}
-		var hole dbwire.ChainHole
-		holed := false
+		var row dbwire.ChainHole
+		var gap, holed bool
 		if hasHead {
-			hole, holed = chains[log].endHole(last, head)
+			row, gap, holed = dbwire.ChainEndPass(chains[log].holes, chains[log].gaps, start, last, head.N, head.Hash)
 		}
 		switch {
 		case end == nil && start != nil:
@@ -590,7 +627,7 @@ func checkEnds(ends map[audit.Log]*chainEnd, chains map[audit.Log]chainInfo, hea
 			if end != nil {
 				after = fmt.Sprintf("the log ends with record %d", end.n)
 			}
-			note(holeNote(log, hole, after))
+			note(passNote(log, row, gap, after))
 		}
 	}
 	for _, a := range anchors {

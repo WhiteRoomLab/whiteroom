@@ -118,8 +118,8 @@ func compactLogin(t *testing.T, f *fixture, now time.Time) Deleted {
 }
 
 // word returns what an event is, in a word: Ln and An for the login and the activity record n, M for a mark, Dn for the
-// deletion before the record n, Bn for the acceptance of the break at it, Hn for the hole that starts at the record n, and ?
-// for another event.
+// deletion before the record n, Bn for the acceptance of the break at it, Hn for the hole that starts at the record n, Gn for
+// the acceptance of the gap that starts at the record n, and ? for another event.
 func word(data []byte) string {
 	if dbwire.IsDaemonEvent(data) {
 		if _, ok := dbwire.ParseMark(data); ok {
@@ -133,6 +133,9 @@ func word(data []byte) string {
 		}
 		if h, ok := dbwire.ParseHole(data); ok {
 			return fmt.Sprintf("H%d", h.First)
+		}
+		if g, ok := dbwire.ParseGap(data); ok {
+			return fmt.Sprintf("G%d", g.First)
 		}
 		return "?"
 	}
@@ -155,6 +158,7 @@ type view struct {
 	rows   map[string]string
 	breaks int
 	holes  int
+	gaps   int
 }
 
 func viewOf(t *testing.T, f *fixture) view {
@@ -183,6 +187,8 @@ func viewOf(t *testing.T, f *fixture) view {
 					case table == dbwire.TableChains:
 						if _, _, ok := dbwire.ParseChainHoleKey(k); ok {
 							v.holes++
+						} else if _, _, ok := dbwire.ParseChainGapKey(k); ok {
+							v.gaps++
 						} else {
 							v.breaks++
 						}
@@ -950,10 +956,77 @@ func putHole(first, last uint64, hash [sha256.Size]byte) func(t *testing.T, f *f
 	}
 }
 
-// TestCompactLoginHoles checks the holes of the table chains that a repair records: the walk goes on across a record that
-// follows one as VerifyAudit has it, the record after a hole is never the first that remains, and a row that is not for
-// the gap that the log has, as it is, passes nothing.
+// putGap is the step of a store that puts the row and the event of the accepted gap of the login records first to last, whose
+// last has the hash hash, with a mark, as whiteroom-db accept-break does.
+func putGap(first, last uint64, hash [sha256.Size]byte) func(t *testing.T, f *fixture) {
+	return func(t *testing.T, f *fixture) {
+		t.Helper()
+		f.update(func(tx *logdb.Tx) {
+			row := dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: last, Hash: hash, At: monthsAgo(1)})
+			if err := tx.Put(dbwire.TableChains, dbwire.ChainGapKey(dbwire.LogLogin, first), row); err != nil {
+				t.Error(err)
+			}
+			event := dbwire.AppendGap(nil, dbwire.Hole{Log: dbwire.LogLogin, First: first, Last: last, Hash: hash})
+			if err := tx.AppendEvent(event); err != nil {
+				t.Error(err)
+			}
+			if err := tx.AppendEvent(dbwire.AppendMark(nil, monthsAgo(1))); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// ranges is a kind of row that tells records that are not there: the hole that a repair records, or the gap that
+// whiteroom-db accept-break accepts, which the walk of CompactLogin passes by one rule.
+type ranges struct {
+	name string
+	put  func(first, last uint64, hash [sha256.Size]byte) func(t *testing.T, f *fixture)
+	// rows returns how many rows of the kind the store has, and word is the letter of its events in the shape.
+	rows func(v view) int
+	word string
+}
+
+var (
+	holeRanges = ranges{"holes", putHole, func(v view) int { return v.holes }, "H"}
+	gapRanges  = ranges{"gaps", putGap, func(v view) int { return v.gaps }, "G"}
+)
+
+// TestCompactLoginHoles checks the holes of the table chains that a repair records, and the gaps that whiteroom-db accept-break
+// accepts: the walk goes on across a record that follows one as VerifyAudit has it, the record after one is never the first
+// that remains, and a row that is not for the gap that the log has, as it is, passes nothing.
 func TestCompactLoginHoles(t *testing.T) {
+	for _, r := range []ranges{holeRanges, gapRanges} {
+		t.Run(r.name, func(t *testing.T) { checkCompactLoginRanges(t, r) })
+	}
+	t.Run("a hole and a gap in one log", checkCompactLoginBoth)
+}
+
+// checkCompactLoginBoth checks a hole and a gap in one log, each passed by its own row.
+func checkCompactLoginBoth(t *testing.T) {
+	chain := newLoginChain(7)
+	f := newFixture(t, nil)
+	for i, n := range []int{1, 2, 4, 6, 7} {
+		f.commitAt(monthsAgo(40), auditRecord("activity", uint64(i+1), ""), chain.rec(n))
+	}
+	putHole(3, 3, chain.sum(3))(t, f)
+	putGap(5, 5, chain.sum(5))(t, f)
+	f.anchor()
+	if err := f.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := viewOf(t, f)
+	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 7, Cutoff: pruneNow.AddDate(-1, 0, 0)})
+	after := viewOf(t, f)
+	kept(t, before, after, "L1", "L2", "L4", "L6", "L7")
+	checkStart(t, after, 8, chain.sum(7), pruneNow)
+	if after.holes != 1 || after.gaps != 1 {
+		t.Errorf("the store has %d rows of holes and %d of gaps, want the one of each that it had", after.holes, after.gaps)
+	}
+}
+
+func checkCompactLoginRanges(t *testing.T, r ranges) {
+	put := r.put
 	chain := newLoginChain(6)
 	cutoff := pruneNow.AddDate(-1, 0, 0)
 	// build commits the login records, each with an activity record and the mark that marks says, and then the steps.
@@ -996,48 +1069,48 @@ func TestCompactLoginHoles(t *testing.T) {
 		first uint64 // the first record that remains, and the hash of the one before it, 0 if the call writes no start
 		prev  [sha256.Size]byte
 	}{
-		{"a hole lets the walk go on", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(3))},
+		{"a hole lets the walk go on", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){put(3, 3, chain.sum(3))},
 			Deleted{First: 1, Last: 6, Cutoff: cutoff}, []int{1, 2, 4, 5, 6}, 7, chain.sum(6)},
-		{"a hole of two records", []int{1, 2, 5, 6}, old(4), []func(t *testing.T, f *fixture){putHole(3, 4, chain.sum(4))},
+		{"a hole of two records", []int{1, 2, 5, 6}, old(4), []func(t *testing.T, f *fixture){put(3, 4, chain.sum(4))},
 			Deleted{First: 1, Last: 6, Cutoff: cutoff}, []int{1, 2, 5, 6}, 7, chain.sum(6)},
-		{"a hole at the start of the log", []int{2, 3, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){putHole(1, 1, chain.sum(1))},
+		{"a hole at the start of the log", []int{2, 3, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){put(1, 1, chain.sum(1))},
 			Deleted{First: 2, Last: 6, Cutoff: cutoff}, []int{2, 3, 4, 5, 6}, 7, chain.sum(6)},
-		{"a hole at the end of the log", []int{1, 2, 3, 4, 5}, old(5), []func(t *testing.T, f *fixture){putHole(6, 6, chain.sum(6))},
+		{"a hole at the end of the log", []int{1, 2, 3, 4, 5}, old(5), []func(t *testing.T, f *fixture){put(6, 6, chain.sum(6))},
 			Deleted{First: 1, Last: 5, Cutoff: cutoff}, []int{1, 2, 3, 4, 5}, 6, chain.sum(5)},
 		{"a hole at the chain start", []int{5, 6}, old(2), []func(t *testing.T, f *fixture){
-			startAt(3, chain.sum(2)), putHole(3, 4, chain.sum(4))},
+			startAt(3, chain.sum(2)), put(3, 4, chain.sum(4))},
 			Deleted{First: 5, Last: 6, Cutoff: cutoff}, []int{5, 6}, 7, chain.sum(6)},
 		{"the cut that lands at the record after a hole goes back", []int{1, 2, 4, 5, 6},
-			append(old(2), monthsAgo(5), monthsAgo(4), monthsAgo(3)), []func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(3))},
+			append(old(2), monthsAgo(5), monthsAgo(4), monthsAgo(3)), []func(t *testing.T, f *fixture){put(3, 3, chain.sum(3))},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff}, []int{1}, 2, chain.sum(1)},
 		{"the cut that lands just after the record after a hole", []int{1, 2, 4, 5}, append(old(3), monthsAgo(5)),
-			[]func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(3))},
+			[]func(t *testing.T, f *fixture){put(3, 3, chain.sum(3))},
 			Deleted{First: 1, Last: 4, Cutoff: cutoff}, []int{1, 2, 4}, 5, chain.sum(4)},
 		{"two holes in a row of records", []int{1, 3, 5, 6}, old(4), []func(t *testing.T, f *fixture){
-			putHole(2, 2, chain.sum(2)), putHole(4, 4, chain.sum(4))},
+			put(2, 2, chain.sum(2)), put(4, 4, chain.sum(4))},
 			Deleted{First: 1, Last: 6, Cutoff: cutoff}, []int{1, 3, 5, 6}, 7, chain.sum(6)},
 
 		// A row that is not for the gap that the log has passes nothing: the walk stops at the record after it.
-		{"a row that is one record wider", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){putHole(3, 4, chain.sum(4))},
+		{"a row that is one record wider", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){put(3, 4, chain.sum(4))},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 2"}, []int{1}, 2,
 			chain.sum(1)},
-		{"a row that is one record narrower", []int{1, 2, 5, 6}, old(4), []func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(3))},
+		{"a row that is one record narrower", []int{1, 2, 5, 6}, old(4), []func(t *testing.T, f *fixture){put(3, 3, chain.sum(3))},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff, Stopped: "record 5: the number does not follow that of record 2"}, []int{1}, 2,
 			chain.sum(1)},
-		{"a row that starts one record later", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){putHole(4, 4, chain.sum(3))},
+		{"a row that starts one record later", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){put(4, 4, chain.sum(3))},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 2"}, []int{1}, 2,
 			chain.sum(1)},
-		{"a row with another hash", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){putHole(3, 3, wrong32)},
+		{"a row with another hash", []int{1, 2, 4, 5, 6}, old(5), []func(t *testing.T, f *fixture){put(3, 3, wrong32)},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 2"}, []int{1}, 2,
 			chain.sum(1)},
 		{"a row with the hash of the record before", []int{1, 2, 4, 5, 6}, old(5),
-			[]func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(2))},
+			[]func(t *testing.T, f *fixture){put(3, 3, chain.sum(2))},
 			Deleted{First: 1, Last: 1, Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 2"}, []int{1}, 2,
 			chain.sum(1)},
 		{"a row that is one record narrower, at the chain start", []int{5, 6}, old(2), []func(t *testing.T, f *fixture){
-			startAt(3, chain.sum(2)), putHole(3, 3, chain.sum(3))},
+			startAt(3, chain.sum(2)), put(3, 3, chain.sum(3))},
 			Deleted{Cutoff: cutoff, Stopped: "record 5: the chain starts at record 3, which is not there"}, nil, 0, [sha256.Size]byte{}},
-		{"a hole for the log that has no gap", []int{1, 2, 3, 4, 5, 6}, old(6), []func(t *testing.T, f *fixture){putHole(3, 3, chain.sum(3))},
+		{"a hole for the log that has no gap", []int{1, 2, 3, 4, 5, 6}, old(6), []func(t *testing.T, f *fixture){put(3, 3, chain.sum(3))},
 			Deleted{First: 1, Last: 6, Cutoff: cutoff}, []int{1, 2, 3, 4, 5, 6}, 7, chain.sum(6)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1053,18 +1126,24 @@ func TestCompactLoginHoles(t *testing.T) {
 			} else {
 				checkStart(t, after, tt.first, tt.prev, pruneNow)
 			}
-			// The rows and the events of the holes stay, whatever is dropped: the records that they tell of are not there.
-			if after.holes != before.holes || strings.Count(after.shape, "H") != strings.Count(before.shape, "H") {
-				t.Errorf("the store has %d rows of holes and the events %q, want the %d and the events that it had", after.holes,
-					after.shape, before.holes)
+			// The rows and the events stay, whatever is dropped: the records that they tell of are not there.
+			if r.rows(after) != r.rows(before) || strings.Count(after.shape, r.word) != strings.Count(before.shape, r.word) {
+				t.Errorf("the store has %d rows of %s and the events %q, want the %d and the events that it had", r.rows(after), r.name,
+					after.shape, r.rows(before))
 			}
 		})
 	}
 }
 
-// TestCompactLoginHolesLeftover checks a hole among the records that a deletion left before the chain start: they are dropped
-// as VerifyAudit reads them, and a row that does not match stops the walk at the record after it.
+// TestCompactLoginHolesLeftover checks a hole or an accepted gap among the records that a deletion left before the chain start:
+// they are dropped as VerifyAudit reads them, and a row that does not match stops the walk at the record after it.
 func TestCompactLoginHolesLeftover(t *testing.T) {
+	for _, r := range []ranges{holeRanges, gapRanges} {
+		t.Run(r.name, func(t *testing.T) { checkCompactLoginLeftover(t, r) })
+	}
+}
+
+func checkCompactLoginLeftover(t *testing.T, r ranges) {
 	chain := newLoginChain(6)
 	deletedCutoff := monthsAgo(20)
 	cutoff := pruneNow.AddDate(-1, 0, 0)
@@ -1082,19 +1161,19 @@ func TestCompactLoginHolesLeftover(t *testing.T) {
 		}
 		return f
 	}
-	t.Run("a hole among them", func(t *testing.T) {
-		f := mk(t, putHole(3, 3, chain.sum(3)))
+	t.Run("a row among them", func(t *testing.T) {
+		f := mk(t, r.put(3, 3, chain.sum(3)))
 		before := viewOf(t, f)
 		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 4, Cutoff: deletedCutoff})
 		after := viewOf(t, f)
 		kept(t, before, after, "L1", "L2", "L4")
 		checkStart(t, after, 5, chain.sum(4), pruneNow)
-		if after.holes != 1 {
-			t.Errorf("the store has %d rows of holes, want the one that it had", after.holes)
+		if r.rows(after) != 1 {
+			t.Errorf("the store has %d rows of %s, want the one that it had", r.rows(after), r.name)
 		}
 	})
 	t.Run("a row that does not match", func(t *testing.T) {
-		f := mk(t, putHole(3, 3, wrong32))
+		f := mk(t, r.put(3, 3, wrong32))
 		before := viewOf(t, f)
 		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 2"})
 		kept(t, before, viewOf(t, f))
@@ -1134,6 +1213,17 @@ func TestCompactLoginUnreadableRows(t *testing.T) {
 			"the table chains: a row of a hole cannot be read"},
 		{"a hole of a log with a longer name", append([]byte("login\x01\x01"), dbwire.ChainHoleKey(dbwire.LogLogin, 2)[6:]...),
 			dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 2, At: pruneNow}), "the table chains: a row of a hole cannot be read"},
+		{"a gap", dbwire.ChainGapKey(dbwire.LogLogin, 2), []byte("short"), "the table chains: a row of an accepted gap cannot be read"},
+		{"a gap of record 0", dbwire.ChainGapKey(dbwire.LogLogin, 0), dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 2, At: pruneNow}),
+			"the table chains: a row of an accepted gap cannot be read"},
+		{"a gap that ends before it starts", dbwire.ChainGapKey(dbwire.LogLogin, 3),
+			dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 2, At: pruneNow}), "the table chains: a row of an accepted gap cannot be read"},
+		{"a gap with a key that is too long", append(dbwire.ChainGapKey(dbwire.LogLogin, 2), 0),
+			dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 2, At: pruneNow}), "the table chains: a row of an accepted gap cannot be read"},
+		{"a gap with the value of a break", dbwire.ChainGapKey(dbwire.LogLogin, 2), dbwire.AppendChainBreak(nil, dbwire.ChainBreak{At: pruneNow}),
+			"the table chains: a row of an accepted gap cannot be read"},
+		{"a gap of a log with a longer name", append([]byte("login\x02\x02"), dbwire.ChainGapKey(dbwire.LogLogin, 2)[6:]...),
+			dbwire.AppendChainHole(nil, dbwire.ChainHole{Last: 2, At: pruneNow}), "the table chains: a row of an accepted gap cannot be read"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t, nil)
@@ -1156,8 +1246,8 @@ func TestCompactLoginUnreadableRows(t *testing.T) {
 	}
 }
 
-// TestCompactLoginUnreadableRowsTogether checks that a row of a break and a row of a hole that cannot be read are told by the
-// row of the break, as VerifyAudit tells it.
+// TestCompactLoginUnreadableRowsTogether checks that a row of a break, of a hole and of a gap that cannot be read are told by
+// the first of them in that order, as VerifyAudit tells it.
 func TestCompactLoginUnreadableRowsTogether(t *testing.T) {
 	chain := newLoginChain(3)
 	f := newFixture(t, nil)
@@ -1177,6 +1267,25 @@ func TestCompactLoginUnreadableRowsTogether(t *testing.T) {
 	}
 	checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0),
 		Stopped: "the table chains: a row of an accepted break cannot be read"})
+
+	// A row of a hole and a row of a gap: the hole is told.
+	g := newFixture(t, nil)
+	for i := 1; i <= 3; i++ {
+		g.commitAt(monthsAgo(40), chain.rec(i))
+	}
+	g.update(func(tx *logdb.Tx) {
+		for _, key := range [][]byte{dbwire.ChainGapKey(dbwire.LogLogin, 2), dbwire.ChainHoleKey(dbwire.LogLogin, 2)} {
+			if err := tx.Put(dbwire.TableChains, key, []byte("short")); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	g.anchor()
+	if err := g.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkDeleted(t, compactLogin(t, g, pruneNow), Deleted{Cutoff: pruneNow.AddDate(-1, 0, 0),
+		Stopped: "the table chains: a row of a hole cannot be read"})
 }
 
 // TestCompactLoginInterrupted checks that a deletion that is stopped between its commit and the end of its compaction

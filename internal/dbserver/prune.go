@@ -32,10 +32,11 @@ type Deleted struct {
 //
 // The records go as a prefix in the order of their events, and only while their chain is whole. The walk stops at a record
 // that is not old enough or has no mark, and at evidence: a record that does not follow the one before it (unless a break
-// is accepted for it, or it follows a hole that a repair recorded, as VerifyAudit has it), an event that is no record, a
-// chain start or a row of a break or of a hole that cannot be read. At evidence it also keeps the record before, so that the
-// pair stays for a repair. A record that the walk takes through a break or a hole is never the first that remains: the cut
-// moves back before it, and the rows of the breaks and of the holes stay.
+// is accepted for it, or it follows a hole that a repair recorded or a gap that is accepted, as VerifyAudit has it), an event
+// that is no record, a chain start or a row of a break, of a hole or of an accepted gap that cannot be read. At evidence it also
+// keeps the record before, so that the pair stays for a repair. A record that the walk takes through a break, a hole or an
+// accepted gap is never the first that remains: the cut moves back before it, and the rows of the breaks, of the holes and of
+// the gaps stay.
 //
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
@@ -108,7 +109,7 @@ type loginRecord struct {
 	n, event uint64
 	sum      [sha256.Size]byte
 	at       time.Time // the time of the mark of its commit; zero if the commit has none
-	honored  bool      // the walk took it through a break that is accepted for it, or through a hole
+	honored  bool      // the walk took it through a break that is accepted for it, or through a hole or an accepted gap
 }
 
 // loginPass is the pass of CompactLogin over the events.
@@ -117,6 +118,7 @@ type loginPass struct {
 	start  *dbwire.ChainStart
 	breaks map[uint64][sha256.Size]byte // by record: the hash that the accepted break at it is for
 	holes  map[uint64]dbwire.ChainHole  // by their first record
+	gaps   map[uint64]dbwire.ChainHole  // the accepted gaps, by their first record
 	schema uint64                       // the table schema of the store if it is older than dbwire.TableVersion, else 0
 
 	recs    []loginRecord // the walked records, in the order of their events
@@ -145,16 +147,17 @@ type leftover struct {
 func (p *loginPass) readChains(tx *logdb.Tx) error {
 	p.schema = olderSchema(tx)
 	rows := readChainRows(tx, dbwire.LogLogin)
-	p.start, p.breaks, p.holes, p.stop = rows.start, rows.breaks, rows.holes, rows.bad
+	p.start, p.breaks, p.holes, p.gaps, p.stop = rows.start, rows.breaks, rows.holes, rows.gaps, rows.bad
 	return nil
 }
 
 // chainRows is what the table chains has of one log: its chain start, the hash that each accepted break is for, by the number
-// of its record, and its holes, by their first records.
+// of its record, and its holes and its accepted gaps, by their first records.
 type chainRows struct {
 	start  *dbwire.ChainStart
 	breaks map[uint64][sha256.Size]byte
 	holes  map[uint64]dbwire.ChainHole
+	gaps   map[uint64]dbwire.ChainHole
 	bad    string // why a row cannot be read, "" if every row can
 }
 
@@ -196,6 +199,22 @@ func readChainRows(tx *logdb.Tx, log string) chainRows {
 			rows.holes = map[uint64]dbwire.ChainHole{}
 		}
 		rows.holes[first] = h
+		return true
+	})
+	if rows.bad != "" {
+		return rows
+	}
+	tx.Scan(dbwire.TableChains, dbwire.ChainGapPrefix(log), func(k, v []byte) bool {
+		name, first, keyOK := dbwire.ParseChainGapKey(k)
+		g, valueOK := dbwire.ParseChainHole(first, v)
+		if !keyOK || !valueOK || name != log {
+			rows.bad = "the table chains: a row of an accepted gap cannot be read"
+			return false
+		}
+		if rows.gaps == nil {
+			rows.gaps = map[uint64]dbwire.ChainHole{}
+		}
+		rows.gaps[first] = g
 		return true
 	})
 	return rows
@@ -303,9 +322,9 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 		}
 	}
 	why := p.follow(n, prev)
-	// A record that follows a hole is taken through it: the cut of a deletion does not land on it, since its prev is not the
-	// hash of the record that would come before it.
-	honored := why != "" && (p.accepted(n, sum) || p.holed(n, prev))
+	// A record that follows a hole or an accepted gap is taken through it: the cut of a deletion does not land on it, since
+	// its prev is not the hash of the record that would come before it.
+	honored := why != "" && (p.accepted(n, sum) || p.passed(n, prev))
 	if why != "" && !honored {
 		p.stop, p.stopLogin = fmt.Sprintf("record %d: %s", n, why), true
 		return
@@ -317,7 +336,8 @@ func (p *loginPass) login(e logdb.Event, n uint64, prev string) {
 }
 
 // leftFollow returns why the record n with prev, whose stored bytes have the hash sum, does not follow the records before
-// the chain start that were met, "" if it does: a break that is accepted for it lets it go, as VerifyAudit has it. The first
+// the chain start that were met, "" if it does: a break that is accepted for it lets it go, as a hole or an accepted gap
+// before it does, as VerifyAudit has it. The first
 // of them is checked as VerifyAudit checks the first record that it reads: it has no prev if it is record 1, and has one
 // if it is not.
 func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) string {
@@ -332,7 +352,7 @@ func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) str
 	}
 	last := p.left[len(p.left)-1]
 	switch {
-	case n != last.n+1 && p.holeAfter(last.n, n, prev):
+	case n != last.n+1 && p.passedAfter(last.n, n, prev):
 	case n != last.n+1:
 		return fmt.Sprintf("the number does not follow that of record %d", last.n)
 	case prev != hashText(last.sum) && !p.breakFor(n, sum):
@@ -341,19 +361,20 @@ func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) str
 	return ""
 }
 
-// holeAfter reports whether the record n with prev follows a hole in a walk that has read the record numbered last (0 if none).
-func (p *loginPass) holeAfter(last, n uint64, prev string) bool {
-	_, ok := dbwire.HoleBefore(p.holes, p.start, last, n, prev)
+// passedAfter reports whether the record n with prev follows a hole or an accepted gap in a walk that has read the record
+// numbered last (0 if none).
+func (p *loginPass) passedAfter(last, n uint64, prev string) bool {
+	_, _, ok := dbwire.ChainPass(p.holes, p.gaps, p.start, last, n, prev)
 	return ok
 }
 
-// holed reports whether the record n with prev follows a hole, after the walked records.
-func (p *loginPass) holed(n uint64, prev string) bool {
+// passed reports whether the record n with prev follows a hole or an accepted gap, after the walked records.
+func (p *loginPass) passed(n uint64, prev string) bool {
 	var last uint64
 	if len(p.recs) > 0 {
 		last = p.recs[len(p.recs)-1].n
 	}
-	return p.holeAfter(last, n, prev)
+	return p.passedAfter(last, n, prev)
 }
 
 // leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is
@@ -480,8 +501,8 @@ func (p *loginPass) plan(now time.Time) deletion {
 		eligible--
 	}
 	cut := min(old, eligible)
-	// A record that the walk took through a break cannot be the first that remains, as VerifyAudit does not honor a break at
-	// the chain start: the record before it stays, as at evidence.
+	// A record that the walk took through a break, a hole or an accepted gap cannot be the first that remains, as VerifyAudit
+	// does not honor a break at the chain start: the record before it stays, as at evidence.
 	for cut > 0 && cut < len(p.recs) && p.recs[cut].honored {
 		cut--
 	}

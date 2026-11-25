@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/dbclient"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
+	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 )
 
 // maintenanceArgs returns the arguments of the maintenance command named command on the data directory data: the arguments
@@ -166,6 +168,161 @@ func TestAcceptBreak(t *testing.T) {
 	for _, log := range []string{"login", "activity"} {
 		refused(accept(log, "4"), fmt.Sprintf("the break at record 4 of the audit log %s is already accepted", log))
 		refused(accept(log, "5"), "record 5 follows record 4: there is no break to accept")
+	}
+}
+
+// putHeads puts the heads of the audit logs, by their names, in the table heads of the data directory data, which no process has
+// open: the number of each head, and the hash that its line names.
+func putHeads(t *testing.T, data string, heads map[string]uint64, hashes map[string][sha256.Size]byte) {
+	t.Helper()
+	srv, err := dbserver.OpenDir(data, storeOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbserver.EngineOf(srv).Update(t.Context(), func(tx *logdb.Tx) error {
+		for log, n := range heads {
+			line := fmt.Sprintf("audit head %s %d sha256:%x", log, n, hashes[log])
+			if err := tx.Put(dbwire.TableHeads, []byte(log), []byte(line)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAcceptGap checks accept-break on a gap in each place: the lines that it prints, the rows and the events that it leaves,
+// which a daemon serves, the refusals, which change nothing, and that the check of the directory finds nothing wrong.
+func TestAcceptGap(t *testing.T) {
+	d := newDirs(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	login, activity := auditChain("login", 5), auditChain("activity", 5)
+	// The login history has the records 1, 2, 4 and 5, and its head names the record 7: the record 3 and the records 6 and 7 are
+	// missing. The activity log has the records 3 to 5: the records 1 and 2 are missing.
+	var commits []commitAt
+	commits = append(commits, commitAt{now, [][]byte{login[0], activity[2]}}, commitAt{now, [][]byte{login[1], activity[3]}},
+		commitAt{now, [][]byte{login[3], activity[4]}}, commitAt{now, [][]byte{login[4]}})
+	writeCommits(t, d.data, commits...)
+	endHash := sha256.Sum256([]byte("the record 7 of the login history"))
+	putHeads(t, d.data, map[string]uint64{"login": 7}, map[string][sha256.Size]byte{"login": endHash})
+
+	refused := func(args []string, text string) {
+		t.Helper()
+		before := withoutHead(t, d.data)
+		code, stdout, stderr := runCmd(t, args...)
+		if want := "whiteroom-db accept-break: " + text + "\n"; code != 1 || stdout != "" || stderr != want {
+			t.Errorf("whiteroom-db %v = %d, with stdout %q and stderr %q, want 1, nothing and %q", args[1:], code, stdout, stderr, want)
+		}
+		if got := withoutHead(t, d.data); !maps.Equal(got, before) {
+			t.Errorf("the refusal of whiteroom-db %v changed the files:\n%v\nwas\n%v", args[1:], got, before)
+		}
+	}
+	accept := func(log, n string) []string {
+		return []string{"accept-break", "-data", d.data, "-log", log, "-record", n}
+	}
+	accepted := func(args []string, line string) {
+		t.Helper()
+		code, stdout, stderr := runCmd(t, args...)
+		if want := line + "\n"; code != 0 || stdout != want || stderr != "" {
+			t.Fatalf("whiteroom-db %v = %d, with stdout %q and stderr %q, want 0, %q and nothing", args[1:], code, stdout, stderr, want)
+		}
+	}
+
+	refused(accept("login", "3"), "record 3 of the audit log login is not in the store: it is in the gap of record 3 before record 4; "+
+		"accept the gap with -record 4")
+	refused(accept("login", "6"), "record 6 of the audit log login is not in the store")
+	refused(accept("login", "5"), "record 5 follows record 4: there is no break to accept")
+	refused(accept("activity", "2"), "record 2 of the audit log activity is not in the store: it is in the gap of the records 1 to 2 "+
+		"before record 3; accept the gap with -record 3")
+
+	accepted(accept("login", "4"), "accepted the gap of record 3 before record 4 of the audit log login in "+d.data+
+		"; whiteroom doctor checks the log again from record 4")
+	accepted(accept("activity", "3"), "accepted the gap of the records 1 to 2 before record 3 of the audit log activity in "+d.data+
+		"; whiteroom doctor checks the log again from record 3")
+	accepted(accept("login", "7"), "accepted the gap of the records 6 to 7 at the end of the audit log login in "+d.data+
+		"; whiteroom doctor checks that the log ends with record 5")
+
+	// A daemon serves the rows of the gaps and the events of their acceptances, each followed by the mark of its command.
+	s := d.startServe(t, d.args()...)
+	r := openClient(t, d.socks, dbwire.RoleReader, dbclient.Options{})
+	var tail []string
+	if err := r.View(t.Context(), func(tx *dbclient.Tx) error {
+		for _, want := range []struct {
+			log         string
+			first, last uint64
+			hash        [sha256.Size]byte
+		}{{"login", 3, 3, sha256.Sum256(login[2])}, {"activity", 1, 2, sha256.Sum256(activity[1])}, {"login", 6, 7, endHash}} {
+			v, found, err := tx.Get(dbwire.TableChains, dbwire.ChainGapKey(want.log, want.first))
+			if err != nil {
+				return err
+			}
+			row, ok := dbwire.ParseChainHole(want.first, v)
+			if !found || !ok || row.Last != want.last || row.Hash != want.hash || row.At.Before(now) {
+				t.Errorf("the row of the gap of the %s log from the record %d is %+v (found %v, valid %v), want the record %d, the hash %x "+
+					"and a time of the commands", want.log, want.first, row, found, ok, want.last, want.hash[:4])
+			}
+		}
+		return tx.Events(t.Context(), func(_ uint64, data []byte) bool {
+			if g, isGap := dbwire.ParseGap(data); isGap {
+				tail = append(tail, fmt.Sprintf("%s %d-%d %x", g.Log, g.First, g.Last, g.Hash[:4]))
+			} else if _, isMark := dbwire.ParseMark(data); isMark && len(tail) > 0 {
+				tail = append(tail, "mark")
+			}
+			return true
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	l3, a2 := sha256.Sum256(login[2]), sha256.Sum256(activity[1])
+	want := []string{fmt.Sprintf("login 3-3 %x", l3[:4]), "mark", fmt.Sprintf("activity 1-2 %x", a2[:4]), "mark",
+		fmt.Sprintf("login 6-7 %x", endHash[:4]), "mark"}
+	if !slices.Equal(tail, want) {
+		t.Errorf("the events of the acceptances are %v, want %v: each followed by the mark of its time", tail, want)
+	}
+	if err := r.Verify(t.Context()); err != nil {
+		t.Errorf("Verify() = %v", err)
+	}
+	if code := s.stop(); code != 0 {
+		t.Fatalf("whiteroom-db serve = %d", code)
+	}
+	if code, stdout, stderr := runCmd(t, "check", "-data", d.data); code != 0 || stdout != "no problems found in "+d.data+"\n" || stderr != "" {
+		t.Errorf("whiteroom-db check = %d, with stdout %q and stderr %q", code, stdout, stderr)
+	}
+
+	// The same gaps are not accepted twice.
+	refused(accept("login", "4"), "record 4 comes after the record 3 whose gap is accepted already")
+	refused(accept("activity", "3"), "record 3 comes after the records 1 to 2 whose gap is accepted already")
+	refused(accept("login", "7"), "the gap of the records 6 to 7 at the end of the audit log login is accepted already")
+}
+
+// TestAcceptGapOfEmptyLog checks the gap at the end of a log that has no record, and the refusal of a record that is a gap with
+// no hash of the record before it.
+func TestAcceptGapOfEmptyLog(t *testing.T) {
+	d := newDirs(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	login := auditChain("login", 5)
+	// The record 4 of the login history has no hash as its prev, and the head of the activity log names three records that are not
+	// there.
+	odd := fmt.Appendf(nil, `{"log":"login","n":4,"prev":"nonsense","at":"2026-01-01T00:00:00Z","action":"x"}`)
+	writeCommits(t, d.data, commitAt{now, [][]byte{login[0], login[1], odd}})
+	hash := sha256.Sum256([]byte("the record 3 of the activity log"))
+	putHeads(t, d.data, map[string]uint64{"activity": 3}, map[string][sha256.Size]byte{"activity": hash})
+
+	code, stdout, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "login", "-record", "4")
+	want := "whiteroom-db accept-break: record 4 does not follow record 2 in number, and its prev is not the hash of a record " +
+		"(sha256: and 64 lower case hexadecimal digits), so the gap before it cannot be accepted\n"
+	if code != 1 || stdout != "" || stderr != want {
+		t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 1, nothing and %q", code, stdout, stderr, want)
+	}
+	code, stdout, stderr = runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "3")
+	line := "accepted the gap of the records 1 to 3 at the end of the audit log activity in " + d.data +
+		"; whiteroom doctor checks that the log has no record\n"
+	if code != 0 || stdout != line || stderr != "" {
+		t.Errorf("whiteroom-db accept-break = %d, with stdout %q and stderr %q, want 0, %q and nothing", code, stdout, stderr, line)
 	}
 }
 

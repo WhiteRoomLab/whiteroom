@@ -650,7 +650,8 @@ func TestRepairForgedRecord(t *testing.T) {
 }
 
 // TestRepairGapIsNotTheRepairs checks that a record that was lost before the repair stays a gap that whiteroom doctor reports:
-// the repair tells it, and writes no row for it.
+// the repair tells it, with the command that accepts it, and writes no row for it; once whiteroom-db accept-break has accepted it,
+// whiteroom doctor finds nothing and tells the gap in a note, and a second repair has no gap to tell.
 func TestRepairGapIsNotTheRepairs(t *testing.T) {
 	s, dir, heads := auditFixture(t)
 	// Position 4 is activity record 3.
@@ -670,6 +671,30 @@ func TestRepairGapIsNotTheRepairs(t *testing.T) {
 	s = reopenLog(t, dir, logdb.Options{})
 	if after, _ := doctorOf(t, s, dir, heads); !slices.Equal(after, was) {
 		t.Errorf("whiteroom doctor finds %q after the repair, was %q", after, was)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// whiteroom-db accept-break -log activity -record 4 accepts the gap.
+	acc, err := acceptOf(t, dir, audit.ActivityLog, 4)
+	if want := (dbserver.Acceptance{Gap: true, First: 3, Last: 3}); err != nil || acc != want {
+		t.Fatalf("AcceptBreak(activity, 4) = %+v, %v, want %+v", acc, err, want)
+	}
+	s = reopenLog(t, dir, logdb.Options{})
+	problems, notes := doctorOf(t, s, dir, heads)
+	if len(problems) != 0 {
+		t.Errorf("whiteroom doctor finds %q after the acceptance", problems)
+	}
+	if want := missingNote("activity", 3, 3, againFrom(4)); !slices.Contains(notes, want) {
+		t.Errorf("the notes are %q, want %q among them", notes, want)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := dbserver.Repair(t.Context(), dir, opts, dbserver.RepairOptions{}); err != nil || again.Things() != 0 || len(again.Holes) != 0 ||
+		len(again.Gaps) != 0 {
+		t.Errorf("the second repair = %+v, %v, want nothing to repair and no gap to tell", again, err)
 	}
 }
 

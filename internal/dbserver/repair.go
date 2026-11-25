@@ -59,10 +59,13 @@ type RepairHole struct {
 }
 
 // RepairGap is a gap in an audit log that the repair does not make: records First to Last are missing, and the repair drops
-// fewer events where they were than there are records, so that they were lost before it.
+// fewer events where they were than there are records, so that they were lost before it. Neither a hole of a repair nor a gap
+// that whiteroom-db accept-break accepted records it.
 type RepairGap struct {
 	Log         string
 	First, Last uint64
+	// End says that the gap is at the end of the log: the head of the log names the record Last, which the log does not have.
+	End bool
 }
 
 // RepairReport is what Repair found and did. Nothing in it is a key or a value of a row, or the data of an object.
@@ -642,7 +645,8 @@ type auditLog struct {
 	name  string
 	start *dbwire.ChainStart
 	holes map[uint64]dbwire.ChainHole
-	bad   string // why a row of the table chains cannot be read, "" if every row can
+	gaps  map[uint64]dbwire.ChainHole // the accepted gaps
+	bad   string                      // why a row of the table chains cannot be read, "" if every row can
 	head  *auditHead
 
 	last, lastEvent uint64 // the last record that was read, and its event; 0: none
@@ -657,13 +661,19 @@ type auditHead struct {
 func readAuditLog(tx *logdb.Tx, name string) *auditLog {
 	l := &auditLog{name: name}
 	rows := readChainRows(tx, name)
-	l.start, l.holes, l.bad = rows.start, rows.holes, rows.bad
+	l.start, l.holes, l.gaps, l.bad = rows.start, rows.holes, rows.gaps, rows.bad
+	l.head = readHead(tx, name)
+	return l
+}
+
+// readHead returns the head of the audit log named name that the table heads has, nil if it has none that can be read.
+func readHead(tx *logdb.Tx, name string) *auditHead {
 	if v, ok := tx.Get(dbwire.TableHeads, []byte(name)); ok {
 		if log, n, hash, valid := dbwire.ParseHeadLine(v); valid && log == name {
-			l.head = &auditHead{n, hash}
+			return &auditHead{n, hash}
 		}
 	}
-	return l
+	return nil
 }
 
 // lost is a set of event numbers that the plan loses: the ranges, ordered and apart.
@@ -772,7 +782,7 @@ func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 		w.err = fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		return
 	}
-	switch _, recorded := dbwire.HoleBefore(l.holes, l.start, l.last, c.n, c.prev); {
+	switch _, _, recorded := dbwire.ChainPass(l.holes, l.gaps, l.start, l.last, c.n, c.prev); {
 	case recorded:
 	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-expected:
 		h := RepairHole{Log: l.name, First: expected, Last: c.n - 1}
@@ -795,7 +805,7 @@ func (w *auditWalk) finish() error {
 		if l.head == nil || l.head.n < expected {
 			continue
 		}
-		if h, ok := l.holes[expected]; ok && h.Last == l.head.n && h.Hash == l.head.hash {
+		if _, _, ok := dbwire.ChainEndPass(l.holes, l.gaps, l.start, l.last, l.head.n, l.head.hash); ok {
 			continue
 		}
 		if l.bad != "" {
@@ -806,7 +816,7 @@ func (w *auditWalk) finish() error {
 		if l.dropped+w.lost.between(l.lastEvent, w.next) >= l.head.n-expected+1 {
 			w.rep.Holes = append(w.rep.Holes, RepairHole{Log: name, First: expected, Last: l.head.n, Hash: l.head.hash, Row: true})
 		} else {
-			w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: name, First: expected, Last: l.head.n})
+			w.rep.Gaps = append(w.rep.Gaps, RepairGap{Log: name, First: expected, Last: l.head.n, End: true})
 		}
 	}
 	order := func(a, b string) int {

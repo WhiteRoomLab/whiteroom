@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/WhiteRoomLab/whiteroom/internal/audit"
+	"github.com/WhiteRoomLab/whiteroom/internal/dbserver"
 	"github.com/WhiteRoomLab/whiteroom/internal/dbwire"
 	"github.com/WhiteRoomLab/whiteroom/internal/logdb"
 )
@@ -42,21 +43,31 @@ func dropRecords(t *testing.T, s *Store, dir string, log audit.Log, ns ...uint64
 }
 
 // TestAuditBreakRule pins together the three places that decide whether a break that is accepted for a record is honored, and
-// whether a hole that a repair recorded passes the record after it: whiteroom-db accept-break, VerifyAudit and whiteroom-db
-// compact. A break is a record whose number is that of the one before it plus one and whose prev is not its hash, and which is
-// neither the first record that is read nor the first that remains after a deletion. A hole passes the record that comes after
-// the records that its row says are lost, with the hash of the last of them as its prev, where the log is expected to go on.
-// Each case is run through all three, and they must agree: a record that accept-break accepts is gone by VerifyAudit and passed
-// by the walk of compact; one that it refuses is not, if its row is put in all the same, as one that the record had before it
-// was changed or its log was, unless a hole passes it, and compact never turns a store that VerifyAudit fails into one that it
-// passes.
+// whether a hole that a repair recorded, or a gap that is accepted, passes the record after it: whiteroom-db accept-break,
+// VerifyAudit and whiteroom-db compact. A break is a record whose number is that of the one before it plus one and whose prev is
+// not its hash, and which is neither the first record that is read nor the first that remains after a deletion. A hole passes the
+// record that comes after the records that its row says are lost, with the hash of the last of them as its prev, where the log is
+// expected to go on; so does a gap that accept-break accepted, which any record whose number is above that and that no row passes
+// can have: the number gaps (in the middle of a log, at its start, at the chain start, at its end, of two records), the rows
+// that do not match, which the acceptance replaces, and a gap after a hole, or one that is accepted twice, or whose record has no
+// hash as its prev, which it refuses. Each case is run through all three, and they must agree: a record that accept-break
+// accepts is gone by VerifyAudit and passed by the walk of compact; one that it refuses is not, if its row is put in all the same,
+// as one that the record had before it was changed or its log was, unless a hole or a gap passes it, and compact never turns a
+// store that VerifyAudit fails into one that it passes.
 func TestAuditBreakRule(t *testing.T) {
 	loginChange := func(r *audit.Record) { r.Login = "forged" }
 	activityChange := func(r *audit.Record) { r.Detail = map[string]string{"event": "X"} }
 	withPrev := func(r *audit.Record) { r.Prev = hashText(wrong[:]) }
-	gap := func(n, before int) string {
-		return fmt.Sprintf("record %d does not follow record %d in number: a gap, which a lost record leaves, is not a break that "+
-			"can be accepted: whiteroom-db repair records as a hole a gap that it makes, and this one stays a problem", n, before)
+	noHash := func(r *audit.Record) { r.Prev = "sha256:" + strings.Repeat("A", sha256.Size*2) }
+	acceptedGap := func(n, first, last int) string {
+		if first == last {
+			return fmt.Sprintf("record %d comes after the record %d whose gap is accepted already", n, first)
+		}
+		return fmt.Sprintf("record %d comes after the records %d to %d whose gap is accepted already", n, first, last)
+	}
+	noHashText := func(n, before int) string {
+		return fmt.Sprintf("record %d does not follow record %d in number, and its prev is not the hash of a record (sha256: and 64 lower "+
+			"case hexadecimal digits), so the gap before it cannot be accepted", n, before)
 	}
 	holeText := func(n, first, last int) string {
 		if first == last {
@@ -82,6 +93,37 @@ func TestAuditBreakRule(t *testing.T) {
 			injectChains(t, s, []chainRow{holeRow(string(rowLog), first, last, sum)}, holeEvents(string(rowLog), first, last, sum)...)
 			return s
 		}
+	}
+	// gapOf is holeOf for the row of an accepted gap and its event.
+	gapOf := func(rowLog, log audit.Log, ns []uint64, first, last, hashOf uint64) func(t *testing.T, s *Store, dir string) *Store {
+		return func(t *testing.T, s *Store, dir string) *Store {
+			t.Helper()
+			sum := wrong
+			if hashOf != 0 {
+				sum = sha256.Sum256(recordEvent(t, s, log, hashOf).Data)
+			}
+			s = dropRecords(t, s, dir, log, ns...)
+			injectChains(t, s, []chainRow{gapRow(string(rowLog), first, last, sum)}, gapEvents(string(rowLog), first, last, sum)...)
+			return s
+		}
+	}
+	// drop drops the records ns of log, which makes a gap.
+	drop := func(log audit.Log, ns ...uint64) func(t *testing.T, s *Store, dir string) *Store {
+		return func(t *testing.T, s *Store, dir string) *Store { return dropRecords(t, s, dir, log, ns...) }
+	}
+	// accepting is a prepare that makes what inner makes, and accepts what is at the record n of log, as whiteroom-db accept-break
+	// does.
+	accepting := func(inner func(t *testing.T, s *Store, dir string) *Store, log audit.Log, n uint64) func(t *testing.T, s *Store, dir string) *Store {
+		return func(t *testing.T, s *Store, dir string) *Store {
+			t.Helper()
+			return closeAcceptReopen(t, inner(t, s, dir), dir, log, n)
+		}
+	}
+	// writes adds a login record, as the writer does.
+	writes := func(t *testing.T, s *Store, dir string) *Store {
+		t.Helper()
+		update(t, s, func(tx *Tx) error { return tx.Record(loginRecord(audit.LoginFailure, "after")) })
+		return s
 	}
 	// lost is holeOf for the hole that is right: the row is of the log, and for the records that are dropped, with the hash of
 	// the last of them.
@@ -157,7 +199,12 @@ func TestAuditBreakRule(t *testing.T) {
 		// prepare makes the record n the one that VerifyAudit reports, and returns the open store.
 		prepare func(t *testing.T, s *Store, dir string) *Store
 		n       uint64
-		refused string // the error of AcceptBreak, "" if it accepts the break
+		refused string // the error of AcceptBreak, "" if it accepts the break or the gap
+		// accepted is what AcceptBreak accepts if it does: the zero value is a break.
+		accepted dbserver.Acceptance
+		// plant puts the row that the acceptance would have put, for a case that it refuses and that is not a break; nil: the row
+		// of the break at the record n.
+		plant func(t *testing.T, s *Store)
 		// after changes the store when the acceptance, if there is one, has been made.
 		after  func(t *testing.T, s *Store, dir string) *Store
 		verify string // the error of VerifyAudit after that, up to the number of the event, "" if it passes
@@ -180,12 +227,6 @@ func TestAuditBreakRule(t *testing.T) {
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, s, dir, audit.ActivityLog, 3, activityChange)
 			}},
-		{name: "a number gap", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: func(t *testing.T, s *Store, dir string) *Store { return dropRecords(t, s, dir, audit.LoginLog, 3) },
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a number gap, in the activity log", log: audit.ActivityLog, build: allOld, n: 4, refused: gap(4, 2), stop: none,
-			prepare: func(t *testing.T, s *Store, dir string) *Store { return dropRecords(t, s, dir, audit.ActivityLog, 3) },
-			verify:  "the number does not follow that of record 2"},
 		{name: "a duplicate of an accepted record", log: audit.LoginLog, build: allOld, n: 4,
 			prepare: func(t *testing.T, s *Store, dir string) *Store {
 				return rewriteRecord(t, s, dir, audit.LoginLog, 3, loginChange)
@@ -246,6 +287,132 @@ func TestAuditBreakRule(t *testing.T) {
 			},
 			verify: "the first record has the hash of one before it"},
 
+		// A gap that is accepted passes the record after it, as a hole does.
+		{name: "a number gap", log: audit.LoginLog, build: allOld, n: 4, prepare: drop(audit.LoginLog, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a number gap, in the activity log", log: audit.ActivityLog, build: allOld, n: 4, stop: none, prepare: drop(audit.ActivityLog, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a gap of two records", log: audit.LoginLog, build: allOld, n: 5, prepare: drop(audit.LoginLog, 3, 4),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 4}},
+		{name: "a gap at the start of the login history", log: audit.LoginLog, build: allOld, n: 2, from: 2, prepare: drop(audit.LoginLog, 1),
+			accepted: dbserver.Acceptance{Gap: true, First: 1, Last: 1}},
+		{name: "a gap at the start of the activity log", log: audit.ActivityLog, build: allOld, n: 3, stop: none,
+			prepare:  drop(audit.ActivityLog, 1, 2),
+			accepted: dbserver.Acceptance{Gap: true, First: 1, Last: 2}},
+		{name: "a gap at the end of the login history", log: audit.LoginLog, build: allOld, n: 6, last: 5, prepare: drop(audit.LoginLog, 6),
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6}},
+		{name: "a gap at the end of the activity log", log: audit.ActivityLog, build: allOld, n: 8, stop: none, prepare: drop(audit.ActivityLog, 8),
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 8, Last: 8}},
+		{name: "a gap at the end of the login history, and then the writer's next record", log: audit.LoginLog, build: allOld, n: 6, last: 4,
+			prepare:  drop(audit.LoginLog, 6),
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 6}, after: writes},
+		{name: "a gap at the chain start", log: audit.LoginLog, build: threeOld, n: 5, nothing: true,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, deleteThree(t, s, dir), dir, audit.LoginLog, 4)
+			},
+			accepted: dbserver.Acceptance{Gap: true, First: 4, Last: 4}},
+		{name: "a gap between the records that a deletion left and the chain start", log: audit.LoginLog, build: threeOld, n: 4,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 3)
+			},
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3},
+			// whiteroom-db compact stops at the record that the chain starts at, which VerifyAudit passes: the walk of compact does
+			// not look at a gap before the chain start yet.
+			stop: "record 4: the number does not follow that of record 2"},
+		{name: "a gap, and then a break", log: audit.LoginLog, build: allOld, n: 5,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, drop(audit.LoginLog, 3)(t, s, dir), dir, audit.LoginLog, 4, loginChange)
+			},
+			after: func(t *testing.T, s *Store, dir string) *Store {
+				if err := s.Close(); err != nil {
+					t.Fatal(err)
+				}
+				acc, err := acceptOf(t, dir, audit.LoginLog, 4)
+				if want := (dbserver.Acceptance{Gap: true, First: 3, Last: 3}); err != nil || acc != want {
+					t.Fatalf("AcceptBreak(login, 4) = %+v, %v, want the gap of the record 3", acc, err)
+				}
+				return reopenLog(t, dir, logdb.Options{})
+			}},
+		{name: "a record after a hole that the writer rewrote", log: audit.LoginLog, build: allOld, n: 4,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, lost(audit.LoginLog, 3, 3)(t, s, dir), dir, audit.LoginLog, 4, withPrev)
+			},
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3},
+			// The record 5 does not follow the record 4 that was rewritten: the gap is accepted, and the break there is not yet.
+			verify: "prev is not the hash of record 4", stop: "record 5: prev is not the hash of record 4"},
+		{name: "the cut of a deletion lands at the record after an accepted gap", log: audit.LoginLog, build: threeOld, n: 4, holed: true,
+			last: 1, remains: 2, refused: acceptedGap(4, 3, 3), prepare: accepting(drop(audit.LoginLog, 3), audit.LoginLog, 4)},
+		{name: "the cut of a deletion lands just after the record after an accepted gap", log: audit.LoginLog, build: threeOldOfFive, n: 3,
+			holed: true, last: 3, remains: 4, refused: acceptedGap(3, 2, 2), prepare: accepting(drop(audit.LoginLog, 2), audit.LoginLog, 3)},
+		{name: "a gap row for a record that a hole passes", log: audit.LoginLog, build: allOld, n: 4, holed: true, refused: holeText(4, 3, 3),
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				sum := sha256.Sum256(recordEvent(t, s, audit.LoginLog, 3).Data)
+				s = lost(audit.LoginLog, 3, 3)(t, s, dir)
+				injectChains(t, s, []chainRow{gapRow("login", 3, 3, sum)}, gapEvents("login", 3, 3, sum)...)
+				return s
+			}},
+		{name: "a gap that is accepted already", log: audit.LoginLog, build: allOld, n: 4, holed: true,
+			refused: acceptedGap(4, 3, 3), prepare: accepting(drop(audit.LoginLog, 3), audit.LoginLog, 4)},
+		{name: "a gap of two records that is accepted already", log: audit.LoginLog, build: allOld, n: 5, holed: true,
+			refused: acceptedGap(5, 3, 4), prepare: accepting(drop(audit.LoginLog, 3, 4), audit.LoginLog, 5)},
+		{name: "a gap at the start of the activity log that is accepted already", log: audit.ActivityLog, build: allOld, n: 3, holed: true,
+			stop: none, refused: acceptedGap(3, 1, 2), prepare: accepting(drop(audit.ActivityLog, 1, 2), audit.ActivityLog, 3)},
+		{name: "a gap at the end that is accepted already", log: audit.LoginLog, build: allOld, n: 6, holed: true, gone: true, last: 5,
+			refused: "the gap of the record 6 at the end of the audit log login is accepted already",
+			prepare: accepting(drop(audit.LoginLog, 6), audit.LoginLog, 6)},
+		{name: "a gap after a hole", log: audit.LoginLog, build: allOld, n: 6,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, lost(audit.LoginLog, 3, 3)(t, s, dir), dir, audit.LoginLog, 5)
+			},
+			accepted: dbserver.Acceptance{Gap: true, First: 5, Last: 5}},
+		{name: "a record whose prev is no hash", log: audit.LoginLog, build: allOld, n: 4, refused: noHashText(4, 2),
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, dropRecords(t, s, dir, audit.LoginLog, 3), dir, audit.LoginLog, 4, noHash)
+			},
+			plant: func(t *testing.T, s *Store) {
+				injectChains(t, s, []chainRow{gapRow("login", 3, 3, wrong)}, gapEvents("login", 3, 3, wrong)...)
+			},
+			verify: "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
+		{name: "a record whose prev is no hash, in the activity log", log: audit.ActivityLog, build: allOld, n: 4, refused: noHashText(4, 2),
+			stop: none,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, dropRecords(t, s, dir, audit.ActivityLog, 3), dir, audit.ActivityLog, 4, noHash)
+			},
+			plant: func(t *testing.T, s *Store) {
+				injectChains(t, s, []chainRow{gapRow("activity", 3, 3, wrong)}, gapEvents("activity", 3, 3, wrong)...)
+			},
+			verify: "the number does not follow that of record 2"},
+
+		// A row of a gap that does not match is not passed by any of the places, and the acceptance replaces it.
+		{name: "a row of a gap that is one record wider", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  gapOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 4, 4),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of a gap that is one record narrower", log: audit.LoginLog, build: allOld, n: 5,
+			prepare:  gapOf(audit.LoginLog, audit.LoginLog, []uint64{3, 4}, 3, 3, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 4}},
+		{name: "a row of a gap that starts one record later", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  gapOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 4, 4, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of a gap with the hash of another record", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  gapOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 2),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of a gap with a hash that no record has", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  gapOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 0),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of a gap of the other log", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  gapOf(audit.ActivityLog, audit.LoginLog, []uint64{3}, 3, 3, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of a gap that cannot be read", log: audit.LoginLog, build: allOld, n: 4,
+			refused: "the chain of the audit log login cannot be read, so no break of it is accepted (the table chains: a row of an " +
+				"accepted gap cannot be read)",
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				s = rewriteRecord(t, s, dir, audit.LoginLog, 3, loginChange)
+				injectChains(t, s, []chainRow{{dbwire.ChainGapKey("login", 2), []byte("abc")}})
+				return s
+			},
+			verify: "a row of the table chains for an accepted gap cannot be read",
+			stop:   "the table chains: a row of an accepted gap cannot be read"},
+
 		// A hole that the repair recorded passes the record after it; a break is no use there.
 		{name: "a hole in the middle", log: audit.LoginLog, build: allOld, n: 4, holed: true, refused: holeText(4, 3, 3),
 			prepare: lost(audit.LoginLog, 3, 3)},
@@ -275,33 +442,28 @@ func TestAuditBreakRule(t *testing.T) {
 		{name: "the cut of a deletion lands just after the record after a hole", log: audit.LoginLog, build: threeOldOfFive, n: 3,
 			holed: true, last: 3, remains: 4, refused: holeText(3, 2, 2), prepare: lost(audit.LoginLog, 2, 2)},
 
-		// A hole that the row does not record, as it is, is a gap.
-		{name: "a row that is one record wider", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 4, 4),
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a row that is one record wider, in the activity log", log: audit.ActivityLog, build: allOld, n: 4, refused: gap(4, 2),
-			stop: none, prepare: holeOf(audit.ActivityLog, audit.ActivityLog, []uint64{3}, 3, 4, 4),
-			verify: "the number does not follow that of record 2"},
-		{name: "a row that is one record narrower", log: audit.LoginLog, build: allOld, n: 5, refused: gap(5, 2),
-			prepare: holeOf(audit.LoginLog, audit.LoginLog, []uint64{3, 4}, 3, 3, 3),
-			verify:  "the number does not follow that of record 2", stop: "record 5: the number does not follow that of record 2"},
-		{name: "a row that starts one record later", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 4, 4, 3),
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a row with the hash of another record", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 2),
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a row with a hash that no record has", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 0),
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a row of the other log", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: holeOf(audit.ActivityLog, audit.LoginLog, []uint64{3}, 3, 3, 3),
-			verify:  "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
-		{name: "a record after a hole that the writer rewrote", log: audit.LoginLog, build: allOld, n: 4, refused: gap(4, 2),
-			prepare: func(t *testing.T, s *Store, dir string) *Store {
-				return rewriteRecord(t, lost(audit.LoginLog, 3, 3)(t, s, dir), dir, audit.LoginLog, 4, withPrev)
-			},
-			verify: "the number does not follow that of record 2", stop: "record 4: the number does not follow that of record 2"},
+		// A hole that the row does not record, as it is, is a gap, which the acceptance of the gap passes.
+		{name: "a row that is one record wider", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 4, 4),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row that is one record wider, in the activity log", log: audit.ActivityLog, build: allOld, n: 4, stop: none,
+			prepare:  holeOf(audit.ActivityLog, audit.ActivityLog, []uint64{3}, 3, 4, 4),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row that is one record narrower", log: audit.LoginLog, build: allOld, n: 5,
+			prepare:  holeOf(audit.LoginLog, audit.LoginLog, []uint64{3, 4}, 3, 3, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 4}},
+		{name: "a row that starts one record later", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 4, 4, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row with the hash of another record", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 2),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row with a hash that no record has", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  holeOf(audit.LoginLog, audit.LoginLog, []uint64{3}, 3, 3, 0),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
+		{name: "a row of the other log", log: audit.LoginLog, build: allOld, n: 4,
+			prepare:  holeOf(audit.ActivityLog, audit.LoginLog, []uint64{3}, 3, 3, 3),
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}},
 		{name: "a row that cannot be read", log: audit.LoginLog, build: allOld, n: 4,
 			refused: "the chain of the audit log login cannot be read, so no break of it is accepted (the table chains: a row of a hole " +
 				"cannot be read)",
@@ -325,10 +487,12 @@ func TestAuditBreakRule(t *testing.T) {
 			}
 
 			// accept-break.
-			err := acceptBreakOf(t, dir, tt.log, tt.n)
+			acc, err := acceptOf(t, dir, tt.log, tt.n)
 			switch {
 			case tt.refused == "" && err != nil:
 				t.Fatalf("AcceptBreak(%s, %d) = %v, want it accepted", tt.log, tt.n, err)
+			case tt.refused == "" && acc != tt.accepted:
+				t.Fatalf("AcceptBreak(%s, %d) accepted %+v, want %+v", tt.log, tt.n, acc, tt.accepted)
 			case tt.refused != "" && (err == nil || err.Error() != tt.refused):
 				t.Fatalf("AcceptBreak(%s, %d) = %v, want %q", tt.log, tt.n, err, tt.refused)
 			}
@@ -338,7 +502,9 @@ func TestAuditBreakRule(t *testing.T) {
 					t.Error("the refusal changed the store")
 				}
 				// The row is put in all the same, as the row of an acceptance that was made before the log was changed would be.
-				if !tt.gone {
+				if tt.plant != nil {
+					tt.plant(t, s)
+				} else if !tt.gone {
 					sum := sha256.Sum256(recordEvent(t, s, tt.log, tt.n).Data)
 					injectChains(t, s, []chainRow{breakRow(string(tt.log), tt.n, sum)}, acceptedEvents(string(tt.log), tt.n, sum)...)
 				}

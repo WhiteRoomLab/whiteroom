@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io/fs"
@@ -538,6 +539,49 @@ func TestRepairLines(t *testing.T) {
 		}
 		if code, stdout, _ = runCmd(t, "check", "-data", d.data); code != 0 {
 			t.Errorf("whiteroom-db check after the repair = %d, with stdout %q", code, stdout)
+		}
+	})
+
+	// A record that was lost before the repair is a gap that it does not make: the line names the command that accepts it, with the
+	// number of the record after the gap, or, for a gap at the end of the log, the number of its head.
+	t.Run("a gap in the middle", func(t *testing.T) {
+		d := newDirs(t)
+		repairStore(t, d.data, 4)
+		// The records 1 to 4 of the activity log are there, and the record 6 names a record 5 that is not.
+		lost := sha256.Sum256([]byte("the record 5"))
+		rec := fmt.Appendf(nil, `{"log":"activity","n":6,"prev":"sha256:%x","at":"2026-01-01T00:00:00Z","action":"x"}`, lost)
+		writeEvents(t, d.data, rec)
+		code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+		want := `gap: audit log "activity": record 5, which this repair does not make: whiteroom doctor reports it until it is accepted ` +
+			"with whiteroom-db accept-break -log activity -record 6\n" + "nothing to repair in " + d.data + "\n"
+		if code != 0 || stderr != "" || stdout != want {
+			t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+		}
+		// whiteroom-db accept-break accepts it, and the repair has no gap to tell.
+		if code, _, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "6"); code != 0 || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stderr %q", code, stderr)
+		}
+		if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+			t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
+		}
+	})
+	t.Run("a gap at the end", func(t *testing.T) {
+		d := newDirs(t)
+		repairStore(t, d.data, 4)
+		// The head of the activity log names the record 6, and the log has the records 1 to 4.
+		hash := sha256.Sum256([]byte("the record 6"))
+		putHeads(t, d.data, map[string]uint64{"activity": 6}, map[string][sha256.Size]byte{"activity": hash})
+		code, stdout, stderr := runCmd(t, "repair", "-data", d.data)
+		want := `gap: audit log "activity": records 5 to 6, which this repair does not make: whiteroom doctor reports it until it is ` +
+			"accepted with whiteroom-db accept-break -log activity -record 6\n" + "nothing to repair in " + d.data + "\n"
+		if code != 0 || stderr != "" || stdout != want {
+			t.Errorf("whiteroom-db repair = %d, with stdout:\n%s\nand stderr %q, want\n%s", code, stdout, stderr, want)
+		}
+		if code, _, stderr := runCmd(t, "accept-break", "-data", d.data, "-log", "activity", "-record", "6"); code != 0 || stderr != "" {
+			t.Fatalf("whiteroom-db accept-break = %d, with stderr %q", code, stderr)
+		}
+		if code, stdout, stderr := runCmd(t, "repair", "-data", d.data); code != 0 || stderr != "" || stdout != "nothing to repair in "+d.data+"\n" {
+			t.Errorf("whiteroom-db repair after the acceptance = %d, with stdout %q and stderr %q", code, stdout, stderr)
 		}
 	})
 

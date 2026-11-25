@@ -168,18 +168,25 @@ func TestUsage(t *testing.T) {
 	if strings.Contains(compactWords, "Nothing is dropped") || !strings.Contains(strings.Join(strings.Fields(usage), " "), "delete the login records older than one year") {
 		t.Errorf("the usages of whiteroom-db compact do not say what it deletes:\n%s\n%s", usage, help["compact"])
 	}
-	// accept-break changes no record, says which traces it leaves and what it refuses, and says that only a gap that
-	// whiteroom-db repair makes is recorded as a hole.
+	// accept-break changes no record, says which traces it leaves and what it refuses, and says that a gap that whiteroom-db repair
+	// makes is recorded as a hole and one that it does not make is accepted here.
 	acceptWords := strings.Join(strings.Fields(help["accept-break"]), " ")
 	for _, text := range []string{"changes no record and drops none", "leaves three traces", "a row of the table chains",
-		"an event of the daemon in the log", "checks the log again from record N", "tells the break in a note, not as a problem",
+		"an event of the daemon in the log", "checks the log again from record N", "tells the break or the gap in a note, not as a problem",
 		"A later change to record N undoes the acceptance", "refuses, and changes nothing", "the first record that the log is checked from",
 		"a record that follows the one before it", "a break that is accepted already", "a chain whose rows cannot be read",
 		"an older table schema than this program's", "an event that is no record", "no record number to name it by",
-		"records as a hole a gap that it makes itself", "a gap that it did not make stays a problem",
-		"A break is a record whose number is that of the one before it plus one",
-		"a record whose number is not that of the one before it plus one (a gap)", "goes on reporting it and an event that is no record",
+		"records as a hole a gap that it makes itself", "and tells a gap that it did not make",
+		"A break is a record whose number is that of the one before it plus one", "A gap is records that are missing",
+		"or the gap before it", "the head of the log names records that the log does not have",
+		"a record that follows a hole that", "recorded or a gap that is accepted already",
+		"a record whose number is below that of a record before it", "the gap before a record whose prev is not the hash of a record",
+		"for which it names the record to accept the gap with", "goes on reporting such a gap until it is accepted here, and an event that is no record",
+		"after a gap at the end of an activity log that has none", "goes on reporting the empty log until the writer has added the next record",
 		"accepted the break at record N of the audit log LOG in DATA; whiteroom doctor checks the log again from it",
+		"accepted the gap of the records A to B before record N of the audit log LOG in DATA; whiteroom doctor checks the log again from record N",
+		`("the gap of record A" if it is one record)`, "at the end of the audit log LOG in DATA; whiteroom doctor checks that the log ends with record A-1",
+		`(or "that the log has no record")`,
 		`starts with "whiteroom-db accept-break:"`, "cannot accept the changes that it made to the log"} {
 		if !strings.Contains(acceptWords, text) {
 			t.Errorf("the usage of whiteroom-db accept-break does not say %q:\n%s", text, help["accept-break"])
@@ -229,7 +236,9 @@ func TestUsage(t *testing.T) {
 		"refuses a store that it would leave without a commit: restore that store from a copy",
 		"records each hole, in the same generation, in the table chains and with an event of the daemon",
 		"A store of the table schema 8 or 9 gets the schema 10 for that; one of an older schema is refused",
-		"A gap that is no hole of this repair stays what it was", "is kept, and its number is told, unless -drop-unreadable-records is given",
+		"A gap that is no hole of this repair is told in a \"gap:\" line, and stays what it was",
+		`until an operator who has looked into it accepts it with "whiteroom-db accept-break"`, "A gap that was accepted so is recorded already",
+		"is kept, and its number is told, unless -drop-unreadable-records is given",
 		"-apply -keep DIR first copies the files of logdb/, as they are, to DIR/logdb/, and makes them durable, and then repairs",
 		"DIR must be missing, in a directory that exists, or empty, and must not be the data directory or in it",
 		"It must not be a symbolic link itself (the directories that hold it may be)",

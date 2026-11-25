@@ -41,10 +41,12 @@ A to B are lost. It records each hole, in the same generation, in the table chai
 and with an event of the daemon, so that "whiteroom doctor" checks the log again
 from the record after the hole, and tells the hole in a note. A store of the table
 schema 8 or 9 gets the schema 10 for that; one of an older schema is refused if a hole
-is to be recorded in it. A gap that
-is no hole of this repair stays what it was, and "whiteroom doctor" goes on
-reporting it. The heads of the logs that were kept outside the store are no part of
-it: one that names a record that a repair dropped is a problem still.
+is to be recorded in it. A gap that is no hole of this repair is told in a "gap:"
+line, and stays what it was: "whiteroom doctor" goes on reporting it until an
+operator who has looked into it accepts it with "whiteroom-db accept-break". A gap
+that was accepted so is recorded already, and no gap of the repair. The heads of the
+logs that were kept outside the store are no part of it: one that names a record that
+a repair dropped is a problem still.
 
 An event that is neither an event of the daemon nor an audit record that this
 program can read is kept, and its number is told, unless -drop-unreadable-records
@@ -76,7 +78,8 @@ and no data of an object or of an original:
   hole: audit log "LOG": records A to B            records that are lost ("; recorded
                                                    in the table chains")
   schema: ...                                      the table schema that is raised
-  gap: audit log "LOG": records A to B, ...        a gap that this repair does not make
+  gap: audit log "LOG": records A to B, ...        a gap that this repair does not make,
+                                                   with the command that accepts it
 
 and then "nothing to repair in DATA", or the number of things to repair and the
 command that repairs them. With -apply, the first line is "kept the files of
@@ -216,8 +219,12 @@ func printRepair(e env, data string, rep dbserver.RepairReport, truncate, dropUn
 		printf(e.stdout, "schema: the table schema %d is raised to %d, which has the rows of the holes\n", rep.SchemaFrom, dbwire.TableVersion)
 	}
 	for _, g := range rep.Gaps {
-		printf(e.stdout, "gap: audit log %q: %s, which this repair does not make: whiteroom doctor goes on reporting it\n", g.Log,
-			records(g.First, g.Last))
+		n := g.Last + 1 // the record after a gap in the middle, or the number of the head for a gap at the end
+		if g.End {
+			n = g.Last
+		}
+		printf(e.stdout, "gap: audit log %q: %s, which this repair does not make: whiteroom doctor reports it until it is accepted "+
+			"with whiteroom-db accept-break -log %s -record %d\n", g.Log, records(g.First, g.Last), g.Log, n)
 	}
 }
 

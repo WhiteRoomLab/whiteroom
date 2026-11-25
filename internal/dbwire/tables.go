@@ -113,13 +113,34 @@ func ChainExpected(start *ChainStart, last uint64) uint64 {
 	return 1
 }
 
-// HoleBefore returns the hole of holes, by their first records, that the record n with the prev text prev follows in a walk
-// of a log that has read the record numbered last (0 if none) and has the chain start start (nil if none): the hole that has
-// the record that the walk expects as its first, and that ChainHole.Follows says n follows. It is the one rule by which
-// VerifyAudit of the store, whiteroom-db compact and accept-break pass a record through a hole.
-func HoleBefore(holes map[uint64]ChainHole, start *ChainStart, last, n uint64, prev string) (ChainHole, bool) {
-	h, ok := holes[ChainExpected(start, last)]
-	return h, ok && h.Follows(n, prev)
+// ChainPass returns the row that passes the record n with the prev text prev in a walk of a log that has read the record
+// numbered last (0 if none) and has the chain start start (nil if none): a hole of holes, by their first records, or else an
+// accepted gap of gaps, which has the record that the walk expects as its first and which ChainHole.Follows says n follows. gap
+// says that the row is a gap. A hole is looked at first. It is the one rule by which VerifyAudit of the store, whiteroom-db
+// compact, accept-break and repair pass a record through what a row records as lost.
+func ChainPass(holes, gaps map[uint64]ChainHole, start *ChainStart, last, n uint64, prev string) (row ChainHole, gap, ok bool) {
+	first := ChainExpected(start, last)
+	if h, found := holes[first]; found && h.Follows(n, prev) {
+		return h, false, true
+	}
+	if g, found := gaps[first]; found && g.Follows(n, prev) {
+		return g, true, true
+	}
+	return ChainHole{}, false, false
+}
+
+// ChainEndPass returns the row that passes the head of a log, which names the record headN with the hash headHash, after the
+// last record that a walk has read (last, 0 if none): the hole, or else the accepted gap, that has the record that the walk
+// expects as its first, and whose Last and Hash are those of the head. A log ends with such a row as it ends with a record.
+func ChainEndPass(holes, gaps map[uint64]ChainHole, start *ChainStart, last, headN uint64, headHash [32]byte) (row ChainHole, gap, ok bool) {
+	first := ChainExpected(start, last)
+	if h, found := holes[first]; found && h.Last == headN && h.Hash == headHash {
+		return h, false, true
+	}
+	if g, found := gaps[first]; found && g.Last == headN && g.Hash == headHash {
+		return g, true, true
+	}
+	return ChainHole{}, false, false
 }
 
 // ChainStart is the row of a log in TableChains, with the log name as its key: the deletion of the oldest records of

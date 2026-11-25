@@ -2166,10 +2166,19 @@ func TestAuditCompactLoginInterrupted(t *testing.T) {
 // acceptBreakOf runs AcceptBreak at chainTime in a maintenance of the data directory dir, which no process has open.
 func acceptBreakOf(t *testing.T, dir string, log audit.Log, n uint64) error {
 	t.Helper()
-	return dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
-		func(m *logdb.Maintenance) error {
-			return dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+	_, err := acceptOf(t, dir, log, n)
+	return err
+}
+
+// acceptOf is acceptBreakOf that also returns what it accepted.
+func acceptOf(t *testing.T, dir string, log audit.Log, n uint64) (acc dbserver.Acceptance, err error) {
+	t.Helper()
+	err = dbserver.Maintain(t.Context(), dir, dbserver.Options{Log: logdb.Options{Placement: logdb.Hybrid}},
+		func(m *logdb.Maintenance) (err error) {
+			acc, err = dbserver.AcceptBreak(t.Context(), m, string(log), n, chainTime)
+			return err
 		})
+	return acc, err
 }
 
 // closeAcceptReopen closes s, accepts the break at record n of log in its data directory dir, and opens the store again.
