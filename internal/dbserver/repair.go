@@ -782,7 +782,7 @@ func (w *auditWalk) skip(l *auditLog, c classified, number, expected uint64) {
 		w.err = fmt.Errorf("audit log %q: %s: the repair cannot tell which of its holes are recorded", l.name, l.bad)
 		return
 	}
-	switch _, _, recorded := dbwire.ChainPass(l.holes, l.gaps, l.start, l.last, c.n, c.prev); {
+	switch recorded := dbwire.ChainPass(l.holes, l.gaps, l.start, l.last, c.n, c.prev) != nil; {
 	case recorded:
 	case l.dropped+w.lost.between(l.lastEvent, number) >= c.n-expected:
 		h := RepairHole{Log: l.name, First: expected, Last: c.n - 1}
@@ -805,7 +805,7 @@ func (w *auditWalk) finish() error {
 		if l.head == nil || l.head.n < expected {
 			continue
 		}
-		if _, _, ok := dbwire.ChainEndPass(l.holes, l.gaps, l.start, l.last, l.head.n, l.head.hash); ok {
+		if dbwire.ChainEndPass(l.holes, l.gaps, l.start, l.last, l.head.n, l.head.hash) != nil {
 			continue
 		}
 		if l.bad != "" {

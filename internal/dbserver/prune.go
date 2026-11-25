@@ -49,13 +49,15 @@ type Deleted struct {
 // If records are to go, one Update first commits the new chain start, the event of the deletion and a mark of now, so that
 // VerifyAudit checks the log from the first record that remains at every point. A compaction that stops before its end
 // leaves records. The next call drops them, whatever their age and without a new chain start, if they are exactly the
-// records before the chain start: they follow each other (a hole that a repair recorded or a gap that is accepted passes, as
-// for VerifyAudit), and they end with the record before the chain start, which has the hash that the chain start has, or at a
-// hole or a gap that ends there with that hash. The event of the deletion is not needed: the chain start says what the
-// deletion left, and a store that has lost the event has it in Deleted.LeftBy. They go also when the walk then stops at the
-// first record that remains, which the chain start names (K): a break at it that no row accepts, or a first record that is
-// above it. The record before K goes with them: its hash is the one that the chain start (and the event of the deletion, if
-// the store has it) keeps. Otherwise they are evidence, and the call keeps them and says where it stopped. The cutoff of a
+// records before the chain start (K is the first that remains): they follow each other (a hole that a repair recorded or a gap
+// that is accepted passes, as for VerifyAudit), and they end with the record K-1, which has the hash that the chain start has,
+// or go on through holes and accepted gaps (dbwire.ChainPass) to the first record that is walked or, if none is, to the head of
+// the login history (dbwire.ChainEndPass), as VerifyAudit passes them, and the step across K is the one that dbwire.ChainCross
+// accepts: the row that ends with K-1 has that hash, or a row holds K-1 and K. The event of the deletion is not needed: the chain
+// start says what the deletion left, and a store that has lost the event has it in Deleted.LeftBy. They go also when the walk
+// then stops at the first record that remains, which the chain start names (K): a break at it that no row accepts, or a first
+// record that is above it. The record before K goes with them: its hash is the one that the chain start (and the event of the
+// deletion, if the store has it) keeps. Otherwise they are evidence, and the call keeps them and says where it stopped. The cutoff of a
 // call that drops only them is that of the event of the deletion, if the store has it.
 //
 // The mark that the commit of a deletion or of an acceptance of a break appends is the time of that trace, and not the
@@ -135,6 +137,7 @@ type loginPass struct {
 	holes  map[uint64]dbwire.ChainHole  // by their first record
 	gaps   map[uint64]dbwire.ChainHole  // the accepted gaps, by their first record
 	schema uint64                       // the table schema of the store if it is older than dbwire.TableVersion, else 0
+	head   *auditHead                   // the head of the login history in the table heads, nil if it has none that can be read
 
 	recs    []loginRecord // the walked records, in the order of their events
 	group   int           // recs[group:] are the records of the commits whose mark has not been read: the next mark gives them its time
@@ -165,6 +168,7 @@ func (p *loginPass) readChains(tx *logdb.Tx) error {
 	p.schema = olderSchema(tx)
 	rows := readChainRows(tx, dbwire.LogLogin)
 	p.start, p.breaks, p.holes, p.gaps, p.stop = rows.start, rows.breaks, rows.holes, rows.gaps, rows.bad
+	p.head = readHead(tx, dbwire.LogLogin)
 	return nil
 }
 
@@ -376,8 +380,7 @@ func (p *loginPass) leftFollow(n uint64, prev string, sum [sha256.Size]byte) str
 // passedAfter reports whether the record n with prev follows a hole or an accepted gap in a walk that has read the record
 // numbered last (0 if none).
 func (p *loginPass) passedAfter(last, n uint64, prev string) bool {
-	_, _, ok := dbwire.ChainPass(p.holes, p.gaps, p.start, last, n, prev)
-	return ok
+	return dbwire.ChainPass(p.holes, p.gaps, p.start, last, n, prev) != nil
 }
 
 // lastRead returns the number of the last record that the walk has read, as VerifyAudit counts it: the last that it has walked,
@@ -397,35 +400,49 @@ func (p *loginPass) passed(n uint64, prev string) bool {
 	return p.passedAfter(p.lastRead(), n, prev)
 }
 
-// leftPassed reports whether the first walked record n with prev follows the last record before the chain start through a
-// hole or an accepted gap that ends where the deletion left off: with the record before n (K-1), whose hash the chain start
-// has.
-func (p *loginPass) leftPassed(n uint64, prev string) bool {
-	row, _, ok := dbwire.ChainPass(p.holes, p.gaps, p.start, p.lastRead(), n, prev)
-	return ok && row.Last+1 == p.start.First && row.Hash == p.start.Prev
-}
-
-// leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is
-// the end of the records before the chain start, "" if they are or there are none: they end with the record before it, which
-// has the hash that the chain start has, or, as VerifyAudit passes it, at a hole or an accepted gap that ends there with that
-// hash. next is the number of the record that comes after them, with the text prev, 0 if none does.
+// leftEnd returns why the records before the chain start that were met are not what an earlier deletion leaves, which is the end
+// of the records before the chain start, "" if they are or there are none: they end with the record before it, which has the hash
+// that the chain start has, or they go on through the holes and the accepted gaps that VerifyAudit passes (dbwire.ChainPass, and, at
+// the end of the log, dbwire.ChainEndPass with the head) to the first record that is walked, next, with the text prev, or to the
+// head, and the step across the chain start is the one that dbwire.ChainCross accepts. next is 0 if no record comes after them.
 func (p *loginPass) leftEnd(next uint64, prev string) string {
 	if len(p.left) == 0 {
 		return ""
 	}
 	last := p.left[len(p.left)-1]
-	switch {
-	case last.n+1 != p.start.First && next != 0 && p.leftPassed(next, prev):
+	k := p.start.First
+	if last.n+1 == k {
+		if last.sum != p.start.Prev {
+			return fmt.Sprintf("record %d: its hash is not the hash that the chain start has of it", last.n)
+		}
 		return ""
-	case last.n+1 != p.start.First && next != 0:
-		return fmt.Sprintf("record %d: the number does not follow that of record %d", next, last.n)
-	case last.n+1 != p.start.First:
-		return fmt.Sprintf("record %d: the chain starts at record %d, so the records before it end with record %d", last.n,
-			p.start.First, p.start.First-1)
-	case last.sum != p.start.Prev:
-		return fmt.Sprintf("record %d: its hash is not the hash that the chain start has of it", last.n)
 	}
-	return ""
+	var rows []dbwire.PassedRow
+	switch {
+	case next != 0:
+		rows = dbwire.ChainPass(p.holes, p.gaps, p.start, last.n, next, prev)
+	case p.head != nil:
+		rows = dbwire.ChainEndPass(p.holes, p.gaps, p.start, last.n, p.head.n, p.head.hash)
+		if rows != nil && rows[len(rows)-1].Last+1 < k {
+			rows = nil // the log would still end before the chain start
+		}
+	}
+	ok, bad := dbwire.ChainCross(p.start, last.n, last.sum, rows)
+	switch {
+	case rows == nil && next != 0:
+		return fmt.Sprintf("record %d: the number does not follow that of record %d", next, last.n)
+	case rows == nil:
+		return fmt.Sprintf("record %d: the chain starts at record %d, so the records before it end with record %d", last.n, k, k-1)
+	case ok:
+		return ""
+	case next != 0 && bad == &rows[len(rows)-1]:
+		// The last row ends with the record before the chain start, which is the first record that is walked and has the hash that
+		// the row has as its prev, not the chain start's.
+		return fmt.Sprintf("record %d: the number does not follow that of record %d", next, last.n)
+	case next != 0:
+		return fmt.Sprintf("record %d: %s does not have the hash that the chain start has of record %d", next, rowWords(*bad), k-1)
+	}
+	return fmt.Sprintf("record %d: %s does not have the hash that the chain start has of record %d", last.n, rowWords(*bad), k-1)
 }
 
 // follow returns why the record n with prev does not follow the walked records, "" if it does.

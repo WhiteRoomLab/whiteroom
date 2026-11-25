@@ -57,7 +57,10 @@ func dropRecords(t *testing.T, s *Store, dir string, log audit.Log, ns ...uint64
 // accepts is gone by VerifyAudit and passed by the walk of compact; one that it refuses is not, if its row is put in all the same,
 // as one that the record had before it was changed or its log was, unless a hole or a gap passes it, and compact never turns a
 // store that VerifyAudit fails into one that it passes, but for the break at the first record that remains when records before it
-// are still there: compact drops them, and the break is honored.
+// are still there: compact drops them, and the break is honored. The rows and the records around that first record (K) are
+// cases of their own: rows that follow one another, a row that holds K, a record K-1 that is not the one that the chain start
+// has, and the rows at the end of the log, whether the records that a deletion left are before K or not, so that the three
+// places go on stepping across K by one rule.
 func TestAuditBreakRule(t *testing.T) {
 	loginChange := func(r *audit.Record) { r.Login = "forged" }
 	activityChange := func(r *audit.Record) { r.Detail = map[string]string{"event": "X"} }
@@ -201,6 +204,45 @@ func TestAuditBreakRule(t *testing.T) {
 		}
 		return reopenLog(t, dir, logdb.Options{})
 	}
+	// Eight login records, 40 to 35 months old and then 3 and 2: the chain starts at the record 7 when the records 1 to 6 go.
+	eightOld := func(t *testing.T) (*Store, string) {
+		s, dir, _ := agedStore(t, []int{40, 39, 38, 37, 36, 35, 3, 2, 0}, []bool{true, true, true, true, true, true, true, true, false})
+		return s, dir
+	}
+	// rows are the holes (or the gaps) of the records first to last that the repair (or accept-break) leaves, with the hash of the
+	// record whose number is hashOf, for the records that are dropped.
+	type rowSpec struct{ first, last, hashOf uint64 }
+	// across is a prepare that leaves the records before the chain start (leaveThree), drops the records ns, and puts the rows, by the
+	// hash that the records have before they are dropped.
+	across := func(gap bool, ns []uint64, rows ...rowSpec) func(t *testing.T, s *Store, dir string) *Store {
+		return func(t *testing.T, s *Store, dir string) *Store {
+			t.Helper()
+			s = leaveThree(t, s, dir)
+			sums := make([][sha256.Size]byte, len(rows))
+			for i, r := range rows {
+				sums[i] = wrong
+				if r.hashOf != 0 {
+					sums[i] = sha256.Sum256(recordEvent(t, s, audit.LoginLog, r.hashOf).Data)
+				}
+			}
+			s = dropRecords(t, s, dir, audit.LoginLog, ns...)
+			for i, r := range rows {
+				if gap {
+					injectChains(t, s, []chainRow{gapRow("login", r.first, r.last, sums[i])}, gapEvents("login", r.first, r.last, sums[i])...)
+				} else {
+					injectChains(t, s, []chainRow{holeRow("login", r.first, r.last, sums[i])}, holeEvents("login", r.first, r.last, sums[i])...)
+				}
+			}
+			return s
+		}
+	}
+	notInStore := func(n, k int) string {
+		return fmt.Sprintf("record %d of the audit log login is not in the store: the records before record %d were deleted", n, k)
+	}
+	changed3 := func(r *audit.Record) { r.Login = "forged" }
+	crossing := "record 5 comes after records before it that an earlier deletion left, the last of which, record 3, does not have the " +
+		"hash that the chain start has of it: the gap before record 5 is not accepted"
+	notHash := "its hash is not the hash that the chain start has of it"
 	replay4 := func(t *testing.T, s *Store, dir string) *Store {
 		t.Helper()
 		rec := recordEvent(t, s, audit.LoginLog, 4).Data
@@ -513,6 +555,103 @@ func TestAuditBreakRule(t *testing.T) {
 				return s
 			},
 			verify: "a row of the table chains for a hole cannot be read", stop: "the table chains: a row of a hole cannot be read"},
+
+		// The rows and the records around the first record that remains, K, when the records that a deletion left are before it
+		// (the chain starts at the record 4, and the records 1 to 3, or 1 and 2, are left): VerifyAudit, compact and accept-break
+		// step across K by one rule, and compact drops the records that were left where VerifyAudit passes them.
+		{name: "a gap that holds K, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 5,
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 4}, last: 2, remains: 5,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 3, 4)
+			}},
+		{name: "a hole that holds K, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 5, holed: true,
+			refused: holeText(5, 3, 4), last: 2, remains: 5, prepare: across(false, []uint64{3, 4}, rowSpec{3, 4, 4})},
+		{name: "a gap that is accepted and holds K, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 5,
+			holed: true, refused: acceptedGap(5, 3, 4), last: 2, remains: 5, prepare: across(true, []uint64{3, 4}, rowSpec{3, 4, 4})},
+		{name: "a hole that holds K, with no record before it", log: audit.LoginLog, build: threeOld, n: 6, holed: true, nothing: true,
+			refused: holeText(6, 3, 5),
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return holeOf(audit.LoginLog, audit.LoginLog, []uint64{4, 5}, 3, 5, 5)(t, deleteThree(t, s, dir), dir)
+			}},
+		{name: "a hole that ends with K-1, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 4, holed: true,
+			refused: holeText(4, 3, 3), last: 2, remains: 4, prepare: across(false, []uint64{3}, rowSpec{3, 3, 3})},
+		{name: "a hole that ends with K-1 with another hash, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 4,
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}, last: 2, remains: 4,
+			prepare: across(false, []uint64{3}, rowSpec{3, 3, 0})},
+		{name: "a hole at K, after the record K-1 that a deletion left", log: audit.LoginLog, build: threeOld, n: 5, holed: true,
+			refused: holeText(5, 4, 4), last: 3, remains: 5, prepare: across(false, []uint64{4}, rowSpec{4, 4, 4})},
+		{name: "a hole at K, after a record K-1 that is not the one that the chain start has", log: audit.LoginLog, build: threeOld, n: 5,
+			refused: holeText(5, 4, 4), verify: notHash, stop: "record 3: " + notHash, remains: 1,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, across(false, []uint64{4}, rowSpec{4, 4, 4})(t, s, dir), dir, audit.LoginLog, 3, changed3)
+			}},
+		{name: "a gap at K, after a record K-1 that is not the one that the chain start has", log: audit.LoginLog, build: threeOld, n: 5,
+			refused: crossing, verify: "the number does not follow that of record 3", stop: "record 3: " + notHash, remains: 1,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return rewriteRecord(t, dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 4), dir, audit.LoginLog, 3, changed3)
+			}},
+		{name: "two holes that follow one another across K", log: audit.LoginLog, build: threeOld, n: 5, holed: true,
+			refused: "record 5 comes after the record 3 and the record 4 that whiteroom-db repair dropped: there is no break to accept",
+			last:    2, remains: 5, prepare: across(false, []uint64{3, 4}, rowSpec{3, 3, 3}, rowSpec{4, 4, 4})},
+		{name: "a hole and a gap that follow one another across K", log: audit.LoginLog, build: threeOld, n: 5, holed: true,
+			refused: "record 5 comes after the record 3 that whiteroom-db repair dropped and the record 4 whose gap is accepted already: there " +
+				"is no break to accept",
+			last: 2, remains: 5, prepare: func(t *testing.T, s *Store, dir string) *Store {
+				s = leaveThree(t, s, dir)
+				sum3, sum4 := sha256.Sum256(recordEvent(t, s, audit.LoginLog, 3).Data), sha256.Sum256(recordEvent(t, s, audit.LoginLog, 4).Data)
+				s = dropRecords(t, s, dir, audit.LoginLog, 3, 4)
+				injectChains(t, s, []chainRow{holeRow("login", 3, 3, sum3)}, holeEvents("login", 3, 3, sum3)...)
+				injectChains(t, s, []chainRow{gapRow("login", 4, 4, sum4)}, gapEvents("login", 4, 4, sum4)...)
+				return s
+			}},
+		{name: "two holes across K, the first ending with K-1 with another hash", log: audit.LoginLog, build: threeOld, n: 5,
+			refused: "record 5 comes after the record 3 and the record 4 that whiteroom-db repair dropped: there is no break to accept",
+			verify:  "the hole of record 3 does not have the hash that the chain start has of record 3",
+			stop:    "record 5: the hole of record 3 does not have the hash that the chain start has of record 3", remains: 1,
+			prepare: across(false, []uint64{3, 4}, rowSpec{3, 3, 0}, rowSpec{4, 4, 4})},
+		{name: "a gap that is the record before K, after the records that a deletion left", log: audit.LoginLog, build: threeOld, n: 4,
+			accepted: dbserver.Acceptance{Gap: true, First: 3, Last: 3}, last: 2, remains: 4,
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 3)
+			}},
+
+		// The same at the end of the log, which a row ends as it ends with a record, and the head is.
+		{name: "a hole at the end that ends with K-1", log: audit.LoginLog, build: allOld, n: 6, holed: true, gone: true, last: 5,
+			refused: notInStore(6, 7), prepare: across(false, []uint64{6}, rowSpec{6, 6, 6})},
+		{name: "a gap at the end that is accepted and ends with K-1", log: audit.LoginLog, build: allOld, n: 6, holed: true, gone: true, last: 5,
+			refused: notInStore(6, 7), prepare: across(true, []uint64{6}, rowSpec{6, 6, 6})},
+		{name: "a hole at the end that ends with K-1 with another hash", log: audit.LoginLog, build: allOld, n: 6, gone: true,
+			refused: notInStore(6, 7), remains: 1,
+			verify: "the hole of record 6 does not have the hash that the chain start has of record 6",
+			stop:   "record 5: the hole of record 6 does not have the hash that the chain start has of record 6",
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				head := audit.Head{Log: audit.LoginLog, N: 6, Hash: wrong}
+				s = closeAndRewrite(t, s, dir, rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head}))
+				return across(false, []uint64{6}, rowSpec{6, 6, 0})(t, s, dir)
+			}},
+		{name: "a hole at the end that ends before K-1", log: audit.LoginLog, build: allOld, n: 5, gone: true, remains: 1,
+			refused: notInStore(5, 7), verify: "the chain starts at record 7, but the log ends with the hole of record 5",
+			stop: "record 4: the chain starts at record 7, so the records before it end with record 6",
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				// The head names the record 5, which the row records as lost.
+				s = leaveThree(t, s, dir)
+				sum := sha256.Sum256(recordEvent(t, s, audit.LoginLog, 5).Data)
+				s = dropRecords(t, s, dir, audit.LoginLog, 5, 6)
+				injectChains(t, s, []chainRow{holeRow("login", 5, 5, sum)}, holeEvents("login", 5, 5, sum)...)
+				head := audit.Head{Log: audit.LoginLog, N: 5, Hash: sum}
+				return closeAndRewrite(t, s, dir, rewriteEvents(nil, nil, map[audit.Log]*audit.Head{audit.LoginLog: &head}))
+			}},
+		{name: "a hole at the end that holds K", log: audit.LoginLog, build: eightOld, n: 8, holed: true, gone: true, last: 5, refused: absent("login", 8),
+			prepare: across(false, []uint64{6, 7, 8}, rowSpec{6, 8, 8})},
+		{name: "a gap at the end that holds K, which accept-break accepts", log: audit.LoginLog, build: eightOld, n: 8, gone: true, last: 5,
+			accepted: dbserver.Acceptance{Gap: true, End: true, First: 6, Last: 8},
+			prepare: func(t *testing.T, s *Store, dir string) *Store {
+				return dropRecords(t, leaveThree(t, s, dir), dir, audit.LoginLog, 6, 7, 8)
+			}},
+		{name: "a hole at the end that starts at K", log: audit.LoginLog, build: eightOld, n: 8, holed: true, gone: true, last: 6,
+			refused: absent("login", 8), prepare: across(false, []uint64{7, 8}, rowSpec{7, 8, 8})},
+		{name: "two holes at the end that follow one another across K", log: audit.LoginLog, build: eightOld, n: 8, holed: true, gone: true,
+			last: 5, refused: absent("login", 8), prepare: across(false, []uint64{6, 7, 8}, rowSpec{6, 6, 6}, rowSpec{7, 8, 8})},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, dir := tt.build(t)

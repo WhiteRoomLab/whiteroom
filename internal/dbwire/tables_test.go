@@ -895,16 +895,18 @@ func TestChainHoleFollows(t *testing.T) {
 	}
 }
 
-// passed is what ChainPass and ChainEndPass return, as a word: "hole N" or "gap N" for the row with the first record N, and ""
-// for none.
-func passed(row ChainHole, gap, ok bool) string {
-	switch {
-	case !ok:
-		return ""
-	case gap:
-		return fmt.Sprintf("gap %d", row.First)
+// passed is what ChainPass and ChainEndPass return, as a word: "hole N" or "gap N" for the row with the first record N, the rows
+// apart by a comma, and "" for none.
+func passed(rows []PassedRow) string {
+	var words []string
+	for _, row := range rows {
+		if row.Gap {
+			words = append(words, fmt.Sprintf("gap %d", row.First))
+		} else {
+			words = append(words, fmt.Sprintf("hole %d", row.First))
+		}
 	}
-	return fmt.Sprintf("hole %d", row.First)
+	return strings.Join(words, ", ")
 }
 
 func TestChainPass(t *testing.T) {
@@ -1090,5 +1092,227 @@ func TestChainEndPass(t *testing.T) {
 	}
 	if got := passed(ChainEndPass(holes, nil, nil, 7, 10, h9)); got != "" {
 		t.Errorf("a walk with holes and no gaps passes the gap: %q", got)
+	}
+}
+
+// rowSet makes the maps of the holes and of the gaps of a test: a row is "H3-4" (the hole of the records 3 to 4) or "G3-4" (the
+// gap), with the hash that hashOf says of its last record.
+func rowSet(t *testing.T, rows ...string) (holes, gaps map[uint64]ChainHole) {
+	t.Helper()
+	holes, gaps = map[uint64]ChainHole{}, map[uint64]ChainHole{}
+	for _, r := range rows {
+		var first, last uint64
+		if _, err := fmt.Sscanf(r[1:], "%d-%d", &first, &last); err != nil {
+			t.Fatalf("the row %q: %v", r, err)
+		}
+		row := ChainHole{First: first, Last: last, Hash: hashOf(last)}
+		if r[0] == 'G' {
+			gaps[first] = row
+		} else {
+			holes[first] = row
+		}
+	}
+	return holes, gaps
+}
+
+// hashOf is the hash of the stored bytes of the record n in these tests.
+func hashOf(n uint64) (h [32]byte) {
+	h[0], h[1] = byte(n), 0xa5
+	return h
+}
+
+func hashText(n uint64) string {
+	h := hashOf(n)
+	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+// TestChainPassRows checks the rows that follow one another, and the row that holds the first record that remains, K.
+func TestChainPassRows(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rows  []string
+		start uint64 // K, 0 if the log has no chain start
+		last  uint64
+		n     uint64
+		prev  uint64 // the record whose hash is the prev of n
+		want  string
+	}{
+		// Rows that follow one another.
+		{"two holes", []string{"H3-3", "H4-4"}, 0, 2, 5, 4, "hole 3, hole 4"},
+		{"two holes, with the record that the first leads to", []string{"H3-3", "H4-4"}, 0, 2, 4, 3, "hole 3"},
+		{"a hole and then a gap", []string{"H3-3", "G4-5"}, 0, 2, 6, 5, "hole 3, gap 4"},
+		{"a gap and then a hole", []string{"G3-4", "H5-5"}, 0, 2, 6, 5, "gap 3, hole 5"},
+		{"two gaps", []string{"G3-3", "G4-4"}, 0, 2, 5, 4, "gap 3, gap 4"},
+		{"three rows", []string{"H3-3", "G4-5", "H6-6"}, 0, 2, 7, 6, "hole 3, gap 4, hole 6"},
+		{"two holes, with the hash of the first", []string{"H3-3", "H4-4"}, 0, 2, 5, 3, ""},
+		{"a second row that is not the next", []string{"H3-3", "H5-5"}, 0, 2, 6, 5, ""},
+		{"a second row that is one record narrower", []string{"H3-3", "H4-4"}, 0, 2, 6, 4, ""},
+		{"a second row that is one record wider", []string{"H3-3", "H4-5"}, 0, 2, 5, 4, ""},
+		{"a record inside the second row", []string{"H3-3", "H4-6"}, 0, 2, 5, 4, ""},
+		{"the second row alone, after the record before it", []string{"H3-3", "H4-4"}, 0, 3, 5, 4, "hole 4"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-3", "G4-5"}, 0, 2, 6, 5, "hole 3, gap 4"},
+		{"a hole and a gap with one first, the gap leading on", []string{"H3-3", "G3-4", "H5-5"}, 0, 2, 6, 5, "gap 3, hole 5"},
+		{"a hole and a gap with one first, the gap passing the record", []string{"H3-3", "G3-4"}, 0, 2, 5, 4, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "H2-2"}, 0, 0, 3, 2, "hole 1, hole 2"},
+		{"rows at the chain start", []string{"H5-5", "G6-7"}, 5, 0, 8, 7, "hole 5, gap 6"},
+
+		// A walk that has read nothing of a log with a chain start K starts with a row that holds K.
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 7, 6, "hole 3"},
+		{"a gap that holds K", []string{"G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a row that holds K and ends there", []string{"H3-5"}, 5, 0, 6, 5, "hole 3"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 5, 4, ""},
+		{"a row that starts at K and a row that holds it: the first", []string{"H5-5", "H3-6"}, 5, 0, 6, 5, "hole 5"},
+		{"a row that starts at K and a row that holds it: the second", []string{"H5-5", "H3-6"}, 5, 0, 7, 6, "hole 3"},
+		{"a hole at K that passes nothing, and a gap that holds K", []string{"H5-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"two rows that hold K: the lowest first", []string{"H2-5", "G3-6"}, 5, 0, 6, 5, "hole 2"},
+		{"two rows that hold K: the other", []string{"H2-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a hole and a gap that hold K from one first: the hole first", []string{"H3-5", "G3-6"}, 5, 0, 6, 5, "hole 3"},
+		{"a hole and a gap that hold K from one first: the gap", []string{"H3-5", "G3-6"}, 5, 0, 7, 6, "gap 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 8, 7, "hole 3, gap 6"},
+		{"a row that holds K, and a row that is not the next", []string{"H3-5", "G7-7"}, 5, 0, 8, 7, ""},
+		{"a row that holds K, with a record inside it", []string{"H3-6"}, 5, 0, 6, 5, ""},
+		{"no chain start, no row that holds it", []string{"H3-6"}, 0, 0, 7, 6, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 7, 6, "hole 3"},
+		{"a row that holds K, but not from the record after the last that was read", []string{"H2-6"}, 5, 2, 7, 6, ""},
+		{"a row that holds K, from after the record after the last that was read", []string{"H4-6"}, 5, 2, 7, 6, ""},
+		{"a row that holds K, and the walk has read a record at K", []string{"H3-6"}, 5, 5, 7, 6, ""},
+		{"a row that holds K, and the walk has read a record above K", []string{"H3-9"}, 5, 7, 10, 9, ""},
+		{"rows after the leftovers, the second holding K", []string{"H3-4", "G5-6"}, 5, 2, 7, 6, "hole 3, gap 5"},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainPass(holes, gaps, start, c.last, c.n, hashText(c.prev))); got != c.want {
+			t.Errorf("%s: ChainPass(last %d, n %d) = %q, want %q", c.name, c.last, c.n, got, c.want)
+		}
+	}
+}
+
+// TestChainPassManyRows checks that the search through rows that have a hole and a gap at each first does not look at a number
+// twice: with sixty of them, it would not end.
+func TestChainPassManyRows(t *testing.T) {
+	var rows []string
+	for n := 3; n < 63; n++ {
+		rows = append(rows, fmt.Sprintf("H%d-%d", n, n), fmt.Sprintf("G%d-%d", n, n))
+	}
+	holes, gaps := rowSet(t, rows...)
+	if got := passed(ChainPass(holes, gaps, nil, 2, 100, hashText(99))); got != "" {
+		t.Errorf("ChainPass() = %q, want none", got)
+	}
+	if got := passed(ChainEndPass(holes, gaps, nil, 2, 100, hashOf(100))); got != "" {
+		t.Errorf("ChainEndPass() = %q, want none", got)
+	}
+	got := ChainPass(holes, gaps, nil, 2, 63, hashText(62))
+	if len(got) != 60 || got[0].First != 3 || got[59].First != 62 {
+		t.Errorf("ChainPass() through sixty rows = %d rows, want 60 from 3 to 62", len(got))
+	}
+}
+
+func TestChainPassNoRowsIsNoCost(t *testing.T) {
+	holes, gaps := rowSet(t, "H3-3")
+	prev, start := hashText(7), &ChainStart{First: 5}
+	if n := testing.AllocsPerRun(100, func() {
+		_ = ChainPass(holes, gaps, nil, 7, 8, prev)
+		_ = ChainPass(holes, gaps, start, 0, 8, prev)
+		_ = ChainPass(nil, nil, start, 0, 8, prev)
+		_ = ChainEndPass(holes, gaps, nil, 7, 8, hashOf(8))
+	}); n != 0 {
+		t.Errorf("a walk that no row passes allocates %v times", n)
+	}
+}
+
+// TestChainEndPassRows checks the rows that follow one another to the head, and the row that holds K.
+func TestChainEndPassRows(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		rows  []string
+		start uint64
+		last  uint64
+		head  uint64
+		want  string
+	}{
+		{"two holes", []string{"H3-3", "H4-4"}, 0, 2, 4, "hole 3, hole 4"},
+		{"a hole and a gap", []string{"H3-3", "G4-6"}, 0, 2, 6, "hole 3, gap 4"},
+		{"three rows", []string{"G3-3", "H4-5", "G6-6"}, 0, 2, 6, "gap 3, hole 4, gap 6"},
+		{"rows that end before the head", []string{"H3-3", "H4-4"}, 0, 2, 5, ""},
+		{"rows that end after the head", []string{"H3-3", "H4-6"}, 0, 2, 5, ""},
+		{"a second row that is not the next", []string{"H3-3", "H5-5"}, 0, 2, 5, ""},
+		{"a hole and a gap with one first", []string{"H3-3", "G3-5"}, 0, 2, 5, "gap 3"},
+		{"a hole and a gap with one first, the hole leading on", []string{"H3-3", "G3-5", "G4-6"}, 0, 2, 6, "hole 3, gap 4"},
+		{"a row that holds K", []string{"H3-6"}, 5, 0, 6, "hole 3"},
+		{"a row that holds K, and the rows after it", []string{"H3-5", "G6-7"}, 5, 0, 7, "hole 3, gap 6"},
+		{"a row that ends with K-1 holds no K", []string{"H3-4"}, 5, 0, 4, ""},
+		{"a row that holds K, with a head before its end", []string{"H3-6"}, 5, 0, 5, ""},
+		{"a row that holds K after the records that a deletion left", []string{"H3-6"}, 5, 2, 6, "hole 3"},
+		{"a row that holds K, but not from the record after the last that was read", []string{"H4-6"}, 5, 2, 6, ""},
+		{"a row that holds K, from before the record after the last that was read", []string{"H2-6"}, 5, 2, 6, ""},
+		{"two rows that hold K: the lowest first", []string{"H2-5", "G3-6"}, 5, 0, 5, "hole 2"},
+		{"two rows that hold K: the other", []string{"H2-5", "G3-6"}, 5, 0, 6, "gap 3"},
+		{"rows from the start of the log", []string{"H1-1", "G2-3"}, 0, 0, 3, "hole 1, gap 2"},
+	} {
+		holes, gaps := rowSet(t, c.rows...)
+		var start *ChainStart
+		if c.start != 0 {
+			start = &ChainStart{First: c.start}
+		}
+		if got := passed(ChainEndPass(holes, gaps, start, c.last, c.head, hashOf(c.head))); got != c.want {
+			t.Errorf("%s: ChainEndPass(last %d, head %d) = %q, want %q", c.name, c.last, c.head, got, c.want)
+		}
+	}
+	// The hash of the head is that of the last row alone.
+	holes, gaps := rowSet(t, "H3-3", "H4-4")
+	if got := passed(ChainEndPass(holes, gaps, nil, 2, 4, hashOf(3))); got != "" {
+		t.Errorf("a head with the hash of the first row = %q, want none", got)
+	}
+}
+
+// TestChainCross checks the hash of the record K-1 that a walk knows when it steps across K.
+func TestChainCross(t *testing.T) {
+	const k = 5
+	start := &ChainStart{First: k, Prev: hashOf(k - 1)}
+	row := func(first, last uint64, prev uint64) PassedRow {
+		return PassedRow{ChainHole: ChainHole{First: first, Last: last, Hash: hashOf(prev)}}
+	}
+	for _, c := range []struct {
+		name  string
+		start *ChainStart
+		lastN uint64
+		hash  uint64 // the record whose hash lastN has
+		rows  []PassedRow
+		want  string // "" if it passes, else the refused: "record" or the first of the row
+	}{
+		{"no chain start", nil, 4, 9, []PassedRow{row(5, 5, 5)}, ""},
+		{"no row", start, 4, 9, nil, ""},
+		{"K-1 read with the hash of the chain start, and a row at K", start, 4, 4, []PassedRow{row(5, 6, 6)}, ""},
+		{"K-1 read with another hash, and a row at K", start, 4, 9, []PassedRow{row(5, 6, 6)}, "record"},
+		{"K-1 read with another hash, and consecutive rows from K", start, 4, 9, []PassedRow{row(5, 5, 5), row(6, 6, 6)}, "record"},
+		{"nothing read, and a row at K", start, 0, 9, []PassedRow{row(5, 6, 6)}, ""},
+		{"a record above K read", start, 7, 9, []PassedRow{row(8, 8, 8)}, ""},
+		{"a row that ends with K-1 and the hash of the chain start", start, 2, 2, []PassedRow{row(3, 4, 4)}, ""},
+		{"a row that ends with K-1 and another hash", start, 2, 2, []PassedRow{row(3, 4, 9)}, "3"},
+		{"a row that ends with K-1 and another hash, and a row after it", start, 2, 2, []PassedRow{row(3, 4, 9), row(5, 6, 6)}, "3"},
+		{"a row that ends with K-1 and the hash of the chain start, and a row after it", start, 2, 2,
+			[]PassedRow{row(3, 4, 4), row(5, 6, 6)}, ""},
+		{"a row that holds K-1 and K", start, 2, 2, []PassedRow{row(3, 6, 9)}, ""},
+		{"a row that holds K-1 and K, and a row after it", start, 2, 2, []PassedRow{row(3, 6, 9), row(7, 7, 9)}, ""},
+		{"a row that starts at K-1 and holds K", start, 3, 9, []PassedRow{row(4, 5, 9)}, ""},
+		{"rows that end before K-1", start, 1, 9, []PassedRow{row(2, 2, 9), row(3, 3, 9)}, ""},
+	} {
+		ok, bad := ChainCross(c.start, c.lastN, hashOf(c.hash), c.rows)
+		got := ""
+		switch {
+		case ok && bad != nil:
+			t.Errorf("%s: ChainCross() = true, %v", c.name, bad)
+		case ok:
+		case bad == nil:
+			got = "record"
+		default:
+			got = fmt.Sprint(bad.First)
+		}
+		if got != c.want {
+			t.Errorf("%s: ChainCross() refuses %q, want %q", c.name, got, c.want)
+		}
 	}
 }

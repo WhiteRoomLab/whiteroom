@@ -1203,7 +1203,7 @@ func TestCompactLoginHolesLeftover(t *testing.T) {
 }
 
 func checkCompactLoginLeftover(t *testing.T, r ranges) {
-	chain := newLoginChain(6)
+	chain := newLoginChain(8)
 	deletedCutoff := monthsAgo(20)
 	cutoff := pruneNow.AddDate(-1, 0, 0)
 	// The records 1, 2 and 4 are the records before the chain start, which is at the record 5, and the record 3 is lost.
@@ -1338,7 +1338,8 @@ func checkCompactLoginLeftover(t *testing.T, r ranges) {
 	}
 	t.Run("a row that covers the chain start", func(t *testing.T) {
 		// The chain starts at the record 3, and the row says that the records 2 to 3 are lost, with the hash that the chain start
-		// has: the record 4 follows the row, but the record 3 is not lost where the deletion left off.
+		// has: the record 4 follows the row, which holds the record 3 and the one before it, so that no hash of the record 2 is
+		// left to check, and the record 1 is what the deletion left.
 		four := auditRecord("login", 4, hashText(chain.sum(2)))
 		f := newFixture(t, nil)
 		f.commitAt(monthsAgo(1), auditRecord("activity", 1, ""), chain.rec(1))
@@ -1350,9 +1351,147 @@ func checkCompactLoginLeftover(t *testing.T, r ranges) {
 			t.Fatal(err)
 		}
 		before := viewOf(t, f)
-		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: "record 4: the number does not follow that of record 1"})
-		kept(t, before, viewOf(t, f))
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 1, Last: 1, Cutoff: deletedCutoff})
+		after := viewOf(t, f)
+		kept(t, before, after, "L1")
+		checkStart(t, after, 3, chain.sum(2), pruneNow)
 	})
+
+	t.Run("a row that holds the chain start, with no record before it, and old records after it", func(t *testing.T) {
+		// The chain starts at the record 5, and the row says that the records 3 to 5 are lost: the record 6 follows it, though it is
+		// not the first that remains, and the walk goes on through the old records 6 to 8 and cuts after them.
+		f := newFixture(t, nil)
+		for i, n := range []int{6, 7, 8} {
+			f.commitAt(monthsAgo(40-i), auditRecord("activity", uint64(i+1), ""), chain.rec(n))
+		}
+		r.put(3, 5, chain.sum(5))(t, f)
+		f.commitStart(5, chain.sum(4), deletedCutoff)
+		f.anchor()
+		if err := f.srv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		before := viewOf(t, f)
+		checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{First: 6, Last: 8, Cutoff: cutoff})
+		after := viewOf(t, f)
+		kept(t, before, after, "L6", "L7", "L8")
+		checkStart(t, after, 9, chain.sum(8), pruneNow)
+		if r.rows(after) != 1 {
+			t.Errorf("the store has %d rows of %s, want the one that it had", r.rows(after), r.name)
+		}
+	})
+
+	// The records before the chain start, which is at the record 5, with the rows after them: what is between them and the first
+	// record that is walked, or the head of the log, is passed by dbwire.ChainPass and dbwire.ChainEndPass, and the hash of the
+	// record 4 that is known must be the chain start's (dbwire.ChainCross).
+	kind := "hole"
+	if r.word == "G" {
+		kind = "accepted gap"
+	}
+	two := func(first, last uint64, hash [sha256.Size]byte, then ...func(t *testing.T, f *fixture)) func(t *testing.T, f *fixture) {
+		return func(t *testing.T, f *fixture) {
+			r.put(first, last, hash)(t, f)
+			for _, step := range then {
+				step(t, f)
+			}
+		}
+	}
+	changed4 := changedRecord("login", 4, chain)
+	for _, tt := range []struct {
+		name  string
+		ns    []int
+		extra [][]byte // records that come before the others, instead of the record n of the chain
+		row   func(t *testing.T, f *fixture)
+		// dropped is how many of the first records go, 0 if none; stop is where the walk stops, "" if it does not.
+		dropped int
+		stop    string
+	}{
+		{"a row that holds the chain start", []int{1, 2, 7}, nil, r.put(3, 6, chain.sum(6)), 2, ""},
+		{"a row that holds the chain start, and the record after it has another prev", []int{1, 2, 8}, nil, r.put(3, 6, chain.sum(6)), 0,
+			"record 8: the number does not follow that of record 2"},
+		{"a row that holds the chain start, and the record is inside it", []int{1, 2, 6}, nil, r.put(3, 6, chain.sum(6)), 0,
+			"record 6: the number does not follow that of record 2"},
+		{"a row that holds the chain start, from after the record that the walk expects", []int{1, 2, 7}, nil, r.put(4, 6, chain.sum(6)), 0,
+			"record 7: the number does not follow that of record 2"},
+		{"a row that holds the chain start, from before the record that the walk expects", []int{1, 2, 7}, nil, r.put(2, 6, chain.sum(6)), 0,
+			"record 7: the number does not follow that of record 2"},
+		{"two rows that follow one another across the chain start", []int{1, 2, 7}, nil, two(3, 4, chain.sum(4), r.put(5, 6, chain.sum(6))), 2, ""},
+		{"two rows, the first of which ends with the record 4 with another hash", []int{1, 2, 7}, nil,
+			two(3, 4, wrong32, r.put(5, 6, chain.sum(6))), 0,
+			"record 7: the " + kind + " of the records 3 to 4 does not have the hash that the chain start has of record 4"},
+		{"two rows that hold the chain start", []int{1, 2, 8}, nil, two(3, 3, chain.sum(3), r.put(4, 7, chain.sum(7))), 2, ""},
+		{"three rows that follow one another across the chain start", []int{1, 2, 8}, nil,
+			two(3, 3, chain.sum(3), r.put(4, 4, chain.sum(4)), r.put(5, 7, chain.sum(7))), 2, ""},
+		{"two rows that follow one another, with a gap between them", []int{1, 2, 8}, nil, two(3, 4, chain.sum(4), r.put(6, 7, chain.sum(7))), 0,
+			"record 8: the number does not follow that of record 2"},
+		{"a row at the chain start, after the record before it", []int{1, 2, 3, 4, 6}, nil, r.put(5, 5, chain.sum(5)), 4, ""},
+		{"a row at the chain start, after a record before it that is not the one that the chain start has", []int{1, 2, 3, 0, 6},
+			[][]byte{changed4}, r.put(5, 5, chain.sum(5)), 0, "record 4: its hash is not the hash that the chain start has of it"},
+		{"a row that ends with the record 4", []int{1, 2, 5}, nil, r.put(3, 4, chain.sum(4)), 2, ""},
+		{"a row that ends with the record 4 and has another hash", []int{1, 2, 5}, nil, r.put(3, 4, wrong32), 0,
+			"record 5: the number does not follow that of record 2"},
+
+		// The head of the log, when no record comes after them.
+		{"the head is the end of a row that ends with the record 4", []int{1, 2}, nil,
+			two(3, 4, chain.sum(4), headAt(dbwire.LogLogin, 4, chain.sum(4))), 2, ""},
+		{"the head is the end of a row that ends with the record 4 and has another hash", []int{1, 2}, nil,
+			two(3, 4, wrong32, headAt(dbwire.LogLogin, 4, wrong32)), 0,
+			"record 2: the " + kind + " of the records 3 to 4 does not have the hash that the chain start has of record 4"},
+		{"the head is the end of a row that holds the chain start", []int{1, 2}, nil,
+			two(3, 6, chain.sum(6), headAt(dbwire.LogLogin, 6, chain.sum(6))), 2, ""},
+		{"the head is the end of rows that follow one another", []int{1, 2}, nil,
+			two(3, 3, chain.sum(3), r.put(4, 4, chain.sum(4)), headAt(dbwire.LogLogin, 4, chain.sum(4))), 2, ""},
+		{"the head is the end of a row that ends before the record 4", []int{1, 2}, nil,
+			two(3, 3, chain.sum(3), headAt(dbwire.LogLogin, 3, chain.sum(3))), 0,
+			"record 2: the chain starts at record 5, so the records before it end with record 4"},
+		{"the head is not the end of the row", []int{1, 2}, nil, two(3, 4, chain.sum(4), headAt(dbwire.LogLogin, 5, chain.sum(5))), 0,
+			"record 2: the chain starts at record 5, so the records before it end with record 4"},
+		{"the head is the end of the row, with another hash", []int{1, 2}, nil, two(3, 4, chain.sum(4), headAt(dbwire.LogLogin, 4, wrong32)), 0,
+			"record 2: the chain starts at record 5, so the records before it end with record 4"},
+		{"no head, and a row that ends with the record 4", []int{1, 2}, nil, r.put(3, 4, chain.sum(4)), 0,
+			"record 2: the chain starts at record 5, so the records before it end with record 4"},
+		{"the records end with the record 4, and the head is the end of a row after it", []int{1, 2, 3, 4}, nil,
+			two(5, 6, chain.sum(6), headAt(dbwire.LogLogin, 6, chain.sum(6))), 4, ""},
+		{"the records end with the record 4 that has another hash, and the head is the end of a row after it", []int{1, 2, 3, 0}, [][]byte{changed4},
+			two(5, 6, chain.sum(6), headAt(dbwire.LogLogin, 6, chain.sum(6))), 0,
+			"record 4: its hash is not the hash that the chain start has of it"},
+	} {
+		t.Run(tt.name+", between them and the chain start", func(t *testing.T) {
+			ns, extra := tt.ns, tt.extra
+			f := newFixture(t, nil)
+			for i, n := range ns {
+				rec := []byte(nil)
+				if n == 0 {
+					rec, extra = extra[0], extra[1:]
+				} else {
+					rec = chain.rec(n)
+				}
+				f.commitAt(monthsAgo(1), auditRecord("activity", uint64(i+1), ""), rec)
+			}
+			tt.row(t, f)
+			f.commitStart(5, chain.sum(4), deletedCutoff)
+			f.anchor()
+			if err := f.srv.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := viewOf(t, f)
+			want := Deleted{Cutoff: cutoff, Stopped: tt.stop}
+			var gone []string
+			if tt.dropped > 0 {
+				want = Deleted{First: 1, Last: uint64(tt.dropped), Cutoff: deletedCutoff}
+				for n := 1; n <= tt.dropped; n++ {
+					gone = append(gone, fmt.Sprintf("L%d", n))
+				}
+			}
+			checkDeleted(t, compactLogin(t, f, pruneNow), want)
+			after := viewOf(t, f)
+			kept(t, before, after, gone...)
+			if r.rows(after) != r.rows(before) {
+				t.Errorf("the store has %d rows of %s, want the %d that it had", r.rows(after), r.name, r.rows(before))
+			}
+			// A second call finds nothing more to drop, and the same stop.
+			checkDeleted(t, compactLogin(t, f, pruneNow), Deleted{Cutoff: cutoff, Stopped: tt.stop})
+		})
+	}
 }
 
 // TestCompactLoginUnreadableRows checks that a row of the table chains that cannot be read stops the walk: nothing is

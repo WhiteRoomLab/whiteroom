@@ -30,7 +30,13 @@ both. Take LOG and N from its report:
 
 N is 7 for the break, 9 for the gap in the middle of the log (the record after it),
 and 12 for the gap at the end (the number of the head). A gap that "whiteroom-db
-repair" tells in a "gap:" line is accepted the same way.
+repair" tells in a "gap:" line is accepted the same way. A gap may go across the
+first record that remains after the deletion of old login records, K: from the
+records that the deletion left, or from none, to a record at or after K, or to the
+head. It is accepted if the hash of record K-1 that the command knows is the one
+that the start of the chain has: that of the last record that the deletion left, if
+that is record K-1, and the prev of the record after the gap, if the gap ends with
+record K-1. A gap that holds both K-1 and K leaves no hash to check.
 
 The command changes no record and drops none. It leaves three traces: a row of the
 table chains (for a break, it ties the acceptance to the hash of record N and to
@@ -44,16 +50,19 @@ a break, and a later change to its prev that of a gap; a break or a gap at anoth
 record is still reported.
 
 The command refuses, and changes nothing, a record that is not in the store (also
-one before the start of the chain, which the deletion of old login records made, and
-one that a gap leaves out, for which it names the record to accept the gap with),
+one before the start of the chain, which the deletion of old login records made,
+whether it is a record or the head of the log, and one that a gap leaves out, for
+which it names the record to accept the gap with),
 a record that follows a hole that "whiteroom-db repair" recorded or a gap that is
 accepted already, a record whose number is below that of a record before it, the gap
 before a record whose prev is not the hash of a record, record 1 with no prev, the first
 that remains after such a deletion with the hash that the start of the chain has (no
 break is there), the first that remains after such a deletion while records before it
 that the deletion left are still in the store ("whiteroom-db compact" drops them if
-they are what the deletion left: accept the break then), a record that follows the one
-before it, a break that is accepted already, a chain whose rows cannot be read, and a
+they are what the deletion left: accept the break then), a gap across the start of
+the chain whose record K-1 has not the hash that the start of the chain has, which the
+problem would stay for (the last record that the deletion left, or the end of the
+gap), a record that follows the one before it, a break that is accepted already, a chain whose rows cannot be read, and a
 data directory of an older table schema than this program's: the first writer that
 connects through "whiteroom-db serve" (such as "whiteroom serve admin") upgrades it.
 

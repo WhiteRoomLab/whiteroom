@@ -254,10 +254,11 @@ func (a auditView) checkChains(t testing.TB) map[string][]string {
 			switch {
 			case last == 0 && startp != nil && n < startp.First:
 			case n != expected:
-				h, _, ok := dbwire.ChainPass(a.holes[log], nil, startp, last, n, prev)
-				if !ok {
+				rows := dbwire.ChainPass(a.holes[log], nil, startp, last, n, prev)
+				if rows == nil {
 					t.Errorf("audit log %q: record %d (event %d) does not follow the end of the log, record %d, and no hole is before it", log, n, e.Number, last)
-				} else {
+				}
+				for _, h := range rows {
 					passed[log] = append(passed[log], fmt.Sprintf("%d-%d", h.First, h.Last))
 				}
 			case last != 0 && prev != hashText(lastSum):

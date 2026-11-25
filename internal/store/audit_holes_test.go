@@ -41,6 +41,11 @@ func lostNote(log string, first, last uint64, after string) string {
 
 func againFrom(n uint64) string { return fmt.Sprintf("the log is checked again from record %d", n) }
 
+// nextRow is what a note says that follows a row that another row follows at once.
+func nextRow(n uint64) string {
+	return fmt.Sprintf("the next row, which starts with record %d, follows it at once", n)
+}
+
 func endsWith(n uint64) string { return fmt.Sprintf("the log ends with record %d", n) }
 
 const noRecordLeft = "the log has no record left"
@@ -165,6 +170,69 @@ func TestVerifyAuditHoles(t *testing.T) {
 			c.events = slices.Concat(c.events, acceptedEvents(A, 3, f.activity(3)))
 			return c
 		}, "", func() []string { return []string{lostNote(A, 2, 2, againFrom(3))} }},
+
+		// Rows that follow one another pass the record after the last of them, and are told one by one, in the order of the reads.
+		{"two holes that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{4, 5}, A, 3, 3, f.activity(3), holeRow(A, 4, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, holeEvents(A, 4, 4, f.activity(4)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 3, 3, nextRow(4)), lostNote(A, 4, 4, againFrom(5))} }},
+		{"a hole and then a gap that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{4, 5}, A, 3, 3, f.activity(3), gapRow(A, 4, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, gapEvents(A, 4, 4, f.activity(4)))
+			return c
+		}, "", func() []string {
+			return []string{lostNote(A, 3, 3, nextRow(4)), missingNote(A, 4, 4, againFrom(5))}
+		}},
+		{"a gap and then a hole that follow one another", func(t *testing.T, f chainFixture) holeChange {
+			c := holeChange{rows: []chainRow{gapRow(A, 3, 3, f.activity(3)), holeRow(A, 4, 4, f.activity(4))},
+				events: slices.Concat(gapEvents(A, 3, 3, f.activity(3)), holeEvents(A, 4, 4, f.activity(4))), drop: []uint64{4, 5}}
+			return c
+		}, "", func() []string {
+			return []string{missingNote(A, 3, 3, nextRow(4)), lostNote(A, 4, 4, againFrom(5))}
+		}},
+		{"two rows that follow one another, the second of two records", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{2, 4, 5}, A, 2, 2, f.activity(2), holeRow(A, 3, 4, f.activity(4)))
+			c.events = slices.Concat(c.events, holeEvents(A, 3, 4, f.activity(4)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 2, 2, nextRow(3)), lostNote(A, 3, 4, againFrom(5))} }},
+		{"two holes that follow one another at the end", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{7, 8}, A, 5, 5, f.activity(5), holeRow(A, 6, 6, f.activity(6)))
+			c.events = slices.Concat(c.events, holeEvents(A, 6, 6, f.activity(6)))
+			return c
+		}, "", func() []string { return []string{lostNote(A, 5, 5, nextRow(6)), lostNote(A, 6, 6, endsWith(4))} }},
+		{"a hole and then a gap that follow one another at the end of the login history", func(t *testing.T, f chainFixture) holeChange {
+			c := lose([]uint64{6, 9}, L, 2, 2, f.login(2), gapRow(L, 3, 3, f.login(3)))
+			c.events = slices.Concat(c.events, gapEvents(L, 3, 3, f.login(3)))
+			return c
+		}, "", func() []string { return []string{lostNote(L, 2, 2, nextRow(3)), missingNote(L, 3, 3, endsWith(1))} }},
+		{"a hole that holds the chain start, from before it", func(t *testing.T, f chainFixture) holeChange {
+			// The chain starts at the record 2, and the hole says that the records 1 to 2 are lost: the first record that is read is
+			// the record 3, which has the hash of the record 2 as its prev.
+			c := lose([]uint64{3, 6}, L, 1, 2, f.login(2), startRow(2, f.login(1)))
+			c.events = slices.Concat(deletedEvents(2, f.login(1)), c.events)
+			return c
+		}, "", func() []string { return []string{startNote(2), lostNote(L, 1, 2, againFrom(3))} }},
+		{"a gap that holds the chain start, from before it", func(t *testing.T, f chainFixture) holeChange {
+			c := holeChange{rows: []chainRow{gapRow(L, 1, 2, f.login(2)), startRow(2, f.login(1))},
+				events: slices.Concat(deletedEvents(2, f.login(1)), gapEvents(L, 1, 2, f.login(2))), drop: []uint64{3, 6}}
+			return c
+		}, "", func() []string { return []string{startNote(2), missingNote(L, 1, 2, againFrom(3))} }},
+		{"a hole that holds the chain start, and no record after it", func(t *testing.T, f chainFixture) holeChange {
+			// The records 1 to 3 are all lost, and the chain starts at the record 2: the head is the end of the hole.
+			c := lose([]uint64{3, 6, 9}, L, 1, 3, f.login(3), startRow(2, f.login(1)))
+			c.events = slices.Concat(deletedEvents(2, f.login(1)), c.events)
+			return c
+		}, "", func() []string { return []string{startNote(2), lostNote(L, 1, 3, noRecordLeft)} }},
+		{"a hole that holds the chain start, which the records that a deletion left are before", func(t *testing.T, f chainFixture) holeChange {
+			// The chain starts at the record 3 and the record 1 is left; the hole starts at the record 2, which is lost, and ends with
+			// the record 3, so that no record follows it, and the log ends with the record 1.
+			c := lose([]uint64{6, 9}, L, 2, 3, f.login(3), startRow(3, f.login(2)))
+			c.events = slices.Concat(deletedEvents(3, f.login(2)), c.events)
+			return c
+		}, "", func() []string {
+			return []string{startNote(3), lostNote(L, 2, 3, endsWith(1)), leftNote("record 1 is", 3)}
+		}},
 
 		// What it does not pass.
 		{"a row that is one record wider", func(t *testing.T, f chainFixture) holeChange {

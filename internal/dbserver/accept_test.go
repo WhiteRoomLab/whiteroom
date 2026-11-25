@@ -326,6 +326,10 @@ func TestAcceptGap(t *testing.T) {
 			Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
 		{"a record after a gap that is accepted for the records before it", login(1, 2, 4, 6), gapAt(L, 3, 3, chain.sum(3)), L, 6,
 			Acceptance{Gap: true, First: 5, Last: 5}, chain.sum(5), 2},
+		{"a gap that holds the chain start", login(1, 2, 7, 8), startAt(5, chain.sum(4)), L, 7,
+			Acceptance{Gap: true, First: 3, Last: 6}, chain.sum(6), 2},
+		{"a gap that is the chain start", login(1, 2, 3, 4, 7, 8), startAt(5, chain.sum(4)), L, 7,
+			Acceptance{Gap: true, First: 5, Last: 6}, chain.sum(6), 2},
 		{"a record that a break is accepted for", login(1, 2, 4, 5), putRow(dbwire.TableChains,
 			dbwire.ChainBreakKey(dbwire.LogLogin, 4), dbwire.AppendChainBreak(nil, dbwire.ChainBreak{Hash: chain.sum(4), At: pruneNow})),
 			L, 4, Acceptance{Gap: true, First: 3, Last: 3}, chain.sum(3), 2},
@@ -343,6 +347,10 @@ func TestAcceptGap(t *testing.T) {
 			Acceptance{Gap: true, End: true, NoRecord: true, First: 4, Last: 5}, chain.sum(5), 2},
 		{"the records after the records that a deletion left, when the log has no other", login(1, 2, 3), both(startAt(4, chain.sum(3)),
 			headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 4, Last: 5}, chain.sum(5), 2},
+		{"the records at the end that hold the chain start", login(1, 2), both(startAt(5, chain.sum(4)), headAt(L, 7, chain.sum(7))), L, 7,
+			Acceptance{Gap: true, End: true, First: 3, Last: 7}, chain.sum(7), 2},
+		{"the records at the end that hold the chain start, when no record is before it", nil, both(startAt(5, chain.sum(4)),
+			headAt(L, 7, chain.sum(7))), L, 7, Acceptance{Gap: true, End: true, NoRecord: true, First: 5, Last: 7}, chain.sum(7), 2},
 		{"the records at the end, when a hole is in the middle", login(1, 2, 4), both(holeAt(L, 3, 3, chain.sum(3)),
 			headAt(L, 5, chain.sum(5))), L, 5, Acceptance{Gap: true, End: true, First: 5, Last: 5}, chain.sum(5), 2},
 		{"the records at the end, when a hole that does not end with the head is there", login(1, 2, 3), both(holeAt(L, 4, 4, chain.sum(4)),
@@ -844,14 +852,185 @@ func TestAcceptBreakWalk(t *testing.T) {
 	})
 	t.Run("the first record that remains, after records that a deletion left that end before it", func(t *testing.T) {
 		// The records 1 and 2 are there, the record 3 is lost, and the chain starts at the record 4: the record 4 is a gap after
-		// the record 2, whatever its prev is, and not a break.
-		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5)}, startAt(4, wrong32))
+		// the record 2, whatever its prev is, and not a break, if its prev is the hash that the chain start has.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5)}, startAt(4, chain.sum(3)))
 		before := viewOf(t, f)
 		if acc, err := accept(t, f, dbwire.LogLogin, 4); err != nil || acc != (Acceptance{Gap: true, First: 3, Last: 3}) {
 			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the record 3", acc, err)
 		}
 		checkGapAccepted(t, f, before, dbwire.LogLogin, 3, 3, chain.sum(3))
 	})
+	t.Run("the first record that remains, after records that end before it, with another prev", func(t *testing.T) {
+		// The gap would end with the record 3 and the hash that the record 4 has as its prev, which is not the chain start's: the
+		// record 4 would still be a break, which VerifyAudit fails at.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5)}, startAt(4, wrong32))
+		refused(t, f, 4, "the gap of record 3 before record 4 is not accepted: record 4 does not have as its prev the hash that the chain "+
+			"start has of record 3")
+	})
+}
+
+// TestAcceptBreakAcrossChainStart checks the gap that goes across the first record that remains, K, from the records that a
+// deletion left, or from none: the hash of the record K-1 that the walk has must be the chain start's, whatever row passes the
+// gap or comes after it.
+func TestAcceptBreakAcrossChainStart(t *testing.T) {
+	chain := newChain(dbwire.LogLogin, 9)
+	const L = dbwire.LogLogin
+	changed := changedRecord(L, 3, chain) // the record 3 as it is not: its hash is not the chain start's
+	refused := func(t *testing.T, f *fixture, n uint64, want string) {
+		t.Helper()
+		before, files := viewOf(t, f), storeFiles(f)
+		if err := acceptBreak(t, f, L, n); err == nil || err.Error() != want {
+			t.Errorf("AcceptBreak() of the record %d = %v, want %q", n, err, want)
+		}
+		if got := storeFiles(f); !maps.Equal(got, files) {
+			t.Error("the refusal changed the files of the store")
+		}
+		kept(t, before, viewOf(t, f))
+	}
+	both := func(steps ...func(t *testing.T, f *fixture)) func(t *testing.T, f *fixture) {
+		return func(t *testing.T, f *fixture) {
+			for _, step := range steps {
+				step(t, f)
+			}
+		}
+	}
+	t.Run("a gap after a record before the chain start that is not the one that it has", func(t *testing.T) {
+		// The records 1 to 3 are there and the chain starts at the record 4, whose record is lost: the gap is the record 4, and the
+		// record 5 has the hash of it as its prev. The record 3 is not the one that the chain start has.
+		want := "record 5 comes after records before it that an earlier deletion left, the last of which, record 3, does not have the " +
+			"hash that the chain start has of it: the gap before record 5 is not accepted"
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), changed, chain.rec(5), chain.rec(6)}, startAt(4, chain.sum(3)))
+		refused(t, f, 5, want)
+		// The record 4, which is the gap, has no hint to accept the gap with the record 5, which would not be accepted.
+		refused(t, f, 4, "record 4 of the audit log login is not in the store")
+	})
+	t.Run("a gap after the record before the chain start that is the one that it has", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(3), chain.rec(5), chain.rec(6)}, startAt(4, chain.sum(3)))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 5); err != nil || acc != (Acceptance{Gap: true, First: 4, Last: 4}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the record 4", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 4, 4, chain.sum(4))
+	})
+	t.Run("a gap that holds the chain start", func(t *testing.T) {
+		// The records 3 to 6 are lost, and the chain starts at the record 5, so that no hash of the record 4 is known.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(7), chain.rec(8)}, startAt(5, wrong32))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 7); err != nil || acc != (Acceptance{Gap: true, First: 3, Last: 6}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the records 3 to 6", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 3, 6, chain.sum(6))
+	})
+	t.Run("a gap that holds the chain start, when no record is before it", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(7), chain.rec(8)}, startAt(5, wrong32))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 7); err != nil || acc != (Acceptance{Gap: true, First: 5, Last: 6}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the records 5 to 6", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 5, 6, chain.sum(6))
+	})
+	t.Run("a gap that ends with the record before the chain start, and the chain start has another hash", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(5)}, startAt(5, wrong32))
+		refused(t, f, 5, "the gap of the records 3 to 4 before record 5 is not accepted: record 5 does not have as its prev the hash that "+
+			"the chain start has of record 4")
+	})
+	t.Run("a gap at the end that holds the chain start", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2)}, both(startAt(5, chain.sum(4)), headAt(L, 7, chain.sum(7))))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 7); err != nil || acc != (Acceptance{Gap: true, End: true, First: 3, Last: 7}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the records 3 to 7 at the end", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 3, 7, chain.sum(7))
+	})
+	t.Run("a gap at the end after a record before the chain start that is not the one that it has", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), changed}, both(startAt(4, chain.sum(3)), headAt(L, 5, chain.sum(5))))
+		refused(t, f, 5, "the gap at the end of the audit log login comes after records before it that an earlier deletion left, the last "+
+			"of which, record 3, does not have the hash that the chain start has of it: the gap is not accepted")
+	})
+	t.Run("a gap at the end that would end before the record before the chain start", func(t *testing.T) {
+		// The head names a record that the chain start leaves out: no gap is accepted for it.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2)}, both(startAt(6, chain.sum(5)), headAt(L, 4, chain.sum(4))))
+		refused(t, f, 4, "record 4 of the audit log login is not in the store: the records before record 6 were deleted")
+	})
+	t.Run("a record after rows that follow one another", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			n    int // the record that comes after them
+			rows []func(t *testing.T, f *fixture)
+			want string
+		}{
+			{"two holes", 5, []func(t *testing.T, f *fixture){holeAt(L, 3, 3, chain.sum(3)), holeAt(L, 4, 4, chain.sum(4))},
+				"record 5 comes after the record 3 and the record 4 that whiteroom-db repair dropped: there is no break to accept"},
+			{"a hole of two records and a hole", 6, []func(t *testing.T, f *fixture){holeAt(L, 3, 4, chain.sum(4)), holeAt(L, 5, 5, chain.sum(5))},
+				"record 6 comes after the records 3 to 4 and the record 5 that whiteroom-db repair dropped: there is no break to accept"},
+			{"two gaps", 5, []func(t *testing.T, f *fixture){gapAt(L, 3, 3, chain.sum(3)), gapAt(L, 4, 4, chain.sum(4))},
+				"record 5 comes after the record 3 and the record 4 whose gap is accepted already"},
+			{"a hole and a gap", 5, []func(t *testing.T, f *fixture){holeAt(L, 3, 3, chain.sum(3)), gapAt(L, 4, 4, chain.sum(4))},
+				"record 5 comes after the record 3 that whiteroom-db repair dropped and the record 4 whose gap is accepted already: there is " +
+					"no break to accept"},
+			{"a gap, a hole and a gap", 6, []func(t *testing.T, f *fixture){gapAt(L, 3, 3, chain.sum(3)), holeAt(L, 4, 4, chain.sum(4)),
+				gapAt(L, 5, 5, chain.sum(5))},
+				"record 6 comes after the record 3 whose gap is accepted already, the record 4 that whiteroom-db repair dropped and the " +
+					"record 5 whose gap is accepted already: there is no break to accept"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(tt.n)}, both(tt.rows...))
+				refused(t, f, uint64(tt.n), tt.want)
+			})
+		}
+	})
+	t.Run("a record after a row that holds the chain start", func(t *testing.T) {
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(7)}, both(startAt(5, chain.sum(4)), holeAt(L, 3, 6, chain.sum(6))))
+		refused(t, f, 7, holeText(7, 3, 6))
+		f = recordsFixture(t, [][]byte{chain.rec(7)}, both(startAt(5, chain.sum(4)), gapAt(L, 3, 6, chain.sum(6))))
+		refused(t, f, 7, acceptedText(7, 3, 6))
+	})
+	t.Run("a gap before a record that a row that holds the chain start does not pass", func(t *testing.T) {
+		// The row ends with the record 6, and the record 8 has the hash of the record 7: the gap is the record 7.
+		f := recordsFixture(t, [][]byte{chain.rec(8), chain.rec(9)}, both(startAt(5, chain.sum(4)), holeAt(L, 3, 6, chain.sum(6))))
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 8); err != nil || acc != (Acceptance{Gap: true, First: 5, Last: 7}) {
+			t.Fatalf("AcceptBreak() = %+v, %v, want the gap of the records 5 to 7", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 5, 7, chain.sum(7))
+	})
+	t.Run("a head behind a record that is absent", func(t *testing.T) {
+		// The records 1, 2, 4, 5 and 6 are there and the head names the record 3, which a writer that has been broken into can set:
+		// the gap is the record 3 before the record 4, and it is accepted with the record 4. A gap at the end that has the record 3 as
+		// its last would have a first above it, which no row can have.
+		f := recordsFixture(t, [][]byte{chain.rec(1), chain.rec(2), chain.rec(4), chain.rec(5), chain.rec(6)}, headAt(L, 3, chain.sum(3)))
+		refused(t, f, 3, "record 3 of the audit log login is not in the store: it is in the gap of record 3 before record 4; accept the gap "+
+			"with -record 4")
+		before := viewOf(t, f)
+		if acc, err := accept(t, f, L, 4); err != nil || acc != (Acceptance{Gap: true, First: 3, Last: 3}) {
+			t.Fatalf("AcceptBreak() of the record 4 = %+v, %v, want the gap of the record 3", acc, err)
+		}
+		checkGapAccepted(t, f, before, L, 3, 3, chain.sum(3))
+	})
+}
+
+// TestGapValue checks that the row of a gap is one that the walks can read back: a gap that has its last before its first is
+// refused, as is one that a record number of 0 would name.
+func TestGapValue(t *testing.T) {
+	if v, err := gapValue(3, 4, chain32(4), acceptAt); err != nil {
+		t.Errorf("gapValue(3, 4) = %v", err)
+	} else if g, ok := dbwire.ParseChainHole(3, v); !ok || g.Last != 4 || g.Hash != chain32(4) || !g.At.Equal(acceptAt) {
+		t.Errorf("the value of gapValue(3, 4) reads back as %+v (%v)", g, ok)
+	}
+	for _, c := range []struct{ first, last uint64 }{{7, 3}, {4, 3}, {0, 3}} {
+		if v, err := gapValue(c.first, c.last, chain32(1), acceptAt); err == nil {
+			t.Errorf("gapValue(%d, %d) = %x, nil, want an error", c.first, c.last, v)
+		} else if want := fmt.Sprintf("the row of the gap of the records %d to %d could not be read back, so it is not written", c.first,
+			c.last); err.Error() != want {
+			t.Errorf("gapValue(%d, %d) = %v, want %q", c.first, c.last, err, want)
+		}
+	}
+}
+
+// chain32 is a hash that depends on n alone.
+func chain32(n byte) (h [sha256.Size]byte) {
+	h[0], h[1] = n, 0xc3
+	return h
 }
 
 // rewriteLogin compacts the store of f, whose server is closed, with the record n of the login history replaced by data.
